@@ -1,0 +1,174 @@
+{
+  "scenario": "RESTORE-01",
+  "reviewedFrom": "B06 recovery: archive, verify, preflight against the actual target catalog, plan with explicit identity mappings, load, compare every archived table, re-enable guards and continue ordinary work. Taxpayer IDs are recovered separately from Vault.",
+  "subcases": {
+    "closed-group-and-continuation": {
+      "inputs": {
+        "contractCents": 10000000,
+        "eacCents": 8000000,
+        "augustInvoiceCents": 1500000,
+        "augustBillCents": 400000,
+        "truckCents": 3600000,
+        "minimumPopulatedTables": 25
+      },
+      "derivation": "The ENTITY-01 closed group (two companies, July closed with per-company statements) is archived, lost and restored from the plan. Every archived table's digest is unchanged except the bank feed connection, which the plan deliberately restores disconnected (its credential is never archived), the July controls and saved statements are unchanged, rerunning the projector adds no line, and a July journal is refused because July is closed. August is then opened, billed, collected, a bill paid, a truck bought and depreciated, WIP reviewed, receipts in transit supported, the land company's statement reconciled, and August closes with its controls passing. The plan also recomputes the bills' generated columns in the target schema; they come back equal, so vendor_bills is unchanged.",
+      "expected": {
+        "archiveVerifies": true,
+        "ready": true,
+        "secretRecovery": 0,
+        "populatedTables": true,
+        "changedTables": [
+          "bank_feed_connections"
+        ],
+        "plannedChanges": [
+          "bank_feed_connections",
+          "vendor_bills"
+        ],
+        "controlsUnchanged": true,
+        "closedStatementsUnchanged": true,
+        "rerunAddsNothing": true,
+        "closedMonthRefused": true,
+        "augustClosed": "closed",
+        "augustControls": true
+      }
+    },
+    "tax-records": {
+      "inputs": {},
+      "derivation": "The TAX-01 company (a withdrawn, a superseded-after-acceptance and an approved corrected 1099 package; four vendors and the company with taxpayer IDs in Vault) is archived and restored. No taxpayer ID or Vault pointer is in the archive; preflight names the four vendors and the company for Vault recovery. Every table returns identical, and the 1099 report and the corrected package's filing file are byte-identical (Vault recovery is simulated by the target keeping its Vault). Until the company's own TIN is entered again (its Vault pointer is not archived), the filing file is refused rather than built with a missing payer.",
+      "expected": {
+        "ready": true,
+        "secretRecovery": [
+          "books_legal_entities",
+          "companies",
+          "companies",
+          "companies",
+          "companies"
+        ],
+        "fileRefusedUntilPayerTinReentered": true,
+        "noTaxpayerIdArchived": true,
+        "packageStatuses": [
+          "approved",
+          "superseded",
+          "withdrawn"
+        ],
+        "changedTables": [],
+        "filingFileIdentical": true,
+        "reportIdentical": true
+      }
+    },
+    "background-archive": {
+      "inputs": {},
+      "derivation": "One journal before the capture (plus none from launch: zero opening), a second committed 0.5 s into a capture that sleeps 2 s inside its one statement: the capture holds 1 entry, the books 2 afterwards. The first export is queued with one job; a worker starts attempt 1 and dies; the job runs attempt 2, which records attempt 1 as interrupted, captures and verifies, and fails at upload because this stack has no storage, keeping the reason and naming no file. An export whose job was deleted, two hours old, is failed by the sweep with its reason; a fresh queued export is left alone. A ready export cannot be started again. With real storage (--storage-env) attempt 2 finishes instead: the archive is ready, written to its own attempt-2 object and hashed, and attempt 1 stays on record as interrupted.",
+      "expected": {
+        "snapshot": {
+          "before": 1,
+          "captured": 1,
+          "after": 2
+        },
+        "queued": {
+          "status": "queued",
+          "job": 1
+        },
+        "retry": {
+          "status": "failed",
+          "attempts": [
+            "1:interrupted",
+            "2:failed"
+          ],
+          "archivedByAttempt": null,
+          "contentHashed": false,
+          "reasonGiven": true
+        },
+        "lost": {
+          "swept": true,
+          "status": "failed",
+          "message": "The archive was interrupted and its job ended; create a new export."
+        },
+        "freshUntouched": "queued",
+        "readyCannotRestart": true
+      },
+      "expectedWithStorage": {
+        "snapshot": {
+          "before": 1,
+          "captured": 1,
+          "after": 2
+        },
+        "queued": {
+          "status": "queued",
+          "job": 1
+        },
+        "retry": {
+          "status": "ready",
+          "attempts": [
+            "1:interrupted"
+          ],
+          "archivedByAttempt": true,
+          "contentHashed": true,
+          "reasonGiven": false
+        },
+        "lost": {
+          "swept": true,
+          "status": "failed",
+          "message": "The archive was interrupted and its job ended; create a new export."
+        },
+        "freshUntouched": "queued",
+        "readyCannotRestart": true
+      }
+    },
+    "proof-repair-and-close": {
+      "inputs": {
+        "contractCents": 10000000,
+        "eacCents": 8000000,
+        "bills": {
+          "A": 400000,
+          "B": 300000,
+          "C": 200000
+        },
+        "tamperCents": 100,
+        "augustBillCents": 250000
+      },
+      "derivation": "July: bills A 4,000.00, B 3,000.00 and C 2,000.00 post; B is recoded to 5020 after posting (its entry reversed and reposted) and a 50.00 accrual is reversed. The proof passes on that ordinary history. Damage past the guards: A's entry gains 1.00 a side, C's entry is deleted, a copy of B's entry is added with no fact. The proof finds journal_divergence, missing_journal and unexpected_journal; job cost and AP stop tying. The bookkeeper reverses A's entry and the stray entry with reasons and the projector posts A again (under a repost key) and C again: the proof passes, every control ties, the job's cost in the ledger is the three bills' 9,000.00, and July closes. Restored from its archive, the company bills 2,500.00 in August, reviews WIP and closes August; the proof still passes. Each difference the proof finds is an open ledger_proof finding with its cure and a link to the entry (3), which blocks the close under the reconciliation findings; the passing proof after the repair resolves all three.",
+      "expected": {
+        "ordinary": {
+          "status": "passed",
+          "found": []
+        },
+        "damaged": {
+          "proof": {
+            "status": "failed",
+            "found": [
+              "journal_divergence",
+              "missing_journal",
+              "unexpected_journal"
+            ]
+          },
+          "controlsNotPassing": [
+            "ap_control",
+            "job_cost_control"
+          ],
+          "openFindings": 3,
+          "closeBlockedBy": [
+            "accounting_drift"
+          ]
+        },
+        "repaired": {
+          "proof": {
+            "status": "passed",
+            "found": []
+          },
+          "controlsNotPassing": [],
+          "openFindings": 0,
+          "jobCost": 900000
+        },
+        "julyClosed": "allowed",
+        "augustAfterRestore": {
+          "closed": "allowed",
+          "proof": {
+            "status": "passed",
+            "found": []
+          }
+        }
+      }
+    }
+  }
+}

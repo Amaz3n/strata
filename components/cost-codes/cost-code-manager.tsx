@@ -4,6 +4,7 @@ import { type CSSProperties, useEffect, useMemo, useState, useTransition } from 
 import { toast } from "sonner"
 
 import type { CostCode } from "@/lib/types"
+import { costCodeHierarchyIssues, costCodeHierarchyRows, costCodeParentOptions } from "@/lib/cost-code-hierarchy"
 import {
   createCostCodeAction,
   listCostCodesAction,
@@ -58,10 +59,6 @@ interface CostCodeManagerProps {
   onCostCodesChange?: (codes: CostCode[]) => void
 }
 
-interface TreeNode extends CostCode {
-  children: TreeNode[]
-}
-
 type CostCodeFormState = {
   code: string
   name: string
@@ -103,35 +100,6 @@ const EMPTY_FORM: CostCodeFormState = {
   is_reimbursable_default: true,
   default_markup_percent: "",
   cost_type: "",
-}
-
-function buildTree(codes: CostCode[]): TreeNode[] {
-  const map = new Map<string, TreeNode>()
-  const roots: TreeNode[] = []
-
-  codes.forEach((code) => {
-    map.set(code.id, { ...code, children: [] })
-  })
-
-  map.forEach((node) => {
-    if (node.parent_id && map.has(node.parent_id)) {
-      map.get(node.parent_id)!.children.push(node)
-    } else {
-      roots.push(node)
-    }
-  })
-
-  const sortNodes = (nodes: TreeNode[]) => {
-    nodes.sort((a, b) => (a.code || "").localeCompare(b.code || ""))
-    nodes.forEach((n) => sortNodes(n.children))
-  }
-
-  sortNodes(roots)
-  return roots
-}
-
-function flattenTree(nodes: TreeNode[], depth = 0): Array<TreeNode & { depth: number }> {
-  return nodes.flatMap((node) => [{ ...node, depth }, ...flattenTree(node.children, depth + 1)])
 }
 
 function normalizeOptional(value: string) {
@@ -181,7 +149,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
     setLocalCodes(costCodes)
   }, [costCodes])
 
-  const activeCodes = useMemo(() => localCodes.filter((code) => code.is_active !== false), [localCodes])
+  const hierarchyIssues = useMemo(() => costCodeHierarchyIssues(localCodes), [localCodes])
 
   const filteredCodes = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -211,7 +179,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
     })
   }, [localCodes, query, viewFilter])
 
-  const rows = useMemo(() => flattenTree(buildTree(filteredCodes)), [filteredCodes])
+  const rows = useMemo(() => costCodeHierarchyRows(filteredCodes, hierarchyIssues), [filteredCodes, hierarchyIssues])
   const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
   const visibleRows = useMemo(() => rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), [page, rows])
   const pageStart = rows.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1
@@ -317,7 +285,9 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
   }
 
   const isEditSheet = sheet.mode === "edit"
-  const parentOptions = activeCodes.filter((code) => sheet.mode !== "edit" || code.id !== sheet.code.id)
+  const editedId = sheet.mode === "edit" ? sheet.code.id : undefined
+  const parentOptions = useMemo(() => costCodeParentOptions(localCodes, editedId, hierarchyIssues), [localCodes, editedId, hierarchyIssues])
+  const unavailableParent = Boolean(form.parent_id && !parentOptions.some(code => code.id === form.parent_id))
   const hasCodes = localCodes.length > 0
 
   return (
@@ -362,14 +332,14 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
               </div>
 
               <div className="flex flex-col gap-2">
-                <Label className="microlabel">Parent</Label>
+                <Label htmlFor="cost-code-parent" className="microlabel">Parent</Label>
                 <Select
                   value={form.parent_id || "__none__"}
                   onValueChange={(value) => setForm((prev) => ({ ...prev, parent_id: value === "__none__" ? "" : value }))}
                   disabled={!canManage}
                 >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="No parent" />
+                  <SelectTrigger id="cost-code-parent" className="w-full" aria-describedby={unavailableParent ? "cost-code-parent-guidance" : undefined}>
+                    <SelectValue placeholder="No parent">{unavailableParent ? "Current parent unavailable" : undefined}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__none__">No parent</SelectItem>
@@ -380,6 +350,11 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
                     ))}
                   </SelectContent>
                 </Select>
+                {unavailableParent ? (
+                  <p id="cost-code-parent-guidance" className="text-xs text-muted-foreground">
+                    Choose No parent or an available parent to update this code. The saved parent stays unchanged until you save.
+                  </p>
+                ) : null}
               </div>
 
               <div className="grid gap-4 md:grid-cols-4">
@@ -606,10 +581,15 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
                         </span>
                       </td>
                       <td className={cn(TD, "min-w-0")}>
-                        <div className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: `${code.depth * 18}px` }}>
+                        <div className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: `${Math.min(code.depth, 8) * 18}px` }}>
                           {code.depth > 0 ? <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/70" /> : null}
                           <div className="min-w-0">
                             <span className="block truncate font-medium text-foreground">{code.name}</span>
+                            {code.hierarchyIssue ? (
+                              <span className="block text-xs text-destructive">
+                                {code.hierarchyIssue === "cycle" ? "Parent hierarchy contains a cycle" : "Parent hierarchy is unavailable"}
+                              </span>
+                            ) : null}
                             <span className="block truncate text-xs text-muted-foreground">
                               {code.division ? `Div ${code.division}` : "General"}
                               {code.unit ? ` · ${code.unit}` : ""}

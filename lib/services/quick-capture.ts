@@ -59,7 +59,7 @@ export async function queueQuickCapture(input: QuickCaptureInput, orgId?: string
 
 async function extractDraft(transcript: string, preferredTarget: string | null, orgId: string): Promise<QuickCaptureExtractedPayload> {
   const result = await runAiObject({
-    feature: "document_extraction",
+    feature: "text_assistance",
     schema: quickCaptureExtractedPayloadSchema,
     system:
       "You turn a construction field note into ONE typed draft. Never invent names, dates, or locations; " +

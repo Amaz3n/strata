@@ -1,5 +1,6 @@
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { createDocument } from "@/lib/services/documents"
 import { createFileRecord } from "@/lib/services/files"
 import { getOrgBranding } from "@/lib/services/estimate-portal"
@@ -30,69 +31,15 @@ export async function generateSubcontractSigningDocument({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
 
-  const { data: commitment, error } = await supabase
-    .from("commitments")
-    .select(
-      `id, org_id, project_id, company_id, title, status, total_cents, contract_number, scope, terms, retainage_percent,
-       lines:commitment_lines(id, description, quantity, unit, unit_cost_cents, sort_order),
-       project:projects(name),
-       company:companies(name, email)`,
-    )
-    .eq("id", commitmentId)
-    .eq("org_id", resolvedOrgId)
-    .single()
-
-  if (error || !commitment) {
-    throw new Error(`Commitment not found: ${error?.message ?? "missing"}`)
+  const commitment = await loadSubcontractCommitment(supabase, resolvedOrgId, commitmentId)
+  if (commitment.metadata?.subcontract_review_required === true) {
+    return { documentId: null, reason: "Review the awarded scope and commercial terms before generating the subcontract." }
   }
   if (!commitment.project_id) {
     throw new Error("Commitment must be linked to a project before an agreement can be generated.")
   }
 
-  const company = (commitment as any).company as { name?: string; email?: string } | null
-  const branding = await getOrgBranding(resolvedOrgId, supabase)
-
-  const lines: QuoteLine[] = [...(((commitment as any).lines as any[]) ?? [])]
-    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-    .map((line) => ({
-      description: line.description,
-      quantity: line.quantity,
-      unit: line.unit,
-      unit_cost_cents: line.unit_cost_cents,
-      item_type: "line",
-    }))
-
-  // A commitment entered as a lump sum may have no lines; the agreement still
-  // needs a priced scope row for the schedule of values.
-  if (lines.length === 0) {
-    lines.push({
-      description: commitment.scope?.trim() || commitment.title,
-      quantity: 1,
-      unit: "LS",
-      unit_cost_cents: commitment.total_cents ?? 0,
-      item_type: "line",
-    })
-  }
-
-  const pdf = await renderSubcontractPdf({
-    orgName: branding.name,
-    orgLogoUrl: branding.logoUrl,
-    orgAddress: branding.address,
-    title: commitment.title,
-    contractNumber: commitment.contract_number ?? null,
-    companyName: company?.name ?? null,
-    companyEmail: company?.email ?? null,
-    projectName: (commitment as any).project?.name ?? null,
-    scope: commitment.scope ?? null,
-    terms: commitment.terms ?? null,
-    retainagePercent: commitment.retainage_percent != null ? Number(commitment.retainage_percent) : null,
-    totalCents: commitment.total_cents ?? null,
-    signers: [
-      { role: company?.name ? `${company.name} (Subcontractor)` : "Subcontractor", name: null },
-      { role: branding.name ? `${branding.name} (Contractor)` : "Contractor", name: null },
-    ],
-    lines,
-  })
+  const pdf = await renderSubcontractForCommitment(supabase, resolvedOrgId, commitment)
 
   const timestamp = Date.now()
   const fileName = `subcontract-${commitment.contract_number ?? commitment.id}.pdf`
@@ -147,4 +94,108 @@ export async function generateSubcontractSigningDocument({
   )
 
   return { documentId: document.id }
+}
+
+type OrgContext = Awaited<ReturnType<typeof requireOrgContext>>
+type SupabaseClient = OrgContext["supabase"]
+
+async function loadSubcontractCommitment(supabase: SupabaseClient, orgId: string, commitmentId: string) {
+  const { data: commitment, error } = await supabase
+    .from("commitments")
+    .select(
+      `id, org_id, project_id, company_id, title, status, total_cents, contract_number, scope, terms, retainage_percent, metadata,
+       lines:commitment_lines(id, description, quantity, unit, unit_cost_cents, sort_order),
+       project:projects(name),
+       company:companies(name, email)`,
+    )
+    .eq("id", commitmentId)
+    .eq("org_id", orgId)
+    .single()
+
+  if (error || !commitment) {
+    throw new Error(`Commitment not found: ${error?.message ?? "missing"}`)
+  }
+  return commitment
+}
+
+/** Builds the agreement document from a loaded commitment; stores nothing. */
+async function renderSubcontractForCommitment(
+  supabase: SupabaseClient,
+  orgId: string,
+  commitment: Awaited<ReturnType<typeof loadSubcontractCommitment>>,
+): Promise<Buffer> {
+  const company = (commitment as any).company as { name?: string; email?: string } | null
+  const branding = await getOrgBranding(orgId, supabase)
+
+  const lines: QuoteLine[] = [...(((commitment as any).lines as any[]) ?? [])]
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+    .map((line) => ({
+      description: line.description,
+      quantity: line.quantity,
+      unit: line.unit,
+      unit_cost_cents: line.unit_cost_cents,
+      item_type: "line",
+    }))
+
+  // A commitment entered as a lump sum may have no lines; the agreement still
+  // needs a priced scope row for the schedule of values.
+  if (lines.length === 0) {
+    lines.push({
+      description: commitment.scope?.trim() || commitment.title,
+      quantity: 1,
+      unit: "LS",
+      unit_cost_cents: commitment.total_cents ?? 0,
+      item_type: "line",
+    })
+  }
+
+  return renderSubcontractPdf({
+    orgName: branding.name,
+    orgLogoUrl: branding.logoUrl,
+    orgAddress: branding.address,
+    title: commitment.title,
+    contractNumber: commitment.contract_number ?? null,
+    companyName: company?.name ?? null,
+    companyEmail: company?.email ?? null,
+    projectName: (commitment as any).project?.name ?? null,
+    scope: commitment.scope ?? null,
+    terms: commitment.terms ?? null,
+    retainagePercent: commitment.retainage_percent != null ? Number(commitment.retainage_percent) : null,
+    totalCents: commitment.total_cents ?? null,
+    signers: [
+      { role: company?.name ? `${company.name} (Subcontractor)` : "Subcontractor", name: null },
+      { role: branding.name ? `${branding.name} (Contractor)` : "Contractor", name: null },
+    ],
+    lines,
+  })
+}
+
+/**
+ * Renders the subcontract exactly as it would be generated for signing and
+ * returns it as base64 without storing anything. A preview, so it renders even
+ * while the awarded scope still needs review.
+ */
+export async function renderSubcontractPreview({
+  commitmentId,
+  orgId,
+}: {
+  commitmentId: string
+  orgId?: string
+}): Promise<string> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const commitment = await loadSubcontractCommitment(supabase, resolvedOrgId, commitmentId)
+
+  await requireAuthorization({
+    permission: "commitment.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: commitment.project_id ?? undefined,
+    supabase,
+    logDecision: true,
+    resourceType: "commitment",
+    resourceId: commitmentId,
+  })
+
+  const pdf = await renderSubcontractForCommitment(supabase, resolvedOrgId, commitment)
+  return pdf.toString("base64")
 }

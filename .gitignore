@@ -61,3 +61,6 @@ Thumbs.db
 # Root-level archives and alternate package-manager artifacts
 *.tar.gz
 /package-lock.json
+
+# Private local takeoff corpus, derivatives, and diagnostic outputs
+/tmp/takeoff-corpus/

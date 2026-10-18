@@ -24,7 +24,8 @@ import type {
 import type {
   CronJobHealth,
   OutboxHealth,
-  PaymentOperationsAlert,
+  OutboxOrgBacklog,
+  OperationsAlert,
   QboConnectionHealth,
   StuckOutboxHealth,
 } from "@/lib/services/ops"
@@ -33,25 +34,29 @@ interface OpsClientProps {
   referenceTimeMs: number
   cronHealth: CronJobHealth[]
   outboxHealth: OutboxHealth
+  orgBacklog: { orgs: OutboxOrgBacklog[]; totalOrgs: number }
   stuckHealth: StuckOutboxHealth
   qboHealth: QboConnectionHealth[]
   reconciliations: PaymentReconciliationSummary[]
   reconciliationExceptions: PaymentReconciliationException[]
-  paymentAlerts: PaymentOperationsAlert[]
+  operationsAlerts: OperationsAlert[]
 }
 
-const PAYMENT_ALERT_LABELS: Record<string, string> = {
+const OPERATIONS_ALERT_LABELS: Record<string, string> = {
   payment_submission_needs_recovery: "Submission needs recovery",
   vendor_transfer_needs_attention: "Vendor transfer stuck",
   payment_operations_alert: "Operations alert",
   accounting_sync_needs_review: "Accounting sync needs review",
   vendor_payout_destination_changed: "Payout bank changed",
+  operations_pipeline_alert: "Production work stopped",
 }
 
 const CRON_STATE_LABEL: Record<CronJobHealth["state"], string> = {
   healthy: "Healthy",
+  running: "Running",
   failing: "Failing",
-  overdue: "Overdue",
+  "timed-out": "Timed out",
+  "not-started": "Not started",
   "no-data": "No runs yet",
 }
 
@@ -76,18 +81,20 @@ export function OpsClient({
   referenceTimeMs,
   cronHealth,
   outboxHealth,
+  orgBacklog,
   stuckHealth,
   qboHealth,
   reconciliations,
   reconciliationExceptions,
-  paymentAlerts,
+  operationsAlerts,
 }: OpsClientProps) {
   const router = useRouter()
   const [refreshing, startRefreshing] = useTransition()
   const [retryingId, setRetryingId] = useState<number | null>(null)
   const [retryingAll, startRetryingAll] = useTransition()
 
-  const overdueCount = cronHealth.filter((job) => job.state === "overdue").length
+  const notStartedCount = cronHealth.filter((job) => job.state === "not-started").length
+  const timedOutCount = cronHealth.filter((job) => job.state === "timed-out").length
   const failingCount = cronHealth.filter((job) => job.state === "failing").length
   const qboErrorCount = qboHealth.filter(
     (conn) => conn.lastError || conn.status !== "connected" || conn.refreshFailureCount > 0,
@@ -190,8 +197,9 @@ export function OpsClient({
 
       <div className="relative z-10 min-h-0 flex-1 overflow-auto">
         {/* Stat strip */}
-        <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-3 lg:grid-cols-6">
-          <Stat label="Overdue crons" value={overdueCount} alarm={overdueCount > 0} hint="past 2× cadence" />
+        <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-4 lg:grid-cols-7">
+          <Stat label="Crons not started" value={notStartedCount} alarm={notStartedCount > 0} hint="no run in 2× cadence" />
+          <Stat label="Crons timed out" value={timedOutCount} alarm={timedOutCount > 0} hint="started, never reported" />
           <Stat label="Failing crons" value={failingCount} alarm={failingCount > 0} hint="last run errored" />
           <Stat label="Outbox failed" value={outboxHealth.failedCount} alarm={outboxHealth.failedCount > 0} hint="need attention" />
           <Stat
@@ -279,6 +287,9 @@ export function OpsClient({
             <Button asChild variant="ghost" size="sm" className="h-7 text-xs">
               <Link href="/admin/ops/drawings">Drawings dead letters</Link>
             </Button>
+            <Button asChild variant="ghost" size="sm" className="h-7 text-xs">
+              <Link href="/admin/ops/pipelines">Production work</Link>
+            </Button>
             {outboxHealth.failedCount > 0 ? (
               <Button variant="outline" size="sm" className="h-7 text-xs" disabled={retryingAll} onClick={handleRetryAll}>
                 {retryingAll ? "Retrying…" : `Retry all failed (${outboxHealth.failedCount})`}
@@ -336,6 +347,51 @@ export function OpsClient({
           {outboxHealth.failedCount > outboxHealth.failedItems.length ? (
             <p className="border-t px-4 py-2 text-xs text-muted-foreground">
               Showing the {outboxHealth.failedItems.length} most recent of {outboxHealth.failedCount} failed jobs.
+            </p>
+          ) : null}
+        </div>
+
+        {/* Backlog by organization */}
+        <div className="px-4 pb-2 pt-5">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Backlog by organization
+            <span className="ml-2 normal-case tracking-normal">
+              claims rotate across organizations · {orgBacklog.totalOrgs} with queued, running or failed work
+            </span>
+          </h2>
+        </div>
+        <div className="border-y">
+          {orgBacklog.orgs.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-muted-foreground">No organization has background work waiting.</p>
+          ) : (
+            <Table>
+              <TableHeader className="bg-muted/40">
+                <TableRow>
+                  <TableHead className="pl-4">Organization</TableHead>
+                  <TableHead className="text-right">Due</TableHead>
+                  <TableHead className="text-right">Scheduled</TableHead>
+                  <TableHead className="text-right">Running</TableHead>
+                  <TableHead className="text-right">Failed 24h</TableHead>
+                  <TableHead className="pr-4">Oldest due</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {orgBacklog.orgs.map((org) => (
+                  <TableRow key={org.orgId}>
+                    <TableCell className="py-2.5 pl-4 text-xs">{org.orgName ?? org.orgId}</TableCell>
+                    <TableCell className="py-2.5 text-right text-xs tabular-nums">{org.dueCount}</TableCell>
+                    <TableCell className="py-2.5 text-right text-xs tabular-nums text-muted-foreground">{org.scheduledCount}</TableCell>
+                    <TableCell className="py-2.5 text-right text-xs tabular-nums">{org.processingCount}</TableCell>
+                    <TableCell className={cn("py-2.5 text-right text-xs tabular-nums", org.failedLastDay > 0 && "text-destructive")}>{org.failedLastDay}</TableCell>
+                    <TableCell className="py-2.5 pr-4 text-xs" title={exact(org.oldestDueAt)}>{relative(org.oldestDueAt, referenceTimeMs)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+          {orgBacklog.totalOrgs > orgBacklog.orgs.length ? (
+            <p className="border-t px-4 py-2 text-xs text-muted-foreground">
+              Showing the {orgBacklog.orgs.length} organizations with the most due work of {orgBacklog.totalOrgs}.
             </p>
           ) : null}
         </div>
@@ -427,11 +483,11 @@ export function OpsClient({
           provider, a tripped loss ceiling — and had no surface reading them.
           Read-only: each row deep-links to the payable it concerns where it can.
         */}
-        <SectionHeading>Payment &amp; accounting operations</SectionHeading>
+        <SectionHeading>Operations alerts</SectionHeading>
         <div className="border-y">
-          {paymentAlerts.length === 0 ? (
+          {operationsAlerts.length === 0 ? (
             <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-              No payment or accounting alerts in the last two weeks.
+              No payment, accounting or production pipeline alerts in the last two weeks.
             </p>
           ) : (
             <Table>
@@ -445,10 +501,10 @@ export function OpsClient({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {paymentAlerts.map((alert) => (
+                {operationsAlerts.map((alert) => (
                   <TableRow key={alert.id}>
                     <TableCell className="pl-4 py-2.5 text-xs font-medium">
-                      {PAYMENT_ALERT_LABELS[alert.eventType] ?? alert.eventType}
+                      {OPERATIONS_ALERT_LABELS[alert.eventType] ?? alert.eventType}
                     </TableCell>
                     <TableCell className="py-2.5 text-xs">{alert.orgName ?? "—"}</TableCell>
                     <TableCell className="py-2.5 font-mono text-[11px] text-muted-foreground">
@@ -722,14 +778,15 @@ function Stat({ label, value, hint, alarm }: { label: string; value: number; hin
 function StateBadge({ state }: { state: CronJobHealth["state"] }) {
   return (
     <Badge
-      variant={state === "healthy" ? "secondary" : state === "no-data" ? "outline" : "destructive"}
+      variant={state === "healthy" || state === "running" ? "secondary" : state === "no-data" ? "outline" : "destructive"}
       className="rounded-none text-[11px]"
     >
       <span
         className={cn(
           "mr-1.5 inline-block h-1.5 w-1.5",
           state === "healthy" && "bg-success",
-          (state === "failing" || state === "overdue") && "bg-destructive-foreground",
+          state === "running" && "bg-primary",
+          (state === "failing" || state === "timed-out" || state === "not-started") && "bg-destructive-foreground",
           state === "no-data" && "bg-muted-foreground",
         )}
       />

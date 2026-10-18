@@ -2,6 +2,7 @@
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { z } from "zod"
+import { PAYABLE_SELECTION_CAP } from "@/lib/financials/payables-book"
 import { recordExtractionCorrection } from "@/lib/services/vendor-extraction-memory"
 import { revalidatePath } from "next/cache"
 
@@ -30,7 +31,7 @@ import type { ApFeePolicy } from "@/lib/payments/fee-engine"
 import { decidePaymentRiskReview, type DecidePaymentRiskInput } from "@/lib/services/payment-risk"
 import { listProjectBudgetLines } from "@/lib/services/budgets"
 import { requireOrgContext } from "@/lib/services/context"
-import { requirePermission } from "@/lib/services/permissions"
+import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 import {
   evaluateHolds,
   overridePaymentHold,
@@ -56,10 +57,16 @@ export async function selectMatchingPayableIdsAction(input: { tab?: string; sear
     const parsed = z.object({ tab: z.string().optional(), search: z.string().trim().max(120).optional(), projectId: z.string().uuid().optional(), communityId: z.string().uuid().optional(), due: z.string().optional(), banded: z.boolean().optional(), includePaid: z.boolean().optional(), sort: z.string().optional(), direction: z.enum(["asc", "desc"]).optional() }).parse(input)
     const { loadOrgPayablesDesk } = await import("@/lib/services/org-payables")
     const { resolveProductionDeskScope } = await import("@/lib/services/production-desk-scope")
+    // An explicit project skips the desk scope, so the caller's read access to that
+    // one project (membership and division) is checked here instead.
+    if (parsed.projectId) {
+      const { userId } = await requireOrgContext()
+      await requireProjectPermission(userId, parsed.projectId, "bill.read")
+    }
     const projectIds = parsed.projectId ? [parsed.projectId] : (await resolveProductionDeskScope({ communityId: parsed.communityId })).projectIds
     const data = await loadOrgPayablesDesk(projectIds, { ...parsed, projectScope: Boolean(parsed.projectId), selectionOnly: true })
     const ids = data.selectionIds ?? []
-    return { success: true as const, data: { ids: [...new Set(ids)], cap: 500, runCap: 200 } }
+    return { success: true as const, data: { ids: [...new Set(ids)], total: data.pagination.total, cap: PAYABLE_SELECTION_CAP, runCap: 200 } }
   } catch (error) { return actionError(error) }
 }
 

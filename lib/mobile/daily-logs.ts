@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { MobileAPIError } from "@/lib/mobile/api"
 import type { MobileOrgContext } from "@/lib/mobile/auth"
+import { revisionMatches, staleRevisionError } from "@/lib/mobile/revision"
 import type {
   MobileDailyLogCommentDTO,
   MobileDailyLogContextDTO,
@@ -48,7 +49,12 @@ const updateSchema = z.object({
   summary: z.string().trim().max(20_000).optional(),
   weather: z.string().trim().max(500).optional(),
   mentioned_user_ids: z.array(z.string().uuid()).max(100).default([]),
+  // The log's `updated_at` as the app last read it. Optional so builds that
+  // predate it keep working; when present, a stale edit is refused with 409.
+  expected_revision: z.string().max(100).optional(),
 })
+
+const DAILY_LOG_COLUMNS = "id, org_id, project_id, log_date, summary, weather, created_by, created_at, updated_at"
 
 const commentSchema = z.object({
   client_id: z.string().uuid(),
@@ -504,13 +510,39 @@ export async function updateMobileDailyLog(
   await requireDailyLogPermission(context, "daily_log.write")
   const parsed = updateSchema.safeParse(input)
   if (!parsed.success) throw new MobileAPIError(422, "invalid_daily_log", "Some daily log information is invalid.")
-  const { data, error } = await context.serviceSupabase.from("daily_logs").update({
+  const readCurrent = async () => {
+    const { data: row, error: readError } = await context.serviceSupabase.from("daily_logs").select(DAILY_LOG_COLUMNS)
+      .eq("org_id", context.orgId).eq("project_id", projectId).eq("id", dailyLogId).maybeSingle()
+    if (readError) throw new MobileAPIError(500, "daily_log_update_failed", "The daily log could not be updated.")
+    return row
+  }
+  const staleWith = async (row: NonNullable<Awaited<ReturnType<typeof readCurrent>>>) => {
+    const current = (await hydrateLogs(context, [row]))[0]
+    return staleRevisionError("daily log", current)
+  }
+
+  // With an expected revision the write is compare-and-swap on the stored
+  // `updated_at`, so an edit landing between the check and the write loses.
+  let guard: string | null = null
+  if (parsed.data.expected_revision) {
+    const current = await readCurrent()
+    if (!current) throw new MobileAPIError(404, "daily_log_not_found", "Daily log not found.")
+    if (!revisionMatches(parsed.data.expected_revision, current.updated_at)) throw await staleWith(current)
+    guard = current.updated_at
+  }
+
+  let query = context.serviceSupabase.from("daily_logs").update({
     summary: parsed.data.summary || null,
     weather: parsed.data.weather || null,
   }).eq("org_id", context.orgId).eq("project_id", projectId).eq("id", dailyLogId)
-    .select("id, org_id, project_id, log_date, summary, weather, created_by, created_at, updated_at").maybeSingle()
+  if (guard) query = query.eq("updated_at", guard)
+  const { data, error } = await query.select(DAILY_LOG_COLUMNS).maybeSingle()
   if (error) throw new MobileAPIError(500, "daily_log_update_failed", "The daily log could not be updated.")
-  if (!data) throw new MobileAPIError(404, "daily_log_not_found", "Daily log not found.")
+  if (!data) {
+    const current = guard ? await readCurrent() : null
+    if (current) throw await staleWith(current)
+    throw new MobileAPIError(404, "daily_log_not_found", "Daily log not found.")
+  }
   await syncMentions({
     context,
     projectId,
@@ -596,9 +628,17 @@ export async function uploadMobileDailyLogPhoto(
   if (!log) throw new MobileAPIError(409, "daily_log_pending", "The daily log must sync before its photos.")
 
   const existing = await context.serviceSupabase.from("files")
-    .select("id, file_name, mime_type, storage_path")
+    .select("id, file_name, mime_type, storage_path, project_id, daily_log_id")
     .eq("org_id", context.orgId).eq("id", clientId.data).maybeSingle()
-  if (existing.data) return signedPhoto(context, existing.data)
+  if (existing.data) {
+    // A retry replays this log's own upload. A client_id naming a file on
+    // another house or another log is a collision — answering it would sign a
+    // URL to a file this request never had access to.
+    if (existing.data.project_id !== projectId || existing.data.daily_log_id !== dailyLogId) {
+      throw new MobileAPIError(409, "photo_client_id_conflict", "This upload id is already used by another file.")
+    }
+    return signedPhoto(context, existing.data)
+  }
 
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_") || `${clientId.data}.jpg`
   const storagePath = `${context.orgId}/${projectId}/daily-logs/uploads/${clientId.data}_${safeName}`

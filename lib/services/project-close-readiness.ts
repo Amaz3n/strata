@@ -1,3 +1,4 @@
+import { requireAuthorization } from "@/lib/services/authorization"
 import { getAccountingSyncStates } from "@/lib/services/accounting-sync-state"
 import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { isBefore, parseISO, startOfToday } from "date-fns"
@@ -105,6 +106,8 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
     orgId: resolvedOrgId,
     userId,
   })
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId,
+    permission: "closeout.read", projectId, resourceType: "project", resourceId: projectId })
 
   const [
     invoicesResult,
@@ -162,7 +165,9 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
       .select("id, title, status, due_date, verification_required, verified_at")
       .eq("org_id", resolvedOrgId)
       .eq("project_id", projectId)
-      .neq("status", "closed"),
+      // Same rule as closing readiness: open items block, and so does a closed
+      // verification-required item nobody verified.
+      .or("status.neq.closed,status.is.null,and(verification_required.eq.true,verified_at.is.null)"),
     supabase
       .from("warranty_requests")
       .select("id, title, status")
@@ -421,7 +426,9 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
       title: rowTitle(item, "Punch item"),
       detail:
         item.verification_required && !item.verified_at
-          ? "Verification evidence is required before this punch item can close."
+          ? status === "closed"
+            ? "This punch item was closed without verification evidence."
+            : "Verification evidence is required before this punch item can close."
           : isPastDate(item.due_date)
             ? "Punch item is overdue."
             : `Punch status is ${status.replaceAll("_", " ")}.`,

@@ -1,0 +1,11 @@
+1..8
+ok 1 - browser cannot bypass allocation authorization
+ok 2 - service can allocate reviewed WIP
+ok 3 - allocation must cover the whole revised contract
+ok 4 - prior snapshot stays immutable
+ok 5 - allocation revision has new evidence hash
+ok 6 - new allocation has valid current evidence
+ok 7 - allocation invalidates approval of prior snapshot
+{"note": "Reviewed native income allocation", "snapshots": [{"asOf": "2026-09-30", "projectId": "55000000-0000-0000-0000-000000000001", "inputsHash": "62585c18148da2a7eed81b4c631aa7c77033b2a648c5ba7d3ad65fc4026a963d", "snapshotId": "ec14568d-c1f5-4bb9-b5b2-bc657a8526ec", "earnedRevenueCents": 50000}], "reviewedAt": "2026-10-06T01:30:17.185205+00:00", "reviewerId": "15000000-0000-0000-0000-000000000001"}
+open
+ok 8 - allocations freeze during close

@@ -6,7 +6,6 @@ import {
   getFile,
   createFileFromUpload,
   finalizeDirectUpload,
-  moveFilesToFolder,
   updateFile,
   archiveFile,
   unarchiveFile,
@@ -39,6 +38,7 @@ import type { FileLinkWithFile } from "@/lib/services/file-links"
 import {
   listVersions,
   createVersion,
+  finalizeDirectFileVersion,
   makeVersionCurrent,
   updateVersion,
   deleteVersion,
@@ -54,6 +54,8 @@ import {
 } from "@/lib/services/file-share-links"
 import { downloadFilesObject } from "@/lib/storage/files-storage"
 import { suggestDocumentFileNameFromBytes } from "@/lib/services/document-ai-rename"
+
+import { mutateDocuments, undoDocumentMutation } from "@/lib/services/document-mutations"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -187,7 +189,7 @@ export async function updateFolderPermissionsAction(
       }
 
       revalidatePath("/documents")
-      if (projectId) revalidatePath(`/projects/${projectId}`)
+      revalidatePath(`/projects/${projectId}`)
 
       return { affectedFiles }
   })
@@ -289,44 +291,40 @@ export async function unarchiveFileAction(fileId: string): Promise<ActionResult<
 /**
  * Bulk move files to a folder (or root when folderPath is null).
  */
-export async function bulkMoveFilesAction(
-  fileIds: string[],
-  folderPath: string | null,
-  applyFolderDefaults: boolean = true
-): Promise<ActionResult<void>> {
-  return run(async () => {
-      const { projectIds } = await moveFilesToFolder(fileIds, folderPath, applyFolderDefaults)
+async function revalidateDocumentMutation(result: { projectIds: string[] }) {
+  revalidatePath("/documents")
+  for (const projectId of result.projectIds) revalidatePath(`/projects/${projectId}`)
+}
 
-      revalidatePath("/documents")
-      for (const projectId of projectIds) {
-        if (projectId) revalidatePath(`/projects/${projectId}`)
-      }
+export async function bulkMoveFilesAction(fileIds: string[], folderPath: string | null, applyFolderDefaults = true) {
+  return run(async () => {
+    const result = await mutateDocuments({ fileIds, kind: "move", folderPath, applyFolderDefaults })
+    await revalidateDocumentMutation(result)
+    return result
   })
 }
 
-/**
- * Move files to trash/archive. Files stay recoverable from the trash view;
- * nothing here deletes bytes.
- */
-export async function bulkDeleteFilesAction(fileIds: string[]): Promise<ActionResult<void>> {
+export async function bulkDeleteFilesAction(fileIds: string[]) {
   return run(async () => {
-      const uniqueIds = Array.from(new Set(fileIds)).filter(Boolean)
-      if (uniqueIds.length === 0) return
+    const result = await mutateDocuments({ fileIds, kind: "archive" })
+    await revalidateDocumentMutation(result)
+    return result
+  })
+}
 
-      const projectIds = new Set<string>()
-      const files = await Promise.all(uniqueIds.map((fileId) => getFile(fileId)))
-      for (const file of files) {
-        if (file?.project_id) {
-          projectIds.add(file.project_id)
-        }
-      }
+export async function bulkRestoreFilesAction(fileIds: string[]) {
+  return run(async () => {
+    const result = await mutateDocuments({ fileIds, kind: "restore" })
+    await revalidateDocumentMutation(result)
+    return result
+  })
+}
 
-      await Promise.all(uniqueIds.map((fileId) => archiveFile(fileId)))
-
-      revalidatePath("/documents")
-      for (const projectId of projectIds) {
-        if (projectId) revalidatePath(`/projects/${projectId}`)
-      }
+export async function undoDocumentMutationAction(receiptId: string) {
+  return run(async () => {
+    const result = await undoDocumentMutation(receiptId)
+    await revalidateDocumentMutation(result)
+    return result
   })
 }
 
@@ -539,4 +537,15 @@ export async function deleteFileVersionAction(versionId: string): Promise<Action
  */
 export async function getVersionDownloadUrlAction(versionId: string): Promise<ActionResult<string>> {
   return run(async () => getVersionSignedUrl(versionId))
+}
+
+export async function finalizeUploadedFileVersionAction(input: {
+  fileId: string; storagePath: string; fileName: string; mimeType?: string;
+  sizeBytes: number; checksum?: string; label?: string; notes?: string;
+}): Promise<ActionResult<FileVersion>> {
+  return run(async () => {
+    const result = await finalizeDirectFileVersion(input)
+    revalidatePath("/documents")
+    return result
+  })
 }

@@ -2,14 +2,20 @@
 
 import { revalidatePath } from "next/cache"
 
+import { z } from "zod"
+
 import {
+  chooseSelectionAlternate,
   createProjectSelection,
+  listHomeSelectionExceptions,
   listProjectSelections,
   listSelectionCategories,
   listSelectionOptions,
 } from "@/lib/services/selections"
+import { AuthorizationError } from "@/lib/services/authorization"
+import { closeSelectionException } from "@/lib/services/selection-exceptions"
 import { requireOrgContext } from "@/lib/services/context"
-import { selectionInputSchema } from "@/lib/validation/selections"
+import { selectionExceptionAlternateSchema, selectionExceptionCloseSchema, selectionInputSchema } from "@/lib/validation/selections"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -46,8 +52,34 @@ export async function createSelectionAction(input: unknown) {
   })
 }
 
+/**
+ * The home's selection exceptions with the alternates each can still take.
+ * Read-only. A viewer without selections.read on the home (a superintendent on
+ * the workbench) has no band rather than an error.
+ */
+export async function loadHomeSelectionExceptionsAction(projectId: unknown) {
+  return run(async () => {
+    try {
+      return await listHomeSelectionExceptions(z.string().uuid().parse(projectId))
+    } catch (error) {
+      if (error instanceof AuthorizationError) return { exceptions: [], truncated: false }
+      throw error
+    }
+  })
+}
 
+export async function chooseSelectionAlternateAction(input: unknown) {
+  return run(async () => {
+    const result = await chooseSelectionAlternate(selectionExceptionAlternateSchema.parse(input))
+    revalidatePath(`/projects/${result.projectId}/selections`)
+    return result
+  })
+}
 
-
-
-
+export async function closeSelectionExceptionAction(input: unknown) {
+  return run(async () => {
+    const result = await closeSelectionException(selectionExceptionCloseSchema.parse(input))
+    revalidatePath(`/projects/${result.projectId}/selections`)
+    return result
+  })
+}

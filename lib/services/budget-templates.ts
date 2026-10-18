@@ -1,3 +1,5 @@
+import { readAllRowsById } from "@/lib/land/paging"
+
 import type { CostType } from "@/lib/cost-types"
 import { resolveTemplateLineAmount } from "@/lib/financials/plan-pricing"
 import type { ProposedBudgetLine } from "@/lib/services/budget-from-estimate"
@@ -109,15 +111,24 @@ function mapTemplate(row: TemplateRow, lines?: BudgetTemplateLineDto[]): BudgetT
 
 async function loadLines(templateIds: string[], orgId: string, supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]) {
   if (templateIds.length === 0) return new Map<string, BudgetTemplateLineDto[]>()
-  const { data, error } = await supabase
-    .from("budget_template_lines")
-    .select("id, budget_template_id, cost_code_id, cost_type, description, amount_cents, quantity, uom, unit_cost_cents, sort_order, cost_code:cost_codes(code,name)")
-    .eq("org_id", orgId)
-    .in("budget_template_id", templateIds)
-    .order("sort_order")
-  if (error) throw new Error(`Failed to load budget template lines: ${error.message}`)
+  const data = await readAllRowsById(
+    (afterId, limit) => {
+      let query = supabase
+        .from("budget_template_lines")
+        .select("id, budget_template_id, cost_code_id, cost_type, description, amount_cents, quantity, uom, unit_cost_cents, sort_order, cost_code:cost_codes(code,name)")
+        .eq("org_id", orgId)
+        .in("budget_template_id", templateIds)
+        .order("id")
+        .limit(limit)
+      if (afterId) query = query.gt("id", afterId)
+      return query
+    },
+    { cap: 200_000, label: "Failed to load complete budget template lines" },
+  )
+  // The ID cursor proves traversal; presentation follows the original line order.
+  data.sort((a, b) => Number(a.sort_order) - Number(b.sort_order) || a.id.localeCompare(b.id))
   const grouped = new Map<string, BudgetTemplateLineDto[]>()
-  for (const source of data ?? []) {
+  for (const source of data) {
     const row: TemplateLineRow = {
       id: String(source.id),
       budget_template_id: String(source.budget_template_id),
@@ -131,7 +142,9 @@ async function loadLines(templateIds: string[], orgId: string, supabase: Awaited
       sort_order: Number(source.sort_order),
       cost_code: source.cost_code,
     }
-    grouped.set(row.budget_template_id, [...(grouped.get(row.budget_template_id) ?? []), mapLine(row)])
+    const lines = grouped.get(row.budget_template_id) ?? []
+    lines.push(mapLine(row))
+    grouped.set(row.budget_template_id, lines)
   }
   return grouped
 }

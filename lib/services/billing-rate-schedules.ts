@@ -490,7 +490,7 @@ export async function assignBillingRateScheduleToProject(
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    getProjectFinancialSettings({ supabase, orgId: resolvedOrgId, projectId: parsed.projectId }).catch(() => null),
+    getProjectFinancialSettings({ supabase, orgId: resolvedOrgId, projectId: parsed.projectId }),
   ])
 
   if (projectResult.error || !projectResult.data) throw new Error("Project not found.")

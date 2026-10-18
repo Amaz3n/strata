@@ -526,10 +526,6 @@ test("receivables mutations remain routed through atomic database functions", ()
     path.join(__dirname, "../lib/services/payments.ts"),
     "utf8",
   );
-  const projectActions = fs.readFileSync(
-    path.join(__dirname, "../app/(app)/projects/[id]/actions.ts"),
-    "utf8",
-  );
   const lateFeeJob = fs.readFileSync(
     path.join(__dirname, "../app/api/jobs/late-fees/route.ts"),
     "utf8",
@@ -555,14 +551,44 @@ test("receivables mutations remain routed through atomic database functions", ()
   );
   assert.match(booksHardening, /public\.apply_invoice_payment_atomic\(/);
   assert.match(paymentSource, /rpc\("record_payment_reversal_atomic"/);
-  assert.match(projectActions, /rpc\("release_project_retainage_atomic"/);
-  assert.match(
-    projectActions,
-    /p_reservation_id: next\.reservation_id \?\? null/,
-  );
   assert.match(lateFeeJob, /rpc\("apply_invoice_late_fee_atomic"/);
   assert.match(migration, /for update/);
   assert.match(migration, /invoices_sync_retainage_release_status/);
+});
+
+test("retainage is released through the atomic database function under the reserved invoice number", async () => {
+  const { createServiceHarness, id, ORG } = require("./support/service");
+  const { stubModule, freshRequire } = require("./support/modules");
+  const project = id(1);
+  const invoice = id(2);
+  const released = [];
+  stubModule("@/lib/services/invoice-numbers", {
+    getNextInvoiceNumber: async () => ({ number: "INV-0007", reservation_id: "reservation-7" }),
+    releaseInvoiceNumberReservation: async () => {},
+  });
+  const service = createServiceHarness({
+    permissions: ["invoice.write", "invoice.send"],
+    projects: [project],
+    tables: { projects: [{ id: project, org_id: ORG }] },
+    rpc: {
+      release_project_retainage_atomic: (args) => {
+        released.push(args);
+        return { data: { invoice_id: invoice, released_cents: args.p_amount_cents }, error: null };
+      },
+    },
+  });
+  const { releaseProjectRetainage } = freshRequire("lib/services/retainage.ts");
+
+  const result = await service.run(() =>
+    releaseProjectRetainage(project, { amount_cents: 12_500, title: "Retainage release" }),
+  );
+
+  assert.deepEqual(result, { invoice_id: invoice, released_cents: 12_500 });
+  assert.equal(released.length, 1);
+  assert.equal(released[0].p_org_id, ORG);
+  assert.equal(released[0].p_project_id, project);
+  assert.equal(released[0].p_invoice_number, "INV-0007");
+  assert.equal(released[0].p_reservation_id, "reservation-7");
 });
 
 test("commercial pay applications preserve base contract sums and reject unsafe posting", () => {
@@ -1243,7 +1269,8 @@ test("the invoice document is one layout in two renderers, and an invoice can na
   // An invoice can turn a method off but never on: the pay pages narrow the org policy by the invoice.
   assert.match(feeEngine, /achEnabled: policy\.achEnabled && methods\.ach !== false/);
   assert.match(publicPage, /restrictPaymentFeePolicyToInvoice\(policy, invoice\.metadata\)/);
-  assert.match(portalPage, /restrictPaymentFeePolicyToInvoice\(policy, invoice\.metadata\)/);
+  assert.match(portalPage, /restrictPaymentFeePolicyToInvoice\(policy, (?:invoice|portalInvoice)\.metadata\)/);
+  if (/restrictPaymentFeePolicyToInvoice\(policy, portalInvoice\.metadata\)/.test(portalPage)) assert.match(portalPage, /const portalInvoice = invoice/);
 });
 
 test("a scheduled send is a timestamp on the draft that the outbox honours only while it still stands", () => {

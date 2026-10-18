@@ -10,7 +10,7 @@ const {
   DETACHED_LOT_STATUS,
 } = require("../lib/land/lot-lifecycle")
 const { resolveDivisionScope, divisionIsInScope } = require("../lib/land/scope")
-const { readAllRows } = require("../lib/land/paging")
+const { readAllRows, readPageOrEmpty } = require("../lib/land/paging")
 
 /* -------------------------------------------------------------------------- */
 /* Attaching and detaching a home go through the lot lifecycle                 */
@@ -98,7 +98,9 @@ function fakeSource(rowCount) {
     calls,
     read: (from, to) => {
       calls.push([from, to])
-      return Promise.resolve({ data: rows.slice(from, to + 1), error: null })
+      // Like PostgREST, a range that starts past the last row is refused (416).
+      if (from > 0 && from >= rowCount) return Promise.resolve({ data: null, error: { code: "PGRST103", message: "Requested range not satisfiable" } })
+      return Promise.resolve({ data: rows.slice(from, to + 1), count: rowCount, error: null })
     },
   }
 }
@@ -123,6 +125,26 @@ test("a 400-lot community across fifteen communities is read whole, not to 5,000
     [0, 1, 2],
   )
   assert.equal(result.rows[5_999].id, 5_999)
+})
+
+test("a set that ends exactly on a page boundary is read whole, not failed on the empty page after it", async () => {
+  const source = fakeSource(2_000)
+  const result = await readAllRows(source.read, { cap: 20_000, label: "lots", pageSize: 1_000 })
+  assert.equal(result.rows.length, 2_000)
+  assert.equal(result.truncated, false)
+})
+
+test("a picker page past the last row is empty and still reports the true total", async () => {
+  const source = fakeSource(28)
+  const last = await readPageOrEmpty(source.read, 20, 29)
+  assert.deepEqual([last.data.length, last.count, last.error], [8, 28, null])
+  const past = await readPageOrEmpty(source.read, 30, 39)
+  assert.deepEqual([past.data, past.count, past.error], [[], 28, null])
+})
+
+test("a real read failure is still an error, not an empty page", async () => {
+  const page = await readPageOrEmpty(() => Promise.resolve({ data: null, error: { code: "42P01", message: "boom" } }), 0, 9)
+  assert.equal(page.error.message, "boom")
 })
 
 test("hitting the ceiling is reported, never silently returned as a total", async () => {

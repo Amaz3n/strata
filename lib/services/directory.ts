@@ -9,6 +9,7 @@ import type {
 } from "@/lib/directory/roles"
 import { DIRECTORY_READ_PERMISSIONS as READ_PERMISSIONS } from "@/lib/directory/permissions"
 import { requireOrgContext } from "@/lib/services/context"
+import { readPageOrEmpty } from "@/lib/land/paging"
 import type { OrgServiceContext } from "@/lib/services/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { listRelationshipTypesWithClient } from "@/lib/services/party-roles"
@@ -203,15 +204,13 @@ async function listDirectoryPageWithClient(
     )
   }
 
-  const { data, error, count } = await query
-    .order(sortColumn(sort), { ascending })
-    .order("id", { ascending: true })
-    .range(offset, offset + pageSize - 1)
+  const ordered = query.order(sortColumn(sort), { ascending }).order("id", { ascending: true })
+  const { data, error, count } = await readPageOrEmpty((start, end) => ordered.range(start, end), offset, offset + pageSize - 1)
 
   if (error) throw new Error(`Failed to list directory: ${error.message}`)
 
   return {
-    entries: ((data ?? []) as DirectoryEntryRow[]).map(mapEntry),
+    entries: (data as DirectoryEntryRow[]).map(mapEntry),
     total: count ?? 0,
     page,
     pageSize,

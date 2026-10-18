@@ -1,7 +1,7 @@
 "use client";
 
 import { PresetTemplateWorkspace } from "@/components/settings/preset-template-workspace";
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import {
@@ -82,7 +82,21 @@ export function BudgetTemplatesClient({
   initialTemplates: BudgetTemplateDto[];
   costCodes: CostCode[];
 }) {
-  const [templates, setTemplates] = useState(initialTemplates);
+  const [library, setLibrary] = useState({
+    source: initialTemplates,
+    templates: initialTemplates,
+  });
+  if (library.source !== initialTemplates) {
+    setLibrary({ source: initialTemplates, templates: initialTemplates });
+  }
+  const templates = library.source === initialTemplates
+    ? library.templates
+    : initialTemplates;
+  const requestScope = useRef({ active: false, writing: false });
+  useEffect(() => {
+    requestScope.current.active = true;
+    return () => { requestScope.current.active = false; };
+  }, []);
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -124,6 +138,7 @@ export function BudgetTemplatesClient({
   );
 
   const save = () => {
+    if (!requestScope.current.active || requestScope.current.writing) return;
     if (!name.trim()) return toast.error("Template name is required.");
     const populated = lines.filter((line) => line.description.trim());
     if (populated.length === 0) return toast.error("Add at least one line.");
@@ -141,6 +156,7 @@ export function BudgetTemplatesClient({
         unitCostCents: line.basis === "quantity" ? cents(line.unitCost) : null,
       })),
     };
+    requestScope.current.writing = true;
     startTransition(async () => {
       try {
         const saved =
@@ -149,11 +165,13 @@ export function BudgetTemplatesClient({
             : unwrapAction(
                 await updateBudgetTemplateAction(editingId as string, payload),
               );
-        setTemplates((current) =>
-          [...current.filter((item) => item.id !== saved.id), saved].sort(
+        if (!requestScope.current.active) return;
+        setLibrary((current) => current.source === initialTemplates ? {
+          ...current,
+          templates: [...current.templates.filter((item) => item.id !== saved.id), saved].sort(
             (a, b) => a.name.localeCompare(b.name),
           ),
-        );
+        } : current);
         setEditingId(null);
         toast.success(
           editingId === "new"
@@ -161,32 +179,42 @@ export function BudgetTemplatesClient({
             : "Budget template saved",
         );
       } catch (error) {
+        if (!requestScope.current.active) return;
         toast.error(
           error instanceof Error ? error.message : "Failed to save template",
         );
+      } finally {
+        requestScope.current.writing = false;
       }
     });
   };
 
   const archive = (template: BudgetTemplateDto) => {
+    if (!requestScope.current.active || requestScope.current.writing) return;
     if (
       !window.confirm(
         `Archive “${template.name}”? Existing project budgets are unchanged.`,
       )
     )
       return;
+    requestScope.current.writing = true;
     startTransition(async () => {
       try {
         unwrapAction(await archiveBudgetTemplateAction(template.id));
-        setTemplates((current) =>
-          current.filter((item) => item.id !== template.id),
-        );
-        if (editingId === template.id) setEditingId(null);
+        if (!requestScope.current.active) return;
+        setLibrary((current) => current.source === initialTemplates ? {
+          ...current,
+          templates: current.templates.filter((item) => item.id !== template.id),
+        } : current);
+        setEditingId((current) => current === template.id ? null : current);
         toast.success("Budget template archived");
       } catch (error) {
+        if (!requestScope.current.active) return;
         toast.error(
           error instanceof Error ? error.message : "Failed to archive template",
         );
+      } finally {
+        requestScope.current.writing = false;
       }
     });
   };
@@ -477,6 +505,7 @@ export function BudgetTemplatesClient({
                     <Button
                       variant="ghost"
                       size="sm"
+                      disabled={pending}
                       onClick={() => startEdit(template)}
                     >
                       <Edit className="h-4 w-4" />
@@ -485,6 +514,7 @@ export function BudgetTemplatesClient({
                     <Button
                       variant="ghost"
                       size="icon"
+                      aria-label={`Archive ${template.name}`}
                       onClick={() => archive(template)}
                       disabled={pending}
                     >

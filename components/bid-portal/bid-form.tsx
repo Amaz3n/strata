@@ -246,7 +246,7 @@ export function BidForm({
   const hasUnacknowledgedAddenda = unacknowledgedAddenda.length > 0
   const bondRequired = access.bidPackage.bond_required
   const hasBond = uploadedFiles.some((f) => f.isBond)
-  const canSubmit = !biddingClosed && !inviteInactive
+  const canSubmit = access.bidPackage.pricing_available !== false && !biddingClosed && !inviteInactive
 
   // ---- Computed tender totals ----
   const { baseTotalCents, alternatesTotalCents } = useMemo(() => {
@@ -257,7 +257,7 @@ export function BidForm({
       const line = lines[item.id]
       if (!line || line.excluded) continue
       const amount = lineAmountCents(item, line)
-      if (amount == null || amount < 0) continue
+      if (amount == null || (amount < 0 && item.item_type !== "alternate")) continue
       if (item.item_type === "alternate") alt += amount
       else base += amount
     }
@@ -445,7 +445,7 @@ export function BidForm({
           built.push({ bid_scope_item_id: item.id, response: "no_bid", notes: line.note.trim() || null })
           continue
         }
-        if (amount == null || amount < 0) {
+        if (amount == null || (amount < 0 && item.item_type !== "alternate")) {
           toast.error(`Enter a valid price for "${item.description}"`)
           return
         }
@@ -480,6 +480,7 @@ export function BidForm({
         input: {
           total_cents: totalCents,
           currency: "usd",
+          scope_revision: access.bidPackage.scope_revision,
           valid_until: validUntil ? format(validUntil, "yyyy-MM-dd") : null,
           lead_time_days: leadTime ? Number(leadTime) : null,
           duration_days: duration ? Number(duration) : null,
@@ -542,6 +543,8 @@ export function BidForm({
 
   return (
     <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">Scope revision {access.bidPackage.scope_revision}. Submitting confirms your price covers the current instructions and acknowledged addenda. Enter deduct alternates as negative amounts.</p>
+      {access.bidPackage.pricing_available === false ? <p className="text-sm text-warning">Submission is temporarily unavailable while the builder completes a database update. Your existing quote remains available.</p> : null}
       {/* Withdrawn state */}
       {withdrawn ? (
         <Card className="border-warning/40 bg-warning/5">

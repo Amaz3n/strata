@@ -75,8 +75,7 @@ export async function sweepOrgWaiverChases(orgId: string, nowIso: string): Promi
   ])
   const orgRequiresWaivers = rules?.require_lien_waiver === true
   const subtierProjectIds = new Set((waiverProjects ?? []).map((row) => String(row.id)))
-  // Nothing on this org asks for a waiver, so nothing to chase.
-  if (!orgRequiresWaivers && subtierProjectIds.size === 0) return metrics
+  // Individual bills can require waivers even without an organization policy.
 
   const horizon = new Date(Date.parse(nowIso) - CHASE_HORIZON_DAYS * 86_400_000).toISOString().slice(0, 10)
   const { data: bills, error } = await supabase
@@ -126,7 +125,7 @@ export async function sweepOrgWaiverChases(orgId: string, nowIso: string): Promi
     const facts: WaiverChaseFacts = {
       billId: bill.id,
       projectId,
-      waiverRequired: orgRequiresWaivers || subtierProjectIds.has(projectId),
+      waiverRequired: orgRequiresWaivers || subtierProjectIds.has(projectId) || bill.lien_waiver_status === "requested" || bill.lien_waiver_status === "received",
       waiverReceived: Boolean(coverage.conditionalId)||coverage.outstandingCents===0,
       paidInFull: bill.status === "paid" || Number(bill.paid_cents ?? 0) >= Number(bill.total_cents ?? 0),
       paidAt: bill.paid_at,

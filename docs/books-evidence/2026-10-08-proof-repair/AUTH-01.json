@@ -1,0 +1,150 @@
+{
+  "scenario": "AUTH-01",
+  "status": "PASSED",
+  "reviewedFrom": "Role catalog (roles/role_permissions): owner has every Books permission; accountant books.read/adjust/close/tax/reconcile/export but not books.manage; Books reviewer books.read only; project lead no Books permission. Books is organization-level, so a division-scoped operator without Books permission is the project lead's case.",
+  "subcases": [
+    {
+      "name": "role-matrix",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "8f3731d9-ebc2-4314-b8a9-19521abdb8e5",
+        "foreignOrgId": "c7916047-a320-416c-8a37-8c5fd6d893a8"
+      },
+      "checks": [
+        {
+          "label": "each role reaches exactly what it should; maker and checker are different people; only filers receive full taxpayer IDs; another organization sees none of this one",
+          "pass": true,
+          "expected": {
+            "matrix": {
+              "owner": {
+                "statements": "allowed",
+                "vendor1099Report": "allowed",
+                "packages": "allowed",
+                "companies": "allowed",
+                "costAllocations": "allowed",
+                "journal": "allowed",
+                "approvePackage": "allowed",
+                "filingFile": "allowed",
+                "addCompany": "allowed"
+              },
+              "accountant": {
+                "statements": "allowed",
+                "vendor1099Report": "allowed",
+                "packages": "allowed",
+                "companies": "allowed",
+                "costAllocations": "allowed",
+                "journal": "allowed",
+                "preparePackage": "allowed",
+                "approvePackage": "refused",
+                "filingFile": "allowed",
+                "addCompany": "refused"
+              },
+              "booksReviewer": {
+                "statements": "allowed",
+                "vendor1099Report": "allowed",
+                "packages": "allowed",
+                "companies": "allowed",
+                "costAllocations": "allowed",
+                "journal": "refused",
+                "preparePackage": "refused",
+                "approvePackage": "refused",
+                "filingFile": "refused",
+                "addCompany": "refused"
+              },
+              "projectLead": {
+                "statements": "refused",
+                "vendor1099Report": "refused",
+                "packages": "refused",
+                "companies": "refused",
+                "costAllocations": "refused",
+                "journal": "refused",
+                "preparePackage": "refused",
+                "approvePackage": "refused",
+                "filingFile": "refused",
+                "addCompany": "refused"
+              },
+              "foreign": {
+                "statements": "allowed",
+                "vendor1099Report": "allowed",
+                "packages": "allowed",
+                "companies": "allowed",
+                "costAllocations": "allowed",
+                "journal": "allowed",
+                "approvePackage": "refused",
+                "filingFile": "refused"
+              }
+            },
+            "fullTinOnlyInFilingFiles": true,
+            "foreignSeesNothingOfOurs": true
+          },
+          "observed": {
+            "matrix": {
+              "owner": {
+                "statements": "allowed",
+                "vendor1099Report": "allowed",
+                "packages": "allowed",
+                "companies": "allowed",
+                "costAllocations": "allowed",
+                "journal": "allowed",
+                "approvePackage": "allowed",
+                "filingFile": "allowed",
+                "addCompany": "allowed"
+              },
+              "accountant": {
+                "statements": "allowed",
+                "vendor1099Report": "allowed",
+                "packages": "allowed",
+                "companies": "allowed",
+                "costAllocations": "allowed",
+                "journal": "allowed",
+                "preparePackage": "allowed",
+                "approvePackage": "refused",
+                "filingFile": "allowed",
+                "addCompany": "refused"
+              },
+              "booksReviewer": {
+                "statements": "allowed",
+                "vendor1099Report": "allowed",
+                "packages": "allowed",
+                "companies": "allowed",
+                "costAllocations": "allowed",
+                "journal": "refused",
+                "preparePackage": "refused",
+                "approvePackage": "refused",
+                "filingFile": "refused",
+                "addCompany": "refused"
+              },
+              "projectLead": {
+                "statements": "refused",
+                "vendor1099Report": "refused",
+                "packages": "refused",
+                "companies": "refused",
+                "costAllocations": "refused",
+                "journal": "refused",
+                "preparePackage": "refused",
+                "approvePackage": "refused",
+                "filingFile": "refused",
+                "addCompany": "refused"
+              },
+              "foreign": {
+                "statements": "allowed",
+                "vendor1099Report": "allowed",
+                "packages": "allowed",
+                "companies": "allowed",
+                "costAllocations": "allowed",
+                "journal": "allowed",
+                "approvePackage": "refused",
+                "filingFile": "refused"
+              }
+            },
+            "fullTinOnlyInFilingFiles": true,
+            "foreignSeesNothingOfOurs": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T18:03:51.371Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T18:03:53.269Z"
+}

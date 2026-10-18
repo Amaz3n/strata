@@ -236,3 +236,23 @@ test('retained funds moved to a release payable cannot become payable twice',()=
  assert.equal(waiverCoverage(original,[],true).outstandingCents,0)
  assert.equal(waiverCoverage({...bill,id:'release',total_cents:10000,retainage_cents:0},[],true).heldCents,10000)
 })
+
+
+test("optional bills stay clear while an explicit request enforces reviewed coverage", () => {
+  assert.equal(waiverCoverage({ ...bill, lien_waiver_status: "not_required" }, [], false).heldCents, 0)
+  const requested = { ...bill, lien_waiver_status: "requested" }
+  assert.equal(waiverCoverage(requested, [], false).heldCents, 90000)
+  assert.equal(waiverCoverage(requested, [{ ...signed, metadata: {} }], false).heldCents, 90000)
+  assert.equal(waiverCoverage(requested, [signed], false).heldCents, 0)
+  assert.equal(waiverCoverage(requested, [{ ...signed, amount_cents: 30000 }], false, 0, false, 30000).heldCents, 0)
+  assert.equal(waiverCoverage({ ...bill, lien_waiver_status: "not_required" }, [], true).heldCents, 90000)
+})
+
+test("explicit requests keep unconditional collection visible after payment", () => {
+  const paid = { ...bill, paid_cents: 90000, lien_waiver_status: "requested" }
+  const awaiting = waiverCoverage(paid, [signed], false)
+  assert.equal(awaiting.heldCents, 0)
+  assert.equal(awaiting.postPaymentOutstanding, true)
+  assert.equal(waiverCoverage(paid, [{ ...signed, waiver_type: "unconditional_progress" }], false).postPaymentOutstanding, false)
+  assert.equal(waiverCoverage({ ...paid, paid_cents: 0, lien_waiver_status: "received" }, [], false).heldCents, 90000)
+})

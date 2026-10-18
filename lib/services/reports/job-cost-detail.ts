@@ -91,11 +91,15 @@ export async function getJobCostDetailReport(input: {
       cost_code: row.cost_code_id
         ? (codeById.get(String(row.cost_code_id)) ?? "Unknown cost code")
         : "Unassigned",
-      description: description ?? sourceType.replaceAll("_", " "),
+      description: description ?? (sourceType === "payroll_correction" ? "Payroll correction" : sourceType === "payroll_import" ? "Payroll reconciliation" : sourceType.replaceAll("_", " ")),
       source_type: sourceType,
       source_id: sourceId,
       cost_cents: Number(row.cost_cents ?? 0),
-      href: sourceType.includes("expense")
+      href: sourceType === "payroll_correction" && typeof metadata.payroll_correction_source_id === "string"
+        ? `/projects/${input.projectId}/time/payroll?source=${encodeURIComponent(metadata.payroll_correction_source_id)}`
+        : sourceType === "payroll_import" || sourceType === "payroll_correction" || sourceType === "time_entry"
+        ? `/projects/${input.projectId}/time`
+        : sourceType.includes("expense")
         ? `/projects/${input.projectId}/expenses`
         : `/projects/${input.projectId}/financials/payables`,
     };

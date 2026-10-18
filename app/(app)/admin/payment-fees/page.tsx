@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PaymentFeesClient } from "@/components/admin/payment-fees-client"
@@ -10,6 +11,7 @@ import {
 
 
 async function PaymentFeesPageContent() {
+  await connection()
   await requirePermissionGuard("platform.billing.manage")
 
   const [policies, organizations] = await Promise.all([
@@ -32,7 +34,17 @@ async function PaymentFeesPageContent() {
 
 export default function PaymentFeesPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="Payment Fees"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "Payment Fees" },
+      ]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <PaymentFeesPageContent />
     </Suspense>
   )

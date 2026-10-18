@@ -1,9 +1,11 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction, getProjectDependenciesAction, getProjectScheduleAction } from "../actions"
 import { ProjectScheduleClient } from "./project-schedule-client"
+import { DeliveryAdvisoryBanner, DeliveryAdvisoryBannerSkeleton } from "@/components/schedule/delivery-advisory-banner"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -11,9 +13,7 @@ interface ProjectSchedulePageProps {
   params: Promise<{ id: string }>
 }
 
-export default async function ProjectSchedulePage({ params }: ProjectSchedulePageProps) {
-  const { id } = await params
-
+export default function ProjectSchedulePage({ params }: ProjectSchedulePageProps) {
   return (
     <>
       <PageLayout
@@ -24,10 +24,17 @@ export default async function ProjectSchedulePage({ params }: ProjectSchedulePag
         ]}
       />
       <Suspense fallback={<ProjectScheduleFallback />}>
-        <ProjectScheduleData id={id} />
+        <ProjectSchedulePageRoute params={params} />
       </Suspense>
     </>
   )
+}
+
+async function ProjectSchedulePageRoute({ params }: ProjectSchedulePageProps) {
+  await connection()
+  const { id } = await params
+
+  return <ProjectScheduleData id={id} />
 }
 
 function ProjectScheduleFallback() {
@@ -60,7 +67,8 @@ async function ProjectScheduleData({ id }: { id: string }) {
         { label: "Schedule" },
       ]}
     >
-      <ProjectScheduleClient projectId={project.id} initialItems={scheduleItems} initialDependencies={dependencies} />
+      <ProjectScheduleClient projectId={project.id} initialItems={scheduleItems} initialDependencies={dependencies}
+        banner={<Suspense key="delivery-advisories" fallback={<DeliveryAdvisoryBannerSkeleton />}><DeliveryAdvisoryBanner projectId={project.id} /></Suspense>} />
     </PageLayout>
   )
 }

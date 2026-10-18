@@ -1,0 +1,219 @@
+{
+  "scenario": "SPEC-01",
+  "reviewedFrom": "EP14-02 (docs/enterprise-production/completion-checklist.json): spec start, inventory aging, buyer conversion and settlement without rewriting released costs or product versions; final margin and warranty reconcile. Books expectations follow HOME-01 (relief by component, own deposit, four home controls) and MONEY-01 (locked release baseline, margin by plan version). One production builder (production-seed.cjs), the Mangrove (MG1650, $385,000 in Cypress Landing) on lot 2 (no premium), elevation B, left swing.",
+  "subcases": {
+    "spec-start-without-buyer": {
+      "checklist": [
+        "EP04-05",
+        "EP07-01",
+        "EP07-17",
+        "EP08-07",
+        "EP10-02",
+        "EP10-04",
+        "EP14-02"
+      ],
+      "derivation": "The plan is pinned on the unsold lot through assignPlanToLot (lot.write and plan.instantiate); a sales consultant holds neither and is refused. The starts desk opens the package, which creates the home on the lot with no contract (spec homes open with no placeholder contract, EP10), waives the selections gate (no buyer) and releases. Books adopts the home without anyone approving a revenue policy by hand: it has no contract. The release issues one order per trade at the Mangrove's takeoff: sitework $34,000, foundation $58,000, framing 1,650 sf x $44 = $72,600, plumbing $41,000, electrical $46,000; total $251,600, which is the budget. The release baseline prices the unsold home at its asking price, the community's $385,000 with no lot premium, against the $251,600 budget: margin $133,400, source asking_price. The release revision records plan version 1, the pinned one. The lot is started and the home has no buyer.",
+      "inputs": {
+        "lot": 2,
+        "plan": "MG1650",
+        "askingPriceCents": 38500000
+      },
+      "expected": {
+        "salesConsultantPins": "refused: lot.write",
+        "lot": {
+          "status": "started",
+          "pinnedVersion": true,
+          "home": true
+        },
+        "home": {
+          "posture": "production",
+          "buyer": null
+        },
+        "contracts": {
+          "atOpening": 0,
+          "afterRelease": 0
+        },
+        "policyRepairedByHand": false,
+        "package": "released",
+        "purchaseOrders": {
+          "Bright Electric": 4600000,
+          "Coastal Plumbing": 4100000,
+          "Cypress Sitework": 3400000,
+          "Gulf Concrete": 5800000,
+          "Palmetto Framing": 7260000
+        },
+        "budgetCents": [
+          25160000
+        ],
+        "releaseBaseline": [
+          {
+            "saleCents": 38500000,
+            "costCents": 25160000,
+            "marginCents": 13340000,
+            "saleSource": "asking_price"
+          }
+        ],
+        "releaseRevision": [
+          {
+            "version": 1,
+            "pinned": true
+          }
+        ]
+      }
+    },
+    "spec-inventory-ages-from-completion": {
+      "checklist": [
+        "EP04-07",
+        "EP10-02",
+        "EP14-02"
+      ],
+      "derivation": "Each order is approved and billed in full ($251,600) and the home is completed into inventory: work in progress (1160) is empty and completed homes (1170) hold the $251,600 of construction plus the $72,000 lot, $323,600. A release cannot be dated in the past and neither can the completion after it, so the completion is recorded through Books and its day is then set thirty days back (the clock moving, as in LOT-01's spec-age-starts-at-actual-completion). The sales desk lists the home as spec stock, finished, aged 30 days from the Books completion (the projected end, 200 days ago, never starts a clock), at its $385,000 asking price, and first when sorted by age.",
+      "inputs": {
+        "completedDaysAgo": 30
+      },
+      "expected": {
+        "books": {
+          "1160": 0,
+          "1170": 32360000
+        },
+        "listed": {
+          "isSpec": true,
+          "underConstruction": false,
+          "agingDays": 30,
+          "completionFromBooks": true,
+          "askingPriceCents": 38500000
+        },
+        "oldestFirst": true
+      }
+    },
+    "buyer-conversion-keeps-released-costs-and-plan": {
+      "checklist": [
+        "EP03-08",
+        "EP05-02",
+        "EP05-03",
+        "EP10-04",
+        "EP14-02"
+      ],
+      "derivation": "A buyer registers, holds and reserves the finished home with a $10,000 earnest deposit and signs at its asking price, $385,000, on the pinned plan version, elevation and swing. Pricing it on the Palmetto's version, or on the Mangrove's elevation A, is refused: the house is built. The agreement executes, the reservation converts and the buyer becomes the home's client. Nothing the release fixed moves: the budget rows and lines, every purchase order and its lines, the lot's plan, version, elevation and swing, the release margin baseline and the release product revision are identical before and after. The agreement adds its own baseline at the signed price against the same $251,600 cost. The house overview's original margin stays the release baseline ($385,000 sale, $133,400 margin) beside the revised $385,000 sale.",
+      "inputs": {
+        "depositCents": 1000000,
+        "salePriceCents": 38500000
+      },
+      "expected": {
+        "otherPlanVersion": "refused: the pinned plan version",
+        "otherElevation": "refused: the pinned elevation",
+        "agreement": {
+          "status": "active",
+          "totalCents": 38500000
+        },
+        "reservation": "converted",
+        "buyerIsTheHomesClient": true,
+        "unchanged": {
+          "budget": true,
+          "budgetLines": true,
+          "purchaseOrders": true,
+          "lotPlan": true,
+          "releaseBaseline": true,
+          "releaseRevision": true
+        },
+        "baselines": [
+          {
+            "stage": "agreement",
+            "saleCents": 38500000,
+            "costCents": 25160000
+          },
+          {
+            "stage": "release",
+            "saleCents": 38500000,
+            "costCents": 25160000
+          }
+        ],
+        "houseMoney": {
+          "originalSaleCents": 38500000,
+          "originalMarginCents": 13340000,
+          "revisedSaleCents": 38500000
+        }
+      }
+    },
+    "settlement-margin-and-warranty-reconcile": {
+      "checklist": [
+        "EP05-08",
+        "EP05-09",
+        "EP05-10",
+        "EP10-04",
+        "EP10-05",
+        "EP11-01",
+        "EP11-07",
+        "EP14-02"
+      ],
+      "derivation": "The closing desk clears the gates and settles at $385,000 less the buyer's own $10,000 deposit: $375,000 due. Revenue is $385,000 and cost of sales relieves the home by component, construction $251,600 and land $72,000, $323,600, leaving gross margin $61,400 and nothing in inventory. No deposit is held for the home, the $6,500 warranty reserve set at completion is provided, and the land, completed-home, warranty-reserve and customer-deposit controls pass. The lot is closed. The closed-homes margin by plan version counts this one home under the released version and its original margin is the locked release baseline, $133,400, not a figure rebuilt from the sale. Closing enrolls warranty once, from the closing date.",
+      "inputs": {
+        "reserveCents": 650000
+      },
+      "expected": {
+        "settlement": {
+          "finalPriceCents": 38500000,
+          "depositsApplied": [
+            1000000
+          ],
+          "balanceDueCents": 37500000
+        },
+        "evidenceRepairedByHand": false,
+        "revenueCents": 38500000,
+        "costOfSalesByComponent": {
+          "construction": 25160000,
+          "land_and_development": 7200000
+        },
+        "grossMarginCents": 6140000,
+        "inventoryLeft": {
+          "1160": 0,
+          "1170": 0
+        },
+        "depositsHeld": 0,
+        "reserveProvidedCents": 650000,
+        "controls": {
+          "land_inventory_control": "passed",
+          "completed_homes_control": "passed",
+          "warranty_reserve_control": "passed",
+          "customer_deposits_control": "passed"
+        },
+        "lot": "closed",
+        "planVersion": {
+          "homes": 1,
+          "originalMarginCents": 13340000,
+          "baselinedHomes": 1
+        },
+        "warranty": {
+          "enrollments": 1,
+          "source": "closing",
+          "startsOnClosingDate": true
+        }
+      }
+    },
+    "same-day-cost-and-completion-still-sells": {
+      "checklist": [
+        "EP10-02",
+        "EP05-09",
+        "EP14-02"
+      ],
+      "derivation": "A presold Mangrove on lot 3 (no premium; the buyer's three design choices cost $2,900 + $4,300 + $1,500 = $8,700) is released, its five orders billed in full on day 14 and the home completed on day 14. The bills were posted to work in progress before the completion was recorded; the completion re-posts all five to completed inventory (each original reversed). At the day-21 sale the relief is still construction $251,600 + $8,700 = $260,300 and land $72,000, and nothing is left in 1160 or 1170. Before 20261021100000 the sale refused: the reversals carry no source type and were dropped from the component breakdown, so construction counted twice (the reversed postings were counted once more than the balance holds).",
+      "inputs": {
+        "lot": 3,
+        "billAndCompletionDay": 14,
+        "closingDay": 21
+      },
+      "expected": {
+        "billsRepostedAtCompletion": 5,
+        "closing": "closed",
+        "costOfSalesByComponent": {
+          "construction": 26030000,
+          "land_and_development": 7200000
+        },
+        "inventoryLeft": {
+          "1160": 0,
+          "1170": 0
+        }
+      }
+    }
+  }
+}

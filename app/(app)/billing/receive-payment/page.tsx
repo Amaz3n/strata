@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { z } from "zod"
@@ -11,6 +12,7 @@ async function ReceivePaymentPageContent({
 }: {
   searchParams: Promise<{ partyType?: string; partyId?: string }>
 }) {
+  await connection()
   const params = await searchParams
   const parsed = z
     .object({
@@ -36,7 +38,11 @@ async function ReceivePaymentPageContent({
 
 export default function ReceivePaymentPage(props: Parameters<typeof ReceivePaymentPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout
+      title="Receive payment"
+      breadcrumbs={[{ label: "Billing", href: "/billing" }, { label: "Receive payment" }]}
+      fullBleed
+    ><PageLoadingSkeleton /></PageLayout>}>
       <ReceivePaymentPageContent {...props} />
     </Suspense>
   )

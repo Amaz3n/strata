@@ -1,6 +1,5 @@
 import { Suspense, type ReactNode } from "react"
-import { notFound } from "next/navigation"
-import { connection } from "next/server"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import { PortalShell } from "@/components/portal/shell/portal-shell"
 import { PortalShellSkeleton } from "@/components/portal/shell/portal-skeleton"
@@ -39,10 +38,6 @@ export default function ClientPortalLayout(props: ClientPortalLayoutProps) {
 
 async function ClientPortalLayoutContent({ children, params }: ClientPortalLayoutProps) {
   const { token } = await params
-  // Token validation is always live, request-scoped work. An explicit boundary
-  // prevents Supabase fetches from surviving past a Cache Components shell
-  // prerender when a portal route is prefetched.
-  await connection()
 
   const gate = await resolvePortalGate({
     token,
@@ -68,7 +63,10 @@ async function ClientPortalLayoutContent({ children, params }: ClientPortalLayou
     }),
     // The 3D tab only appears when this buyer's plan actually has a published
     // model — an empty destination is worse than no destination.
-    getPortalFloorplanModel({ orgId: access.org_id, projectId: access.project_id }).catch(() => null),
+    getPortalFloorplanModel({ orgId: access.org_id, projectId: access.project_id }).catch((error) => {
+      unstable_rethrow(error)
+      return null
+    }),
   ])
 
   const nav = buildClientPortalNav({

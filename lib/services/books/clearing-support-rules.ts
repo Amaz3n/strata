@@ -14,6 +14,9 @@ export function clearingSupportMatches(balances: ClearingBalance[], items: Clear
   return [...expected].every(([code, amount]) => supported.get(code) === amount)
 }
 
-export function clearingLedgerDigest(rows: Array<{ id: string; entry_id: string; account_id: string; debit_cents: number; credit_cents: number }>) {
-  return booksDigest(rows.map(row => ({ id: row.id, entryId: row.entry_id, accountId: row.account_id, debitCents: row.debit_cents, creditCents: row.credit_cents })).sort((a, b) => a.id.localeCompare(b.id)))
+/** Each clearing account's totals and the database's fingerprint of the lines behind them. */
+export type ClearingAccountPosition = { code: string; debitCents: number; creditCents: number; lineCount: number; linesDigest: string }
+
+export function clearingLedgerDigest(positions: ClearingAccountPosition[]) {
+  return booksDigest([...positions].sort((a, b) => a.code.localeCompare(b.code)))
 }

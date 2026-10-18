@@ -1,7 +1,8 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { CommunityInventory } from "@/components/communities/community-inventory"
-import type { LotMoney } from "@/components/communities/lot-inspector"
+import type { LotCapabilities, LotMoney } from "@/components/communities/lot-inspector"
 import { isLotStatus } from "@/lib/land/lot-lifecycle"
 import {
   countCommunityLotsByStatus,
@@ -13,7 +14,7 @@ import {
 } from "@/lib/services/community-inventory"
 import { getCommunity } from "@/lib/services/communities"
 import { listAttachableProjects } from "@/lib/services/lots"
-import { getCurrentUserPermissions } from "@/lib/services/permissions"
+import { getCurrentUserPermissions, hasPermission } from "@/lib/services/permissions"
 import { getCommunityPnl } from "@/lib/services/production-reporting"
 
 
@@ -63,6 +64,7 @@ function sortByMargin(
 }
 
 export default async function CommunityInventoryPage({ params, searchParams }: InventoryPageProps) {
+  await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
   const view = query.view === "map" ? "map" : "table"
   const direction = query.dir === "desc" ? "desc" : "asc"
@@ -95,8 +97,25 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
   const canReadMoney = permissions.permissions.some((permission) =>
     ["report.read", "org.admin", "*"].includes(permission),
   )
+  const canReadMargin = permissions.permissions.some((permission) =>
+    ["financials.margin.read", "org.admin", "*"].includes(permission),
+  )
 
-  const byMargin = query.sort === "margin" && canReadMoney
+  const [canPinPlan, canInstantiatePlan, canReleasePlan, canOverrideDelivery, canOverrideFit] = await Promise.all([
+    hasPermission("lot.write"),
+    hasPermission("plan.instantiate"),
+    hasPermission("plan.release"),
+    hasPermission("lot.delivery_override"),
+    hasPermission("lot.fit_override"),
+  ])
+  const lotCapabilities: LotCapabilities = {
+    canAssignPlan: canPinPlan && canInstantiatePlan,
+    canOverrideOffering: canReleasePlan,
+    canRecordDeliveryException: canOverrideDelivery,
+    canOverrideFit,
+  }
+
+  const byMargin = query.sort === "margin" && canReadMargin
 
   const [inventory, pnl, projects, statusCounts] = await Promise.all([
     listCommunityInventory(id, {
@@ -110,7 +129,7 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
       page: view === "map" || byMargin ? 1 : page,
       pageSize: view === "map" || byMargin ? INVENTORY_MAP_PAGE_SIZE : INVENTORY_TABLE_PAGE_SIZE,
     }),
-    canReadMoney ? getCommunityPnl(id).catch(optional("community P&L", null)) : Promise.resolve(null),
+    canReadMargin ? getCommunityPnl(id).catch(optional("community P&L", null)) : Promise.resolve(null),
     canWrite
       ? listAttachableProjects(id).catch(optional("attachable homes", { projects: [], truncated: false }))
       : Promise.resolve({ projects: [], truncated: false }),
@@ -140,6 +159,7 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
       projects={projects.projects}
       projectsTruncated={projects.truncated}
       canWrite={canWrite}
+      lotCapabilities={lotCapabilities}
       canReadMoney={canReadMoney}
       view={view}
       sort={byMargin ? "margin" : isInventorySort(query.sort) ? query.sort : "lot"}

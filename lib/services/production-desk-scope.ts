@@ -17,6 +17,11 @@ export interface ProductionDeskScope {
   divisionId?: string
   /** null means no filter; [] deliberately matches no projects. */
   projectIds: string[] | null
+  /**
+   * A community was asked for (a shared link, a stale bookmark) that the caller
+   * may not pin. The scope is empty rather than quietly widened to the division.
+   */
+  refused: boolean
 }
 
 export async function orgHasProductionProjects(orgId?: string): Promise<boolean> {
@@ -44,6 +49,19 @@ export async function orgHasActiveNonProductionProjects(orgId?: string): Promise
   return (data ?? []).length > 0
 }
 
+export async function orgHasActiveCommercialProjects(orgId?: string): Promise<boolean> {
+  const context = await requireOrgContext(orgId)
+  const { data, error } = await context.supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq("status", "active")
+    .eq("property_type", "commercial")
+    .limit(1)
+  if (error) throw new Error(`Failed to inspect commercial projects: ${error.message}`)
+  return (data ?? []).length > 0
+}
+
 export async function resolveProductionDeskScope(input: {
   communityId?: string
 }): Promise<ProductionDeskScope> {
@@ -57,8 +75,11 @@ export async function resolveProductionDeskScope(input: {
     : undefined
   const divisionId = ambient.divisionId
 
+  if (requestedCommunityId && !communityId) {
+    return { communities, communityId, divisionId, projectIds: [], refused: true }
+  }
   if (!communityId && !divisionId) {
-    return { communities, communityId, divisionId, projectIds: requestedCommunityId ? [] : null }
+    return { communities, communityId, divisionId, projectIds: null, refused: false }
   }
 
   const [communityProjectIds, divisionProjectIds, excludedProjectIds] = await Promise.all([
@@ -73,5 +94,5 @@ export async function resolveProductionDeskScope(input: {
     : (communityProjectIds ?? divisionProjectIds ?? [])
         .filter((id) => !excludedProjectSet.has(id))
 
-  return { communities, communityId, divisionId, projectIds }
+  return { communities, communityId, divisionId, projectIds, refused: false }
 }

@@ -44,6 +44,7 @@ import type { ConnectionTone } from "@/components/integrations/connection-status
 interface Props {
   /** Server-rendered seed so the Payments row never flashes empty. */
   initialStripe?: StripeConnectedAccount | null
+  booksEnabled?: boolean
 }
 
 /**
@@ -152,7 +153,7 @@ function RowSkeleton() {
   )
 }
 
-export function IntegrationsPanel({ initialStripe = null }: Props) {
+export function IntegrationsPanel({ initialStripe = null, booksEnabled = false }: Props) {
   const [overview, setOverview] = useState<IntegrationsOverview | null>(null)
   const [syncSheetOpen, setSyncSheetOpen] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -382,216 +383,221 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
         </div>
       </section>
 
-      <section className="space-y-3">
-        <SectionHeader
-          label="Accounting"
-          description="Books of record. Connect one file per legal entity — Arc routes each project to the right one."
-          action={addConnectionButton}
-        />
+      {!booksEnabled ? (
+        <>
+          <section className="space-y-3">
+            <SectionHeader
+              label="Accounting"
+              description="Books of record. Connect one file per legal entity — Arc routes each project to the right one."
+              action={addConnectionButton}
+            />
 
-        {!loading && !canManage ? (
-          <div className="flex flex-col items-center border border-border bg-muted/30 px-6 py-10 text-center">
-            <Shield className="size-8 text-muted-foreground/40" />
-            <p className="mt-3 max-w-sm text-sm text-muted-foreground">
-              Organization admin access is required to view and manage accounting connections.
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-border border border-border bg-card">
-            {loading ? (
-              <>
-                <RowSkeleton />
-                <RowSkeleton />
-              </>
-            ) : connections.length === 0 ? (
-              <div className="flex flex-col items-center px-6 py-10 text-center">
-                <div className="flex size-10 items-center justify-center border border-border bg-background p-2">
-                  <img src={ACCOUNTING_PROVIDERS.qbo.logoUrl ?? undefined} alt="" className="size-full object-contain" />
-                </div>
-                <p className="mt-3 text-sm font-medium">No accounting connection</p>
-                <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                  Arc financials work without one. Connect a provider to push invoices, bills, payments, and expenses to your books —
-                  or keep using the CSV exports below.
+            {!loading && !canManage ? (
+              <div className="flex flex-col items-center border border-border bg-muted/30 px-6 py-10 text-center">
+                <Shield className="size-8 text-muted-foreground/40" />
+                <p className="mt-3 max-w-sm text-sm text-muted-foreground">
+                  Organization admin access is required to view and manage accounting connections.
                 </p>
-                <div className="mt-4">{addConnectionButton}</div>
               </div>
             ) : (
-              connections.map((connection) => (
-                <AccountingRow key={connection.id} connection={connection} onOpen={() => setActiveConnectionId(connection.id)} />
-              ))
+              <div className="divide-y divide-border border border-border bg-card">
+                {loading ? (
+                  <>
+                    <RowSkeleton />
+                    <RowSkeleton />
+                  </>
+                ) : connections.length === 0 ? (
+                  <div className="flex flex-col items-center px-6 py-10 text-center">
+                    <div className="flex size-10 items-center justify-center border border-border bg-background p-2">
+                      <img src={ACCOUNTING_PROVIDERS.qbo.logoUrl ?? undefined} alt="" className="size-full object-contain" />
+                    </div>
+                    <p className="mt-3 text-sm font-medium">No accounting connection</p>
+                    <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                      Arc financials work without one. Connect a provider to push invoices, bills, payments, and expenses to your books —
+                      or keep using the CSV exports below.
+                    </p>
+                    <div className="mt-4">{addConnectionButton}</div>
+                  </div>
+                ) : (
+                  connections.map((connection) => (
+                    <AccountingRow key={connection.id} connection={connection} onOpen={() => setActiveConnectionId(connection.id)} />
+                  ))
+                )}
+              </div>
             )}
-          </div>
-        )}
-      </section>
+          </section>
 
-      {/*
-        Connection health answers "is the pipe open", which is not the question
-        a bookkeeper has. This answers "is anything stuck in it" — the state that
-        was previously visible only on the admin Ops page.
-      */}
-      {canManage && syncPosture && connections.length > 0 ? (
-        <section className="space-y-3">
-          <SectionHeader
-            label="Sync queue"
-            description="Transactions on their way to your accounting file, and any that stopped."
-          />
-          <div className="border border-border bg-card">
-            <div className="grid grid-cols-2 divide-x divide-border border-b border-border sm:grid-cols-5">
-              {[
-                { label: "Waiting", value: syncPosture.pendingCount, retryable: false },
-                { label: "Failed", value: syncPosture.errorCount, retryable: false },
-                { label: "Needs review", value: syncPosture.needsReviewCount, retryable: false },
-                { label: "Conflict", value: syncPosture.conflictCount, retryable: false },
-                // Dead-lettered outbox jobs: the only counter with nothing that
-                // could ever move it, until this button.
-                { label: "Gave up", value: syncPosture.failedJobCount, retryable: true },
-              ].map((tile) => (
-                <div key={tile.label} className="px-4 py-3">
-                  <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{tile.label}</p>
-                  <p
-                    className={cn(
-                      "mt-1 text-lg font-semibold tabular-nums",
-                      tile.value > 0 && tile.label !== "Waiting" ? "text-destructive" : undefined,
-                    )}
-                  >
-                    {tile.value}
-                  </p>
-                  {tile.retryable && tile.value > 0 ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="mt-2 h-7 px-2 text-xs"
-                      onClick={() => void retryFailedJobs()}
-                      disabled={retryingFailedJobs}
-                    >
-                      {retryingFailedJobs ? "Retrying…" : "Retry failed"}
-                    </Button>
-                  ) : null}
+          {/*
+            Connection health answers "is the pipe open", which is not the question
+            a bookkeeper has. This answers "is anything stuck in it" — the state that
+            was previously visible only on the admin Ops page.
+          */}
+          {canManage && syncPosture && connections.length > 0 ? (
+            <section className="space-y-3">
+              <SectionHeader
+                label="Sync queue"
+                description="Transactions on their way to your accounting file, and any that stopped."
+              />
+              <div className="border border-border bg-card">
+                <div className="grid grid-cols-2 divide-x divide-border border-b border-border sm:grid-cols-5">
+                  {[
+                    { label: "Waiting", value: syncPosture.pendingCount, retryable: false },
+                    { label: "Failed", value: syncPosture.errorCount, retryable: false },
+                    { label: "Needs review", value: syncPosture.needsReviewCount, retryable: false },
+                    { label: "Conflict", value: syncPosture.conflictCount, retryable: false },
+                    // Dead-lettered outbox jobs: the only counter with nothing that
+                    // could ever move it, until this button.
+                    { label: "Gave up", value: syncPosture.failedJobCount, retryable: true },
+                  ].map((tile) => (
+                    <div key={tile.label} className="px-4 py-3">
+                      <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{tile.label}</p>
+                      <p
+                        className={cn(
+                          "mt-1 text-lg font-semibold tabular-nums",
+                          tile.value > 0 && tile.label !== "Waiting" ? "text-destructive" : undefined,
+                        )}
+                      >
+                        {tile.value}
+                      </p>
+                      {tile.retryable && tile.value > 0 ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="mt-2 h-7 px-2 text-xs"
+                          onClick={() => void retryFailedJobs()}
+                          disabled={retryingFailedJobs}
+                        >
+                          {retryingFailedJobs ? "Retrying…" : "Retry failed"}
+                        </Button>
+                      ) : null}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-              <p className="text-sm text-muted-foreground">
-                {syncPosture.suppressedReason === "books_authoritative"
-                  ? "Arc Books owns this ledger, so nothing is pushed to an outside accounting file."
-                  : syncPosture.suppressedReason === "unconnected"
-                    ? "No routing rule points anywhere yet, so nothing is being pushed."
-                    : syncPosture.suppressedReason === "cutover_freeze"
-                      ? "A cutover freeze is holding every push until it is lifted."
-                      : stuckCount > 0
-                        ? "Open the queue to see what stopped and send it again."
-                        : "Everything queued has posted."}
-              </p>
-              <Button size="sm" variant="outline" onClick={() => setSyncSheetOpen(true)}>
-                Open sync queue
-              </Button>
-            </div>
-          </div>
-        </section>
-      ) : null}
+                <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                  <p className="text-sm text-muted-foreground">
+                    {syncPosture.suppressedReason === "books_authoritative"
+                      ? "Arc Books owns this ledger, so nothing is pushed to an outside accounting file."
+                      : syncPosture.suppressedReason === "unconnected"
+                        ? "No routing rule points anywhere yet, so nothing is being pushed."
+                        : syncPosture.suppressedReason === "cutover_freeze"
+                          ? "A cutover freeze is holding every push until it is lifted."
+                          : stuckCount > 0
+                            ? "Open the queue to see what stopped and send it again."
+                            : "Everything queued has posted."}
+                  </p>
+                  <Button size="sm" variant="outline" onClick={() => setSyncSheetOpen(true)}>
+                    Open sync queue
+                  </Button>
+                </div>
+              </div>
+            </section>
+          ) : null}
 
-      {canManageRouting && connections.length > 0 ? (
-        <section className="space-y-3">
-          <SectionHeader
-            label="Routing"
-            description="Which accounting file each project posts to. Project beats community, community beats division, division beats the organization default."
-            action={
-              <Button size="sm" variant="outline" onClick={() => openRouting(null)}>
-                <Plus className="mr-1.5 size-3.5" />
-                Add rule
-              </Button>
-            }
-          />
-          {routes.length === 0 ? (
-            <div className="border border-border bg-card px-4 py-6 text-center">
-              <p className="text-sm text-muted-foreground">
-                No routing rules yet — nothing syncs until at least an organization default exists.
-              </p>
-              <Button size="sm" variant="outline" className="mt-3" onClick={() => openRouting(null)}>
-                Add the organization default
-              </Button>
-            </div>
-          ) : (
-            <div className="border border-border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-40">Scope</TableHead>
-                    <TableHead>Applies to</TableHead>
-                    <TableHead>Posts to</TableHead>
-                    <TableHead>Dimensions</TableHead>
-                    <TableHead className="w-10" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {routes.map((route) => {
-                    const connection = connections.find((row) => row.id === route.connection_id)
-                    const dimensionKinds = Object.keys(route.dimensions ?? {}) as AccountingDimensionKind[]
-                    return (
-                      <TableRow key={route.id}>
-                        <TableCell className="text-xs text-muted-foreground">{SCOPE_LABELS[route.scope]}</TableCell>
-                        <TableCell className="text-sm">{route.scopeName ?? "Every unmapped project"}</TableCell>
-                        <TableCell className="text-sm">{connection?.label ?? "Missing connection"}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {dimensionKinds.length ? dimensionKinds.map((kind) => DIMENSION_LABELS[kind]).join(", ") : "—"}
-                        </TableCell>
-                        <TableCell>
-                          {route.scope === "project" ? null : (
-                            <Button size="icon" variant="ghost" className="size-7" onClick={() => openRouting(route)}>
-                              <Pencil className="size-3" />
-                            </Button>
-                          )}
-                        </TableCell>
+          {canManageRouting && connections.length > 0 ? (
+            <section className="space-y-3">
+              <SectionHeader
+                label="Routing"
+                description="Which accounting file each project posts to. Project beats community, community beats division, division beats the organization default."
+                action={
+                  <Button size="sm" variant="outline" onClick={() => openRouting(null)}>
+                    <Plus className="mr-1.5 size-3.5" />
+                    Add rule
+                  </Button>
+                }
+              />
+              {routes.length === 0 ? (
+                <div className="border border-border bg-card px-4 py-6 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    No routing rules yet — nothing syncs until at least an organization default exists.
+                  </p>
+                  <Button size="sm" variant="outline" className="mt-3" onClick={() => openRouting(null)}>
+                    Add the organization default
+                  </Button>
+                </div>
+              ) : (
+                <div className="border border-border bg-card">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-40">Scope</TableHead>
+                        <TableHead>Applies to</TableHead>
+                        <TableHead>Posts to</TableHead>
+                        <TableHead>Dimensions</TableHead>
+                        <TableHead className="w-10" />
                       </TableRow>
-                    )
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </section>
-      ) : null}
+                    </TableHeader>
+                    <TableBody>
+                      {routes.map((route) => {
+                        const connection = connections.find((row) => row.id === route.connection_id)
+                        const dimensionKinds = Object.keys(route.dimensions ?? {}) as AccountingDimensionKind[]
+                        return (
+                          <TableRow key={route.id}>
+                            <TableCell className="text-xs text-muted-foreground">{SCOPE_LABELS[route.scope]}</TableCell>
+                            <TableCell className="text-sm">{route.scopeName ?? "Every unmapped project"}</TableCell>
+                            <TableCell className="text-sm">{connection?.label ?? "Missing connection"}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {dimensionKinds.length ? dimensionKinds.map((kind) => DIMENSION_LABELS[kind]).join(", ") : "—"}
+                            </TableCell>
+                            <TableCell>
+                              {route.scope === "project" ? null : (
+                                <Button size="icon" variant="ghost" className="size-7" onClick={() => openRouting(route)}>
+                                  <Pencil className="size-3" />
+                                </Button>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </section>
+          ) : null}
 
-      <section className="space-y-3">
-        <SectionHeader label="Exports" description="CSV for accounting systems Arc does not connect to. Works with or without a connection." />
-        <div className="flex flex-wrap items-end gap-3 border border-border bg-card p-4">
-          <div className="space-y-1.5">
-            <Label className="text-xs font-normal text-muted-foreground">Scope</Label>
-            <Select value={exportScope} onValueChange={setExportScope}>
-              <SelectTrigger className="h-8 w-52 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All projects</SelectItem>
-                {routes.map((route) => {
-                  const connection = connections.find((row) => row.id === route.connection_id)
-                  return (
-                    <SelectItem key={route.id} value={route.id}>
-                      {route.scopeName ?? SCOPE_LABELS[route.scope]} · {connection?.label ?? "Accounting entity"}
-                    </SelectItem>
-                  )
-                })}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs font-normal text-muted-foreground">From</Label>
-            <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="h-8 w-40 text-xs" />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs font-normal text-muted-foreground">Through</Label>
-            <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className="h-8 w-40 text-xs" />
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {EXPORT_KINDS.map(({ kind, label }) => (
-              <Button key={kind} size="sm" variant="outline" disabled={exportingKind !== null} onClick={() => void downloadExport(kind)}>
-                <Download className="mr-1.5 size-3.5" />
-                {exportingKind === kind ? "Building…" : label}
-              </Button>
-            ))}
-          </div>
-        </div>
-      </section>
+          <section className="space-y-3">
+            <SectionHeader label="Exports" description="CSV for accounting systems Arc does not connect to. Works with or without a connection." />
+            <div className="flex flex-wrap items-end gap-3 border border-border bg-card p-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-normal text-muted-foreground">Scope</Label>
+                <Select value={exportScope} onValueChange={setExportScope}>
+                  <SelectTrigger className="h-8 w-52 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All projects</SelectItem>
+                    {routes.map((route) => {
+                      const connection = connections.find((row) => row.id === route.connection_id)
+                      return (
+                        <SelectItem key={route.id} value={route.id}>
+                          {route.scopeName ?? SCOPE_LABELS[route.scope]} · {connection?.label ?? "Accounting entity"}
+                        </SelectItem>
+                      )
+                    })}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-normal text-muted-foreground">From</Label>
+                <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="h-8 w-40 text-xs" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-normal text-muted-foreground">Through</Label>
+                <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className="h-8 w-40 text-xs" />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {EXPORT_KINDS.map(({ kind, label }) => (
+                  <Button key={kind} size="sm" variant="outline" disabled={exportingKind !== null} onClick={() => void downloadExport(kind)}>
+                    <Download className="mr-1.5 size-3.5" />
+                    {exportingKind === kind ? "Building…" : label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+        </>
+      ) : null}
 
       <StripeConnectionSheet
         connection={stripe}
@@ -601,7 +607,7 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
         onChanged={(next) => setOverview((current) => (current ? { ...current, stripe: next } : current))}
       />
 
-      {batches.length > 0 ? (
+      {!booksEnabled && batches.length > 0 ? (
         <section className="mt-6 border bg-card">
           <div className="border-b px-4 py-3">
             <h2 className="text-sm font-semibold">Export batches</h2>

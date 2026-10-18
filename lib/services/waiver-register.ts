@@ -118,7 +118,7 @@ export async function getProjectWaiverRegister(
           ctx.supabase
             .from("vendor_bills")
             .select(
-              "id,project_id,company_id,commitment_id,bill_number,total_cents,paid_cents,retainage_cents,retainage_released_cents,status,metadata",
+              "id,project_id,company_id,commitment_id,bill_number,total_cents,paid_cents,retainage_cents,retainage_released_cents,lien_waiver_status,status,metadata",
             )
             .eq("org_id", ctx.orgId)
             .eq("project_id", id)
@@ -370,7 +370,7 @@ export async function getProjectWaiverReadiness(
         ctx.supabase
           .from("vendor_bills")
           .select(
-            "id,project_id,company_id,commitment_id,total_cents,paid_cents,retainage_cents,retainage_released_cents,status,metadata,bill_number",
+            "id,project_id,company_id,commitment_id,total_cents,paid_cents,retainage_cents,retainage_released_cents,lien_waiver_status,status,metadata,bill_number",
           )
           .eq("org_id", ctx.orgId)
           .eq("project_id", projectId)
@@ -420,8 +420,8 @@ export async function getProjectWaiverReadiness(
   const required = Boolean(
     rules.require_lien_waiver || project?.require_subtier_waivers,
   )
-  const missing = required
-    ? bills
+  const missing = bills
+        .filter((b) => required || b.lien_waiver_status === "requested" || b.lien_waiver_status === "received")
         .filter(
           (b) =>
             !waiverCoverage(
@@ -431,7 +431,6 @@ export async function getProjectWaiverReadiness(
             ).finalReceived,
         )
         .map((b) => b.bill_number ?? b.id)
-    : []
   if (project?.require_subtier_waivers)
     for (const r of requirements)
       if (

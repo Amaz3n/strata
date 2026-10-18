@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
+import { ESignPdfPage } from "@/lib/esign/esign-ui-pdf-page"
 import { cn } from "@/lib/utils"
 import type { DocumentFieldType } from "@/lib/types"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -65,7 +67,7 @@ const FIELD_CONFIG: Record<DocumentFieldType, { label: string; icon: typeof PenL
   checkbox: { label: "Checkbox", icon: CheckSquare, shortLabel: "Check" },
 }
 
-const PLACEABLE_FIELD_TYPES: DocumentFieldType[] = ["signature", "initials", "text", "date", "checkbox"]
+const PLACEABLE_FIELD_TYPES: DocumentFieldType[] = ["signature", "initials", "name", "text", "date", "checkbox"]
 
 const FONT_SIZES = [
   { value: "10", label: "10px" },
@@ -159,7 +161,7 @@ export function ESignDocumentViewer({
     const loadPdf = async () => {
       try {
         const { Document, Page, pdfjs } = await import("react-pdf")
-        configurePdfWorker()
+        configurePdfWorker(pdfjs)
         setPDFComponents({ Document, Page, pdfjs })
       } catch (error) {
         console.error("Failed to load PDF components", error)
@@ -556,6 +558,10 @@ export function ESignDocumentViewer({
 
               <ScrollArea className="flex-1">
                 <div className="p-4 space-y-6">
+                  <div className="space-y-2">
+                    <Label htmlFor="esign-field-label" className="text-xs font-medium">Field label</Label>
+                    <Input id="esign-field-label" value={selectedField.label ?? ""} maxLength={200} onChange={event => handleUpdateField(selectedField.id, { label: event.target.value })} placeholder={FIELD_CONFIG[selectedField.field_type].label} />
+                  </div>
                   {/* Assigned signer */}
                   <div className="space-y-2">
                     <Label className="text-xs font-medium">Assigned to</Label>
@@ -590,6 +596,12 @@ export function ESignDocumentViewer({
 
                   <Separator />
 
+                  {selectedField.field_type === "text" ? <div className="space-y-2">
+                    <Label className="text-xs font-medium">Expected value</Label>
+                    <Select value={selectedField.metadata?.validation ?? "none"} onValueChange={value => handleUpdateFieldMetadata(selectedField.id, { validation: value })}>
+                      <SelectTrigger aria-label="Expected text value"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Any text</SelectItem><SelectItem value="email">Email address</SelectItem><SelectItem value="number">Number</SelectItem></SelectContent>
+                    </Select>
+                  </div> : null}
                   {/* Text/Name specific settings */}
                   {(selectedField.field_type === "text" || selectedField.field_type === "name") && (
                     <>
@@ -636,7 +648,7 @@ export function ESignDocumentViewer({
                   {/* Signature specific settings */}
                   {selectedField.field_type === "signature" && (
                     <div className="space-y-2">
-                      <Label className="text-xs font-medium">Signature Style</Label>
+                      <Label className="text-xs font-medium">Preferred signature input</Label>
                       <Select
                         value={selectedField.metadata?.signatureStyle ?? "draw"}
                         onValueChange={(value) => handleUpdateFieldMetadata(selectedField.id, { signatureStyle: value })}
@@ -734,12 +746,7 @@ export function ESignDocumentViewer({
                           handlePlaceField(pageIndex, event)
                         }}
                       >
-                        <PDFComponents.Page
-                          pageNumber={pageIndex + 1}
-                          width={pageWidth}
-                          renderTextLayer={false}
-                          renderAnnotationLayer={false}
-                        />
+                        <ESignPdfPage Page={PDFComponents.Page} pageNumber={pageIndex + 1} width={pageWidth} />
 
                         {/* Field overlay */}
                         <div

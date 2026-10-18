@@ -1,0 +1,21 @@
+1..20
+ok 1 - members cannot authorize D2 cleanup
+ok 2 - no campaign fails closed
+ok 3 - campaign approval does not imply drop approval
+ok 4 - elapsed time without observations does not qualify
+ok 5 - 7 complete days and current measured evidence pass
+ok 6 - one missing completed date blocks
+ok 7 - a same-day success cannot erase a failed observation
+ok 8 - owner fixture restoration leaves original full evidence valid
+ok 9 - today failure blocks earlier clean streak
+ok 10 - stale evidence cannot authorize a current drop
+ok 11 - connection identity is rechecked at drop time
+ok 12 - names-only legacy payload must be archived
+ok 13 - exact archive preserves names-only compatibility payload
+ok 14 - archive evidence invalidates when source cache changes
+ok 15 - JSON null is filled as absent coding
+ok 16 - conflicting non-null neutral account is never overwritten
+ok 17 - company counterparty identity is left in its scoped link
+ok 18 - JSON-null dimensions adopt missing equivalent class
+ok 19 - alias conflict cannot be silently discarded
+ok 20 - normalization preserves unrelated neutral dimensions

@@ -1,16 +1,21 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { cache } from "react"
+import { z } from "zod"
 
+import { hasApprovedAcquisition } from "@/lib/land/diligence"
+import { readSetbacks, type Setbacks } from "@/lib/land/lot-dimensions"
 import type { LotStatus } from "@/lib/land/lot-lifecycle"
 import { assertLotStatusTransition, LOT_STATUSES } from "@/lib/land/lot-lifecycle"
 import { readAllRows } from "@/lib/land/paging"
-import { resolveDivisionScope } from "@/lib/land/scope"
+import { takedownCash, type LandDepositStatus } from "@/lib/land/takedown-cash"
+import { divisionIsInScope, resolveDivisionScope } from "@/lib/land/scope"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
+import { phaseDevelopmentLinkSchema } from "@/lib/validation/land-contracts"
 import {
   communityInputSchema,
   communityUpdateSchema,
@@ -31,6 +36,8 @@ export interface CommunityPhaseDTO {
   status: "planned" | "open" | "built_out"
   targetOpenDate: string | null
   notes: string | null
+  /** The project that develops this phase's land, when one is linked. */
+  developmentProjectId: string | null
 }
 
 export interface LotTakedownDTO {
@@ -43,7 +50,10 @@ export interface LotTakedownDTO {
   lotCount: number
   linkedLotCount: number
   pricePerLotCents: number | null
-  depositCents: number
+  /** The land contract the tranche is under; its deposits are on that contract's schedule. */
+  landContractId: string | null
+  /** The land deal the tranche came from; closing it needs that deal's acquisition approved. */
+  landOpportunityId: string | null
   status: "scheduled" | "closed" | "cancelled"
   sellerCompanyId: string | null
   notes: string | null
@@ -67,6 +77,8 @@ export interface CommunityDetailDTO extends CommunityListItemDTO {
   address: string | null
   postalCode: string | null
   description: string | null
+  /** Default setbacks; a lot's own value wins over each one. */
+  setbacks: Setbacks
   phases: CommunityPhaseDTO[]
   takedowns: LotTakedownDTO[]
 }
@@ -84,6 +96,7 @@ type CommunityRow = {
   description: string | null
   planned_lot_count: number | null
   target_absorption_per_month: number | string | null
+  setbacks?: Record<string, unknown> | null
   division?: { name?: string | null } | Array<{ name?: string | null }> | null
 }
 
@@ -95,6 +108,7 @@ type PhaseRow = {
   status: CommunityPhaseDTO["status"]
   target_open_date: string | null
   notes: string | null
+  development_project_id: string | null
 }
 
 type TakedownRow = {
@@ -106,14 +120,19 @@ type TakedownRow = {
   actual_date: string | null
   lot_count: number
   price_per_lot_cents: number | null
-  deposit_cents: number
+  land_contract_id: string | null
+  land_opportunity_id: string | null
   status: LotTakedownDTO["status"]
   seller_company_id: string | null
   notes: string | null
 }
 
+const PHASE_SELECT = "id, community_id, name, phase_number, status, target_open_date, notes, development_project_id"
+const TAKEDOWN_SELECT =
+  "id, community_id, community_phase_id, name, scheduled_date, actual_date, lot_count, price_per_lot_cents, land_contract_id, land_opportunity_id, status, seller_company_id, notes"
+
 const COMMUNITY_SELECT =
-  "id, name, code, status, division_id, address, city, state, postal_code, description, planned_lot_count, target_absorption_per_month, division:divisions(name)"
+  "id, name, code, status, division_id, address, city, state, postal_code, description, planned_lot_count, target_absorption_per_month, setbacks, division:divisions(name)"
 /**
  * A ceiling on the community list, not a page size — `listCommunities` reads to
  * exhaustion. Even a large production builder runs tens of communities, so this
@@ -155,6 +174,7 @@ function mapPhase(row: PhaseRow): CommunityPhaseDTO {
     status: row.status,
     targetOpenDate: row.target_open_date,
     notes: row.notes,
+    developmentProjectId: row.development_project_id,
   }
 }
 
@@ -169,7 +189,8 @@ function mapTakedown(row: TakedownRow, linkedLotCount = 0): LotTakedownDTO {
     lotCount: Number(row.lot_count),
     linkedLotCount,
     pricePerLotCents: row.price_per_lot_cents == null ? null : Number(row.price_per_lot_cents),
-    depositCents: Number(row.deposit_cents),
+    landContractId: row.land_contract_id,
+    landOpportunityId: row.land_opportunity_id,
     status: row.status,
     sellerCompanyId: row.seller_company_id,
     notes: row.notes,
@@ -255,6 +276,32 @@ async function assertDivisionBelongsToOrg(
   if (error || !data) throw new Error("Division not found")
 }
 
+/**
+ * A community may only be filed under a division the caller works in. Without
+ * this a division-scoped `community.write` holder could create a community in,
+ * or move one of theirs into, a division they cannot see, and with it every lot
+ * and home it holds. Refused as not found, like a division outside the org.
+ */
+async function assertDivisionInCallerScope(
+  context: Awaited<ReturnType<typeof requireOrgContext>>,
+  divisionId: string | null | undefined,
+) {
+  const decision = resolveDivisionScope(await allowedDivisionScope(context.orgId, context.userId))
+  if (!divisionIsInScope(decision, divisionId ?? null)) throw new Error("Division not found")
+}
+
+/** Homes standing on the community's lots: what a division move carried with it. */
+async function countCommunityHomes(context: Awaited<ReturnType<typeof requireOrgContext>>, communityId: string) {
+  const { count, error } = await context.supabase
+    .from("lots")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", context.orgId)
+    .eq("community_id", communityId)
+    .not("project_id", "is", null)
+  if (error) throw new Error(`Failed to count the community's homes: ${error.message}`)
+  return count ?? 0
+}
+
 function applyCommunityInput(parsed: Partial<CommunityInput>) {
   const patch: Record<string, unknown> = {}
   if (parsed.name !== undefined) patch.name = parsed.name
@@ -334,6 +381,34 @@ export async function listCommunities(
  * `listCommunities()` — 200 rows plus an org-wide lot-count aggregation — so a
  * single page load ran that scan about five times.
  */
+/** Authorized chrome identity, without inventory, phases, or takedown reads. */
+export const getCommunityIdentity = cache(async function getCommunityIdentity(
+  id: string,
+  orgId?: string,
+): Promise<Pick<CommunityListItemDTO, "id" | "name" | "status" | "plannedLotCount">> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("community.read", context)
+  const decision = resolveDivisionScope(await allowedDivisionScope(context.orgId, context.userId))
+  if (decision.kind === "none") throw new Error("Community not found")
+
+  let query = context.supabase
+    .from("communities")
+    .select("id, name, status, planned_lot_count")
+    .eq("org_id", context.orgId)
+    .eq("id", id)
+    .is("archived_at", null)
+  if (decision.kind === "limited") query = query.in("division_id", decision.divisionIds)
+  const { data, error } = await query.maybeSingle()
+  if (error) throw new Error(`Failed to load community identity: ${error.message}`)
+  if (!data) throw new Error("Community not found")
+  return {
+    id: data.id,
+    name: data.name,
+    status: data.status as CommunityListItemDTO["status"],
+    plannedLotCount: data.planned_lot_count,
+  }
+})
+
 export const getCommunity = cache(async function getCommunity(
   id: string,
   orgId?: string,
@@ -361,13 +436,13 @@ export const getCommunity = cache(async function getCommunity(
     getLotCountMap(context.orgId),
     context.supabase
       .from("community_phases")
-      .select("id, community_id, name, phase_number, status, target_open_date, notes")
+      .select(PHASE_SELECT)
       .eq("org_id", context.orgId)
       .eq("community_id", id)
       .order("phase_number"),
     context.supabase
       .from("lot_takedowns")
-      .select("id, community_id, community_phase_id, name, scheduled_date, actual_date, lot_count, price_per_lot_cents, deposit_cents, status, seller_company_id, notes")
+      .select(TAKEDOWN_SELECT)
       .eq("org_id", context.orgId)
       .eq("community_id", id)
       .order("scheduled_date", { ascending: true, nullsFirst: false }),
@@ -402,6 +477,7 @@ export const getCommunity = cache(async function getCommunity(
     address: row.address,
     postalCode: row.postal_code,
     description: row.description,
+    setbacks: readSetbacks(row.setbacks),
     phases: (phasesResult.data ?? []).map((phase) => mapPhase(phase as PhaseRow)),
     takedowns: takedownRows.map((takedown) => mapTakedown(takedown, linkedCounts.get(takedown.id) ?? 0)),
   }
@@ -428,7 +504,10 @@ export async function createCommunity(input: CommunityInput, orgId?: string): Pr
   const parsed = communityInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("community.write", context)
-  await assertDivisionBelongsToOrg(context.supabase, context.orgId, parsed.divisionId)
+  await Promise.all([
+    assertDivisionInCallerScope(context, parsed.divisionId),
+    assertDivisionBelongsToOrg(context.supabase, context.orgId, parsed.divisionId),
+  ])
   const { data, error } = await context.supabase
     .from("communities")
     .insert({ org_id: context.orgId, ...applyCommunityInput(parsed) })
@@ -448,7 +527,12 @@ export async function updateCommunity(
   const context = await requireOrgContext(orgId)
   await requirePermission("community.write", context)
   await requireCommunityScope(id, context)
-  if (parsed.divisionId !== undefined) await assertDivisionBelongsToOrg(context.supabase, context.orgId, parsed.divisionId)
+  if (parsed.divisionId !== undefined) {
+    await Promise.all([
+      assertDivisionInCallerScope(context, parsed.divisionId),
+      assertDivisionBelongsToOrg(context.supabase, context.orgId, parsed.divisionId),
+    ])
+  }
   const { data: before, error: beforeError } = await context.supabase
     .from("communities")
     .select("*")
@@ -464,30 +548,12 @@ export async function updateCommunity(
     .select("*")
     .single()
   if (error) throw new Error(`Failed to update community: ${error.message}`)
-  if (parsed.divisionId !== undefined && parsed.divisionId !== before.division_id) {
-    const { data: linkedLots, error: lotsError } = await context.supabase
-      .from("lots")
-      .select("project_id")
-      .eq("org_id", context.orgId)
-      .eq("community_id", id)
-    if (lotsError) throw new Error(`Failed to resolve linked projects: ${lotsError.message}`)
-    const projectIds = (linkedLots ?? []).map((row) => row.project_id).filter((value): value is string => Boolean(value))
-    const { error: updateLotsError } = await context.supabase
-      .from("lots")
-      .update({ division_id: parsed.divisionId })
-      .eq("org_id", context.orgId)
-      .eq("community_id", id)
-    if (updateLotsError) throw new Error(`Failed to update lot divisions: ${updateLotsError.message}`)
-    if (projectIds.length > 0) {
-      const { error: updateProjectsError } = await context.supabase
-        .from("projects")
-        .update({ division_id: parsed.divisionId })
-        .eq("org_id", context.orgId)
-        .in("id", projectIds)
-      if (updateProjectsError) throw new Error(`Failed to update project divisions: ${updateProjectsError.message}`)
-    }
-  }
-  await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "community.updated", entityType: "community", entityId: id, action: "update", before, after: data, payload: { name: data.name } })
+  // The database moves the community's lots and homes with it, in the same
+  // statement (communities_cascade_division); this only reports how many homes
+  // went. A community taken out of every division leaves its homes where they were.
+  const divisionMoved = data.division_id !== before.division_id
+  const homesMoved = divisionMoved && data.division_id ? await countCommunityHomes(context, id) : 0
+  await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "community.updated", entityType: "community", entityId: id, action: "update", before, after: data, payload: divisionMoved ? { name: data.name, from_division_id: before.division_id, to_division_id: data.division_id, homes_moved: homesMoved } : { name: data.name } })
   return getCommunity(id, context.orgId)
 }
 
@@ -523,7 +589,7 @@ export async function createCommunityPhase(communityId: string, input: PhaseInpu
   const context = await requireOrgContext(orgId)
   await requirePermission("community.write", context)
   await requireCommunityScope(communityId, context)
-  const { data, error } = await context.supabase.from("community_phases").insert({ org_id: context.orgId, community_id: communityId, ...phasePayload(parsed) }).select("id, community_id, name, phase_number, status, target_open_date, notes").single()
+  const { data, error } = await context.supabase.from("community_phases").insert({ org_id: context.orgId, community_id: communityId, ...phasePayload(parsed) }).select(PHASE_SELECT).single()
   if (error) throw new Error(`Failed to create phase: ${error.message}`)
   await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "community_phase.created", entityType: "community_phase", entityId: data.id, action: "insert", after: data, payload: { community_id: communityId, name: data.name } })
   return mapPhase(data as PhaseRow)
@@ -536,7 +602,7 @@ export async function updateCommunityPhase(id: string, input: Partial<PhaseInput
   const { data: before, error: beforeError } = await context.supabase.from("community_phases").select("*").eq("org_id", context.orgId).eq("id", id).maybeSingle()
   if (beforeError || !before) throw new Error("Community phase not found")
   await requireCommunityScope(before.community_id, context)
-  const { data, error } = await context.supabase.from("community_phases").update(phasePayload(parsed)).eq("org_id", context.orgId).eq("id", id).select("id, community_id, name, phase_number, status, target_open_date, notes").single()
+  const { data, error } = await context.supabase.from("community_phases").update(phasePayload(parsed)).eq("org_id", context.orgId).eq("id", id).select(PHASE_SELECT).single()
   if (error) throw new Error(`Failed to update phase: ${error.message}`)
   await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "community_phase.updated", entityType: "community_phase", entityId: id, action: "update", before, after: data, payload: { community_id: data.community_id, name: data.name } })
   return mapPhase(data as PhaseRow)
@@ -556,6 +622,29 @@ export async function deleteCommunityPhase(id: string, orgId?: string): Promise<
   await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "community_phase.deleted", entityType: "community_phase", entityId: id, action: "delete", before, payload: { community_id: before.community_id, name: before.name } })
 }
 
+/**
+ * Name the job that develops a phase, or unlink it. A development job is an
+ * ordinary project in the community's division (the database refuses any other,
+ * and a home on a lot); its budget, contracts and cost stay on its workbench.
+ * Books development allocations from the job reach only the phases it develops.
+ */
+export async function linkPhaseDevelopmentProject(phaseId: string, input: { developmentProjectId: string | null }, orgId?: string): Promise<CommunityPhaseDTO> {
+  const parsed = phaseDevelopmentLinkSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await Promise.all([requirePermission("community.write", context), requirePermission("project.manage", context)])
+  const { data: before, error: beforeError } = await context.supabase.from("community_phases").select(PHASE_SELECT).eq("org_id", context.orgId).eq("id", phaseId).maybeSingle()
+  if (beforeError || !before) throw new Error("Community phase not found")
+  await requireCommunityScope(before.community_id, context)
+  if (parsed.developmentProjectId) {
+    const { data: project, error: projectError } = await context.supabase.from("projects").select("id").eq("org_id", context.orgId).eq("id", parsed.developmentProjectId).maybeSingle()
+    if (projectError || !project) throw new Error("Project not found")
+  }
+  const { data, error } = await context.supabase.from("community_phases").update({ development_project_id: parsed.developmentProjectId }).eq("org_id", context.orgId).eq("id", phaseId).select(PHASE_SELECT).single()
+  if (error) throw new Error(error.code === "23514" ? error.message : `Failed to link the development job: ${error.message}`)
+  await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "community_phase.development_linked", entityType: "community_phase", entityId: phaseId, action: "update", before, after: data, payload: { community_id: data.community_id, name: data.name, development_project_id: parsed.developmentProjectId, previous_development_project_id: before.development_project_id } })
+  return mapPhase(data as PhaseRow)
+}
+
 function takedownPayload(parsed: Partial<TakedownInput>) {
   const patch: Record<string, unknown> = {}
   if (parsed.name !== undefined) patch.name = parsed.name
@@ -564,11 +653,30 @@ function takedownPayload(parsed: Partial<TakedownInput>) {
   if (parsed.actualDate !== undefined) patch.actual_date = parsed.actualDate
   if (parsed.lotCount !== undefined) patch.lot_count = parsed.lotCount
   if (parsed.pricePerLotCents !== undefined) patch.price_per_lot_cents = parsed.pricePerLotCents
-  if (parsed.depositCents !== undefined) patch.deposit_cents = parsed.depositCents
+  if (parsed.landContractId !== undefined) patch.land_contract_id = parsed.landContractId
+  if (parsed.landOpportunityId !== undefined) patch.land_opportunity_id = parsed.landOpportunityId
   if (parsed.status !== undefined) patch.status = parsed.status
   if (parsed.sellerCompanyId !== undefined) patch.seller_company_id = parsed.sellerCompanyId
   if (parsed.notes !== undefined) patch.notes = parsed.notes || null
   return patch
+}
+
+/**
+ * Naming the deal a tranche came from takes land.read and a deal the caller can
+ * see that was acquired into this community. The database holds the community
+ * half; the division wall is the deal's own row security.
+ */
+async function requireLinkableLandDeal(context: Awaited<ReturnType<typeof requireOrgContext>>, communityId: string, landOpportunityId: string) {
+  await requirePermission("land.read", context)
+  const { data, error } = await context.supabase
+    .from("land_opportunities")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq("id", landOpportunityId)
+    .eq("community_id", communityId)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to read the land deal: ${error.message}`)
+  if (!data) throw new Error("Land deal not found for this community")
 }
 
 export async function createLotTakedown(communityId: string, input: TakedownInput, orgId?: string): Promise<LotTakedownDTO> {
@@ -576,12 +684,33 @@ export async function createLotTakedown(communityId: string, input: TakedownInpu
   const context = await requireOrgContext(orgId)
   await requirePermission("community.write", context)
   await requireCommunityScope(communityId, context)
-  const { data, error } = await context.supabase.from("lot_takedowns").insert({ org_id: context.orgId, community_id: communityId, ...takedownPayload(parsed) }).select("id, community_id, community_phase_id, name, scheduled_date, actual_date, lot_count, price_per_lot_cents, deposit_cents, status, seller_company_id, notes").single()
+  if (parsed.landOpportunityId) await requireLinkableLandDeal(context, communityId, parsed.landOpportunityId)
+  const { data, error } = await context.supabase.from("lot_takedowns").insert({ org_id: context.orgId, community_id: communityId, ...takedownPayload(parsed) }).select(TAKEDOWN_SELECT).single()
   if (error) throw new Error(`Failed to create takedown: ${error.message}`)
   await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot_takedown.created", entityType: "lot_takedown", entityId: data.id, action: "insert", after: data, payload: { community_id: communityId, name: data.name } })
   return mapTakedown(data as TakedownRow)
 }
 
+/** The status of the land contract a takedown is under, or null when it has none. */
+async function takedownContractStatus(context: Awaited<ReturnType<typeof requireOrgContext>>, landContractId: string | null) {
+  if (!landContractId) return null
+  const { data, error } = await context.supabase.from("land_contracts").select("status").eq("org_id", context.orgId).eq("id", landContractId).maybeSingle()
+  if (error || !data) throw new Error("The takedown's land contract could not be read")
+  return String(data.status)
+}
+
+/**
+ * A takedown under an executed land contract keeps its signed lot count and
+ * price, and its close date moves only by a recorded extension
+ * (`recordLandContractExtension`). The database holds the same line.
+ *
+ * A takedown closes only through `closeLotTakedown` and a closed one stays
+ * closed. Cancelling (or restoring) one under a signed contract or from a land
+ * deal is a land decision: the database refuses a member's direct status write
+ * there, so after these checks the row is written as the system — and under a
+ * signed contract it also takes land_contract.write. Moving a takedown off its
+ * land deal takes land.approve and is written the same way.
+ */
 export async function updateLotTakedown(id: string, input: Partial<TakedownInput>, orgId?: string): Promise<LotTakedownDTO> {
   const parsed = takedownUpdateSchema.parse(input)
   const context = await requireOrgContext(orgId)
@@ -589,35 +718,95 @@ export async function updateLotTakedown(id: string, input: Partial<TakedownInput
   const { data: before, error: beforeError } = await context.supabase.from("lot_takedowns").select("*").eq("org_id", context.orgId).eq("id", id).maybeSingle()
   if (beforeError || !before) throw new Error("Lot takedown not found")
   await requireCommunityScope(before.community_id, context)
-  const { data, error } = await context.supabase.from("lot_takedowns").update(takedownPayload(parsed)).eq("org_id", context.orgId).eq("id", id).select("id, community_id, community_phase_id, name, scheduled_date, actual_date, lot_count, price_per_lot_cents, deposit_cents, status, seller_company_id, notes").single()
+  if (parsed.landOpportunityId && parsed.landOpportunityId !== before.land_opportunity_id) {
+    await requireLinkableLandDeal(context, before.community_id, parsed.landOpportunityId)
+  }
+  const contractStatus = await takedownContractStatus(context, before.land_contract_id)
+  const statusChanges = parsed.status !== undefined && parsed.status !== before.status
+  if (statusChanges && parsed.status === "closed") throw new Error("Close a takedown with its actual date; closing applies its deposits and acquires its lots.")
+  if (statusChanges && before.status === "closed") throw new Error("A closed takedown stays closed.")
+  const landDecision = statusChanges && ((contractStatus !== null && contractStatus !== "draft") || Boolean(before.land_opportunity_id))
+  if (landDecision && contractStatus !== null && contractStatus !== "draft") await requirePermission("land_contract.write", context)
+  // Its deal's approval gates a takedown's closing, so moving it off that deal is the approvers' call.
+  const movesDeal = Boolean(before.land_opportunity_id) && parsed.landOpportunityId !== undefined && parsed.landOpportunityId !== before.land_opportunity_id
+  if (movesDeal) await requirePermission("land.approve", context)
+  if (contractStatus === "executed") {
+    const changes = (value: unknown, current: unknown) => value !== undefined && value !== current
+    if (changes(parsed.scheduledDate, before.scheduled_date)) throw new Error("This takedown is under an executed land contract. Record an extension with the signed evidence to move its close date.")
+    if (changes(parsed.lotCount, before.lot_count) || changes(parsed.pricePerLotCents, before.price_per_lot_cents)) throw new Error("The lot count and price of a takedown under an executed land contract are signed terms. Record an amendment.")
+    if (changes(parsed.landContractId, before.land_contract_id)) throw new Error("A takedown cannot move out of an executed land contract.")
+  }
+  const writer = landDecision || movesDeal ? createServiceSupabaseClient() : context.supabase
+  const { data, error } = await writer.from("lot_takedowns").update(takedownPayload(parsed)).eq("org_id", context.orgId).eq("id", id).select(TAKEDOWN_SELECT).single()
   if (error) throw new Error(`Failed to update takedown: ${error.message}`)
   await logMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot_takedown.updated", entityType: "lot_takedown", entityId: id, action: "update", before, after: data, payload: { community_id: data.community_id, name: data.name } })
   return mapTakedown(data as TakedownRow)
 }
 
 /**
- * Settle a land tranche: the takedown closes and every lot it controls becomes
- * owned.
+ * A tranche that came from a land deal closes only once that deal's acquisition
+ * is approved; an unlinked takedown (legacy, imported) is unaffected. The review
+ * is read as the system: the gate is a fact about the deal, and a closer without
+ * land.read, or outside the deal's division, must be refused for the right
+ * reason rather than because they cannot see the approval.
+ */
+async function assertTakedownAcquisitionApproved(orgId: string, landOpportunityId: string | null): Promise<void> {
+  if (!landOpportunityId) return
+  const { data, error } = await createServiceSupabaseClient()
+    .from("land_acquisition_reviews")
+    .select("status, decision")
+    .eq("org_id", orgId)
+    .eq("land_opportunity_id", landOpportunityId)
+  if (error) throw new Error(`Failed to read the deal's acquisition reviews: ${error.message}`)
+  if (!hasApprovedAcquisition(data ?? [])) {
+    throw new Error("This takedown's land deal has no approved acquisition review. Approve the acquisition before closing it.")
+  }
+}
+
+const takedownClosingSchema = z.object({ lot_ids: z.array(z.string().uuid()), applied_deposit_cents: z.coerce.number().int() })
+
+/**
+ * Settle a land tranche: the takedown closes, the paid deposits credited
+ * against it are applied, and every lot it controls becomes owned — in one
+ * database transaction (`close_lot_takedown`), so a failure never leaves a
+ * closed takedown with its deposits still paid or its lots still controlled.
  *
- * The lot half goes through `assertLotStatusTransition` like every other status
- * change — closing a tranche used to write `status: 'owned'` straight past the
- * lifecycle — and leaves the same trail a bulk lot edit leaves: one status event
- * and one audit row naming every lot moved. Validating in the pure state machine
- * and writing once keeps a forty-lot tranche one round trip rather than forty.
+ * The lot half answers to `assertLotStatusTransition` like every other status
+ * change, and leaves the trail a bulk lot edit leaves: one status event and one
+ * audit row naming every lot moved. The database repeats the gates that are
+ * facts about the land (signed contract, paid deposits, approved acquisition).
  */
 export async function closeLotTakedown(id: string, { actualDate }: { actualDate: string }, orgId?: string): Promise<LotTakedownDTO> {
   const parsedDate = takedownUpdateSchema.pick({ actualDate: true }).parse({ actualDate }).actualDate
+  if (!parsedDate) throw new Error("A takedown closes on its actual date.")
   const context = await requireOrgContext(orgId)
   await requirePermission("community.write", context)
   await requirePermission("lot.write", context)
   const { data: takedown, error: takedownError } = await context.supabase
     .from("lot_takedowns")
-    .select("community_id")
+    .select("community_id, status, land_contract_id, land_opportunity_id")
     .eq("org_id", context.orgId)
     .eq("id", id)
     .maybeSingle()
   if (takedownError || !takedown) throw new Error("Lot takedown not found")
   await requireCommunityScope(takedown.community_id, context)
+  if (takedown.status !== "scheduled") throw new Error("Only a scheduled takedown is closed.")
+  await assertTakedownAcquisitionApproved(context.orgId, takedown.land_opportunity_id)
+
+  // A tranche under a contract closes only once the contract is signed, and
+  // only with every deposit credited against it actually paid: the credit is
+  // what the cash plan netted out of the closing.
+  const contractStatus = await takedownContractStatus(context, takedown.land_contract_id)
+  if (contractStatus !== null && contractStatus !== "executed") throw new Error("Execute this takedown's land contract before closing it.")
+  const { data: credited, error: creditedError } = await context.supabase
+    .from("land_contract_deposits")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq("takedown_id", id)
+    .eq("status", "scheduled")
+    .limit(1)
+  if (creditedError) throw new Error(`Failed to load the takedown's deposits: ${creditedError.message}`)
+  if ((credited ?? []).length > 0) throw new Error("Record the payment of every deposit credited against this takedown before closing it.")
 
   const { data: linked, error: linkedError } = await context.supabase
     .from("lots")
@@ -626,32 +815,34 @@ export async function closeLotTakedown(id: string, { actualDate }: { actualDate:
     .eq("takedown_id", id)
     .eq("status", "controlled")
   if (linkedError) throw new Error(`Failed to load the takedown's lots: ${linkedError.message}`)
-  const advancing = (linked ?? []) as Array<{ id: string; status: LotStatus; project_id: string | null }>
+  const advancing: Array<{ id: string; status: LotStatus; project_id: string | null }> = linked ?? []
   for (const lot of advancing) {
     assertLotStatusTransition({ from: lot.status, to: "owned", hasProject: Boolean(lot.project_id) })
   }
 
-  const { data: books, error: booksError } = await createServiceSupabaseClient().from("books_settings").select("workspace_enabled,arc_ledger_mode").eq("org_id", context.orgId).maybeSingle()
+  const service = createServiceSupabaseClient()
+  const { data: books, error: booksError } = await service.from("books_settings").select("workspace_enabled,arc_ledger_mode").eq("org_id", context.orgId).maybeSingle()
   if (booksError) throw new Error(`Failed to verify land accounting posture: ${booksError.message}`)
   if (books?.workspace_enabled && books.arc_ledger_mode !== "disabled" && advancing.length > 0) throw new Error("Record the actual land acquisition and funding in Books before closing this takedown. Expected lot prices are not settlement evidence.")
-  const closed = await updateLotTakedown(id, { status: "closed", actualDate: parsedDate }, context.orgId)
 
-  if (advancing.length > 0) {
-    const lotIds = advancing.map((lot) => lot.id)
-    const { error } = await context.supabase
-      .from("lots")
-      .update({ status: "owned", acquired_date: parsedDate })
-      .eq("org_id", context.orgId)
-      .in("id", lotIds)
-    if (error) throw new Error(`Takedown closed, but linked lots could not be advanced: ${error.message}`)
-    await Promise.all([
-      recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot.status_changed", entityType: "lot", entityId: lotIds[0], payload: { community_id: closed.communityId, from: "controlled", to: "owned", count: lotIds.length, takedown_id: id } }),
-      recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: lotIds[0], before: { lots: advancing }, after: { lot_ids: lotIds, status: "owned", acquired_date: parsedDate, takedown_id: id } }),
-    ])
+  const { data: result, error: closeError } = await service.rpc("close_lot_takedown", { p_org_id: context.orgId, p_takedown_id: id, p_actual_date: parsedDate, p_actor_id: context.userId })
+  if (closeError) throw new Error(closeError.message)
+  const closing = takedownClosingSchema.parse(result)
+  const { data: closed, error: closedError } = await context.supabase.from("lot_takedowns").select(TAKEDOWN_SELECT).eq("org_id", context.orgId).eq("id", id).single()
+  if (closedError || !closed) throw new Error(`Takedown closed, but it could not be read back: ${closedError?.message ?? "not found"}`)
+  const dto = mapTakedown(closed)
+
+  const writes: Array<Promise<unknown>> = [
+    logMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot_takedown.closed", entityType: "lot_takedown", entityId: id, action: "update", before: { status: takedown.status }, after: { status: "closed", actual_date: parsedDate }, payload: { community_id: dto.communityId, actual_date: parsedDate, lot_count: closing.lot_ids.length, applied_deposit_cents: closing.applied_deposit_cents } }),
+  ]
+  if (closing.lot_ids.length > 0) {
+    writes.push(
+      recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot.status_changed", entityType: "lot", entityId: closing.lot_ids[0], payload: { community_id: dto.communityId, from: "controlled", to: "owned", count: closing.lot_ids.length, takedown_id: id } }),
+      recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: closing.lot_ids[0], before: { lots: advancing }, after: { lot_ids: closing.lot_ids, status: "owned", acquired_date: parsedDate, takedown_id: id } }),
+    )
   }
-
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_takedown.closed", entityType: "lot_takedown", entityId: id, payload: { community_id: closed.communityId, actual_date: parsedDate, lot_count: advancing.length } })
-  return closed
+  await Promise.all(writes)
+  return dto
 }
 
 /**
@@ -667,68 +858,166 @@ function takedownReminderKey(days: number) {
   return `reminded_at_${days}d`
 }
 
+/** Whole days from today to an ISO date; negative once it has passed. */
+function daysUntil(date: string, today: Date) {
+  return Math.ceil((Date.parse(date) - today.getTime()) / 86_400_000)
+}
+
+/** The tightest threshold crossed and not yet announced. Past due keeps the `0` key, so it fires once. */
+function dueThreshold(daysOut: number, announced: (days: number) => boolean) {
+  return TAKEDOWN_REMINDER_DAYS.find((days) => daysOut <= days && !announced(days))
+}
+
 /**
- * Announce takedowns whose contractual close date is approaching.
+ * Announce land money coming due: takedown closings, deposits on a contract's
+ * schedule, and extension or penalty fees.
  *
  * A multi-million-dollar land close previously had no notification path at all:
  * it sat on the Land tab and was noticed when somebody looked. This runs on a
  * schedule rather than as a side effect of a page load, because a close date has
  * to arrive whether or not anyone opened the community that week.
  *
- * Each threshold fires once per takedown. The marker lives in the takedown's own
- * `metadata`, so a re-run after a partial failure resumes rather than repeating —
- * the same idempotency the payment sweeps use.
+ * Every announcement is the same `lot_takedown.due` event (the `takedown_due`
+ * notification), with `kind` saying which obligation it is. Each threshold
+ * fires once per obligation. The marker lives in the takedown's or deposit's
+ * own `metadata` — and, because amendments are never rewritten, in the
+ * contract's for a fee — so a re-run after a partial failure resumes rather
+ * than repeating, the same idempotency the payment sweeps use.
  */
 export async function sweepTakedownReminders(): Promise<{ announced: number }> {
   const service = createServiceSupabaseClient()
   const today = new Date()
+  const todayIso = today.toISOString().slice(0, 10)
   const horizon = new Date(today)
   horizon.setDate(horizon.getDate() + Math.max(...TAKEDOWN_REMINDER_DAYS))
+  const horizonIso = horizon.toISOString().slice(0, 10)
 
-  const { data: due, error } = await service
-    .from("lot_takedowns")
-    .select("id, org_id, community_id, name, scheduled_date, lot_count, price_per_lot_cents, deposit_cents, metadata")
-    .eq("status", "scheduled")
-    .not("scheduled_date", "is", null)
-    .lte("scheduled_date", horizon.toISOString().slice(0, 10))
-    .order("scheduled_date", { ascending: true })
-    .limit(TAKEDOWN_SWEEP_BATCH)
-  if (error) throw new Error(`Failed to load due takedowns: ${error.message}`)
+  const [dueTakedowns, dueDeposits, dueFees] = await Promise.all([
+    service
+      .from("lot_takedowns")
+      .select("id, org_id, community_id, name, scheduled_date, lot_count, price_per_lot_cents, status, metadata")
+      .eq("status", "scheduled")
+      .not("scheduled_date", "is", null)
+      .lte("scheduled_date", horizonIso)
+      .order("scheduled_date", { ascending: true })
+      .limit(TAKEDOWN_SWEEP_BATCH),
+    service
+      .from("land_contract_deposits")
+      .select("id, org_id, land_contract_id, label, due_on, amount_cents, refundability, metadata, contract:land_contracts!inner(community_id, title)")
+      .eq("status", "scheduled")
+      .lte("due_on", horizonIso)
+      .order("due_on", { ascending: true })
+      .limit(TAKEDOWN_SWEEP_BATCH),
+    service
+      .from("land_contract_amendments")
+      .select("id, org_id, land_contract_id, kind, fee_cents, due_on, contract:land_contracts!inner(community_id, title, metadata)")
+      .gt("fee_cents", 0)
+      .is("fee_paid_on", null)
+      .gte("due_on", todayIso)
+      .lte("due_on", horizonIso)
+      .order("due_on", { ascending: true })
+      .limit(TAKEDOWN_SWEEP_BATCH),
+  ])
+  if (dueTakedowns.error) throw new Error(`Failed to load due takedowns: ${dueTakedowns.error.message}`)
+  if (dueDeposits.error) throw new Error(`Failed to load due land deposits: ${dueDeposits.error.message}`)
+  if (dueFees.error) throw new Error(`Failed to load due land contract fees: ${dueFees.error.message}`)
+
+  const takedownRows = dueTakedowns.data ?? []
+  const { data: creditRows, error: creditError } = takedownRows.length
+    ? await service.from("land_contract_deposits").select("takedown_id, due_on, amount_cents, status").in("takedown_id", takedownRows.map((row) => row.id as string))
+    : { data: [], error: null }
+  if (creditError) throw new Error(`Failed to load takedown deposit credits: ${creditError.message}`)
+  const credits = (creditRows ?? []).map((row) => ({
+    takedownId: row.takedown_id as string,
+    dueOn: row.due_on as string,
+    amountCents: Number(row.amount_cents),
+    status: row.status as LandDepositStatus,
+  }))
+
+  const announce = (orgId: string, entityType: string, entityId: string, payload: Record<string, unknown>) =>
+    recordEvent({ orgId, actorId: null, eventType: "lot_takedown.due", entityType, entityId, payload })
 
   let announced = 0
-  for (const row of due ?? []) {
+  for (const row of takedownRows) {
     const scheduledDate = row.scheduled_date as string
-    const daysOut = Math.ceil((Date.parse(scheduledDate) - today.getTime()) / 86_400_000)
+    const daysOut = daysUntil(scheduledDate, today)
     const metadata = (row.metadata ?? {}) as Record<string, unknown>
-    // The tightest threshold this takedown has crossed and not yet announced.
-    // Past due keeps firing the `0` threshold's key, so it is announced once.
-    const threshold = TAKEDOWN_REMINDER_DAYS.find(
-      (days) => daysOut <= days && !metadata[takedownReminderKey(days)],
-    )
+    const threshold = dueThreshold(daysOut, (days) => Boolean(metadata[takedownReminderKey(days)]))
     if (threshold === undefined) continue
 
     const lotCount = Number(row.lot_count ?? 0)
-    await recordEvent({
-      orgId: row.org_id as string,
-      actorId: null,
-      eventType: "lot_takedown.due",
-      entityType: "lot_takedown",
-      entityId: row.id as string,
-      payload: {
-        community_id: row.community_id as string,
-        name: row.name as string,
-        scheduled_date: scheduledDate,
-        days_out: daysOut,
-        lot_count: lotCount,
-        cash_cents: lotCount * Number(row.price_per_lot_cents ?? 0),
-        deposit_cents: Number(row.deposit_cents ?? 0),
-      },
+    const cash = takedownCash(
+      { id: row.id as string, scheduledDate, lotCount, pricePerLotCents: row.price_per_lot_cents == null ? null : Number(row.price_per_lot_cents), status: "scheduled" },
+      credits,
+    )
+    await announce(row.org_id as string, "lot_takedown", row.id as string, {
+      kind: "takedown",
+      community_id: row.community_id as string,
+      name: row.name as string,
+      scheduled_date: scheduledDate,
+      days_out: daysOut,
+      lot_count: lotCount,
+      cash_cents: cash.netCents,
+      deposit_cents: cash.creditedDepositCents,
     })
     const { error: markError } = await service
       .from("lot_takedowns")
       .update({ metadata: { ...metadata, [takedownReminderKey(threshold)]: new Date().toISOString() } })
       .eq("id", row.id)
     if (markError) throw new Error(`Failed to record the takedown reminder: ${markError.message}`)
+    announced += 1
+  }
+
+  for (const row of dueDeposits.data ?? []) {
+    const dueOn = row.due_on as string
+    const daysOut = daysUntil(dueOn, today)
+    const metadata = (row.metadata ?? {}) as Record<string, unknown>
+    const threshold = dueThreshold(daysOut, (days) => Boolean(metadata[takedownReminderKey(days)]))
+    if (threshold === undefined) continue
+    const contract = Array.isArray(row.contract) ? row.contract[0] : row.contract
+    await announce(row.org_id as string, "land_contract", row.land_contract_id as string, {
+      kind: "deposit",
+      community_id: String(contract?.community_id ?? ""),
+      name: (row.label as string | null) ?? `${String(contract?.title ?? "Land contract")} deposit`,
+      deposit_id: row.id as string,
+      due_on: dueOn,
+      days_out: daysOut,
+      amount_cents: Number(row.amount_cents),
+      refundability: row.refundability as string,
+    })
+    const { error: markError } = await service
+      .from("land_contract_deposits")
+      .update({ metadata: { ...metadata, [takedownReminderKey(threshold)]: new Date().toISOString() } })
+      .eq("id", row.id)
+    if (markError) throw new Error(`Failed to record the deposit reminder: ${markError.message}`)
+    announced += 1
+  }
+
+  for (const row of dueFees.data ?? []) {
+    const dueOn = row.due_on as string
+    const daysOut = daysUntil(dueOn, today)
+    const contract = Array.isArray(row.contract) ? row.contract[0] : row.contract
+    const contractMetadata = ((contract?.metadata ?? {}) as Record<string, unknown>)
+    const feeKey = (days: number) => `fee_${row.id as string}_${takedownReminderKey(days)}`
+    const threshold = dueThreshold(daysOut, (days) => Boolean(contractMetadata[feeKey(days)]))
+    if (threshold === undefined) continue
+    await announce(row.org_id as string, "land_contract", row.land_contract_id as string, {
+      kind: "fee",
+      community_id: String(contract?.community_id ?? ""),
+      name: `${String(contract?.title ?? "Land contract")} ${row.kind === "extension" ? "extension fee" : "penalty"}`,
+      amendment_id: row.id as string,
+      due_on: dueOn,
+      days_out: daysOut,
+      amount_cents: Number(row.fee_cents),
+    })
+    // Read the contract's metadata fresh: two fees on one contract may both be due.
+    const { data: current, error: currentError } = await service.from("land_contracts").select("metadata").eq("id", row.land_contract_id).maybeSingle()
+    if (currentError || !current) throw new Error(`Failed to record the fee reminder: ${currentError?.message ?? "contract not found"}`)
+    const { error: markError } = await service
+      .from("land_contracts")
+      .update({ metadata: { ...((current.metadata ?? {}) as Record<string, unknown>), [feeKey(threshold)]: new Date().toISOString() } })
+      .eq("id", row.land_contract_id)
+    if (markError) throw new Error(`Failed to record the fee reminder: ${markError.message}`)
     announced += 1
   }
 

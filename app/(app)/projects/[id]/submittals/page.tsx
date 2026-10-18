@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
@@ -17,7 +18,18 @@ interface ProjectSubmittalsPageProps {
   searchParams: Promise<{ submittal?: string }>
 }
 
-export default async function ProjectSubmittalsPage({ params, searchParams }: ProjectSubmittalsPageProps) {
+export default function ProjectSubmittalsPage(props: ProjectSubmittalsPageProps) {
+  return (
+    <PageLayout title="Submittals">
+      <Suspense fallback={<ProjectSubmittalsFallback />}>
+        <ProjectSubmittalsRoute {...props} />
+      </Suspense>
+    </PageLayout>
+  )
+}
+
+async function ProjectSubmittalsRoute({ params, searchParams }: ProjectSubmittalsPageProps) {
+  await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
   const project = await getProjectAction(id)
 
@@ -33,9 +45,7 @@ export default async function ProjectSubmittalsPage({ params, searchParams }: Pr
         { label: "Submittals" },
       ]}
     >
-      <Suspense fallback={<ProjectSubmittalsFallback />}>
-        <ProjectSubmittalsData project={project} initialSubmittalId={query.submittal} />
-      </Suspense>
+      <ProjectSubmittalsData project={project} initialSubmittalId={query.submittal} />
     </PageLayout>
   )
 }
@@ -65,7 +75,7 @@ async function ProjectSubmittalsData({ project, initialSubmittalId }: { project:
   return (
     <div className="space-y-6">
       <div className="flex justify-end"><Button variant="outline" asChild><a href={`/projects/${project.id}/exports/submittal-register`} target="_blank" rel="noreferrer">Export register PDF</a></Button></div>
-      <SubmittalsClient submittals={submittals} projects={[project]} companies={companies} initialSubmittalId={initialSubmittalId} specSections={specSections} />
+      <SubmittalsClient key={project.id} submittals={submittals} projects={[project]} companies={companies} initialSubmittalId={initialSubmittalId} specSections={specSections} />
     </div>
   )
 }

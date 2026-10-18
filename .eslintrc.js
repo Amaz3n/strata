@@ -46,7 +46,7 @@ const GRANDFATHERED = [
   "app/(app)/projects/\\[id\\]/safety/safety-client.tsx",
   "app/(app)/projects/projects-client.tsx",
   "app/(app)/schedule/schedule-client.tsx",
-  "app/dither-lab/page.tsx",
+  "components/animation/dither-lab-client.tsx",
   "app/layout.tsx",
   "components/auth/accept-invite-form.tsx",
   "components/auth/forgot-password-form.tsx",
@@ -61,7 +61,6 @@ const GRANDFATHERED = [
   "components/decisions/decisions-client.tsx",
   "components/drawings/create-from-drawing-dialog.tsx",
   "components/drawings/drawing-pin-layer.tsx",
-  "components/drawings/drawing-viewer.tsx",
   "components/drawings/drawings-sets-view.tsx",
   "components/drawings/sheet-status-dots.tsx",
   "components/drawings/viewer/svg-overlay.tsx",
@@ -106,7 +105,6 @@ const GRANDFATHERED = [
   "components/schedule/budget-summary-panel.tsx",
   "components/schedule/change-order-impact-badge.tsx",
   "components/schedule/draw-milestone-overlay.tsx",
-  "components/schedule/gantt-chart.tsx",
   "components/schedule/lookahead-view.tsx",
   "components/schedule/mobile-item-sheet.tsx",
   "components/schedule/mobile-lookahead-view.tsx",
@@ -118,12 +116,9 @@ const GRANDFATHERED = [
   "components/settings/settings-window.tsx",
   "components/submittals/submittal-detail-sheet.tsx",
   "components/submittals/submittals-client.tsx",
-  "components/tasks/tasks-tab.tsx",
   "components/team/member-form-panel.tsx",
   "components/team/team-table.tsx",
   "components/ui/project-avatar.tsx",
-  "components/ui/toast.tsx",
-  "components/warranty/warranty-client.tsx",
 ]
 
 module.exports = {

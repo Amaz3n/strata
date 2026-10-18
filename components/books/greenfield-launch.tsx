@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -89,7 +90,12 @@ export function GreenfieldLaunch() {
             })
           }
         >
-          <Input name="launchedOn" type="date" required />
+          <div className="space-y-1">
+            <Label htmlFor="greenfield-launched-on">First day Arc keeps the books</Label>
+            <Input id="greenfield-launched-on" name="launchedOn" type="date" required />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="greenfield-opening">Opening position</Label>
           <Select
             name="openingPosition"
             required
@@ -99,7 +105,7 @@ export function GreenfieldLaunch() {
                 : "zero"
             }
           >
-            <SelectTrigger>
+            <SelectTrigger id="greenfield-opening">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -111,11 +117,13 @@ export function GreenfieldLaunch() {
               </SelectItem>
             </SelectContent>
           </Select>
-          <div className="lg:col-span-2">
-            <p className="mb-2 font-mono text-[10px] text-muted-foreground">
+          </div>
+          <div className="lg:col-span-2 space-y-1">
+            <Label htmlFor="greenfield-attestation">Attestation</Label>
+            <p className="font-mono text-[10px] text-muted-foreground">
               Type exactly: {GREENFIELD_ATTESTATION}
             </p>
-            <Textarea name="attestation" required rows={3} />
+            <Textarea id="greenfield-attestation" name="attestation" required rows={3} />
           </div>
           <Button className="lg:col-span-2" disabled={pending}>
             {pending ? "Launching…" : "Make Arc Books the sole ledger"}

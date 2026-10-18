@@ -23,7 +23,6 @@ import { requireOrgContext } from "@/lib/services/context"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { enqueueSheetsListRefresh } from "@/lib/services/drawings"
 import {
   assertConditionAcceptsUom,
   loadMeasurementContext,
@@ -299,7 +298,7 @@ export async function createDrawingMarkup(
   const measurement = parsed.sheet_version_id
     ? measureMarkup(
         parsed.data,
-        await loadMeasurementContext(supabase, resolvedOrgId, parsed.sheet_version_id),
+        await loadMeasurementContext(supabase, resolvedOrgId, parsed.sheet_version_id, parsed.drawing_sheet_id),
       )
     : measureMarkup(parsed.data, { imageSize: null, feetPerImagePx: null })
 
@@ -359,8 +358,6 @@ export async function createDrawingMarkup(
     },
   })
 
-  // Keep denormalized list counts fresh (best-effort).
-  await enqueueSheetsListRefresh(resolvedOrgId)
 
   return mapDrawingMarkup(data)
 }
@@ -414,22 +411,26 @@ export async function updateDrawingMarkup(
   // Geometry changed → the stored quantity is stale. Recompute against the
   // version this markup is pinned to before anything can roll it up.
   const nextData = (parsed.data ?? existing.data) as MarkupData
-  const measurement = existing.sheet_version_id
+  // Labels/sharing and explicit membership removal do not change quantities.
+  // Keep those repairs available without reading an unrelated broken scale.
+  const needsMeasurement = parsed.data !== undefined || (parsed.condition_id !== undefined && parsed.condition_id !== null)
+  const measurement = needsMeasurement && existing.sheet_version_id
     ? measureMarkup(
         nextData,
-        await loadMeasurementContext(supabase, resolvedOrgId, existing.sheet_version_id as string),
+        await loadMeasurementContext(supabase, resolvedOrgId, existing.sheet_version_id as string, drawingMarkupInputSchema.shape.drawing_sheet_id.parse(existing.drawing_sheet_id)),
       )
-    : measureMarkup(nextData, { imageSize: null, feetPerImagePx: null })
+    : needsMeasurement ? measureMarkup(nextData, { imageSize: null, feetPerImagePx: null }) : { quantity: null, uom: null }
 
   if (parsed.data !== undefined) {
     updateData.quantity = measurement.quantity
     updateData.uom = measurement.uom
   }
 
+  const nextConditionId = parsed.condition_id === undefined ? existing.condition_id : parsed.condition_id
+  if (nextConditionId && (parsed.data !== undefined || parsed.condition_id !== undefined)) {
+    await assertConditionAcceptsUom(supabase, resolvedOrgId, nextConditionId, measurement.uom)
+  }
   if (parsed.condition_id !== undefined) {
-    if (parsed.condition_id) {
-      await assertConditionAcceptsUom(supabase, resolvedOrgId, parsed.condition_id, measurement.uom)
-    }
     updateData.condition_id = parsed.condition_id
   }
 
@@ -461,7 +462,6 @@ export async function updateDrawingMarkup(
     after: data,
   })
 
-  await enqueueSheetsListRefresh(resolvedOrgId)
 
   return mapDrawingMarkup(data)
 }
@@ -517,7 +517,6 @@ export async function deleteDrawingMarkup(markupId: string, orgId?: string): Pro
     before: existing,
   })
 
-  await enqueueSheetsListRefresh(resolvedOrgId)
 }
 
 // ============================================================================
@@ -844,7 +843,6 @@ export async function createDrawingPin(
     },
   })
 
-  await enqueueSheetsListRefresh(resolvedOrgId)
 
   return mapDrawingPin(data)
 }
@@ -909,7 +907,6 @@ export async function updateDrawingPin(
     after: data,
   })
 
-  await enqueueSheetsListRefresh(resolvedOrgId)
 
   return mapDrawingPin(data)
 }
@@ -951,7 +948,6 @@ export async function deleteDrawingPin(pinId: string, orgId?: string): Promise<v
     before: existing,
   })
 
-  await enqueueSheetsListRefresh(resolvedOrgId)
 }
 
 /**
@@ -988,9 +984,6 @@ export async function deletePinForEntity(
     })
   }
 
-  if ((deleted?.length ?? 0) > 0) {
-    await enqueueSheetsListRefresh(resolvedOrgId)
-  }
 }
 
 /**

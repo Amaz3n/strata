@@ -1,0 +1,8 @@
+1..6
+ok 1 - one pending draft per project
+ok 2 - publication cannot cross tenant boundary
+ok 3 - conflicting edit rolls back publication
+ok 4 - revision remains draft after failed transaction
+ok 5 - no partial current pointers after rollback
+
+ok 6 - published current pointers select each intended version

@@ -1,4 +1,5 @@
 "use client"
+import { SourcePostingStatus } from "@/components/books/source-posting-status"
 
 import Link from "next/link"
 import { useEffect, useMemo, useRef, useState, useTransition } from "react"
@@ -816,6 +817,8 @@ export function ExpenseWorkspace({
             </div>
           ) : null}
         </section>
+
+        <SourcePostingStatus key={`${selectedExpense.id}:${selectedExpense.updated_at}:${selectedExpense.status}`} sourceType="expense" sourceId={selectedExpense.id} revision={selectedExpense.updated_at ?? selectedExpense.status} />
 
         <FinancialRecordAccounting type="expense" id={selectedExpense.id} version={`${selectedExpense.status}:${selectedExpense.qbo_sync_status ?? ""}:${selectedExpense.amount_cents ?? 0}`} />
 

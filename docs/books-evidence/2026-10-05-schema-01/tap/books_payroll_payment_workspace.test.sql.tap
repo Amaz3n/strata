@@ -1,0 +1,11 @@
+1..10
+ok 1 - Attribution history uses invoker privileges
+ok 2 - Retained attribution read is stable
+ok 3 - Anonymous callers cannot list private attribution
+ok 4 - Ordinary authenticated callers cannot list private attribution
+ok 5 - Private service can read retained attribution
+ok 6 - Null organization rejected
+ok 7 - Null import rejected
+ok 8 - Oversized page rejected
+ok 9 - Partial cursor rejected
+ok 10 - Organization/import history pagination index exists

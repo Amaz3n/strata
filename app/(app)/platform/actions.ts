@@ -1,12 +1,12 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
-import { redirect } from "next/navigation"
+import { redirect, unstable_rethrow } from "next/navigation"
 import { z } from "zod"
 
 import { requireAuth } from "@/lib/auth/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import {
   clearPlatformOrgContext,
   endImpersonationSession,
@@ -32,6 +32,7 @@ import {
 import { invalidateAiPriceCache } from "@/lib/services/ai/usage"
 import { setOrgAiSearchAccess } from "@/lib/services/ai-search-access"
 import { PRODUCT_TIERS } from "@/lib/product-tier"
+import { enterPlatformOrgSchema, platformAccessReasonSchema } from "@/lib/validation/platform-access"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -39,18 +40,14 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
     return { success: true, data: await fn() }
   } catch (error) {
+    unstable_rethrow(error)
     return actionError(error)
   }
 }
 
-const enterOrgContextSchema = z.object({
-  orgId: z.string().uuid("Invalid organization id"),
-  reason: z.string().max(300).optional(),
-})
-
 const startImpersonationSchema = z.object({
   targetEmail: z.string().email("Valid user email is required"),
-  reason: z.string().min(8, "Reason must be at least 8 characters"),
+  reason: platformAccessReasonSchema,
   orgId: z.string().uuid().optional(),
   expiresInMinutes: z.coerce.number().min(5).max(240).optional(),
 })
@@ -60,6 +57,8 @@ const provisionPlatformOrgSchema = z.object({
   slug: z.string().min(2, "Slug is required"),
   billingModel: z.enum(["subscription", "license"]).default("subscription"),
   productTier: z.enum(PRODUCT_TIERS).default("residential"),
+  businessKind: z.enum(["builder", "trade"]).default("builder"),
+  specialty: z.string().trim().max(80).default("Electrical"),
   fullName: z.string().min(2, "Primary contact name is required"),
   primaryEmail: z.string().email("Valid email is required"),
   trialDays: z.coerce.number().int().min(1).max(60).optional(),
@@ -132,18 +131,18 @@ function parseTeamMembers(formData: FormData) {
 
 export async function enterOrgContextAction(formData: FormData) {
   return run(async () => {
-      const parsed = enterOrgContextSchema.safeParse({
+      const parsed = enterPlatformOrgSchema.safeParse({
         orgId: formData.get("orgId"),
         reason: formData.get("reason"),
+        durationMinutes: formData.get("durationMinutes") || undefined,
       })
 
       if (!parsed.success) {
         throw new Error(parsed.error.errors[0]?.message ?? "Invalid context request")
       }
 
-      const { user } = await requireAuth()
-      await requirePermission("platform.org.access", { userId: user.id })
-      await setPlatformOrgContext(parsed.data.orgId, parsed.data.reason)
+      await requireAnyPlatformPermission(["platform.org.access"])
+      await setPlatformOrgContext(parsed.data)
 
       revalidatePath("/")
       redirect("/")
@@ -153,7 +152,7 @@ export async function enterOrgContextAction(formData: FormData) {
 export async function clearOrgContextAction() {
   return run(async () => {
       const { user } = await requireAuth()
-      await requirePermission("platform.org.access", { userId: user.id })
+      await requireAnyPlatformPermission(["platform.org.access"])
       await clearPlatformOrgContext()
 
       revalidatePath("/")
@@ -177,7 +176,7 @@ export async function startImpersonationAction(
   }
 
   const { user } = await requireAuth()
-  await requirePermission("impersonation.start", { userId: user.id })
+  await requireAnyPlatformPermission(["impersonation.start"])
 
   const target = await findUserByEmail(parsed.data.targetEmail)
   if (!target?.id) {
@@ -209,7 +208,7 @@ export async function startImpersonationAction(
 export async function endImpersonationAction() {
   return run(async () => {
       const { user } = await requireAuth()
-      await requirePermission("impersonation.end", { userId: user.id })
+      await requireAnyPlatformPermission(["impersonation.end"])
       await endImpersonationSession()
 
       revalidatePath("/")
@@ -227,6 +226,8 @@ export async function provisionPlatformOrgAction(
     slug: formData.get("slug") ?? formData.get("orgSlug"),
     billingModel: formData.get("billingModel") ?? "subscription",
     productTier: formData.get("productTier") ?? "residential",
+    businessKind: formData.get("businessKind") ?? "builder",
+    specialty: formData.get("specialty") ?? "Electrical",
     fullName: formData.get("fullName"),
     primaryEmail: formData.get("primaryEmail"),
     trialDays: formData.get("trialDays"),
@@ -245,7 +246,7 @@ export async function provisionPlatformOrgAction(
   }
 
   const { user } = await requireAuth()
-  await requireAnyPermission(["billing.manage", "platform.billing.manage"], { userId: user.id })
+  await requireAnyPlatformPermission(["platform.billing.manage"])
 
   try {
     const org = await provisionOrganization({
@@ -259,6 +260,7 @@ export async function provisionPlatformOrgAction(
       createdBy: user.id,
       sendInviteEmail: parsed.data.sendInvites,
       productTier: parsed.data.productTier,
+      businessProfile: { kind: parsed.data.businessKind, specialty: parsed.data.specialty },
     })
 
     const serviceSupabase = createServiceSupabaseClient()
@@ -274,6 +276,7 @@ export async function provisionPlatformOrgAction(
         email: member.email,
         role: member.role,
         sendEmail: parsed.data.sendInvites,
+        authority: { kind: "platform_provisioning" },
       })
     }
 
@@ -293,7 +296,7 @@ export async function provisionPlatformOrgAction(
     }
 
     let seedWarning = ""
-    if (parsed.data.productTier === "production") {
+    if (parsed.data.businessKind !== "trade" && parsed.data.productTier === "production") {
       try {
         await createOnboardingRun({ orgId: org.id })
       } catch (onboardingError) {
@@ -301,7 +304,7 @@ export async function provisionPlatformOrgAction(
         seedWarning += " The production onboarding run could not be created automatically."
       }
     }
-    if (parsed.data.productTier === "production" && parsed.data.seedSampleCommunity) {
+    if (parsed.data.businessKind !== "trade" && parsed.data.productTier === "production" && parsed.data.seedSampleCommunity) {
       try {
         await seedSampleCommunity(org.id, user.id)
       } catch (sampleCommunityError) {
@@ -309,7 +312,7 @@ export async function provisionPlatformOrgAction(
         seedWarning += " Sample community seeding failed; the org was still created."
       }
     }
-    if (parsed.data.seedSampleProject) {
+    if (parsed.data.seedSampleProject && parsed.data.businessKind !== "trade") {
       try {
         await seedSampleProject(org.id, user.id)
       } catch (seedError) {
@@ -356,7 +359,7 @@ export async function setOrganizationStatusAction(formData: FormData) {
       }
 
       const { user } = await requireAuth()
-      await requireAnyPermission(["platform.billing.manage", "platform.support.write"], { userId: user.id })
+      await requireAnyPlatformPermission(["platform.billing.manage", "platform.support.write"])
 
       await setPlatformOrganizationStatus({
         orgId: parsed.data.orgId,
@@ -382,7 +385,7 @@ export async function setAiSearchAccessAction(input: { orgId: string; enabled: b
       }
 
       const { user } = await requireAuth()
-      await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+      await requireAnyPlatformPermission(["platform.feature_flags.manage"])
 
       await setOrgAiSearchAccess({
         orgId: parsed.data.orgId,
@@ -414,7 +417,7 @@ export async function updateAiTierModelAction(input: unknown) {
     if (!parsed.success) throw new Error(parsed.error.errors[0]?.message ?? "Invalid model routing.")
 
     const { user } = await requireAuth()
-    await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+    await requireAnyPlatformPermission(["platform.feature_flags.manage"])
 
     const { feature, tier, provider, model } = parsed.data
     const mismatch = validateAiProviderModelPair(provider, model)
@@ -442,7 +445,7 @@ export async function clearAiTierModelAction(input: unknown) {
     if (!parsed.success) throw new Error("Invalid feature or tier.")
 
     const { user } = await requireAuth()
-    await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+    await requireAnyPlatformPermission(["platform.feature_flags.manage"])
 
     await clearPlatformAiFeatureDefaultConfig({
       supabase: createServiceSupabaseClient(),
@@ -472,7 +475,7 @@ export async function setAiModelPriceAction(input: unknown) {
     if (!parsed.success) throw new Error(parsed.error.errors[0]?.message ?? "Invalid price.")
 
     const { user } = await requireAuth()
-    await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+    await requireAnyPlatformPermission(["platform.feature_flags.manage"])
 
     const supabase = createServiceSupabaseClient()
     const { provider, model, inputPerMTokUsd, outputPerMTokUsd } = parsed.data

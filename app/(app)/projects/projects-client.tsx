@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { OptimisticLink as Link } from "@/lib/navigation/optimistic-pathname";
@@ -48,6 +48,7 @@ import { deleteProjectAction } from "./actions";
 import { unwrapAction } from "@/lib/action-result";
 import type { ProductTier } from "@/lib/product-tier";
 import type { ProjectScheduleSummary, ProjectStatus } from "@/lib/types";
+import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile";
 import { terminology } from "@/lib/terminology";
 import {
   directoryQueryKey,
@@ -92,6 +93,8 @@ export function ProjectsClient({
   initialPage,
   initialQuery,
   productTier,
+  businessProfile = BUILDER_PROFILE,
+  tradeCreateButton,
   communities,
   communityId,
   canReadSchedule,
@@ -99,6 +102,8 @@ export function ProjectsClient({
   initialPage: ProjectDirectoryPage;
   initialQuery: ProjectDirectoryQuery;
   productTier: ProductTier;
+  businessProfile?: BusinessProfile;
+  tradeCreateButton?: ReactNode;
   communities: Array<{ id: string; name: string }>;
   communityId?: string;
   canReadSchedule: boolean;
@@ -129,7 +134,7 @@ export function ProjectsClient({
   const [isDeleting, setIsDeleting] = useState(false);
   const [scheduleProject, setScheduleProject] =
     useState<ProjectDirectoryRow | null>(null);
-  const terms = terminology(productTier);
+  const terms = terminology(productTier, businessProfile);
   // Props stay authoritative after RSC revalidation. No copied project array
   // survives a community change; in-flight responses are cancelled on key changes.
   const page =
@@ -309,7 +314,7 @@ export function ProjectsClient({
             ))}
           </SelectContent>
         </Select>
-        <Button
+        {businessProfile.kind === "trade" ? <div className="ml-auto">{tradeCreateButton}</div> : <Button
           className="ml-auto h-8"
           size="sm"
           onClick={() => setEditor({ id: null })}
@@ -318,7 +323,7 @@ export function ProjectsClient({
         >
           <Plus className="mr-1.5 h-3.5 w-3.5" />
           New {terms.project.toLowerCase()}
-        </Button>
+        </Button>}
       </div>
       <div
         className="min-h-0 flex-1 overflow-auto"

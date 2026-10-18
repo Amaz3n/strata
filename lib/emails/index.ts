@@ -13,6 +13,15 @@ export {
 } from "./external-password-reset-email"
 export { ExternalVerifyEmail, type ExternalVerifyEmailProps } from "./external-verify-email"
 export { RfiNotificationEmail, type RfiNotificationEmailProps } from "./rfi-notification-email"
+export { WarrantyVisitEmail, type WarrantyVisitEmailProps } from "./warranty-visit-email"
+export {
+  DesignStudioAppointmentEmail,
+  type DesignStudioAppointmentEmailProps,
+} from "./design-studio-appointment-email"
+export {
+  SelectionApprovalRequestEmail,
+  type SelectionApprovalRequestEmailProps,
+} from "./selection-approval-request-email"
 export {
   WeeklyExecutiveSnapshotEmail,
   type WeeklyExecutiveSnapshotEmailProps,

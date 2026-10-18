@@ -1,0 +1,13 @@
+begin;
+select plan(9);
+select ok(not prosecdef,'Supporting versions use invoker privileges') from pg_proc where oid='public.read_books_payroll_support_versions(uuid,uuid,text,integer)'::regprocedure;
+select is(provolatile::text,'s','Supporting version read is stable') from pg_proc where oid='public.read_books_payroll_support_versions(uuid,uuid,text,integer)'::regprocedure;
+select ok(not has_function_privilege('anon','public.read_books_payroll_support_versions(uuid,uuid,text,integer)','execute'),'Anonymous callers cannot list private supporting versions');
+select ok(not has_function_privilege('authenticated','public.read_books_payroll_support_versions(uuid,uuid,text,integer)','execute'),'Ordinary authenticated callers cannot list private supporting versions');
+select ok(has_function_privilege('service_role','public.read_books_payroll_support_versions(uuid,uuid,text,integer)','execute'),'Private service can list supporting versions');
+select throws_ok($$select read_books_payroll_support_versions(null)$$,'P0001','Invalid private payroll supporting-version page','Null organization rejected');
+select throws_ok($$select read_books_payroll_support_versions('99400000-0000-4000-8000-000000000001',null,'',51)$$,'P0001','Invalid private payroll supporting-version page','Oversized page rejected');
+select throws_ok($$select read_books_payroll_support_versions('99400000-0000-4000-8000-000000000001',null,repeat('x',201),50)$$,'P0001','Invalid private payroll supporting-version page','Oversized search rejected');
+select ok(to_regclass('public.books_payroll_support_version_page_idx') is not null,'Organization and UUID pagination index exists');
+select * from finish();
+rollback;

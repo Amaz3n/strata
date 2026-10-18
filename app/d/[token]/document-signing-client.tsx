@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { ELECTRONIC_SIGNATURE_CONSENT_TEXT } from "@/lib/esign/consent"
+import { readUnsignedDraft, unsignedDraftValues } from "@/lib/esign/esign-ui-helpers"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 
@@ -33,11 +36,9 @@ interface DocumentSigningClientProps {
 
 type SigningStep = "fields" | "review" | "success" | "declined"
 
-const ELECTRONIC_SIGNATURE_CONSENT_TEXT =
-  "I agree to use electronic records and signatures for this document, I can access and retain the document electronically, and I intend my electronic signature to be legally binding."
-
 function getTodayIsoDate() {
-  return new Date().toISOString().split("T")[0]
+  const today = new Date()
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`
 }
 
 export function DocumentSigningClient({
@@ -73,7 +74,7 @@ export function DocumentSigningClient({
     const loadPdf = async () => {
       try {
         const { Document, Page, pdfjs } = await import("react-pdf")
-        configurePdfWorker()
+        configurePdfWorker(pdfjs)
         setPDFComponents({ Document, Page })
       } catch (error) {
         console.error("Failed to load PDF renderer", error)
@@ -88,6 +89,42 @@ export function DocumentSigningClient({
     () => fields.filter((field) => !field.signer_role || field.signer_role === signerRole),
     [fields, signerRole],
   )
+
+  const [draftKey, setDraftKey] = useState<string | null>(null)
+  const [rememberProgress, setRememberProgress] = useState(false)
+  const [draftNotice, setDraftNotice] = useState("")
+  const fieldScope = visibleFields.map(field => field.id).join(":")
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const bytes = new TextEncoder().encode(`${token}:${document.id}:${fieldScope}`)
+      const digest = await crypto.subtle.digest("SHA-256", bytes)
+      const key = `arc-signing-draft-v1:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")}`
+      if (cancelled) return
+      setDraftKey(key)
+      try {
+        const saved = readUnsignedDraft(sessionStorage.getItem(key), visibleFields)
+        if (saved) {
+          setValues(previous => ({ ...previous, ...saved }))
+          setRememberProgress(true)
+          setDraftNotice("Your unsigned fields were restored. Add your signature and consent again.")
+        } else sessionStorage.removeItem(key)
+      } catch { setDraftNotice("This browser cannot save progress.") }
+    })().catch(() => { if (!cancelled) setDraftNotice("This browser cannot save progress.") })
+    return () => { cancelled = true }
+  }, [token, document.id, fieldScope])
+
+  useEffect(() => {
+    if (!draftKey || !rememberProgress || step === "success" || step === "declined") return
+    try {
+      sessionStorage.setItem(draftKey, JSON.stringify({ version: 1, savedAt: Date.now(), values: unsignedDraftValues(visibleFields, values) }))
+    } catch { setDraftNotice("Progress could not be saved. Keep this page open until you finish.") }
+  }, [draftKey, rememberProgress, step, values, visibleFields])
+
+  const clearLocalDraft = () => {
+    if (draftKey) { try { sessionStorage.removeItem(draftKey) } catch {} }
+    setRememberProgress(false)
+  }
 
   const requiredFields = useMemo(
     () => visibleFields.filter((field) => isRequiredField(field)),
@@ -113,7 +150,11 @@ export function DocumentSigningClient({
     [requiredFields, values],
   )
 
-  const allRequiredComplete = requiredFields.every((field) => isFieldComplete(field, values))
+  const allRequiredComplete = visibleFields.every(field => {
+    const value = values[field.id]
+    const provided = typeof value === "string" ? value.trim().length > 0 : value === true
+    return !isRequiredField(field) && !provided || isFieldComplete(field, values)
+  })
 
   useEffect(() => {
     setValues((previous) => {
@@ -126,7 +167,7 @@ export function DocumentSigningClient({
           changed = true
         }
 
-        if (field.field_type === "name" && signerName.trim() && !next[field.id]) {
+        if (field.field_type === "name" && signerName.trim() && next[field.id] !== signerName.trim()) {
           next[field.id] = signerName.trim()
           changed = true
         }
@@ -216,7 +257,7 @@ export function DocumentSigningClient({
 
         if (field.field_type === "name" && typeof nextValue === "string" && nextValue.trim()) {
           visibleFields.forEach((visibleField) => {
-            if (visibleField.field_type === "name" && !String(next[visibleField.id] ?? "").trim()) {
+            if (visibleField.field_type === "name") {
               next[visibleField.id] = nextValue.trim()
             }
           })
@@ -252,7 +293,7 @@ export function DocumentSigningClient({
   )
 
   useEffect(() => {
-    if (step !== "fields") return
+    if (step !== "fields" || signatureDialogFieldId || declineDialogOpen) return
 
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -278,11 +319,11 @@ export function DocumentSigningClient({
 
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [goToNextField, goToPreviousField, step])
+  }, [goToNextField, goToPreviousField, step, signatureDialogFieldId, declineDialogOpen])
 
   const handleFinishFields = () => {
     if (!allRequiredComplete) {
-      toast.error("Complete all required fields before finishing")
+      toast.error("Complete required fields and correct invalid values before finishing")
       return
     }
 
@@ -291,7 +332,7 @@ export function DocumentSigningClient({
 
   const handleSubmit = () => {
     if (!allRequiredComplete) {
-      toast.error("Complete all required fields before signing")
+      toast.error("Complete required fields and correct invalid values before signing")
       setStep("fields")
       return
     }
@@ -314,10 +355,11 @@ export function DocumentSigningClient({
           token,
           signerName: resolvedSignerName,
           signerEmail,
-          values,
+          values: Object.fromEntries(visibleFields.filter(field => values[field.id] !== undefined).map(field => [field.id, values[field.id]])),
           consentText: ELECTRONIC_SIGNATURE_CONSENT_TEXT,
         })
 
+        clearLocalDraft()
         setSignedAt(new Date())
         setExecutedDocumentUrl(response.executedDocumentUrl ?? null)
         setStep("success")
@@ -335,6 +377,7 @@ export function DocumentSigningClient({
     startTransition(async () => {
       try {
         await declineDocumentSignatureAction({ token, reason: declineReason })
+        clearLocalDraft()
         setDeclineDialogOpen(false)
         setStep("declined")
         toast.success("Signature request declined")
@@ -410,6 +453,11 @@ export function DocumentSigningClient({
       </div>
 
       <main className="mx-auto w-full max-w-7xl px-4 pb-32 pt-4">
+        <div className="mb-3 space-y-1 text-sm">
+          <label className="flex items-center gap-2"><Checkbox checked={rememberProgress} onCheckedChange={checked => { if (checked === true) setRememberProgress(true); else clearLocalDraft() }} />Save unsigned fields in this browser tab for up to 24 hours</label>
+          <p className="text-xs text-muted-foreground">Use only on a private device. Signatures and consent are never saved. Saved fields stay in this tab’s session and expire after 24 hours.</p>
+          {draftNotice ? <p role="status">{draftNotice}</p> : null}
+        </div>
         <PdfFieldViewer
           PDFComponents={PDFComponents}
           fileUrl={fileUrl}
@@ -453,6 +501,7 @@ export function DocumentSigningClient({
           {signatureDialogField ? (
             <SignatureCapture
               fieldLabel={signatureDialogField.label?.trim() || "Signature"}
+              preferredMethod={signatureDialogField.metadata?.signatureStyle}
               adoptedSignature={adoptedSignature}
               onApply={(signatureDataUrl, options) => {
                 applyFieldValue(signatureDialogField, signatureDataUrl, { advance: true })

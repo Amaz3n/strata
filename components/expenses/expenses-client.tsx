@@ -781,8 +781,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
       .sort((a, b) => a - b)
   }, [pagination.page, pagination.pageCount])
 
-  function PaginationFooter() {
-    return (
+  const paginationFooter = (
       <div className="flex shrink-0 flex-col gap-3 border-t bg-background px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-sm text-muted-foreground">
           {pagination.total === 0 ? "No expenses found" : `Showing ${pageStart}-${pageEnd} of ${pagination.total}`}
@@ -817,8 +816,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
           </Button>
         </div>
       </div>
-    )
-  }
+  )
 
   return (
     <TooltipProvider>
@@ -1177,7 +1175,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
             </Table>
           </div>
         )}
-        <PaginationFooter />
+        {paginationFooter}
       </div>
     </TooltipProvider>
   )

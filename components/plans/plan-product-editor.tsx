@@ -5,23 +5,37 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 import { Plus, Save } from "@/components/icons"
-import { updateHousePlanAction, upsertElevationAction } from "@/app/(app)/plans/actions"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { getElevationChangeImpactAction, updateHousePlanAction, upsertElevationAction } from "@/app/(app)/plans/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import { PlanImageAttachment, PLAN_IMAGE_TYPES } from "@/components/plans/plan-image-attachment"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
+import { ElevationRevisionHistory } from "@/components/plans/elevation-revision-history"
+import { ProductChangeImpactConfirm } from "@/components/plans/product-change-impact"
 import type { HousePlanDto, HousePlanElevationDto } from "@/lib/services/house-plans"
+import type { ProductChangeImpactDto } from "@/lib/services/product-change-impact"
+
+const UNSET_SWING = "unset"
 
 type ElevationDraft = {
   name: string
   swingApplicable: boolean
   heatedSqftDelta: string
   isActive: boolean
+}
+
+/** Said after a save that left pinned homes on lots they no longer fit; they stay pinned, and the start gate refuses them. */
+function warnFit(lotsNoLongerFitting: number) {
+  if (lotsNoLongerFitting === 0) return
+  toast.warning(`${lotsNoLongerFitting} pinned ${lotsNoLongerFitting === 1 ? "lot no longer fits" : "lots no longer fit"} this plan`, {
+    description: "Their homes stay pinned. The start gate and agreement pricing refuse them until the lot or plan changes or a fit override is recorded.",
+  })
 }
 
 function toDraft(elevation: HousePlanElevationDto): ElevationDraft {
@@ -56,6 +70,8 @@ export function PlanProductEditor({
   const [newCode, setNewCode] = useState("")
   const [newName, setNewName] = useState("")
   const [uploadTarget, setUploadTarget] = useState<string | null>(null)
+  /** An elevation edit waiting on its confirm step, with the homes it reaches. */
+  const [confirming, setConfirming] = useState<{ elevationId: string; impact: ProductChangeImpactDto } | null>(null)
   const [series, setSeries] = useState(plan.series ?? "")
   const [heatedSqft, setHeatedSqft] = useState(plan.heated_sqft?.toString() ?? "")
   const [totalSqft, setTotalSqft] = useState(plan.total_sqft?.toString() ?? "")
@@ -63,6 +79,9 @@ export function PlanProductEditor({
   const [baths, setBaths] = useState(plan.baths?.toString() ?? "")
   const [stories, setStories] = useState(plan.stories?.toString() ?? "")
   const [garageBays, setGarageBays] = useState(plan.garage_bays?.toString() ?? "")
+  const [footprintWidth, setFootprintWidth] = useState(plan.footprint_width_ft?.toString() ?? "")
+  const [footprintDepth, setFootprintDepth] = useState(plan.footprint_depth_ft?.toString() ?? "")
+  const [drawnSwing, setDrawnSwing] = useState<string>(plan.drawn_swing ?? UNSET_SWING)
   const [description, setDescription] = useState(plan.description ?? "")
 
   function run(operation: () => Promise<unknown>, success: string, failure: string) {
@@ -79,8 +98,8 @@ export function PlanProductEditor({
 
   function saveSpecs() {
     run(
-      async () =>
-        unwrapAction(
+      async () => {
+        const saved = unwrapAction(
           await updateHousePlanAction(plan.id, {
             series: series.trim() || null,
             heatedSqft: heatedSqft ? Number(heatedSqft) : null,
@@ -89,9 +108,14 @@ export function PlanProductEditor({
             baths: baths ? Number(baths) : null,
             stories: stories ? Number(stories) : null,
             garageBays: garageBays ? Number(garageBays) : null,
+            footprintWidthFt: footprintWidth ? Number(footprintWidth) : null,
+            footprintDepthFt: footprintDepth ? Number(footprintDepth) : null,
+            drawnSwing: drawnSwing === "left" || drawnSwing === "right" ? drawnSwing : null,
             description: description.trim() || null,
           }),
-        ),
+        )
+        warnFit(saved.lotsNoLongerFitting)
+      },
       "Plan details saved",
       "Unable to save plan details",
     )
@@ -138,11 +162,11 @@ export function PlanProductEditor({
     )
   }
 
-  function saveElevation(elevation: HousePlanElevationDto) {
+  function persistElevation(elevation: HousePlanElevationDto) {
     const draft = drafts[elevation.id] ?? toDraft(elevation)
     run(
-      async () =>
-        unwrapAction(
+      async () => {
+        const saved = unwrapAction(
           await upsertElevationAction(plan.id, {
             id: elevation.id,
             code: elevation.code,
@@ -153,10 +177,30 @@ export function PlanProductEditor({
             coverFileId: elevation.cover_file_id,
             sortOrder: elevation.sort_order,
           }),
-        ),
+        )
+        setConfirming(null)
+        warnFit(saved.lotsNoLongerFitting)
+      },
       `Elevation ${elevation.code} saved`,
       "Unable to save elevation",
     )
+  }
+
+  /** A definition edit reaches every home on the elevation, so the homes it reaches are shown before it saves. */
+  function saveElevation(elevation: HousePlanElevationDto) {
+    startTransition(async () => {
+      let impact: ProductChangeImpactDto
+      try {
+        impact = unwrapAction(await getElevationChangeImpactAction(elevation.id))
+      } catch (error) {
+        toast.error("Unable to check which homes this elevation reaches", {
+          description: error instanceof Error ? error.message : undefined,
+        })
+        return
+      }
+      if (impact.homes.length === 0 && !impact.truncated && impact.homesElsewhere === 0) persistElevation(elevation)
+      else setConfirming({ elevationId: elevation.id, impact })
+    })
   }
 
   function addElevation() {
@@ -208,6 +252,8 @@ export function PlanProductEditor({
                   ["Beds", beds, setBeds, "numeric"],
                   ["Baths", baths, setBaths, "decimal"],
                   ["Garage bays", garageBays, setGarageBays, "numeric"],
+                  ["Footprint width ft", footprintWidth, setFootprintWidth, "decimal"],
+                  ["Footprint depth ft", footprintDepth, setFootprintDepth, "decimal"],
                 ] as const
               ).map(([label, value, setter, mode]) => (
                 <div key={label} className="grid gap-1.5">
@@ -223,7 +269,26 @@ export function PlanProductEditor({
                   />
                 </div>
               ))}
+              <div className="grid gap-1.5">
+                <Label htmlFor="spec-drawn-swing" className="text-xs">
+                  Drawn garage
+                </Label>
+                <Select value={drawnSwing} onValueChange={setDrawnSwing}>
+                  <SelectTrigger id="spec-drawn-swing" className="h-8 rounded-none text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={UNSET_SWING}>Not recorded</SelectItem>
+                    <SelectItem value="left">Left</SelectItem>
+                    <SelectItem value="right">Right</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              The footprint is the building&apos;s outside width across the lot and depth front to rear; lots check it
+              against their setbacks. An elevation that cannot be flipped is built only with the drawn garage.
+            </p>
             <div className="mt-3 grid gap-1.5">
               <Label htmlFor="spec-description" className="text-xs">
                 Marketing description
@@ -281,6 +346,7 @@ export function PlanProductEditor({
                     <div key={elevation.id} className="space-y-2 p-2.5">
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         <span className="w-8 font-mono font-medium">{elevation.code}</span>
+                        <ElevationRevisionHistory elevationId={elevation.id} code={elevation.code} revision={elevation.revision} />
                         <Input
                           aria-label={`Name for elevation ${elevation.code}`}
                           className="h-8 w-36 rounded-none text-xs"
@@ -339,6 +405,19 @@ export function PlanProductEditor({
                           active
                         </label>
                       </div>
+                      {confirming?.elevationId === elevation.id ? (
+                        <ProductChangeImpactConfirm
+                          impact={confirming.impact}
+                          note={
+                            elevation.is_active && !draft.isActive
+                              ? "Retiring it: homes sold on this elevation can still start on it; nothing new can be sold on it."
+                              : null
+                          }
+                          pending={pending}
+                          onConfirm={() => persistElevation(elevation)}
+                          onCancel={() => setConfirming(null)}
+                        />
+                      ) : null}
                       <PlanImageAttachment
                         compact
                         existingUrl={

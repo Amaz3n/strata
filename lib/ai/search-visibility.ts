@@ -33,7 +33,7 @@ export const WILDCARD_PERMISSION = "*"
  * Entity type → the permission that governs reading it.
  *
  * Every key here exists in the RBAC catalog (`TEAM_PERMISSION_OPTIONS` in
- * `lib/services/team.ts`, seeded by the catalog-as-code migration). A type
+ * `lib/permission-catalog.ts`, seeded by the catalog-as-code migration). A type
  * absent from this map is ungated on purpose, not by oversight.
  */
 export const SEARCH_TYPE_PERMISSION: Partial<Record<SearchEntityType, string>> = {
@@ -43,6 +43,7 @@ export const SEARCH_TYPE_PERMISSION: Partial<Record<SearchEntityType, string>> =
   budget_transfer: "budget.read",
   commitment: "commitment.read",
   commitment_change_order: "commitment.read",
+  po_completion: "bill.read",
   payable: "bill.read",
   change_event: "change_events.read",
   warranty_request: "warranty.read",
@@ -56,11 +57,23 @@ export const SEARCH_TYPE_PERMISSION: Partial<Record<SearchEntityType, string>> =
   // Production
   community: "community.read",
   lot: "community.read",
+  land_opportunity: "land.read",
+  land_entitlement: "community.read",
+  // Land contracts read like takedowns: every community reader sees their terms.
+  land_contract: "community.read",
   house_plan: "plan.read",
   selection_option: "selections.read",
+  design_studio_appointment: "selections.read",
+  design_studio_location: "selections.read",
+  selection_approval: "selections.read",
+  selection_exception: "selections.read",
   price_agreement: "price_book.read",
   start_package: "start.read",
+  permit_application: "permit.read",
   closing: "sales.read",
+  spec_price_proposal: "sales.read",
+  spec_disposition: "sales.read",
+  agreement_template: "sales.read",
 
   // Field and correspondence
   safety_incident: "safety.read",

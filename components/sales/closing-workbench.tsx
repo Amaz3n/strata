@@ -1,12 +1,14 @@
 "use client"
 
-import { Fragment, useMemo, useState, useTransition } from "react"
+import { Fragment, useMemo, useState, useTransition, type ReactNode } from "react"
 import { toast } from "sonner"
 
 import {
+  recoverClosingCompletionAction,
   downloadSettlementStatementAction,
   markClearedToCloseAction,
   removeClosingAdjustmentAction,
+  reverseClosingAction,
   scheduleClosingAction,
   settleClosingAction,
   updateClosingChecklistItemAction,
@@ -22,7 +24,10 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { AgreementMilestonesPanel, type HomeMilestonesState } from "@/components/sales/agreement-milestones-panel"
+import { VoidAgreementDialog } from "@/components/sales/void-agreement-dialog"
 
 type ClosingDetail = NonNullable<Awaited<ReturnType<typeof getClosing>>>
 type SettlementPreview = ClosingDetail["settlementPreview"]
@@ -42,11 +47,46 @@ function formatDate(value?: string | null) {
   return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 }
 
+function EntitlementDue({ blockers }: { blockers: ClosingDetail["entitlementBlockers"] }) {
+  if (blockers === null) return <p className="border p-4 text-sm text-muted-foreground">Entitlement conditions due before closing could not be checked.</p>
+  if (blockers.length === 0) return null
+  return (
+    <section className="border bg-background">
+      <div className="border-b p-4">
+        <h2 className="font-semibold">Entitlement conditions required before closing</h2>
+        <p className="mt-1 text-xs text-muted-foreground">For awareness; these do not hold the closing.</p>
+      </div>
+      <ul className="divide-y">
+        {blockers.map((blocker) => (
+          <li key={`${blocker.kind}:${blocker.id}`} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
+            <span className="min-w-0 truncate">{blocker.title}</span>
+            <span className={`shrink-0 text-xs tabular-nums ${blocker.overdueDays !== null ? "text-destructive" : "text-muted-foreground"}`}>
+              {blocker.overdueDays !== null ? `${blocker.overdueDays}d overdue · ` : blocker.dueOn ? "Due " : "No due date"}
+              {blocker.dueOn ? formatDate(blocker.dueOn) : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10)
 }
 
-export function ClosingWorkbench({ projectId, detail }: { projectId: string; detail: ClosingDetail }) {
+export function ClosingWorkbench({ projectId, detail, milestones, commissions, agreementRecord, canCancelSale }: {
+  projectId: string
+  detail: ClosingDetail
+  milestones: HomeMilestonesState
+  /** The closing's commission payables, rendered by their own module. */
+  commissions: ReactNode
+  /** The agreement's authorized price and version history, rendered by its own module. */
+  agreementRecord: ReactNode
+  /** sales.manage: cancelling the sale belongs to the agreement, not the closing. */
+  canCancelSale: boolean
+}) {
+  const [cancelOpen, setCancelOpen] = useState(false)
   const [pending, startTransition] = useTransition()
   const [scheduledDate, setScheduledDate] = useState(detail.closing.scheduled_date ?? "")
   const [paymentReference, setPaymentReference] = useState("")
@@ -63,12 +103,33 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
         toast.error(error instanceof Error ? error.message : "Action failed")
       }
     })
+  const canManage = detail.canManageClosing && !["closed", "cancelled"].includes(detail.closing.status)
   const settlement = detail.settlementPreview
   const posting = (detail.closing.metadata ?? {}) as Record<string, unknown>
+  const cancellableContractId = canCancelSale && detail.agreement && "status" in detail.agreement
+    && (detail.agreement.status === "active" || detail.agreement.status === "draft")
+    && !["closed", "cancelled"].includes(detail.closing.status) ? String(detail.agreement.id) : null
 
   return (
     <div className="space-y-5 p-4">
       {posting.books_posting_status ? <div className="border p-4 text-sm"><p>Books posting: {String(posting.books_posting_status).replaceAll("_", " ")}</p>{posting.books_posting_error ? <p className="mt-2 text-destructive">{String(posting.books_posting_error)}. Resolve the accounting issue, then retry settlement using the same date and payment reference.</p> : null}</div> : null}
+      {detail.closing.status === "closed" && detail.canRecoverCompletion ? <div className="flex flex-wrap items-center justify-between gap-3 border p-4 text-sm"><p>Retry lot handoff, warranty enrollment and statement filing after a completion failure.</p><Button size="sm" variant="outline" disabled={pending} onClick={() => act(() => recoverClosingCompletionAction(projectId, detail.closing.id), "Closing completion verified")}>Retry completion</Button></div> : null}
+      {detail.closing.status === "closed" && detail.canManageClosing ? <ReverseClosing projectId={projectId} closingId={detail.closing.id} /> : null}
+      {detail.closing.status === "cancelled" && (detail.closing.metadata as Record<string, unknown> | null)?.reversed_at ? <div role="status" className="border p-4 text-sm"><p className="font-medium">Closing reversed on {String((detail.closing.metadata as Record<string, unknown>).reversed_on)}</p><p className="text-muted-foreground">{detail.closing.cancel_reason}</p></div> : null}
+      {!["closed", "cancelled"].includes(detail.closing.status) ? <EntitlementDue blockers={detail.entitlementBlockers} /> : null}
+      {agreementRecord || cancellableContractId ? (
+        <section className="border bg-background">
+          {cancellableContractId ? (
+            <div className="flex items-center justify-between gap-3 border-b p-4">
+              <h2 className="font-semibold">Purchase agreement</h2>
+              <Button size="sm" variant="outline" disabled={pending} onClick={() => setCancelOpen(true)}>Cancel sale</Button>
+            </div>
+          ) : null}
+          {agreementRecord}
+        </section>
+      ) : null}
+      {cancellableContractId ? <VoidAgreementDialog contractId={cancellableContractId} open={cancelOpen} onOpenChange={setCancelOpen} /> : null}
+      <AgreementMilestonesPanel projectId={projectId} state={milestones} editable={!["closed", "cancelled"].includes(detail.closing.status)} />
       <SettlementStatement projectId={projectId} closing={detail.closing} settlement={settlement} />
 
       <section className="border bg-background">
@@ -82,8 +143,9 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
               {detail.closing.community?.name} · Lot {detail.closing.lot?.lot_number}
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <Input className="w-40" type="date" value={scheduledDate} onChange={(event) => setScheduledDate(event.target.value)} />
+          {canManage ? <div className="flex items-center gap-2">
+            <label htmlFor="closing-scheduled-date" className="sr-only">Scheduled closing date</label>
+            <Input id="closing-scheduled-date" className="w-40" type="date" value={scheduledDate} onChange={(event) => setScheduledDate(event.target.value)} />
             <Button
               size="sm"
               variant="outline"
@@ -99,39 +161,21 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
             >
               Clear to close
             </Button>
-          </div>
+          </div> : <p className="text-sm text-muted-foreground">Scheduled: {formatDate(detail.closing.scheduled_date)}</p>}
         </div>
         <div className="divide-y">
+          {detail.checklist.length === 0 && <p className="px-4 py-3 text-sm text-muted-foreground">{canManage ? "Schedule this closing to prepare its checklist." : "The closing checklist has not been prepared."}</p>}
           {detail.checklist.map((item) => (
-            <div key={item.id} className="flex items-center justify-between gap-3 px-4 py-3">
-              <div>
-                <p className="text-sm font-medium">{item.title}</p>
-                <p className="text-xs text-muted-foreground">
-                  {item.is_gate ? "Required gate" : "Checklist item"}
-                  {item.notes ? ` · ${item.notes}` : ""}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <Badge variant={item.status === "complete" ? "secondary" : "outline"}>{item.status}</Badge>
-                {item.status !== "complete" && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={pending || detail.closing.status === "closed"}
-                    onClick={() => act(() => updateClosingChecklistItemAction(projectId, { itemId: item.id, status: "complete" }), "Checklist updated")}
-                  >
-                    Complete
-                  </Button>
-                )}
-              </div>
-            </div>
+            <ChecklistRow key={item.id} projectId={projectId} item={item} canManage={canManage} pending={pending} act={act}
+              evidenceFiles={milestones.ok ? milestones.data.evidenceFiles : []} />
           ))}
         </div>
       </section>
 
-      <SettlementAdjustments projectId={projectId} closing={detail.closing} settlement={settlement} pending={pending} act={act} />
+      <SettlementAdjustments projectId={projectId} closing={detail.closing} settlement={settlement} canManage={canManage} pending={pending} act={act} />
+      {commissions}
 
-      {detail.closing.status === "cleared_to_close" && (
+      {detail.closing.status === "cleared_to_close" && detail.canSettleClosing && (
         <section className="border border-primary/30 bg-primary/5 p-4">
           <h2 className="text-sm font-semibold">Settle closing</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -327,12 +371,14 @@ function SettlementAdjustments({
   projectId,
   closing,
   settlement,
+  canManage,
   pending,
   act,
 }: {
   projectId: string
   closing: ClosingDetail["closing"]
   settlement: SettlementPreview
+  canManage: boolean
   pending: boolean
   act: <T,>(operation: () => Promise<ActionResult<T>>, message: string) => void
 }) {
@@ -346,8 +392,10 @@ function SettlementAdjustments({
   const submit = () => {
     act(async () => {
       const result = await upsertClosingAdjustmentAction(projectId, { closingId: closing.id, label: label.trim(), kind, amountCents: Math.round(parsedAmount * 100) })
-      setLabel("")
-      setAmount("")
+      if (result.success) {
+        setLabel("")
+        setAmount("")
+      }
       return result
     }, "Settlement adjustment saved")
   }
@@ -375,7 +423,7 @@ function SettlementAdjustments({
                 <span className={`text-sm font-semibold tabular-nums ${adjustment.amountCents < 0 ? "text-success" : ""}`}>
                   {money.format(adjustment.amountCents / 100)}
                 </span>
-                {!settled && (
+                {canManage && !settled && (
                   <Button size="sm" variant="ghost" disabled={pending} onClick={() => act(() => removeClosingAdjustmentAction(projectId, closing.id, adjustment.id), "Adjustment removed")}>
                     Remove
                   </Button>
@@ -385,7 +433,7 @@ function SettlementAdjustments({
           ))}
         </div>
       )}
-      {!settled && (
+      {canManage && !settled && (
         <div className="grid gap-3 border-t p-4 sm:grid-cols-[1fr_10rem_9rem_auto] sm:items-end">
           <div className="space-y-1">
             <Label htmlFor="adjustment-label" className="text-xs">Description</Label>
@@ -410,5 +458,113 @@ function SettlementAdjustments({
         </div>
       )}
     </section>
+  )
+}
+
+/**
+ * A recorded sale that fell through: refunds the balance, returns the buyer's
+ * deposit to their deposit balance, credits the sale and puts the home back in
+ * inventory, each on its own record and dated in an open month.
+ */
+function ReverseClosing({ projectId, closingId }: { projectId: string; closingId: string }) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState("")
+  const [date, setDate] = useState(today())
+  const [pending, startTransition] = useTransition()
+  return (
+    <div className="space-y-3 border p-4 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-muted-foreground">If this sale fell through after it was recorded, reverse it. The balance is refunded, the deposit returns to the buyer&apos;s deposit balance, the sale is credited and the home goes back to inventory.</p>
+        <Button size="sm" variant="outline" onClick={() => setOpen((value) => !value)}>Reverse closing</Button>
+      </div>
+      {open ? (
+        <div className="grid gap-2 sm:grid-cols-[10rem_1fr_auto]">
+          <Input type="date" aria-label="Reversal date" value={date} onChange={(event) => setDate(event.target.value)} />
+          <Textarea aria-label="Why the closing is reversed" rows={2} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why the sale is reversed" />
+          <Button size="sm" variant="destructive" disabled={pending || reason.trim().length < 10} onClick={() => startTransition(async () => {
+            try {
+              unwrapAction(await reverseClosingAction(projectId, { closingId, reason, date }))
+              toast.success("Closing reversed", { description: "The home is back in inventory." })
+              setOpen(false)
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : "Could not reverse the closing")
+            }
+          })}>{pending ? "Reversing…" : "Reverse"}</Button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+type ChecklistItem = ClosingDetail["checklist"][number]
+const NO_FILE = "__none"
+
+/**
+ * One closing gate. The certificate of occupancy gate completes only with its
+ * evidence file and is never waived; any other gate is completed, or waived
+ * with a reason the record keeps.
+ */
+function ChecklistRow({ projectId, item, canManage, pending, act, evidenceFiles }: {
+  projectId: string
+  item: ChecklistItem
+  canManage: boolean
+  pending: boolean
+  act: <T,>(operation: () => Promise<ActionResult<T>>, message: string) => void
+  evidenceFiles: Array<{ id: string; name: string }>
+}) {
+  const [open, setOpen] = useState(false)
+  const [fileId, setFileId] = useState<string>(item.file_id ?? NO_FILE)
+  const [notes, setNotes] = useState("")
+  const evidenceRequired = item.evidence_required === true
+  const attached = item.file_id ? evidenceFiles.find((file) => file.id === item.file_id)?.name ?? "Evidence on file" : null
+  return (
+    <div className="px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">{item.title}</p>
+          <p className="text-xs text-muted-foreground">
+            {item.is_gate ? (evidenceRequired ? "Required gate · evidence file required, not waivable" : "Required gate") : "Checklist item"}
+            {attached ? ` · ${attached}` : ""}
+            {item.notes ? ` · ${item.notes}` : ""}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant={item.status === "complete" ? "secondary" : "outline"} className={item.status === "open" && item.is_gate ? "text-warning" : ""}>{item.status}</Badge>
+          {canManage && item.status !== "complete" ? (
+            <Button size="sm" variant="outline" disabled={pending} aria-expanded={open} onClick={() => setOpen((value) => !value)}>{open ? "Cancel" : "Resolve"}</Button>
+          ) : null}
+        </div>
+      </div>
+      {open ? (
+        <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+          <div className="space-y-1">
+            <Label htmlFor={`gate-file-${item.id}`} className="text-xs">Evidence {evidenceRequired ? "(required)" : "(optional)"}</Label>
+            <Select value={fileId} onValueChange={setFileId}>
+              <SelectTrigger id={`gate-file-${item.id}`}><SelectValue placeholder="Choose a file on this home" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_FILE}>No file</SelectItem>
+                {evidenceFiles.map((file) => <SelectItem key={file.id} value={file.id}>{file.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button size="sm" disabled={pending || (evidenceRequired && fileId === NO_FILE)}
+            onClick={() => act(() => updateClosingChecklistItemAction(projectId, { itemId: item.id, status: "complete", fileId: fileId === NO_FILE ? null : fileId }), "Gate completed")}>
+            Complete
+          </Button>
+          {!evidenceRequired ? (
+            <>
+              <div className="space-y-1">
+                <Label htmlFor={`gate-waive-${item.id}`} className="text-xs">Waiver reason</Label>
+                <Input id={`gate-waive-${item.id}`} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="10 characters or more" />
+              </div>
+              <Button size="sm" variant="outline" disabled={pending || notes.trim().length < 10}
+                onClick={() => act(() => updateClosingChecklistItemAction(projectId, { itemId: item.id, status: "waived", notes }), "Gate waived")}>
+                Waive
+              </Button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }

@@ -1,5 +1,10 @@
 import { z } from "zod"
 
+export const checklistTemplateActiveSchema = z.object({
+  templateId: z.string().uuid(),
+  isActive: z.boolean(),
+})
+
 export const checklistKindSchema = z.enum(["safety", "quality"])
 export type ChecklistKind = z.infer<typeof checklistKindSchema>
 

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { PortalDocumentsTab } from "@/components/portal/tabs/portal-documents-tab"
 import { loadClientPortalDocumentsPage } from "../load-portal"
@@ -8,6 +9,7 @@ interface Props {
 
 
 export default async function ClientPortalDocumentsPage({ params }: Props) {
+  await connection()
   const { token } = await params
   const { access, data } = await loadClientPortalDocumentsPage(token)
 

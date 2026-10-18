@@ -2,8 +2,37 @@ import "server-only"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/auth/context"
+import { hasAnyPermission, requireAnyPermission } from "@/lib/services/permissions"
 import { isPlatformAdminId } from "@/lib/auth/platform"
 import { preserveQueryError } from "@/lib/supabase/query-error"
+
+const PLATFORM_PERMISSIONS = new Set([
+  "platform.org.read", "platform.org.access", "platform.billing.manage",
+  "platform.support.read", "platform.support.write", "platform.feature_flags.manage",
+  "impersonation.start", "impersonation.end",
+])
+
+/** A read-side UI probe; never substitutes for the owning service's gate. */
+export async function hasAnyPlatformPermission(permissions: string[]) {
+  if (permissions.length === 0 || permissions.some(permission => !PLATFORM_PERMISSIONS.has(permission))) {
+    throw new Error("Invalid platform permission")
+  }
+  const { user } = await requireAuth()
+  return isPlatformAdminId(user.id, user.email ?? undefined) ||
+    await hasAnyPermission(permissions, { userId: user.id })
+}
+
+/** Bind global service access to the authenticated actor, without tenant grants. */
+export async function requireAnyPlatformPermission(permissions: string[]) {
+  if (permissions.length === 0 || permissions.some(permission => !PLATFORM_PERMISSIONS.has(permission))) {
+    throw new Error("Invalid platform permission")
+  }
+  const { user } = await requireAuth()
+  if (!isPlatformAdminId(user.id, user.email ?? undefined)) {
+    await requireAnyPermission(permissions, { userId: user.id })
+  }
+  return user
+}
 
 export type PlatformRoleKey =
   | "platform_super_admin"
@@ -88,6 +117,7 @@ export async function getCurrentPlatformAccess(): Promise<PlatformAccessState> {
 }
 
 export async function listPlatformOrganizations(filters: PlatformOrganizationFilters = {}) {
+  await requireAnyPlatformPermission(["platform.org.read", "platform.support.read", "platform.feature_flags.manage"])
   const supabase = createServiceSupabaseClient()
   const trimmedQuery = filters.query?.trim()
   const trimmedStatus = filters.status?.trim()
@@ -154,6 +184,8 @@ export async function setPlatformOrganizationStatus(input: {
   actorUserId: string
   reason?: string | null
 }) {
+  const actor = await requireAnyPlatformPermission(["platform.billing.manage", "platform.support.write"])
+  if (actor.id !== input.actorUserId) throw new Error("Platform actor mismatch")
   const supabase = createServiceSupabaseClient()
   const { data: existing, error: existingError } = await supabase
     .from("orgs")

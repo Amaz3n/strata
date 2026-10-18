@@ -1,3 +1,4 @@
+import type { BusinessProfile } from "@/lib/business-profile"
 import type { ProductTier, ProjectPosture } from "@/lib/product-tier"
 
 /**
@@ -55,6 +56,9 @@ const TERMS = {
 export type TermKey = keyof (typeof TERMS)["residential"]
 export type TerminologyPosture = ProjectPosture | ProductTier
 
-export function terminology(posture: TerminologyPosture) {
-  return TERMS[posture]
+export function terminology(posture: TerminologyPosture, profile?: BusinessProfile) {
+  const base = TERMS[posture]
+  return profile?.kind === "trade"
+    ? { ...base, project: "Job", projects: "Jobs", owner: "Customer", owners: "Customers", ownerPortal: "Customer portal", fee: "Markup", vendors: "Suppliers", vendor: "Supplier" }
+    : base
 }

@@ -1,0 +1,5 @@
+1..4
+ok 1 - public clients cannot derive private correction pairs
+ok 2 - correction pair derivation retains INVOKER authority
+ok 3 - replacement draft helper is private
+ok 4 - replacement draft helper retains INVOKER authority

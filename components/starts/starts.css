@@ -40,8 +40,10 @@
   background: color-mix(in oklab, var(--foreground) 2%, transparent);
 }
 
+/* A past week recedes by surface, not by opacity: fading the column took its
+   labels and cards under 4.5:1 contrast. */
 .lane-column[data-past="true"] {
-  opacity: 0.55;
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
 }
 
 .lane-column[data-current="true"] {

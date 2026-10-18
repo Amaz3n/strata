@@ -1,4 +1,16 @@
-import { createHmac, randomBytes } from "crypto"
+import { z } from "zod"
+import { resolveSigningRequestToken } from "@/lib/esign/signing-tokens"
+import { assertElectronicSignatureConsent } from "@/lib/esign/consent"
+import { createEstimateEvidenceManifest } from "@/lib/esign/estimate-evidence"
+import { validateSignaturePng } from "@/lib/esign/field-values"
+import { requireSigningAccess } from "@/lib/esign/access-code"
+import { SignatureEmail } from "@/lib/emails/signature-email"
+import { issueSigningLinkForRequest, deliverSigningInvitation } from "@/lib/services/signature-delivery"
+import { authorizeEstimateDocumentWrite } from "./estimate-document-authorization"
+import { assertEstimateIssuable } from "./estimate-issuance"
+import { proposalDocumentLabel } from "@/lib/precon/proposal-documents"
+import { normalizeEstimateCommercial, estimateBuilderFeeCents, estimateLineNotes, estimateDocumentTerms, estimateCommercialIssues, estimatePriceRange, type EstimateCommercial } from "@/lib/financials/estimate-commercial"
+import { createHmac, createHash, randomBytes, randomUUID } from "crypto"
 
 import {
   estimateLineAmountCents,
@@ -12,7 +24,6 @@ import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
 import { EstimateEmail } from "@/lib/emails/estimate-email"
-import { SignatureEmail } from "@/lib/emails/signature-email"
 import { ENVELOPE_EVENT_TYPES, buildUnifiedSigningUrl } from "@/lib/esign/unified-contracts"
 import { renderEstimatePdf } from "@/lib/pdfs/estimate"
 import { generateExecutedPdf, type ESignAuditTrailItem } from "@/lib/pdfs/esign"
@@ -210,25 +221,32 @@ async function addComment(
 
 /**
  * Mints a fresh portal token for an estimate and returns the shareable review URL.
- * Rotating the token invalidates any previously shared link.
+ * Existing links remain valid unless the caller explicitly requests replacement.
  */
-export async function getEstimateShareLink({ estimateId, orgId }: { estimateId: string; orgId?: string }) {
+export async function getEstimateShareLink({ estimateId, orgId, revokeExisting = false }: { estimateId: string; orgId?: string; revokeExisting?: boolean }) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { data: estimate, error } = await supabase.from("estimates")
+    .select("id, org_id, status, sent_at, updated_at, is_current_version, client_signed_at, executed_at, total_cents, metadata, prospect_id, items:estimate_items(id,metadata)")
+    .eq("org_id", resolvedOrgId).eq("id", estimateId).single()
+  if (error || !estimate) throw new Error("Estimate not found")
+  const { service } = await assertEstimateIssuable(estimate, resolvedOrgId)
   const { token, tokenHash } = mintToken()
-
-  const { data, error } = await supabase
-    .from("estimates")
-    .update({ token_hash: tokenHash })
-    .eq("id", estimateId)
-    .eq("org_id", resolvedOrgId)
-    .select("id")
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to generate review link: ${error?.message ?? "estimate not found"}`)
-  }
-
+  const issued = await service.rpc("issue_estimate_review_link", {
+    p_org_id: resolvedOrgId, p_estimate_id: estimateId, p_token_hash: tokenHash,
+    p_expected_updated_at: estimate.updated_at, p_revoke_existing: revokeExisting,
+  })
+  if (issued.error) throw new Error(issued.error.message)
   return { token, url: `${appUrl()}/e/${token}` }
+}
+
+/** Existing legacy links and separately issued review capabilities remain valid until explicitly revoked. */
+async function estimateIdForReviewToken(supabase: ServiceClient, tokenHash: string): Promise<string> {
+  const legacy = await supabase.from("estimates").select("id").eq("token_hash", tokenHash).maybeSingle()
+  if (legacy.error) throw new Error("Unable to verify this review link.")
+  if (legacy.data) return legacy.data.id
+  const link = await supabase.from("estimate_review_links").select("estimate_id").eq("token_hash", tokenHash).maybeSingle()
+  if (link.error) throw new Error("Unable to verify this review link.")
+  return link.data?.estimate_id ?? "00000000-0000-0000-0000-000000000000"
 }
 
 /**
@@ -249,7 +267,7 @@ export async function sendEstimate({
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      "id, org_id, prospect_id, title, status, total_cents, valid_until, version_group_id, recipient_contact_id, metadata, project:projects(name), prospect:prospects(name, prospect_contacts(full_name, email, is_primary)), recipient:contacts(full_name, email)",
+      "id, org_id, prospect_id, title, status, sent_at, updated_at, is_current_version, client_signed_at, executed_at, total_cents, valid_until, version_group_id, recipient_contact_id, metadata, items:estimate_items(id,metadata), project:projects(name), prospect:prospects(name, prospect_contacts(full_name, email, is_primary)), recipient:contacts(full_name, email)",
     )
     .eq("id", estimateId)
     .eq("org_id", resolvedOrgId)
@@ -259,6 +277,7 @@ export async function sendEstimate({
     throw new Error(`Estimate not found: ${error?.message ?? "missing"}`)
   }
 
+  const { service } = await assertEstimateIssuable(estimate, resolvedOrgId)
   const recipient = resolveEstimateRecipient(estimate)
   const recipientEmail = recipient.email?.trim()
   if (!recipientEmail) {
@@ -268,19 +287,16 @@ export async function sendEstimate({
   const { token, tokenHash } = mintToken()
   const reviewUrl = `${appUrl()}/e/${token}`
 
-  const { error: updateError } = await supabase
-    .from("estimates")
-    .update({ token_hash: tokenHash, status: "sent", sent_at: new Date().toISOString() })
-    .eq("id", estimateId)
-    .eq("org_id", resolvedOrgId)
-
-  if (updateError) {
-    throw new Error(`Failed to mark estimate as sent: ${updateError.message}`)
-  }
+  const { error: issueError } = await service.rpc("issue_estimate_review_link", {
+    p_org_id: resolvedOrgId, p_estimate_id: estimateId, p_token_hash: tokenHash,
+    p_expected_updated_at: estimate.updated_at, p_revoke_existing: false,
+  })
+  if (issueError) throw new Error(`Failed to issue document: ${issueError.message}`)
 
   const branding = await getOrgBranding(resolvedOrgId, supabase)
   const html = await renderEmailTemplate(
     EstimateEmail({
+      documentKind: normalizeEstimateCommercial(estimate.metadata).purpose === "budget" ? "proposal" : "agreement",
       estimateTitle: estimate.title,
       reviewLink: reviewUrl,
       orgName: branding.name,
@@ -297,7 +313,7 @@ export async function sendEstimate({
 
   const emailSent = await sendEmail({
     to: [recipientEmail],
-    subject: `${branding.name ?? "Your builder"} sent you an estimate: ${estimate.title}`,
+    subject: `${branding.name ?? "Your builder"} sent you ${normalizeEstimateCommercial(estimate.metadata).purpose === "budget" ? "a proposal" : "an agreement"}: ${estimate.title}`,
     html,
     from: getOrgSenderEmail(branding.slug, branding.name),
   })
@@ -322,7 +338,8 @@ export async function sendEstimate({
     payload: { title: estimate.title, recipient_email: recipientEmail, email_sent: emailSent },
   })
 
-  if ((estimate as any).prospect_id) {
+  // A budget out for review puts the deal with the client just as an agreement does.
+  if ((estimate as any).prospect_id && normalizeEstimateCommercial(estimate.metadata).purpose !== "preconstruction_agreement") {
     await supabase
       .from("prospects")
       .update({ status: "estimate_sent", updated_at: new Date().toISOString() })
@@ -411,6 +428,7 @@ export async function listEstimateComments(estimateId: string, orgId?: string): 
 // ---------------------------------------------------------------------------
 
 export type EstimatePortalData = {
+  precon?: EstimateCommercial
   id: string
   org_id: string
   title: string
@@ -457,9 +475,15 @@ export type EstimatePortalData = {
   photos: EstimatePhotoView[]
   /** Recorded once the client signs: which add-ons they accepted + the final total. */
   accepted_options: AcceptedOptions | null
+  /** A budget is presented as a range until the price is firm. */
+  price_range: { lowCents: number; highCents: number } | null
+  /** What the builder needs the client to decide before signing. */
+  questions: EstimateQuestion[]
   items: EstimatePortalLine[]
   comments: EstimateCommentDto[]
 }
+
+export type EstimateQuestion = { id: string; question: string; answer: string | null }
 
 export type EstimatePhotoView = {
   id: string
@@ -526,6 +550,7 @@ async function resolveEstimatePhotos(
 }
 
 type PortalExtras = {
+  questions?: EstimateQuestion[]
   photos?: EstimatePhotoView[]
   accentColor?: string | null
   fontFamily?: string | null
@@ -548,7 +573,7 @@ function mapEstimatePortalData(
       unit: it.unit,
       unit_cost_cents: it.unit_cost_cents,
       markup_pct: it.markup_pct,
-      notes: typeof it.metadata?.notes === "string" ? it.metadata.notes : null,
+      notes: estimateLineNotes(it.metadata),
       is_optional: it.metadata?.is_optional === true,
       is_allowance: it.metadata?.is_allowance === true,
       option_group: typeof it.metadata?.option_group === "string" ? it.metadata.option_group : null,
@@ -561,9 +586,13 @@ function mapEstimatePortalData(
       amount_cents: lineAmountCents(it),
     }))
 
+  const builderFee = estimateBuilderFeeCents(metadata)
+  if (builderFee) items.push({ id: `${estimate.id}-builder-fee`, item_type: "line", description: "Fixed builder fee", quantity: 1, unit: null, unit_cost_cents: builderFee, markup_pct: 0, amount_cents: builderFee, notes: null, is_optional: false, is_allowance: false, option_group: null, takeoff_condition_id: null })
+
   const acceptedOptions = (metadata.accepted_options as AcceptedOptions | null) ?? null
 
   return {
+    precon: normalizeEstimateCommercial(metadata),
     intro: typeof metadata.intro === "string" ? metadata.intro : null,
     tax_rate: Number(metadata.tax_rate ?? 0) || 0,
     contingency_percent: Number(metadata.contingency_percent ?? 0) || 0,
@@ -575,6 +604,8 @@ function mapEstimatePortalData(
     org_address: extras.orgAddress ?? null,
     photos: extras.photos ?? [],
     accepted_options: acceptedOptions,
+    price_range: estimatePriceRange(metadata),
+    questions: extras.questions ?? [],
     id: estimate.id,
     org_id: estimate.org_id,
     title: estimate.title,
@@ -586,7 +617,7 @@ function mapEstimatePortalData(
     issued_at: (estimate as any).created_at ?? null,
     valid_until: estimate.valid_until,
     summary: typeof metadata.summary === "string" ? metadata.summary : null,
-    terms: typeof metadata.terms === "string" ? metadata.terms : null,
+    terms: estimateDocumentTerms(metadata),
     recipient_name: resolveEstimateRecipient(estimate).name,
     recipient_email: resolveEstimateRecipient(estimate).email,
     project_name: (estimate as any).project?.name ?? (estimate as any).prospect?.name ?? null,
@@ -606,6 +637,89 @@ function mapEstimatePortalData(
   }
 }
 
+/** The deal's client questions, as the client sees them. Waived questions are the builder's to drop. */
+async function loadEstimateQuestions(
+  supabase: ServiceClient,
+  orgId: string,
+  prospectId: string | null,
+): Promise<EstimateQuestion[]> {
+  if (!prospectId) return []
+  const { data, error } = await supabase
+    .from("precon_decisions")
+    .select("id, title, status, resolution")
+    .eq("org_id", orgId)
+    .eq("prospect_id", prospectId)
+    .eq("kind", "client_decision")
+    .neq("status", "waived")
+    .order("created_at", { ascending: true })
+    .limit(50)
+  if (error) throw new Error(`Unable to load questions: ${error.message}`)
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    question: row.title as string,
+    answer: row.status === "resolved" ? ((row.resolution as string) || null) : null,
+  }))
+}
+
+/**
+ * The client answers a builder's question from the review link. The answer
+ * resolves the question for the builder, so a firm price can go out for signature.
+ */
+export async function answerEstimateQuestion(input: { token: string; questionId: string; answer: string }) {
+  const answer = z.string().trim().min(3, "Write a short answer.").max(2000).parse(input.answer)
+  const questionId = z.string().uuid().parse(input.questionId)
+  const supabase = createServiceSupabaseClient()
+  const { data: estimate, error } = await supabase
+    .from("estimates")
+    .select("id, org_id, prospect_id, status, is_current_version, version_group_id, metadata, prospect:prospects(prospect_contacts(full_name, email, is_primary)), recipient:contacts(full_name, email)")
+    .eq("id", await estimateIdForReviewToken(supabase, hashToken(input.token)))
+    .maybeSingle()
+  if (error) throw new Error("Unable to verify this review link.")
+  if (!estimate?.prospect_id || estimate.status !== "sent" || estimate.is_current_version === false)
+    throw new Error("This document is no longer open for answers.")
+  const { data: question, error: questionError } = await supabase
+    .from("precon_decisions")
+    .select("id, title, version")
+    .eq("org_id", estimate.org_id)
+    .eq("prospect_id", estimate.prospect_id)
+    .eq("id", questionId)
+    .eq("kind", "client_decision")
+    .eq("status", "open")
+    .maybeSingle()
+  if (questionError) throw new Error("Unable to load this question.")
+  if (!question) throw new Error("This question was already answered.")
+  const { data: updated, error: updateError } = await supabase
+    .from("precon_decisions")
+    .update({ status: "resolved", resolution: answer, version: question.version + 1 })
+    .eq("org_id", estimate.org_id)
+    .eq("id", question.id)
+    .eq("version", question.version)
+    .select("id")
+    .maybeSingle()
+  if (updateError) throw new Error("Unable to save your answer.")
+  if (!updated) throw new Error("This question changed. Reload the page and try again.")
+  const recipient = resolveEstimateRecipient(estimate)
+  await addComment(supabase, {
+    orgId: estimate.org_id,
+    estimateId: estimate.id,
+    versionGroupId: (estimate as any).version_group_id ?? null,
+    authorType: "client",
+    authorName: recipient.name,
+    authorEmail: recipient.email,
+    kind: "comment",
+    body: `${question.title}\n${answer}`,
+    metadata: { question_id: question.id },
+  })
+  await recordEvent({
+    orgId: estimate.org_id,
+    eventType: "precon_question_answered",
+    entityType: "prospect",
+    entityId: estimate.prospect_id,
+    payload: { question_id: question.id, title: question.title, estimate_id: estimate.id },
+  })
+  return { id: question.id }
+}
+
 /** Loads an estimate for the public portal by raw token, stamping first-view time. */
 export async function loadEstimateByToken(token: string): Promise<EstimatePortalData | null> {
   const supabase = createServiceSupabaseClient()
@@ -614,7 +728,7 @@ export async function loadEstimateByToken(token: string): Promise<EstimatePortal
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      `id, org_id, title, status, version, total_cents, subtotal_cents, tax_cents, valid_until, created_at, metadata,
+      `id, org_id, prospect_id, title, status, version, total_cents, subtotal_cents, tax_cents, valid_until, created_at, metadata,
        responded_at, decision_note, is_current_version, client_signed_at, builder_signed_at, executed_at,
        executed_file_id, signature_document_id, signature_data,
        items:estimate_items(id, item_type, description, quantity, unit, unit_cost_cents, markup_pct, sort_order, metadata),
@@ -623,7 +737,7 @@ export async function loadEstimateByToken(token: string): Promise<EstimatePortal
        org:orgs(name, logo_url),
        recipient:contacts(full_name, email)`,
     )
-    .eq("token_hash", tokenHash)
+    .eq("id", await estimateIdForReviewToken(supabase, tokenHash))
     .maybeSingle()
 
   if (error) {
@@ -651,7 +765,7 @@ export async function loadEstimateByToken(token: string): Promise<EstimatePortal
     }
   }
 
-  const [{ data: comments }, branding, photos] = await Promise.all([
+  const [{ data: comments }, branding, photos, questions] = await Promise.all([
     supabase
       .from("estimate_comments")
       .select("id, author_type, author_name, author_email, kind, body, created_at")
@@ -660,9 +774,11 @@ export async function loadEstimateByToken(token: string): Promise<EstimatePortal
       .order("created_at", { ascending: true }),
     getOrgBranding(estimate.org_id, supabase),
     resolveEstimatePhotos(supabase, estimate.org_id, estimate.metadata as Record<string, any> | null),
+    loadEstimateQuestions(supabase, estimate.org_id, estimate.prospect_id ?? null),
   ])
 
   return mapEstimatePortalData(estimate, (comments ?? []) as EstimateCommentDto[], {
+    questions,
     photos,
     accentColor: branding.estimateAccentColor,
     fontFamily: branding.estimateFont,
@@ -679,7 +795,7 @@ export async function loadEstimateByIdForPortal(input: {
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      `id, org_id, title, status, version, total_cents, subtotal_cents, tax_cents, valid_until, created_at, metadata,
+      `id, org_id, prospect_id, title, status, version, total_cents, subtotal_cents, tax_cents, valid_until, created_at, metadata,
        responded_at, decision_note, is_current_version, client_signed_at, builder_signed_at, executed_at,
        executed_file_id, signature_document_id, signature_data,
        items:estimate_items(id, item_type, description, quantity, unit, unit_cost_cents, markup_pct, sort_order, metadata),
@@ -697,7 +813,7 @@ export async function loadEstimateByIdForPortal(input: {
   }
   if (!estimate) return null
 
-  const [{ data: comments }, branding, photos] = await Promise.all([
+  const [{ data: comments }, branding, photos, questions] = await Promise.all([
     supabase
       .from("estimate_comments")
       .select("id, author_type, author_name, author_email, kind, body, created_at")
@@ -706,9 +822,11 @@ export async function loadEstimateByIdForPortal(input: {
       .order("created_at", { ascending: true }),
     getOrgBranding(estimate.org_id, supabase),
     resolveEstimatePhotos(supabase, estimate.org_id, estimate.metadata as Record<string, any> | null),
+    loadEstimateQuestions(supabase, estimate.org_id, estimate.prospect_id ?? null),
   ])
 
   return mapEstimatePortalData(estimate, (comments ?? []) as EstimateCommentDto[], {
+    questions,
     photos,
     accentColor: branding.estimateAccentColor,
     fontFamily: branding.estimateFont,
@@ -734,7 +852,7 @@ export async function renderEstimatePdfByToken(
        prospect:prospects(name, prospect_contacts(full_name, email, is_primary)),
        recipient:contacts(full_name, email)`,
     )
-    .eq("token_hash", tokenHash)
+    .eq("id", await estimateIdForReviewToken(supabase, tokenHash))
     .maybeSingle()
 
   if (error) throw new Error(`Database error: ${error.message}`)
@@ -795,9 +913,10 @@ export async function renderEstimatePdfByToken(
 
   const acceptedOptions = (metadata.accepted_options as AcceptedOptions | null) ?? null
   const isSigned = Boolean((estimate as any).client_signed_at || (estimate as any).builder_signed_at)
-  const totalForPdf = isSigned && acceptedOptions ? acceptedOptions.accepted_total_cents : estimate.total_cents
+  const hasAcceptedScope = isSigned || (estimate.status === "approved" && normalizeEstimateCommercial(metadata).purpose === "budget")
+  const totalForPdf = hasAcceptedScope && acceptedOptions ? acceptedOptions.accepted_total_cents : estimate.total_cents
   const taxForPdf =
-    isSigned && acceptedOptions
+    hasAcceptedScope && acceptedOptions
       ? (estimate.tax_cents ?? 0) + (acceptedOptions.optional_tax_cents ?? 0)
       : estimate.tax_cents
 
@@ -807,6 +926,7 @@ export async function renderEstimatePdfByToken(
     orgAddress: branding.address,
     accentColor: branding.estimateAccentColor,
     fontFamily: branding.estimateFont,
+    builderFeeCents: estimateBuilderFeeCents(metadata),
     estimateTitle: estimate.title,
     recipientName: pdfRecipient.name ?? undefined,
     recipientEmail: pdfRecipient.email ?? null,
@@ -814,10 +934,11 @@ export async function renderEstimatePdfByToken(
     issuedAt: (estimate as any).created_at ?? null,
     intro: typeof metadata.intro === "string" ? metadata.intro : null,
     summary: typeof metadata.summary === "string" ? metadata.summary : null,
-    terms: typeof metadata.terms === "string" ? metadata.terms : null,
+    terms: estimateDocumentTerms(metadata),
     pricingDisplay: normalizePricingDisplay(metadata.display?.pricing),
     acceptedOptionalIds: acceptedOptions?.ids ?? null,
-    hideUnacceptedOptionals: isSigned,
+    hideUnacceptedOptionals: hasAcceptedScope,
+    totalRange: estimatePriceRange(metadata),
     subtotalCents: estimate.subtotal_cents,
     taxCents: taxForPdf,
     totalCents: totalForPdf,
@@ -826,7 +947,7 @@ export async function renderEstimatePdfByToken(
     inclusions: typeof metadata.inclusions === "string" ? metadata.inclusions : null,
     exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : null,
     validUntil: estimate.valid_until,
-    documentLabel: signers ? ((estimate as any).executed_at ? "Executed Estimate" : "Client-Signed Estimate") : undefined,
+    documentLabel: signers ? ((estimate as any).executed_at ? "Executed agreement" : "Client-signed agreement") : proposalDocumentLabel(normalizeEstimateCommercial(estimate.metadata)),
     signers,
     lines: items,
   })
@@ -887,12 +1008,14 @@ async function generateExecutedEstimateArtifact({
   userId,
   estimate,
   signatureData,
+  execution,
 }: {
   supabase: ServiceClient
   orgId: string
   userId: string | null
   estimate: any
   signatureData: Record<string, any>
+  execution?: { envelopeId: string; documentId: string; revision: number; fileId: string; leaseToken: string; sourcePath: string; sourceHash?: string }
 }): Promise<{ fileId: string; documentId: string } | { skippedReason: string }> {
   const projectId = (estimate.project_id as string | null) ?? null
   const prospectId = (estimate.prospect_id as string | null) ?? null
@@ -908,13 +1031,29 @@ async function generateExecutedEstimateArtifact({
     const fileName = safePdfName(`executed-estimate-${estimate.title ?? estimate.id}.pdf`)
 
     const executedAccepted = (metadata.accepted_options as AcceptedOptions | null) ?? null
-    const basePdf = await renderEstimatePdf({
+    let frozenSourceHash: string | undefined
+    const nativeBase = async () => {
+      const source = await downloadFilesObject({ supabase, orgId, path: execution!.sourcePath })
+      frozenSourceHash = createHash("sha256").update(source).digest("hex")
+      if (execution!.sourceHash && frozenSourceHash !== execution!.sourceHash) throw new Error("Estimate source no longer matches the issued agreement")
+      const { PDFDocument } = await import("pdf-lib")
+      const pdf = await PDFDocument.load(source)
+      const page = pdf.addPage([612, 792])
+      page.drawText("Builder electronic signature", { x: 48, y: 736, size: 18 })
+      const image = await pdf.embedPng(builderSigner.signature_image)
+      const scale = Math.min(420 / image.width, 160 / image.height)
+      page.drawImage(image, { x: 48, y: 510, width: image.width * scale, height: image.height * scale })
+      page.drawText("Signer identity, consent and time follow in the completion certificate.", { x: 48, y: 480, size: 11 })
+      return Buffer.from(await pdf.save())
+    }
+    const basePdf = execution ? await nativeBase() : await renderEstimatePdf({
       orgName: branding.name ?? undefined,
       orgLogoUrl: branding.logoUrl,
       orgAddress: branding.address,
       accentColor: branding.estimateAccentColor,
       fontFamily: branding.estimateFont,
-      documentLabel: "Executed Estimate",
+      documentLabel: "Executed agreement",
+      builderFeeCents: estimateBuilderFeeCents(metadata),
       estimateTitle: estimate.title,
       recipientName: executedRecipient.name ?? clientSigner.signer_name ?? undefined,
       recipientEmail: executedRecipient.email ?? clientSigner.signer_email ?? null,
@@ -922,7 +1061,7 @@ async function generateExecutedEstimateArtifact({
       issuedAt: (estimate as any).created_at ?? null,
       intro: typeof metadata.intro === "string" ? metadata.intro : null,
       summary: typeof metadata.summary === "string" ? metadata.summary : null,
-      terms: typeof metadata.terms === "string" ? metadata.terms : branding.estimateTermsTemplate,
+      terms: estimateDocumentTerms(metadata, branding.estimateTermsTemplate),
       pricingDisplay: normalizePricingDisplay(metadata.display?.pricing),
       acceptedOptionalIds: executedAccepted?.ids ?? null,
       hideUnacceptedOptionals: true,
@@ -953,33 +1092,18 @@ async function generateExecutedEstimateArtifact({
       lines: estimateLinesToQuoteLines(estimate.items ?? []),
     })
 
-    // Append the e-sign certificate page (audit trail) so the executed estimate
-    // carries the same evidence as documents run through the signing engine.
-    // Best-effort: if certificate generation fails, fall back to the base PDF so
-    // execution still produces a valid (cert-less) executed file.
-    let pdf = basePdf
-    try {
-      pdf = Buffer.from(
-        await generateExecutedPdf({
-          pdfBytes: basePdf,
-          fields: [],
-          values: {},
-          auditTrail: buildEstimateAuditTrail(estimate, signatureData),
-        }),
-      )
-    } catch (certError) {
-      console.error(
-        `[generateExecutedEstimateArtifact] Failed to append signature certificate for estimate ${estimate.id}; using base PDF:`,
-        certError,
-      )
-    }
+    // Evidence is part of the executed artifact. Rendering failure is retryable.
+    const pdf = Buffer.from(await generateExecutedPdf({
+      pdfBytes: basePdf, fields: [], values: {},
+      auditTrail: buildEstimateAuditTrail(estimate, signatureData),
+    }))
 
     const storagePath = buildOrgScopedPath(
       orgId,
       contextType,
       contextId,
       "executed-estimates",
-      `${Date.now()}_${fileName}`,
+      execution ? `${execution.fileId}.pdf` : `${Date.now()}_${fileName}`,
     )
 
     await uploadFilesObject({
@@ -988,8 +1112,27 @@ async function generateExecutedEstimateArtifact({
       path: storagePath,
       bytes: pdf,
       contentType: "application/pdf",
-      upsert: false,
+      upsert: Boolean(execution),
     })
+
+    if (execution) {
+      const sourceHash = frozenSourceHash ?? createHash("sha256").update(basePdf).digest("hex")
+      const executedHash = createHash("sha256").update(pdf).digest("hex")
+      const evidenceManifest = createEstimateEvidenceManifest({ documentId: execution.documentId,
+        envelopeId: execution.envelopeId, revision: execution.revision, sourceHash, executedHash,
+        builder: builderSigner, earlierClient: clientSigner })
+      const { data: fileId, error } = await supabase.rpc("complete_esign_execution", {
+        p_org_id: orgId, p_envelope_id: execution.envelopeId, p_lease_token: execution.leaseToken,
+        p_artifact: { file_name: fileName, storage_path: storagePath, size_bytes: pdf.length,
+          metadata: { estimate_id: estimate.id, source_sha256: sourceHash, executed_sha256: executedHash,
+            evidence_manifest: evidenceManifest, audit_certificate: "appended_to_executed_pdf" },
+          signer: { signer_name: builderSigner.signer_name, signer_email: builderSigner.signer_email,
+            signer_ip: builderSigner.signer_ip, signed_at: builderSigner.signed_at,
+            signature_image: builderSigner.signature_image, consent_text: builderSigner.consent_text } },
+      })
+      if (error || !fileId) throw new Error(`Could not publish executed estimate: ${error?.message ?? "missing file"}`)
+      return { fileId, documentId: execution.documentId }
+    }
 
     const { data: file, error: fileError } = await supabase
       .from("files")
@@ -1124,30 +1267,20 @@ async function sendBuilderEstimateSigningEmail(input: {
   signerName: string
   signerEmail: string
   signingUrl: string
+  orgId: string
+  requestId: string
+  envelopeId: string
 }) {
-  const html = await renderEmailTemplate(
-    SignatureEmail({
-      documentTitle: input.estimate.title,
-      signingLink: input.signingUrl,
-      recipientName: input.signerName,
-      orgName: input.branding.name ?? null,
-      orgLogoUrl: input.branding.logoUrl ?? null,
-      eventLabel: "Estimate Countersignature",
-      headline: "Client signed estimate",
-      bodyText: `${input.estimate.title} has been signed by the client and is ready for your countersignature.`,
-      detailLabel: "Next Action",
-      detailText: "Review the client-signed estimate and sign electronically to fully execute it.",
-      buttonText: "Review and Sign",
-      previewText: `Countersign estimate: ${input.estimate.title}`,
-    }),
-  )
-
-  return sendEmail({
-    to: [input.signerEmail],
-    subject: `Countersign estimate: ${input.estimate.title}`,
-    html,
-    from: getOrgSenderEmail(input.branding.slug, input.branding.name),
-  })
+  const supabase = createServiceSupabaseClient()
+  const { error } = await supabase.rpc("queue_esign_recipients", { p_org_id: input.orgId, p_envelope_id: input.envelopeId })
+  if (error) throw new Error(`Could not queue builder signing invitation: ${error.message}`)
+  try {
+    await deliverSigningInvitation({ orgId: input.orgId, requestId: input.requestId })
+    return true
+  } catch {
+    // The outbox owns retries; the client signature remains durable.
+    return false
+  }
 }
 
 async function issueBuilderEstimateSigningEnvelope(input: {
@@ -1174,6 +1307,9 @@ async function issueBuilderEstimateSigningEnvelope(input: {
     throw new Error(`Estimate not found for signing envelope: ${error?.message ?? "missing"}`)
   }
 
+  if (estimate.status !== "client_signed" || !estimate.is_current_version || normalizeEstimateCommercial(estimate.metadata).purpose === "budget") {
+    throw new Error("This agreement is no longer awaiting builder signature.")
+  }
   const branding = await getOrgBranding(orgId, supabase)
   const metadata = (estimate.metadata as Record<string, any> | null) ?? {}
 
@@ -1209,26 +1345,13 @@ async function issueBuilderEstimateSigningEnvelope(input: {
             .maybeSingle()
         : { data: null }
 
-      const signingToken = randomBytes(32).toString("hex")
-      const signingUrl = buildUnifiedSigningUrl(signingToken)
+      const { url: signingUrl } = await issueSigningLinkForRequest(supabase, { orgId, requestId: existingRequest.id, markSent: true })
       const nowIso = new Date().toISOString()
-      const { error: refreshError } = await supabase
-        .from("document_signing_requests")
-        .update({
-          token_hash: hashSigningToken(signingToken),
-          status: existingRequest.status === "draft" ? "sent" : existingRequest.status,
-          sent_at: nowIso,
-        })
-        .eq("org_id", orgId)
-        .eq("id", existingRequest.id)
-
-      if (refreshError) {
-        throw new Error(`Failed to refresh builder signing request: ${refreshError.message}`)
-      }
 
       const signerEmail = String(existingRequest.sent_to_email)
       const signerName = existingRecipient?.name?.trim() || existingRecipient?.email?.trim() || signerEmail
       const emailSent = await sendBuilderEstimateSigningEmail({
+        orgId, requestId: existingRequest.id, envelopeId: existingEnvelope.id,
         estimate,
         branding,
         signerName,
@@ -1283,7 +1406,8 @@ async function issueBuilderEstimateSigningEnvelope(input: {
     orgAddress: branding.address,
     accentColor: branding.estimateAccentColor,
     fontFamily: branding.estimateFont,
-    documentLabel: "Client-Signed Estimate",
+    documentLabel: "Client-signed agreement",
+    builderFeeCents: estimateBuilderFeeCents(metadata),
     estimateTitle: estimate.title,
     recipientName: estimate.recipient?.full_name ?? clientSigner.signer_name ?? undefined,
     recipientEmail: estimate.recipient?.email ?? clientSigner.signer_email ?? null,
@@ -1291,7 +1415,7 @@ async function issueBuilderEstimateSigningEnvelope(input: {
     issuedAt: (estimate as any).created_at ?? null,
     intro: typeof metadata.intro === "string" ? metadata.intro : null,
     summary: typeof metadata.summary === "string" ? metadata.summary : null,
-    terms: typeof metadata.terms === "string" ? metadata.terms : branding.estimateTermsTemplate,
+    terms: estimateDocumentTerms(metadata, branding.estimateTermsTemplate),
     pricingDisplay: normalizePricingDisplay(metadata.display?.pricing),
     acceptedOptionalIds: builderAccepted?.ids ?? null,
     hideUnacceptedOptionals: true,
@@ -1377,6 +1501,7 @@ async function issueBuilderEstimateSigningEnvelope(input: {
         completion_event: "estimate.executed",
         unified_esign_phase: "2026-02-07.phase0",
         estimate_signature_data: signatureData,
+        esign_source: { storage_path: storagePath, sha256: createHash("sha256").update(sourcePdf).digest("hex"), file_id: file.id },
         envelope_recipients: [
           {
             type: "internal_user",
@@ -1519,6 +1644,7 @@ async function issueBuilderEstimateSigningEnvelope(input: {
   ])
 
   const emailSent = await sendBuilderEstimateSigningEmail({
+    orgId, requestId: request.id, envelopeId: envelope.id,
     estimate,
     branding,
     signerName: signer.name,
@@ -1559,142 +1685,13 @@ async function issueBuilderEstimateSigningEnvelope(input: {
   }
 }
 
-export async function countersignEstimate({
-  estimateId,
-  signerName,
-  orgId,
-}: {
+/** Kept for existing server-action callers; signatures require explicit signer consent. */
+export async function countersignEstimate(_input: {
   estimateId: string
   signerName?: string | null
   orgId?: string
-}) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-
-  const { data: estimate, error } = await supabase
-    .from("estimates")
-    .select(
-      `*, items:estimate_items(*),
-       project:projects(name),
-       prospect:prospects(name, prospect_contacts(full_name, email, is_primary)),
-       recipient:contacts(full_name, email)`,
-    )
-    .eq("org_id", resolvedOrgId)
-    .eq("id", estimateId)
-    .maybeSingle()
-
-  if (error || !estimate) {
-    throw new Error("Estimate not found")
-  }
-
-  if (estimate.executed_at || estimate.status === "executed") {
-    throw new Error("This estimate is already executed.")
-  }
-
-  if (!estimate.client_signed_at && estimate.status !== "client_signed") {
-    throw new Error("Client signature is required before builder countersignature.")
-  }
-
-  const actorName = signerName?.trim() || (await resolveActorName(supabase, userId)) || "Builder"
-  const nowIso = new Date().toISOString()
-  const signatureData = {
-    ...(((estimate as any).signature_data as Record<string, any> | null) ?? {}),
-    builder: {
-      signer_name: actorName,
-      signed_at: nowIso,
-      source: "builder_countersign",
-      user_id: userId,
-    },
-  }
-
-  const artifact = await generateExecutedEstimateArtifact({
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-    estimate,
-    signatureData,
-  })
-
-  const metadata = {
-    ...(((estimate as any).metadata as Record<string, any> | null) ?? {}),
-    estimate_execution: {
-      countersigned_at: nowIso,
-      artifact_skipped_reason: "skippedReason" in artifact ? artifact.skippedReason : null,
-    },
-  }
-
-  const update: Record<string, any> = {
-    status: "executed",
-    builder_signed_at: nowIso,
-    executed_at: nowIso,
-    signature_data: signatureData,
-    metadata,
-    updated_at: nowIso,
-  }
-
-  if ("fileId" in artifact) {
-    update.executed_file_id = artifact.fileId
-    update.signature_document_id = artifact.documentId
-  }
-
-  const { data: updated, error: updateError } = await supabase
-    .from("estimates")
-    .update(update)
-    .eq("org_id", resolvedOrgId)
-    .eq("id", estimateId)
-    .select("*")
-    .single()
-
-  if (updateError || !updated) {
-    throw new Error(`Failed to countersign estimate: ${updateError?.message}`)
-  }
-
-  if ((estimate as any).prospect_id) {
-    await supabase
-      .from("prospects")
-      .update({ status: "executed", updated_at: nowIso })
-      .eq("org_id", resolvedOrgId)
-      .eq("id", (estimate as any).prospect_id)
-      .in("status", [
-        "new",
-        "contacted",
-        "qualified",
-        "pricing",
-        "estimate_sent",
-        "changes_requested",
-        "client_approved",
-      ])
-  }
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "estimate_executed",
-    entityType: "estimate",
-    entityId: estimateId,
-    payload: {
-      title: estimate.title,
-      signer_name: actorName,
-      executed_file_id: "fileId" in artifact ? artifact.fileId : null,
-      signature_document_id: "fileId" in artifact ? artifact.documentId : null,
-      artifact_skipped_reason: "skippedReason" in artifact ? artifact.skippedReason : null,
-    },
-  })
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "update",
-    entityType: "estimate",
-    entityId: estimateId,
-    before: { status: estimate.status, signature_data: estimate.signature_data },
-    after: updated,
-  })
-
-  return {
-    estimate: updated,
-    executedFileId: "fileId" in artifact ? artifact.fileId : null,
-    signatureDocumentId: "fileId" in artifact ? artifact.documentId : null,
-    artifactSkippedReason: "skippedReason" in artifact ? artifact.skippedReason : null,
-  }
+}): Promise<{ estimate: any; executedFileId: string | null; signatureDocumentId: string | null; artifactSkippedReason: string | null }> {
+  throw new Error("Open builder signing to review the issued agreement, accept electronic signature consent, and sign. Direct countersigning is no longer supported.")
 }
 
 export async function getEstimateBuilderSigningLink({
@@ -1704,11 +1701,11 @@ export async function getEstimateBuilderSigningLink({
   estimateId: string
   orgId?: string
 }) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { service: supabase, orgId: resolvedOrgId, userId } = await authorizeEstimateDocumentWrite(estimateId, orgId)
 
   const { data: estimate, error: estimateError } = await supabase
     .from("estimates")
-    .select("id, org_id, title, status, client_signed_at, signature_data, signature_document_id, metadata")
+    .select("id, org_id, title, status, is_current_version, client_signed_at, signature_data, signature_document_id, metadata")
     .eq("org_id", resolvedOrgId)
     .eq("id", estimateId)
     .maybeSingle()
@@ -1716,7 +1713,7 @@ export async function getEstimateBuilderSigningLink({
   if (estimateError || !estimate) {
     throw new Error(`Estimate not found: ${estimateError?.message ?? "missing"}`)
   }
-  if (estimate.status !== "client_signed") {
+  if (estimate.status !== "client_signed" || !estimate.is_current_version) {
     throw new Error("Builder signing is only available after the client signs.")
   }
 
@@ -1782,21 +1779,8 @@ export async function getEstimateBuilderSigningLink({
     throw new Error("Builder signing request is no longer active.")
   }
 
-  const token = randomBytes(32).toString("hex")
+  const { url: signingUrl } = await issueSigningLinkForRequest(supabase, { orgId: resolvedOrgId, requestId: request.id, markSent: true })
   const nowIso = new Date().toISOString()
-  const { error: updateError } = await supabase
-    .from("document_signing_requests")
-    .update({
-      token_hash: hashSigningToken(token),
-      status: request.status === "draft" ? "sent" : request.status,
-      sent_at: nowIso,
-    })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", request.id)
-
-  if (updateError) {
-    throw new Error(`Failed to issue builder signing link: ${updateError.message}`)
-  }
 
   let emailSent: boolean | null = null
   if (request.sent_to_email) {
@@ -1812,11 +1796,12 @@ export async function getEstimateBuilderSigningLink({
     const signerEmail = String(request.sent_to_email)
     const signerName = recipient?.name?.trim() || recipient?.email?.trim() || signerEmail
     emailSent = await sendBuilderEstimateSigningEmail({
+      orgId: resolvedOrgId, requestId: request.id, envelopeId,
       estimate,
       branding,
       signerName,
       signerEmail,
-      signingUrl: buildUnifiedSigningUrl(token),
+      signingUrl: signingUrl,
     })
 
     const currentMetadata = ((estimate as any).metadata as Record<string, any> | null) ?? {}
@@ -1849,7 +1834,7 @@ export async function getEstimateBuilderSigningLink({
   })
 
   return {
-    url: buildUnifiedSigningUrl(token),
+    url: signingUrl,
     signingRequestId: request.id as string,
     signerEmail: (request.sent_to_email as string | null) ?? null,
   }
@@ -1929,7 +1914,7 @@ async function notifyBuilderOfClientResponse(input: {
     }
 
     const branding = await getOrgBranding(orgId, supabase)
-    const ctaLink = estimate.prospect_id ? `${appUrl()}/pipeline` : `${appUrl()}/estimates`
+    const ctaLink = estimate.prospect_id ? `${appUrl()}/pipeline/${estimate.prospect_id}` : `${appUrl()}/estimates`
     const html = await renderEmailTemplate(
       SignatureEmail({
         documentTitle: estimate.title,
@@ -1978,31 +1963,32 @@ export async function submitEstimateDecision(input: {
     .select(
       "id, org_id, prospect_id, title, status, valid_until, version_group_id, is_current_version, signature_data, metadata, total_cents, created_by, items:estimate_items(id, item_type, quantity, unit_cost_cents, markup_pct, metadata), recipient:contacts(full_name, email), prospect:prospects(name, owner_user_id)",
     )
-    .eq("token_hash", tokenHash)
+    .eq("id", await estimateIdForReviewToken(supabase, tokenHash))
     .maybeSingle()
 
   if (error) throw new Error(`Database error: ${error.message}`)
   if (!estimate) throw new Error("This estimate link is no longer valid.")
 
   // The link is sent to a known contact, so attribute the decision to them.
-  const recipient = (estimate as any).recipient as { full_name?: string; email?: string } | null
-  const name = recipient?.full_name?.trim() || "Client"
-  const email = recipient?.email?.trim() || null
+  const recipient = resolveEstimateRecipient(estimate)
+  const name = recipient.name?.trim() || "Client"
+  const email = recipient.email?.trim() || null
 
   if (!estimate.is_current_version) {
     throw new Error("A newer version of this estimate is available. Please use the latest link.")
   }
-  if (["client_signed", "executed", "converted_to_project"].includes(estimate.status)) {
+  if (["approved", "client_signed", "executed", "converted_to_project"].includes(estimate.status)) {
     throw new Error("This estimate has already been signed.")
   }
   if (estimate.valid_until && new Date(estimate.valid_until) < new Date()) {
     throw new Error("This estimate has expired. Please contact your builder for an updated copy.")
   }
 
+  const isBudget = normalizeEstimateCommercial(estimate.metadata).purpose === "budget"
   const nowIso = new Date().toISOString()
   const existingSignatureData = ((estimate as any).signature_data as Record<string, any> | null) ?? {}
   const update: Record<string, any> = {
-    status: input.decision === "approved" ? "client_signed" : input.decision,
+    status: input.decision === "approved" ? (isBudget ? "approved" : "client_signed") : input.decision,
     responded_at: nowIso,
     decision_note: input.note?.trim() || null,
     client_decision_name: name,
@@ -2011,7 +1997,7 @@ export async function submitEstimateDecision(input: {
   if (input.decision === "approved") {
     const signature = input.signature
     const signerName = signature?.signer_name?.trim()
-    if (!signature?.consent_accepted || !signerName) {
+    if (!isBudget && (!signature?.consent_accepted || !signerName)) {
       throw new Error("Please sign and accept the estimate before approving.")
     }
 
@@ -2031,10 +2017,16 @@ export async function submitEstimateDecision(input: {
       input.selected_optional_ids ?? [],
       taxRate,
     )
+    if (!isBudget && estimate.metadata?.precon) {
+      const issues = estimateCommercialIssues(normalizeEstimateCommercial(estimate.metadata), { totalCents: accepted.accepted_total_cents, hasAllowances: estimate.items?.some((item: any) => item.metadata?.is_allowance) })
+      if (issues.length) throw new Error(issues.join(" "))
+    }
     const existingMetadata = ((estimate as any).metadata as Record<string, any> | null) ?? {}
     update.metadata = { ...existingMetadata, accepted_options: accepted }
 
     update.approved_at = nowIso
+    if (!isBudget && signature) {
+    await resolveEstimateBuilderSigner({ supabase, orgId: estimate.org_id, estimate })
     update.client_signed_at = nowIso
     update.signature_data = {
       ...existingSignatureData,
@@ -2050,6 +2042,7 @@ export async function submitEstimateDecision(input: {
         source: "estimate_portal",
       },
     }
+    }
   }
 
   // Precondition on status so a concurrent decision (double-click, two tabs)
@@ -2059,7 +2052,8 @@ export async function submitEstimateDecision(input: {
     .update(update)
     .eq("id", estimate.id)
     .eq("org_id", estimate.org_id)
-    .not("status", "in", '("client_signed","executed","converted_to_project")')
+    .not("status", "in", '("approved","client_signed","executed","converted_to_project")')
+    .eq("is_current_version", true)
     .select("id")
 
   if (updateError) {
@@ -2075,15 +2069,22 @@ export async function submitEstimateDecision(input: {
 
   // Route the builder countersignature through the same unified e-sign backend
   // used by the Signatures workspace.
-  if (input.decision === "approved") {
+  if (input.decision === "approved" && !isBudget) {
+    try {
     builderSigningResult = await issueBuilderEstimateSigningEnvelope({
       supabase,
       orgId: estimate.org_id,
       estimateId: estimate.id,
       signatureData: update.signature_data as Record<string, any>,
     })
+    } catch (deliveryError) {
+      // The client signature is durable. Builder signing can be recovered from
+      // Open builder signing, which idempotently creates the missing envelope.
+      console.error("Estimate signed; builder signing delivery requires retry", { estimateId: estimate.id, deliveryError })
+    }
   }
 
+  try {
   await addComment(supabase, {
     orgId: estimate.org_id,
     estimateId: estimate.id,
@@ -2104,13 +2105,13 @@ export async function submitEstimateDecision(input: {
 
   await recordEvent({
     orgId: estimate.org_id,
-    eventType: input.decision === "approved" ? "estimate_client_signed" : `estimate_${input.decision}`,
+    eventType: input.decision === "approved" ? (isBudget ? "estimate_budget_approved" : "estimate_client_signed") : `estimate_${input.decision}`,
     entityType: "estimate",
     entityId: estimate.id,
     payload: { title: estimate.title, decision: input.decision, by: name },
   })
 
-  if (input.decision === "approved" && (estimate as any).prospect_id) {
+  if (input.decision === "approved" && normalizeEstimateCommercial(estimate.metadata).purpose === "construction_agreement" && (estimate as any).prospect_id) {
     await supabase
       .from("prospects")
       .update({ status: "client_approved", updated_at: nowIso })
@@ -2121,7 +2122,7 @@ export async function submitEstimateDecision(input: {
 
   // Reflect a change request on the prospect row so the pipeline no longer shows
   // "Estimate sent" once the client has come back with edits.
-  if (input.decision === "changes_requested" && (estimate as any).prospect_id) {
+  if (input.decision === "changes_requested" && (estimate as any).prospect_id && normalizeEstimateCommercial(estimate.metadata).purpose !== "preconstruction_agreement") {
     await supabase
       .from("prospects")
       .update({ status: "changes_requested", updated_at: nowIso })
@@ -2152,6 +2153,10 @@ export async function submitEstimateDecision(input: {
     source: "client_portal",
   })
 
+  } catch (activityError) {
+    console.error("Estimate decision saved; activity notification failed", { estimateId: estimate.id, activityError })
+  }
+
   return { status: update.status }
 }
 
@@ -2167,19 +2172,26 @@ export async function executeEstimateFromEnvelopeExecution(input: {
   signatureImage?: string | null
   signatureText?: string | null
   consentText?: string | null
+  signedAt?: string
 }) {
   const supabase = createServiceSupabaseClient()
-  const nowIso = new Date().toISOString()
 
   const { data: estimate, error } = await supabase
     .from("estimates")
-    .select("id, org_id, prospect_id, status, title, signature_data, metadata")
+    .select("id, org_id, prospect_id, status, title, executed_at, signature_data, metadata, is_current_version, signature_document_id")
     .eq("org_id", input.orgId)
     .eq("id", input.estimateId)
     .maybeSingle()
 
   if (error || !estimate) {
     throw new Error(`Failed to load estimate for execution sync: ${error?.message ?? "missing"}`)
+  }
+
+  const nowIso = input.signedAt ?? estimate.executed_at ?? new Date().toISOString()
+  if (estimate.status === "executed" && estimate.signature_document_id === input.documentId && estimate.metadata?.estimate_execution?.effects_completed === true) return estimate
+  if (!["client_signed", "executed"].includes(estimate.status) || !estimate.is_current_version ||
+      estimate.signature_document_id !== input.documentId || normalizeEstimateCommercial(estimate.metadata).purpose === "budget") {
+    throw new Error("This signing request no longer belongs to the current construction agreement.")
   }
 
   const existingSignatureData = ((estimate as any).signature_data as Record<string, any> | null) ?? {}
@@ -2228,6 +2240,8 @@ export async function executeEstimateFromEnvelopeExecution(input: {
     })
     .eq("org_id", input.orgId)
     .eq("id", input.estimateId)
+    .in("status", ["client_signed", "executed"])
+    .eq("is_current_version", true)
     .select("*")
     .single()
 
@@ -2235,8 +2249,8 @@ export async function executeEstimateFromEnvelopeExecution(input: {
     throw new Error(`Failed to mark estimate executed: ${updateError?.message}`)
   }
 
-  if ((estimate as any).prospect_id) {
-    await supabase
+  if ((estimate as any).prospect_id && normalizeEstimateCommercial(estimate.metadata).purpose === "construction_agreement") {
+    const { error: prospectError } = await supabase
       .from("prospects")
       .update({ status: "executed", updated_at: nowIso })
       .eq("org_id", input.orgId)
@@ -2250,6 +2264,7 @@ export async function executeEstimateFromEnvelopeExecution(input: {
         "changes_requested",
         "client_approved",
       ])
+    if (prospectError) throw new Error(`Could not synchronize executed estimate: ${prospectError.message}`)
   }
 
   await recordEvent({
@@ -2278,6 +2293,10 @@ export async function executeEstimateFromEnvelopeExecution(input: {
     source: "unified_esign",
   })
 
+  const { error: completionError } = await supabase.from("estimates")
+    .update({ metadata: { ...metadata, estimate_execution: { ...metadata.estimate_execution, effects_completed: true } } })
+    .eq("org_id", input.orgId).eq("id", input.estimateId)
+  if (completionError) throw new Error(`Could not complete estimate execution effects: ${completionError.message}`)
   return updated
 }
 
@@ -2291,36 +2310,33 @@ export async function submitEstimateBuilderSignatureBySigningToken(input: {
   signerIp?: string | null
 }) {
   if (!input.token) throw new Error("Missing signing token")
-  const signerName = input.signerName.trim()
-  const signerEmail = input.signerEmail?.trim()
-  if (!signerName) throw new Error("Signer name is required")
-  if (!signerEmail) throw new Error("Signer email is required")
-  if (!input.signatureImage) throw new Error("Signature is required")
-  if (!input.consentText?.trim()) throw new Error("Consent text is required")
-
   const supabase = createServiceSupabaseClient()
   const tokenHash = hashSigningToken(input.token)
   const now = new Date()
   const nowIso = now.toISOString()
 
-  const { data: signingRequest, error } = await supabase
-    .from("document_signing_requests")
-    .select(
-      `*,
-       document:documents(id, org_id, project_id, prospect_id, title, document_type, source_file_id, executed_file_id, source_entity_type, source_entity_id, created_by, metadata)`,
-    )
-    .eq("token_hash", tokenHash)
-    .maybeSingle()
+  const { data: resolvedRequest, error } = await resolveSigningRequestToken(supabase, input.token,
+    `*, document:documents(id, org_id, project_id, prospect_id, title, document_type, source_file_id, executed_file_id, source_entity_type, source_entity_id, created_by, metadata)`)
+  const signingRequest = resolvedRequest as any
 
   if (error || !signingRequest || !signingRequest.document) {
     throw new Error(`Signing request not found: ${error?.message ?? "Invalid link"}`)
   }
-  if (signingRequest.expires_at && new Date(signingRequest.expires_at) < now) {
-    throw new Error("Signing link has expired")
+  await requireSigningAccess(signingRequest)
+  const finishAccepted = async () => {
+    try { return { ...(await finalizeEstimateBuilderSignature({ orgId: signingRequest.org_id, requestId: signingRequest.id })), processing: false } }
+    catch { return { success: true, processing: true, estimate: null, executedFileId: null } }
   }
-  if (signingRequest.status === "signed") {
-    throw new Error("This estimate has already been signed.")
-  }
+  if (signingRequest.status === "signed") return finishAccepted()
+  if (signingRequest.expires_at && new Date(signingRequest.expires_at) < now) throw new Error("Signing link has expired")
+  const signerName = input.signerName.trim()
+  const signerEmail = input.signerEmail?.trim()
+  if (!signerName) throw new Error("Signer name is required")
+  if (!signerEmail) throw new Error("Signer email is required")
+  const signatureImage = await validateSignaturePng(input.signatureImage)
+  assertElectronicSignatureConsent(input.consentText)
+  if (signerName.length > 300 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signerEmail)) throw new Error("Enter a valid signer name and email")
+
   if (signingRequest.status === "voided" || signingRequest.status === "expired") {
     throw new Error("Signing request is no longer valid")
   }
@@ -2355,59 +2371,42 @@ export async function submitEstimateBuilderSignatureBySigningToken(input: {
   if (estimate.status === "executed" || estimate.executed_at) {
     throw new Error("This estimate is already executed.")
   }
-  if (estimate.status !== "client_signed") {
+  if (estimate.status !== "client_signed" || !estimate.is_current_version || normalizeEstimateCommercial(estimate.metadata).purpose === "budget") {
     throw new Error("Builder signing is only available after the client signs.")
   }
 
   const envelopeId = signingRequest.envelope_id ?? signingRequest.group_id ?? signingRequest.id
   const signerRole = signingRequest.signer_role ?? "builder"
-  const existingSignatureData = ((estimate as any).signature_data as Record<string, any> | null) ?? {}
-  const signatureData = {
-    ...existingSignatureData,
-    builder: {
-      signer_name: signerName,
-      signer_email: signerEmail,
-      signature_text: input.signatureText?.trim() || signerName,
-      signature_image: input.signatureImage,
-      consent_text: input.consentText.trim(),
-      consent_accepted: true,
-      signed_at: nowIso,
-      signer_ip: input.signerIp ?? null,
-      source: "estimate_builder_portal",
-      document_id: signingRequest.document_id,
-      envelope_id: envelopeId,
-    },
-  }
-
-  const artifact = await generateExecutedEstimateArtifact({
-    supabase,
-    orgId: signingRequest.org_id,
-    userId: signingRequest.created_by ?? document.created_by ?? null,
-    estimate,
-    signatureData,
-  })
-  if (!("fileId" in artifact)) {
-    throw new Error(artifact.skippedReason)
-  }
-
-  const { error: insertError } = await supabase.from("document_signatures").insert({
-    org_id: signingRequest.org_id,
-    signing_request_id: signingRequest.id,
-    document_id: signingRequest.document_id,
-    revision: signingRequest.revision,
-    signer_name: signerName,
-    signer_email: signerEmail,
-    signer_ip: input.signerIp ?? null,
-    consent_text: input.consentText.trim(),
-    values: {
+  const { data: sourceFile, error: sourceError } = await supabase.from("files").select("storage_path")
+    .eq("org_id", signingRequest.org_id).eq("id", document.source_file_id).single()
+  if (sourceError || !sourceFile) throw new Error("Issued agreement source is unavailable")
+  const sourceBytes = await downloadFilesObject({ supabase, orgId: signingRequest.org_id,
+    path: document.metadata?.esign_source?.storage_path ?? sourceFile.storage_path })
+  const sourceHash = createHash("sha256").update(sourceBytes).digest("hex")
+  if (document.metadata?.esign_source?.sha256 && document.metadata.esign_source.sha256 !== sourceHash) throw new Error("Issued agreement source changed")
+  await generateExecutedPdf({ pdfBytes: sourceBytes, fields: [], values: {}, auditTrail: [
+    { label: "Builder", value: signerName }, { label: "Email", value: signerEmail }, { label: "Consent", value: input.consentText },
+  ] })
+  const { error: insertError } = await supabase.rpc("record_document_signature_atomic", {
+    p_user_agent: null,
+    p_signed_at: nowIso,
+    p_org_id: signingRequest.org_id,
+    p_signing_request_id: signingRequest.id,
+    p_document_id: signingRequest.document_id,
+    p_revision: signingRequest.revision,
+    p_signer_name: signerName,
+    p_signer_email: signerEmail,
+    p_signer_ip: input.signerIp ?? null,
+    p_consent_text: input.consentText.trim(),
+    p_values: {
       estimate_builder_name: signerName,
       estimate_builder_email: signerEmail,
-      estimate_builder_signature: input.signatureImage,
+      estimate_builder_signature: signatureImage,
       estimate_builder_signed_at: nowIso,
     },
-    audit_data: {
+    p_audit_data: {
       consent_version: "esign-consent-2026-05-24",
-      consent_presented_at: nowIso,
+      consent_accepted_at: nowIso,
       signed_at: nowIso,
       signer_role: signerRole,
       signer_email_on_request: signingRequest.sent_to_email ?? null,
@@ -2426,79 +2425,62 @@ export async function submitEstimateBuilderSignatureBySigningToken(input: {
     throw new Error(`Failed to record signature: ${insertError.message}`)
   }
 
-  const { error: requestUpdateError } = await supabase
-    .from("document_signing_requests")
-    .update({
-      status: "signed",
-      signed_at: nowIso,
-      used_count: (signingRequest.used_count ?? 0) + 1,
-    })
-    .eq("id", signingRequest.id)
+  return finishAccepted()
+}
 
-  if (requestUpdateError) {
-    throw new Error(`Failed to update signing request: ${requestUpdateError.message}`)
+/** Resume only from durable signature evidence, never from retried browser input. */
+export async function finalizeEstimateBuilderSignature(input: { orgId: string; requestId: string }) {
+  const supabase = createServiceSupabaseClient()
+  const { data: request, error: requestError } = await supabase.from("document_signing_requests")
+    .select("*, document:documents(*)").eq("org_id", input.orgId).eq("id", input.requestId).single()
+  if (requestError || !request || request.status !== "signed") throw new Error("Recorded estimate signature not found")
+  const { data: signature, error: signatureError } = await supabase.from("document_signatures")
+    .select("*").eq("org_id", input.orgId).eq("signing_request_id", request.id).single()
+  if (signatureError || !signature || signature.audit_data?.source !== "estimate_native_builder_signing") {
+    throw new Error("Estimate signature evidence not found")
   }
-
-  await supabase
-    .from("documents")
-    .update({ status: "signed", executed_file_id: artifact.fileId, updated_at: nowIso })
-    .eq("id", signingRequest.document_id)
-
-  await supabase
-    .from("envelopes")
-    .update({ status: "executed", executed_at: nowIso, updated_at: nowIso })
-    .eq("org_id", signingRequest.org_id)
-    .eq("id", envelopeId)
-
-  await recordESignEvent({
-    supabase,
-    orgId: signingRequest.org_id,
-    eventType: ENVELOPE_EVENT_TYPES.recipientSigned,
-    envelopeId,
-    documentId: signingRequest.document_id,
-    payload: {
-      signing_request_id: signingRequest.id,
-      signer_role: signerRole,
-      signer_name: signerName,
-      signer_email_on_request: signingRequest.sent_to_email ?? null,
-      submitted_signer_email: signerEmail,
-      signer_ip: input.signerIp ?? null,
-      consent_text: input.consentText.trim(),
-      consent_version: "esign-consent-2026-05-24",
-      signed_at: nowIso,
-      source: "estimate_native_builder_signing",
-    },
-  })
-
-  await recordESignEvent({
-    supabase,
-    orgId: signingRequest.org_id,
-    eventType: ENVELOPE_EVENT_TYPES.executed,
-    envelopeId,
-    documentId: signingRequest.document_id,
-    payload: {
-      executed_file_id: artifact.fileId,
-      executed_at: nowIso,
-      estimate_id: estimateId,
-      source: "estimate_native_builder_signing",
-    },
-  })
-
-  const updated = await executeEstimateFromEnvelopeExecution({
-    orgId: signingRequest.org_id,
-    estimateId,
-    documentId: signingRequest.document_id,
-    envelopeId,
-    executedFileId: artifact.fileId,
-    signerName,
-    signerEmail,
-    signerIp: input.signerIp ?? null,
-    signatureImage: input.signatureImage,
-    signatureText: input.signatureText?.trim() || signerName,
-    consentText: input.consentText.trim(),
-  })
-
-  return { success: true, estimate: updated, executedFileId: artifact.fileId }
+  const document = request.document as any
+  const estimateId = document.source_entity_type === "estimate" ? document.source_entity_id : document.metadata?.estimate_id
+  const { data: estimate, error: estimateError } = await supabase.from("estimates")
+    .select("*, items:estimate_items(*), project:projects(name), prospect:prospects(name, prospect_contacts(full_name, email, is_primary)), recipient:contacts(full_name, email)")
+    .eq("org_id", input.orgId).eq("id", estimateId).single()
+  if (estimateError || !estimate) throw new Error("Estimate for recorded signature not found")
+  if (estimate.signature_document_id !== document.id || !estimate.is_current_version || !["client_signed", "executed"].includes(estimate.status)) {
+    throw new Error("Recorded signature no longer belongs to the current agreement")
+  }
+  const signedAt = signature.created_at
+  const signatureData = { ...(estimate.signature_data ?? {}),
+    client: document.metadata?.estimate_signature_data?.client ?? estimate.signature_data?.client ?? {}, builder: {
+    signature_id: signature.id, user_agent: signature.user_agent, consent_version: signature.audit_data?.consent_version,
+    signer_name: signature.signer_name, signer_email: signature.signer_email,
+    signer_ip: signature.signer_ip, signature_image: signature.values?.estimate_builder_signature,
+    signature_text: signature.signer_name, consent_text: signature.consent_text, consent_accepted: true,
+    signed_at: signedAt, source: "estimate_builder_portal", document_id: document.id, envelope_id: request.envelope_id,
+  } }
+  let executedFileId = document.executed_file_id as string | null
+  if (!executedFileId) {
+    const leaseToken = randomUUID()
+    const { data: execution, error: claimError } = await supabase.rpc("claim_esign_execution", {
+      p_org_id: input.orgId, p_envelope_id: request.envelope_id, p_lease_token: leaseToken,
+    })
+    if (claimError || !execution) throw new Error(claimError?.message ?? "Estimate execution is not ready")
+    const { data: sourceFile, error: sourceError } = await supabase.from("files").select("storage_path")
+      .eq("org_id", input.orgId).eq("id", document.source_file_id).single()
+    if (sourceError || !sourceFile) throw new Error("Issued estimate source is unavailable")
+    const artifact = await generateExecutedEstimateArtifact({ supabase, orgId: input.orgId,
+      userId: request.created_by ?? document.created_by ?? null, estimate, signatureData,
+      execution: { envelopeId: request.envelope_id, documentId: document.id, revision: request.revision, fileId: execution.file_id, leaseToken,
+        sourcePath: document.metadata?.esign_source?.storage_path ?? sourceFile.storage_path,
+        sourceHash: document.metadata?.esign_source?.sha256 } })
+    if (!("fileId" in artifact)) throw new Error(artifact.skippedReason)
+    executedFileId = artifact.fileId
+  }
+  const updated = await executeEstimateFromEnvelopeExecution({ orgId: input.orgId, estimateId,
+    documentId: document.id, envelopeId: request.envelope_id, executedFileId,
+    signerName: signature.signer_name, signerEmail: signature.signer_email,
+    signerIp: signature.signer_ip, signatureImage: signature.values?.estimate_builder_signature,
+    consentText: signature.consent_text, signedAt })
+  return { success: true, estimate: updated, executedFileId }
 }
 
 /** Client posts a comment from the portal (e.g. alongside a "request changes"). */
@@ -2519,7 +2501,7 @@ export async function addClientEstimateComment(input: {
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select("id, org_id, version_group_id, is_current_version")
-    .eq("token_hash", tokenHash)
+    .eq("id", await estimateIdForReviewToken(supabase, tokenHash))
     .maybeSingle()
 
   if (error) throw new Error(`Database error: ${error.message}`)
@@ -2610,7 +2592,7 @@ export async function loadTakeoffEvidenceByToken(
   const { data: estimate } = await supabase
     .from("estimates")
     .select("id, org_id, items:estimate_items(id, metadata)")
-    .eq("token_hash", tokenHash)
+    .eq("id", await estimateIdForReviewToken(supabase, tokenHash))
     .maybeSingle()
 
   if (!estimate) return null

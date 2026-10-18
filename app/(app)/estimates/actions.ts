@@ -1,6 +1,9 @@
 "use server"
 
+import { listEstimateTemplateRecords } from "@/lib/services/estimate-templates"
 import { revalidatePath } from "next/cache"
+
+import { freshDocumentSeed } from "@/lib/precon/proposal-documents"
 
 import { randomUUID } from "crypto"
 
@@ -9,9 +12,11 @@ import { requireOrgContext } from "@/lib/services/context"
 import { buildOrgScopedPath, createFilesDownloadUrl, uploadFilesObject } from "@/lib/storage/files-storage"
 import {
   createEstimate,
+  saveEstimateDraft,
   createEstimateVersion,
   duplicateEstimate,
   reviseEstimate,
+  withdrawSignedEstimateForRevision,
   updateEstimateStatus,
 } from "@/lib/services/estimates"
 import {
@@ -22,6 +27,7 @@ import {
   countersignEstimate,
   listEstimateComments,
 } from "@/lib/services/estimate-portal"
+import { normalizeEstimateCommercial, carryAcceptedBudgetScope } from "@/lib/financials/estimate-commercial"
 import { estimateInputSchema } from "@/lib/validation/estimates"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -108,19 +114,8 @@ export async function uploadEstimatePhotoAction(formData: FormData) {
 }
 
 export async function listEstimateTemplatesAction() {
-      const { supabase, orgId } = await requireOrgContext()
-      const { data, error } = await supabase
-        .from("estimate_templates")
-        .select("id, org_id, name, description, lines, is_default, created_at, updated_at")
-        .eq("org_id", orgId)
-        .order("created_at", { ascending: false })
-
-      if (error) {
-        console.error("Failed to list estimate templates", error.message)
-        return []
-      }
-
-      return data ?? []
+  const rows = await listEstimateTemplateRecords()
+  return rows.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "") || a.id.localeCompare(b.id))
 }
 
 export async function duplicateEstimateAction(estimateId: string) {
@@ -150,6 +145,11 @@ export async function sendEstimateAction(estimateId: string, message?: string) {
 
 export async function getEstimateShareLinkAction(estimateId: string) {
   return run(() => getEstimateShareLink({ estimateId }))
+}
+
+/** Explicitly replaces all client review links, including previously emailed links. */
+export async function replaceEstimateShareLinkAction(estimateId: string) {
+  return run(() => getEstimateShareLink({ estimateId, revokeExisting: true }))
 }
 
 export async function getEstimateBuilderSigningLinkAction(estimateId: string) {
@@ -222,9 +222,12 @@ export async function getEstimateForEditAction(estimateId: string) {
 
       return {
         id: data.id as string,
+        status: data.status as string,
+        updated_at: data.updated_at as string,
         title: (data.title as string) ?? "",
         version: (data.version as number) ?? 1,
         summary: typeof metadata.summary === "string" ? metadata.summary : "",
+        precon: normalizeEstimateCommercial(metadata),
         terms: typeof metadata.terms === "string" ? metadata.terms : "",
         intro: typeof metadata.intro === "string" ? metadata.intro : "",
         pricing_display: pricing_display as "itemized" | "subtotals" | "lump_sum",
@@ -234,12 +237,15 @@ export async function getEstimateForEditAction(estimateId: string) {
         recipient_contact_id: (data.recipient_contact_id as string | null) ?? null,
         recipient_name: (data.recipient as any)?.full_name ?? adHocRecipient?.name ?? null,
         recipient_email: (data.recipient as any)?.email ?? adHocRecipient?.email ?? null,
+        tax_rate: Number(metadata.tax_rate ?? 0),
         markup_percent: typeof metadata.markup_percent === "number" ? metadata.markup_percent : 0,
         contingency_percent: typeof metadata.contingency_percent === "number" ? metadata.contingency_percent : 0,
         inclusions: typeof metadata.inclusions === "string" ? metadata.inclusions : "",
         exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : "",
         lines: items.map((item: any) => ({
+          id: item.id as string,
           description: (item.description as string) ?? "",
+          unit: (item.unit as string | null) ?? undefined,
           quantity: (item.quantity as number) ?? 1,
           unit_cost_cents: (item.unit_cost_cents as number) ?? 0,
           markup_pct: (item.markup_pct as number) ?? 0,
@@ -274,5 +280,48 @@ export async function countersignEstimateAction(estimateId: string, signerName?:
         revalidatePath("/signatures")
       }
       return result
+  })
+}
+
+export async function withdrawSignedEstimateForRevisionAction(estimateId: string, reason: string) {
+  return run(async () => {
+    const revised = await withdrawSignedEstimateForRevision({ estimateId, reason })
+    revalidatePath("/estimates")
+    revalidatePath("/pipeline")
+    revalidatePath("/precon")
+    return revised
+  })
+}
+
+/** A reviewable draft derived from the exact options accepted on an approved budget. */
+export async function prepareConstructionAgreementDraftAction(estimateId: string) {
+  return run(async () => {
+    const { supabase, orgId } = await requireOrgContext()
+    const { data: source, error } = await supabase.from("estimates").select("id, status, metadata, is_current_version")
+      .eq("org_id", orgId).eq("id", estimateId).single()
+    if (error || !source || source.status !== "approved" || normalizeEstimateCommercial(source.metadata).purpose !== "budget" || !source.is_current_version) {
+      throw new Error("Choose a current approved proposal as the agreement basis.")
+    }
+    const initial = await getEstimateForEditAction(estimateId)
+    if (!initial.success) throw new Error("Unable to load the approved proposal")
+    const acceptedIds: string[] = source.metadata?.accepted_options?.ids ?? []
+    return {
+      ...freshDocumentSeed(initial.data),
+      title: `${initial.data.title} — Construction agreement`,
+      source_budget_estimate_id: estimateId,
+      precon: { ...initial.data.precon, purpose: "construction_agreement" as const },
+      lines: carryAcceptedBudgetScope(initial.data.lines, acceptedIds),
+    }
+  })
+}
+
+export async function saveEstimateDraftAction(estimateId: string, expectedUpdatedAt: string, input: unknown) {
+  return run(() => saveEstimateDraft({ estimateId, expectedUpdatedAt, input: estimateInputSchema.parse(input) }))
+}
+
+export async function getDealConversionReviewAction(prospectId: string) {
+  return run(async () => {
+    const { getProspectConversionReview } = await import("@/lib/services/precon-project-start")
+    return getProspectConversionReview(prospectId)
   })
 }

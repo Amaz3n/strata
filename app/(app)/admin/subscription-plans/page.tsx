@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -7,7 +8,8 @@ import { getPlans } from "@/lib/services/admin"
 
 
 async function PlansPageContent() {
-  await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.billing.manage"])
 
   const plans = await getPlans()
 
@@ -28,7 +30,17 @@ async function PlansPageContent() {
 
 export default function PlansPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="Subscription Plans"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "Subscription Plans" }
+      ]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <PlansPageContent />
     </Suspense>
   )

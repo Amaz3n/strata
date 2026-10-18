@@ -1,0 +1,27 @@
+require('../scripts/register-ts-node-test')
+const test=require('node:test'),assert=require('node:assert/strict')
+const {ORG,ACTOR,PROJECT,LOT,COMMUNITY,stubModule}=require('./support/starts-harness')
+const {warrantyTechQueueSchema,encodeWarrantyTechCursor,decodeWarrantyTechCursor}=require('../lib/warranty/tech-queue')
+const scope={orgId:ORG,actorId:ACTOR,userId:ACTOR,date:'2026-10-03'},row={id:LOT,window_start:'2026-10-03T10:00:00.123456+00:00'}
+test('technician cursor preserves microsecond precision and binds organization, viewer, tech and day',()=>{
+ const cursor=encodeWarrantyTechCursor(scope,row),decoded=decodeWarrantyTechCursor(cursor,scope)
+ assert.equal(decoded.window_start,row.window_start);assert.equal(decoded.id,LOT)
+ for(const key of ['orgId','actorId','userId','date'])assert.throws(()=>decodeWarrantyTechCursor(cursor,{...scope,[key]:key==='date'?'2026-10-04':COMMUNITY}),/Invalid warranty/)
+ for(const cursor of ['invalid', '*', 'x'.repeat(2049),Buffer.from(JSON.stringify({...scope,...row,version:1,extra:true})).toString('base64url')])assert.throws(()=>decodeWarrantyTechCursor(cursor,scope),/Invalid warranty/)
+ assert.equal(warrantyTechQueueSchema.parse({date:scope.date}).pageSize,100)
+ for(const value of [{date:'2026-02-30'},{date:scope.date,pageSize:0},{date:scope.date,pageSize:1.5},{date:scope.date,userId:'invalid'}])assert.equal(warrantyTechQueueSchema.safeParse(value).success,false)
+})
+test('mobile technician endpoint forwards the page cursor and rejects invalid input with HTTP 400',async()=>{
+ const calls=[],next=encodeWarrantyTechCursor(scope,row)
+ stubModule('@/lib/mobile/auth',{requireMobileOrg:async()=>({orgId:ORG,serviceContext:{orgId:ORG,userId:ACTOR}})})
+ stubModule('@/lib/services/context',{runWithServiceOrgContext:async(_ctx,work)=>work()})
+ stubModule('@/lib/services/warranty',{listWarrantyTechVisits:async(params,org)=>{calls.push({params,org});return {rows:[row],nextCursor:next}}})
+ delete require.cache[require.resolve('../app/api/mobile/v1/service/visits/route')]
+ const {GET}=require('../app/api/mobile/v1/service/visits/route')
+ const response=await GET(new Request(`https://local.invalid/api/mobile/v1/service/visits?date=${scope.date}&limit=25&cursor=${next}`))
+ assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store')
+ const body=await response.json();assert.equal(body.meta.next_cursor,next);assert.deepEqual(body.data,[row])
+ assert.equal(calls[0].params.cursor,next);assert.equal(calls[0].params.pageSize,25);assert.equal(calls[0].org,ORG)
+ for(const query of ['date=2026-02-30','date=2026-10-03&limit=101','date=2026-10-03&cursor=broken',`date=2026-10-04&cursor=${next}`])assert.equal((await GET(new Request(`https://local.invalid/api/mobile/v1/service/visits?${query}`))).status,400)
+ assert.equal(calls.length,1)
+})

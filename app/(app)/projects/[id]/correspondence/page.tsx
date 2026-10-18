@@ -1,4 +1,5 @@
 import { Suspense } from "react"
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -47,6 +48,7 @@ export default function CorrespondencePage({ params, searchParams }: Corresponde
 }
 
 async function CorrespondenceData({ params, searchParams }: CorrespondencePageProps) {
+  await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
   const filters = parseCorrespondenceSearchParams(id, query)
   const openEmailId = single(query.email)

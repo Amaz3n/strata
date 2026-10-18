@@ -1095,6 +1095,7 @@ export function FileViewer({
                 key={currentFile.id}
                 url={previewUrl}
                 fileId={currentFile.id}
+                revision={currentFile.storage_path || currentFile.updated_at}
                 fileName={currentFile.file_name}
                 zoom={pdfZoom}
                 rotation={pdfRotation}

@@ -1,0 +1,4 @@
+1..3
+ok 1 - replacement request validator is private
+ok 2 - replacement proposal guard retains INVOKER authority
+ok 3 - bounded replacement intent has room for its original economic witness

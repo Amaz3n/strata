@@ -1,0 +1,4 @@
+1..3
+ok 1 - exact quantity export remains private
+ok 2 - decimal export keeps INVOKER single-statement visibility
+ok 3 - previous capture remains server-only

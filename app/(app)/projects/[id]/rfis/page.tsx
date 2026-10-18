@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
@@ -15,9 +16,7 @@ interface ProjectRfisPageProps {
   searchParams: Promise<{ rfi?: string }>
 }
 
-export default async function ProjectRfisPage({ params, searchParams }: ProjectRfisPageProps) {
-  const [{ id }, query] = await Promise.all([params, searchParams])
-
+export default function ProjectRfisPage({ params, searchParams }: ProjectRfisPageProps) {
   return (
     <>
       <PageLayout
@@ -28,10 +27,17 @@ export default async function ProjectRfisPage({ params, searchParams }: ProjectR
         ]}
       />
       <Suspense fallback={<ProjectRfisFallback />}>
-        <ProjectRfisData id={id} initialRfiId={query.rfi} />
+        <ProjectRfisPageRoute params={params} searchParams={searchParams} />
       </Suspense>
     </>
   )
+}
+
+async function ProjectRfisPageRoute({ params, searchParams }: ProjectRfisPageProps) {
+  await connection()
+  const [{ id }, query] = await Promise.all([params, searchParams])
+
+  return <ProjectRfisData id={id} initialRfiId={query.rfi} />
 }
 
 function ProjectRfisFallback() {
@@ -68,7 +74,7 @@ async function ProjectRfisData({ id, initialRfiId }: { id: string; initialRfiId?
         { label: "RFIs" },
       ]}
     >
-      <RfisClient rfis={rfis} projects={[project]} companies={companies} contacts={contacts} initialRfiId={initialRfiId} />
+      <RfisClient key={project.id} rfis={rfis} projects={[project]} companies={companies} contacts={contacts} initialRfiId={initialRfiId} />
     </PageLayout>
   )
 }

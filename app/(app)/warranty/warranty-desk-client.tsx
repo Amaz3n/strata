@@ -1,6 +1,8 @@
 "use client"
 
 import Link from "next/link"
+import { warrantyQueueFilterHref } from "@/lib/warranty/desk-query"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useCallback, useMemo, useState, useTransition } from "react"
 import { AlertTriangle, CalendarClock, PhoneCall, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
@@ -17,8 +19,11 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-picker"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import { formatWarrantyVisitClock, resolveWarrantyTimeZone, warrantyLocalDate, zonedWallTimeToUtc } from "@/lib/services/warranty/visit-time"
+import { routingRecordFrom } from "@/lib/services/warranty/domain"
 import type {
   WarrantyBackchargeDTO, WarrantyCostSummaryRow, WarrantyDefectAnalysisRow, WarrantyServiceVisitDTO,
 } from "@/lib/services/warranty"
@@ -30,9 +35,11 @@ import {
   findOriginatingCommitmentsAction, generateWarrantyCourtesyInspectionsAction, getWarrantyRequestCostBasisAction,
   issueWarrantyBackchargeAction, resolveWarrantyBackchargeAction, scheduleWarrantyVisitAction,
   verifyWarrantyVisitAction,
+  rejectWarrantyVisitCompletionAction, searchWarrantyCompaniesAction, updateWarrantyRequestAction,
 } from "./actions"
+import { WarrantyRoutingRulesSheet } from "./warranty-routing-rules-sheet"
 
-type DeskRequest = WarrantyRequest & { project_name?: string | null; community_name?: string | null }
+type DeskRequest = WarrantyRequest & { project_name?: string | null; community_name?: string | null; time_zone?: string }
 type DispatchVisit = WarrantyServiceVisitDTO & { request?: Record<string, unknown> | null; project?: Record<string, unknown> | null }
 type CostBasisDraft = { label: string; amount: string }
 
@@ -56,10 +63,14 @@ const QUEUE_FILTERS = [
   { value: "awaiting_first_response", label: "Awaiting first contact" },
   { value: "first_response_breached", label: "First response overdue" },
   { value: "breached", label: "Resolution overdue" },
+  { value: "due_soon", label: "Resolution due soon" },
+  { value: "first_response_due_soon", label: "First response due soon" },
+  { value: "sent_back", label: "Sent back for rework" },
 ] as const
 
 const RESOLUTIONS = [
   { value: "recovered", label: "Recovered in full", destructive: false },
+  { value: "settled", label: "Settle for less", destructive: true },
   { value: "written_off", label: "Write off", destructive: true },
   { value: "waived", label: "Waive", destructive: true },
 ] as const
@@ -80,9 +91,17 @@ function draftTotalCents(rows: CostBasisDraft[]) {
 }
 
 export function WarrantyDeskClient({
+  initialTab = "queue", analyticsAvailable = true, dispatchDays, timeZone, initialSearch = "", initialSla = "all",
   requests: initialRequests, total, visits, pendingVerification: initialPendingVerification,
-  backcharges, defects, costs, technicians, companies,
+  backcharges, defects, costs, technicians, canReviewAccounting = false,
 }: {
+  dispatchDays: string[]
+  timeZone: string
+  initialSearch?: string
+  initialSla?: string
+  analyticsAvailable?: boolean
+  initialTab?: string
+  canReviewAccounting?: boolean
   requests: DeskRequest[]
   total: number
   visits: DispatchVisit[]
@@ -91,8 +110,9 @@ export function WarrantyDeskClient({
   defects: WarrantyDefectAnalysisRow[]
   costs: WarrantyCostSummaryRow[]
   technicians: Array<{ id: string; name: string }>
-  companies: Array<{ id: string; name: string }>
 }) {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [requests, setRequests] = useState(initialRequests)
   const [scheduledVisits, setScheduledVisits] = useState(visits)
   const [awaitingVerification, setAwaitingVerification] = useState(initialPendingVerification)
@@ -100,21 +120,23 @@ export function WarrantyDeskClient({
   const [selected, setSelected] = useState<DeskRequest | null>(null)
   const [pending, startTransition] = useTransition()
 
-  const [filter, setFilter] = useState("")
-  const [slaFilter, setSlaFilter] = useState<string>("all")
+  const [filter, setFilter] = useState(initialSearch)
+  const [slaFilter, setSlaFilter] = useState<string>(initialSla)
 
   const [acknowledgeChannel, setAcknowledgeChannel] = useState("phone")
   const [acknowledgeNote, setAcknowledgeNote] = useState("")
 
   const [assigneeKind, setAssigneeKind] = useState<"tech" | "trade">("tech")
   const [assigneeId, setAssigneeId] = useState("")
+  const [assigneeCompany, setAssigneeCompany] = useState<SearchPickerItem | null>(null)
   const [windowStart, setWindowStart] = useState("")
   const [windowEnd, setWindowEnd] = useState("")
 
   const [commitments, setCommitments] = useState<RankedOriginatingCommitment[]>([])
   const [commitmentsLoaded, setCommitmentsLoaded] = useState(false)
   const [commitmentId, setCommitmentId] = useState("")
-  const [backchargeCompanyId, setBackchargeCompanyId] = useState("")
+  const [backchargeCompany, setBackchargeCompany] = useState<SearchPickerItem | null>(null)
+  const backchargeCompanyId = backchargeCompany?.id ?? ""
   const [backchargeReason, setBackchargeReason] = useState("")
   const [costBasis, setCostBasis] = useState<CostBasisDraft[]>([{ label: "", amount: "" }])
   const [confirmNoApHistory, setConfirmNoApHistory] = useState(false)
@@ -123,27 +145,28 @@ export function WarrantyDeskClient({
   const [disputeNote, setDisputeNote] = useState<Record<string, string>>({})
   const [resolving, setResolving] = useState<{ charge: WarrantyBackchargeDTO; resolution: (typeof RESOLUTIONS)[number] } | null>(null)
   const [resolveNote, setResolveNote] = useState("")
+  const [settleAmount, setSettleAmount] = useState("")
 
   const now = useMemo(() => new Date(), [])
 
-  const visible = useMemo(() => {
-    const term = filter.trim().toLowerCase()
-    return requests.filter((request) => {
-      if (term && !`${request.title} ${request.project_name ?? ""} ${request.community_name ?? ""}`.toLowerCase().includes(term)) return false
-      if (slaFilter === "all") return true
-      const firstResponse = warrantyFirstResponseState(request, now)
-      if (slaFilter === "awaiting_first_response") return firstResponse !== "met"
-      if (slaFilter === "first_response_breached") return firstResponse === "breached"
-      return warrantyResolutionState(request, now) === "breached"
-    })
-  }, [requests, filter, slaFilter, now])
+  const visible = requests
+  const homeZone = resolveWarrantyTimeZone(selected?.time_zone, timeZone)
+  const selectedRouting = selected ? routingRecordFrom(selected.metadata) : null
+  const [reassignUserId, setReassignUserId] = useState("")
+  const [reassignReason, setReassignReason] = useState("")
+  const [rulesOpen, setRulesOpen] = useState(false)
+  const applyQueueFilters = (search: string, sla: string) => {
+    const href = warrantyQueueFilterHref(searchParams.toString(), search, sla)
+    startTransition(() => router.push(href, { scroll: false }))
+  }
 
   const openSheet = useCallback((request: DeskRequest) => {
     setSelected(request)
     setAcknowledgeChannel("phone"); setAcknowledgeNote("")
-    setAssigneeKind("tech"); setAssigneeId(""); setWindowStart(""); setWindowEnd("")
+    setAssigneeKind("tech"); setAssigneeId(""); setAssigneeCompany(null); setWindowStart(""); setWindowEnd("")
+    setReassignUserId(""); setReassignReason("")
     setCommitments([]); setCommitmentsLoaded(false); setCommitmentId("")
-    setBackchargeCompanyId(request.assigned_company_id ?? "")
+    setBackchargeCompany(request.assigned_company_id ? { id: request.assigned_company_id, name: request.assigned_company_name ?? "Assigned trade", detail: "" } : null)
     setBackchargeReason(""); setConfirmNoApHistory(false)
     setCostBasis([{ label: "", amount: "" }])
     startTransition(async () => {
@@ -184,40 +207,51 @@ export function WarrantyDeskClient({
 
   return (
     <div className="desk-rise space-y-4">
-      <Tabs defaultValue="queue" className="space-y-4">
+      <Tabs value={initialTab} onValueChange={(tab) => {
+        const params = new URLSearchParams(searchParams.toString())
+        params.set("tab", tab)
+        params.delete("page")
+        startTransition(() => router.push(`/warranty?${params}`, { scroll: false }))
+      }} className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList>
-            <TabsTrigger value="queue">Queue</TabsTrigger>
-            <TabsTrigger value="dispatch">Dispatch</TabsTrigger>
-            <TabsTrigger value="verify">Verify{awaitingVerification.length ? ` (${awaitingVerification.length})` : ""}</TabsTrigger>
-            <TabsTrigger value="backcharges">Backcharges</TabsTrigger>
-            <TabsTrigger value="analytics">Analytics</TabsTrigger>
+            <TabsTrigger disabled={pending} value="queue">Queue</TabsTrigger>
+            <TabsTrigger disabled={pending} value="dispatch">Dispatch</TabsTrigger>
+            <TabsTrigger disabled={pending} value="verify">Verify{awaitingVerification.length ? ` (${awaitingVerification.length})` : ""}</TabsTrigger>
+            <TabsTrigger disabled={pending} value="backcharges">Backcharges</TabsTrigger>
+            <TabsTrigger disabled={pending} value="analytics">Analytics</TabsTrigger>
           </TabsList>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={pending}
-            onClick={() => startTransition(async () => {
-              const result = await generateWarrantyCourtesyInspectionsAction()
-              if (!result.success) { toast.error(result.error); return }
-              toast.success(result.data.created ? `${result.data.created} courtesy inspection${result.data.created === 1 ? "" : "s"} scheduled` : "No courtesy inspections are due")
-            })}
-          >
-            Generate courtesy inspections
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button asChild size="sm" variant="outline"><Link href="/settings/imports/warranty_homes">Import homes under warranty</Link></Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              onClick={() => startTransition(async () => {
+                const result = await generateWarrantyCourtesyInspectionsAction()
+                if (!result.success) { toast.error(result.error); return }
+                toast.success(result.data.created ? `${result.data.created} courtesy inspection${result.data.created === 1 ? "" : "s"} scheduled` : "No courtesy inspections are due")
+              })}
+            >
+              Generate courtesy inspections
+            </Button>
+            {initialTab === "queue" ? <Button size="sm" variant="outline" onClick={() => setRulesOpen(true)}>Routing rules</Button> : null}
+          </div>
         </div>
 
         <TabsContent value="queue" className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Input className="w-72" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search home, community, or request" />
-              <Select value={slaFilter} onValueChange={setSlaFilter}>
-                <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+            <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); applyQueueFilters(filter, slaFilter) }}>
+              <Input aria-label="Search warranty requests" maxLength={200} className="w-72" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search home, community, or request" />
+              <Select disabled={pending} value={slaFilter} onValueChange={(value) => { setSlaFilter(value); applyQueueFilters(filter, value) }}>
+                <SelectTrigger aria-label="Response time" className="w-56"><SelectValue /></SelectTrigger>
                 <SelectContent>{QUEUE_FILTERS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
               </Select>
-            </div>
+              <Button type="submit" size="sm" variant="outline" disabled={pending}>Search</Button>
+              {(initialSearch || initialSla !== "all") && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => { setFilter(""); setSlaFilter("all"); applyQueueFilters("", "all") }}>Clear</Button>}
+            </form>
             <p className="text-xs text-muted-foreground tabular-nums">
-              {visible.length} of {requests.length} shown{total > requests.length ? ` · ${total} open in total (first ${requests.length} loaded)` : ""}
+              {visible.length} shown on this page · {total} matching requests
             </p>
           </div>
           <div className="overflow-x-auto border border-border">
@@ -263,7 +297,10 @@ export function WarrantyDeskClient({
                         {countdown(request.resolution_due_at)}
                         {request.cost_dump_flag ? <AlertTriangle className="ml-2 inline size-3 text-warning" aria-label="Possible cost dump" /> : null}
                       </td>
-                      <td className="px-3 py-2">{request.status.replaceAll("_", " ")}</td>
+                      <td className="px-3 py-2">
+                        {request.status.replaceAll("_", " ")}
+                        {request.metadata?.sent_back === true ? <Badge variant="destructive" className="ml-2" title={typeof request.metadata.rejection_reason === "string" ? request.metadata.rejection_reason : undefined}>Sent back</Badge> : null}
+                      </td>
                     </tr>
                   )
                 })}
@@ -277,26 +314,25 @@ export function WarrantyDeskClient({
 
         <TabsContent value="dispatch">
           <div className="grid gap-3 border border-border p-3 md:grid-cols-7">
-            {Array.from({ length: 7 }, (_, day) => {
-              const date = new Date()
-              date.setDate(date.getDate() - date.getDay() + day)
-              const dayVisits = scheduledVisits.filter((visit) => new Date(visit.window_start).toDateString() === date.toDateString())
+            {dispatchDays.map((day) => {
+              const dayVisits = scheduledVisits.filter((visit) => warrantyLocalDate(visit.window_start, visit.time_zone ?? timeZone) === day)
               return (
                 <div key={day} className="min-h-40 border border-border">
                   <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1 text-xs font-medium">
-                    <span>{date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</span>
+                    <span>{new Date(`${day}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" })}</span>
                     <span className="tabular-nums text-muted-foreground">{dayVisits.length || ""}</span>
                   </div>
                   <div className="space-y-1 p-1">
                     {dayVisits.map((visit) => (
                       <div key={visit.id} className="border border-border p-2 text-xs">
                         <p className="font-medium">{String(visit.request?.title ?? "Service visit")}</p>
+                        <Link href={`/projects/${visit.project_id}/warranty`} className="underline underline-offset-2">{String(visit.project?.name ?? "Home")} · Visit {visit.visit_number}</Link>
                         <p className="text-muted-foreground">
-                          {new Date(visit.window_start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · {visit.assigned_user_name ?? visit.assigned_company_name}
+                          {formatWarrantyVisitClock(visit.window_start, visit.time_zone ?? timeZone, true)} · {visit.assigned_user_name ?? visit.assigned_company_name}
                         </p>
                       </div>
                     ))}
-                    {dayVisits.length === 0 ? <p className="px-1 py-2 text-xs text-muted-foreground">No visits</p> : null}
+                    {dayVisits.length === 0 ? <p className="px-1 py-2 text-xs text-muted-foreground">No visits on this page</p> : null}
                   </div>
                 </div>
               )
@@ -324,7 +360,7 @@ export function WarrantyDeskClient({
                       <p className="font-medium">{String(visit.request?.title ?? `Visit ${visit.visit_number}`)}</p>
                       <p className="text-xs text-muted-foreground">{visit.outcome_note ?? "No note provided"}</p>
                     </td>
-                    <td className="px-3 py-2">{String(visit.project?.name ?? "Home")}</td>
+                    <td className="px-3 py-2"><Link href={`/projects/${visit.project_id}/warranty`} className="underline underline-offset-2">{String(visit.project?.name ?? "Home")}</Link></td>
                     <td className="px-3 py-2">{visit.assigned_company_name ?? visit.assigned_user_name ?? "—"}</td>
                     <td className="px-3 py-2">
                       <Badge variant={visit.outcome === "resolved" ? "outline" : "secondary"}>{visit.outcome?.replaceAll("_", " ") ?? "—"}</Badge>
@@ -333,28 +369,45 @@ export function WarrantyDeskClient({
                       <Input
                         value={verifyNote[visit.id] ?? ""}
                         onChange={(event) => setVerifyNote((state) => ({ ...state, [visit.id]: event.target.value }))}
-                        placeholder="What the homeowner is told"
+                        placeholder="What the homeowner is told, or why the work is sent back"
                       />
                     </td>
-                    <td className="px-3 py-2 text-right">
-                      <Button
-                        size="sm"
-                        disabled={pending}
-                        onClick={() => startTransition(async () => {
-                          const result = await verifyWarrantyVisitAction(visit.id, verifyNote[visit.id]?.trim() || undefined)
-                          if (!result.success) { toast.error(result.error); return }
-                          setAwaitingVerification((rows) => rows.filter((row) => row.id !== visit.id))
-                          setRequests((rows) => rows.filter((row) => row.id !== visit.request_id || visit.outcome !== "resolved"))
-                          toast.success(visit.outcome === "resolved" ? "Verified and resolved" : "Verified — request stays open")
-                        })}
-                      >
-                        Verify
-                      </Button>
+                    <td className="px-3 py-2">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={pending || (verifyNote[visit.id]?.trim().length ?? 0) < 3}
+                          onClick={() => startTransition(async () => {
+                            const result = await rejectWarrantyVisitCompletionAction(visit.id, verifyNote[visit.id]?.trim() ?? "")
+                            if (!result.success) { toast.error(result.error); return }
+                            setAwaitingVerification((rows) => rows.filter((row) => row.id !== visit.id))
+                            toast.success("Sent back — book the corrective visit from the request")
+                            router.refresh()
+                          })}
+                        >
+                          Send back
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={pending}
+                          onClick={() => startTransition(async () => {
+                            const result = await verifyWarrantyVisitAction(visit.id, verifyNote[visit.id]?.trim() || undefined)
+                            if (!result.success) { toast.error(result.error); return }
+                            setAwaitingVerification((rows) => rows.filter((row) => row.id !== visit.id))
+                            setRequests((rows) => rows.filter((row) => row.id !== visit.request_id || visit.outcome !== "resolved"))
+                            toast.success(visit.outcome === "resolved" ? "Verified and resolved" : "Verified — request stays open")
+                            router.refresh()
+                          })}
+                        >
+                          Verify
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
                 {awaitingVerification.length === 0 ? (
-                  <tr><td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">Nothing is waiting on verification.</td></tr>
+                  <tr><td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">No visits awaiting verification on this page.</td></tr>
                 ) : null}
               </tbody>
             </table>
@@ -421,7 +474,7 @@ export function WarrantyDeskClient({
                             size="sm"
                             variant={resolution.destructive ? "outline" : "default"}
                             disabled={pending}
-                            onClick={() => { setResolving({ charge, resolution }); setResolveNote("") }}
+                            onClick={() => { setResolving({ charge, resolution }); setResolveNote(""); setSettleAmount("") }}
                           >
                             {resolution.label}
                           </Button>
@@ -439,6 +492,7 @@ export function WarrantyDeskClient({
         </TabsContent>
 
         <TabsContent value="analytics" className="space-y-5">
+          {!analyticsAvailable ? <p role="status" className="border border-border p-4 text-sm text-muted-foreground">Analytics is unavailable for this scope. You can continue using the warranty queue, dispatch and verification views.</p> : <>
           <section>
             <h2 className="mb-2 text-sm font-semibold">Recurring defects by community</h2>
             <div className="overflow-x-auto border border-border">
@@ -475,7 +529,7 @@ export function WarrantyDeskClient({
           </section>
           <section>
             <h2 className="mb-2 text-sm font-semibold">Warranty cost benchmark</h2>
-            <Button asChild variant="outline" size="sm"><Link href="/books#warranty-accounting">Review warranty cost accounting</Link></Button>
+            {canReviewAccounting ? <Button asChild variant="outline" size="sm"><Link href="/warranty/accounting">Review warranty cost accounting</Link></Button> : null}
             <p className="mb-2 text-xs text-muted-foreground">Approved costs linked to posted expenses, bills and labor, less recoveries. Submitted visit estimates are excluded.</p>
             <div className="overflow-x-auto border border-border">
               <table className="w-full text-sm">
@@ -509,10 +563,13 @@ export function WarrantyDeskClient({
               </table>
             </div>
           </section>
+                  </>}
         </TabsContent>
       </Tabs>
 
-      <Sheet open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}>
+      <WarrantyRoutingRulesSheet open={rulesOpen} onOpenChange={setRulesOpen} technicians={technicians} />
+
+      <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) { setSelected(null); router.refresh() } }}>
         <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
           <SheetHeader>
             <SheetTitle>{selected ? `WR-${selected.request_number} · ${selected.title}` : "Warranty request"}</SheetTitle>
@@ -541,7 +598,7 @@ export function WarrantyDeskClient({
                   <div className="space-y-3 border border-border p-3">
                     <p className="text-xs text-muted-foreground">The first-response clock stops when the homeowner is actually contacted — not when a truck is dispatched.</p>
                     <Select value={acknowledgeChannel} onValueChange={setAcknowledgeChannel}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger aria-label="How the homeowner was contacted"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="phone">Phone call</SelectItem>
                         <SelectItem value="email">Email</SelectItem>
@@ -549,7 +606,7 @@ export function WarrantyDeskClient({
                         <SelectItem value="in_person">In person</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Textarea value={acknowledgeNote} onChange={(event) => setAcknowledgeNote(event.target.value)} placeholder="What the homeowner was told" rows={2} />
+                    <Textarea aria-label="What the homeowner was told" value={acknowledgeNote} onChange={(event) => setAcknowledgeNote(event.target.value)} placeholder="What the homeowner was told" rows={2} />
                     <Button disabled={pending} onClick={() => startTransition(async () => {
                       const result = await acknowledgeWarrantyRequestAction({ request_id: selected.id, channel: acknowledgeChannel, note: acknowledgeNote.trim() || null })
                       if (!result.success) { toast.error(result.error); return }
@@ -564,28 +621,62 @@ export function WarrantyDeskClient({
               ) : null}
 
               <section>
+                <h3 className="mb-2 text-sm font-semibold">Owner</h3>
+                <div className="space-y-3 border border-border p-3">
+                  <p className="text-sm">{selected.assigned_user_name ?? selected.assigned_company_name ?? "Unassigned"}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedRouting?.source === "rule"
+                      ? `Routed by rule "${selectedRouting.rule_name ?? "Routing rule"}".`
+                      : selectedRouting?.source === "manual"
+                        ? `Assigned by hand${selectedRouting.overridden_rule_id ? `, over a routing rule: ${selectedRouting.override_reason ?? ""}` : ""}.`
+                        : "Not routed. Assign it by hand, or add a routing rule."}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Select value={reassignUserId} onValueChange={setReassignUserId}>
+                      <SelectTrigger aria-label="Reassign to technician"><SelectValue placeholder="Reassign to technician" /></SelectTrigger>
+                      <SelectContent>{technicians.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                    <Button variant="outline" disabled={pending || !reassignUserId || reassignUserId === selected.assigned_user_id || (selectedRouting?.source === "rule" && reassignReason.trim().length < 3)} onClick={() => startTransition(async () => {
+                      const result = await updateWarrantyRequestAction(selected.id, selected.project_id, { assigned_user_id: reassignUserId, routing_override_reason: reassignReason.trim() || null })
+                      if (!result.success) { toast.error(result.error); return }
+                      const next = { ...selected, assigned_user_id: result.data.assigned_user_id, assigned_user_name: result.data.assigned_user_name, metadata: result.data.metadata, updated_at: result.data.updated_at }
+                      setSelected(next)
+                      setRequests((rows) => rows.map((row) => row.id === selected.id ? { ...row, ...next } : row))
+                      setReassignReason("")
+                      toast.success("Request reassigned")
+                    })}>Reassign</Button>
+                  </div>
+                  {selectedRouting?.source === "rule" ? <Textarea value={reassignReason} onChange={(event) => setReassignReason(event.target.value)} placeholder="Why this request is not going to the routed owner (required)" rows={2} /> : null}
+                </div>
+              </section>
+
+              <section>
                 <h3 className="mb-2 text-sm font-semibold">Schedule service visit</h3>
                 <div className="space-y-3 border border-border p-3">
                   <div className="grid grid-cols-2 gap-2">
-                    <Select value={assigneeKind} onValueChange={(value) => { setAssigneeKind(value === "trade" ? "trade" : "tech"); setAssigneeId("") }}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                    <Select value={assigneeKind} onValueChange={(value) => { setAssigneeKind(value === "trade" ? "trade" : "tech"); setAssigneeId(""); setAssigneeCompany(null) }}>
+                      <SelectTrigger aria-label="Who makes the visit"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="tech">In-house tech</SelectItem>
                         <SelectItem value="trade">Trade</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Select value={assigneeId} onValueChange={setAssigneeId}>
-                      <SelectTrigger><SelectValue placeholder="Choose assignee" /></SelectTrigger>
-                      <SelectContent>{(assigneeKind === "tech" ? technicians : companies).map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
-                    </Select>
+                    {assigneeKind === "tech" ? (
+                      <Select value={assigneeId} onValueChange={setAssigneeId}>
+                        <SelectTrigger aria-label="Technician"><SelectValue placeholder="Choose assignee" /></SelectTrigger>
+                        <SelectContent>{technicians.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
+                      </Select>
+                    ) : (
+                      <SearchPicker label="Trade" value={assigneeCompany} onChange={(company) => { setAssigneeCompany(company); setAssigneeId(company?.id ?? "") }} search={searchWarrantyCompaniesAction} />
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="space-y-1.5">
-                      <Label htmlFor="window-start">Window start</Label>
+                      <Label htmlFor="window-start">Window start ({homeZone.replaceAll("_", " ")})</Label>
                       <Input id="window-start" type="datetime-local" value={windowStart} onChange={(event) => setWindowStart(event.target.value)} />
                     </div>
                     <div className="space-y-1.5">
-                      <Label htmlFor="window-end">Window end</Label>
+                      <Label htmlFor="window-end">Window end ({homeZone.replaceAll("_", " ")})</Label>
                       <Input id="window-end" type="datetime-local" value={windowEnd} onChange={(event) => setWindowEnd(event.target.value)} />
                     </div>
                   </div>
@@ -594,12 +685,15 @@ export function WarrantyDeskClient({
                       request_id: selected.id, assignee_kind: assigneeKind,
                       assigned_user_id: assigneeKind === "tech" ? assigneeId : null,
                       assigned_company_id: assigneeKind === "trade" ? assigneeId : null,
-                      window_start: new Date(windowStart).toISOString(), window_end: new Date(windowEnd).toISOString(),
+                      window_start: zonedWallTimeToUtc(windowStart, homeZone), window_end: zonedWallTimeToUtc(windowEnd, homeZone),
                     }
                     let result = await scheduleWarrantyVisitAction(payload)
                     if (!result.success) {
-                      if (!result.error.includes("already booked") || !window.confirm(`${result.error}\n\nBook anyway?`)) { toast.error(result.error); return }
-                      result = await scheduleWarrantyVisitAction(payload, true)
+                      if (!result.error.includes("already booked")) { toast.error(result.error); return }
+                      // Double-booking is allowed, but never silently: the reason goes on the visit and the audit trail.
+                      const reason = window.prompt(`${result.error}\n\nWhy is it being booked anyway?`)?.trim()
+                      if (!reason) return
+                      result = await scheduleWarrantyVisitAction(payload, { reason })
                       if (!result.success) { toast.error(result.error); return }
                     }
                     const visit = result.data
@@ -634,7 +728,7 @@ export function WarrantyDeskClient({
                           <button
                             key={candidate.id}
                             type="button"
-                            onClick={() => { setCommitmentId(candidate.id); if (candidate.company_id) setBackchargeCompanyId(candidate.company_id) }}
+                            onClick={() => { setCommitmentId(candidate.id); if (candidate.company_id) setBackchargeCompany({ id: candidate.company_id, name: candidate.company_name ?? "Originating trade", detail: "" }) }}
                             className={cn(
                               "flex w-full items-start justify-between gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-muted/40",
                               commitmentId === candidate.id ? "bg-muted" : "",
@@ -652,11 +746,7 @@ export function WarrantyDeskClient({
                   </div>
 
                   <div className="space-y-1.5">
-                    <Label>Responsible trade</Label>
-                    <Select value={backchargeCompanyId} onValueChange={setBackchargeCompanyId}>
-                      <SelectTrigger><SelectValue placeholder="Responsible trade" /></SelectTrigger>
-                      <SelectContent>{companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}</SelectContent>
-                    </Select>
+                    <SearchPicker label="Responsible trade" noun="trade" value={backchargeCompany} onChange={setBackchargeCompany} search={searchWarrantyCompaniesAction} />
                   </div>
 
                   <div className="space-y-2">
@@ -727,11 +817,19 @@ export function WarrantyDeskClient({
               {resolving ? `${resolving.resolution.label} WB-${resolving.charge.backcharge_number}?` : "Resolve backcharge"}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {resolving?.resolution.value === "recovered"
+              {resolving?.resolution.value === "settled"
+                ? `The trade pays the amount below; Arc posts a reversing bill for the rest of ${moneyExact.format((resolving?.charge.amount_cents ?? 0) / 100)}. Settlements are final.`
+                : resolving?.resolution.value === "recovered"
                 ? `Records ${moneyExact.format((resolving?.charge.amount_cents ?? 0) / 100)} as fully recovered. Backcharge resolutions are final.`
                 : `Arc posts a reversing bill for ${moneyExact.format((resolving?.charge.amount_cents ?? 0) / 100)} against the original vendor credit. This cannot be undone.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {resolving?.resolution.value === "settled" ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="settle-amount">Settled amount (USD)</Label>
+              <Input id="settle-amount" inputMode="decimal" className="tabular-nums" value={settleAmount} onChange={(event) => setSettleAmount(event.target.value)} placeholder={`Less than ${moneyExact.format((resolving.charge.amount_cents ?? 0) / 100)}`} />
+            </div>
+          ) : null}
           {resolving?.resolution.value !== "recovered" ? (
             <div className="space-y-1.5">
               <Label htmlFor="resolve-note">Resolution note</Label>
@@ -741,14 +839,14 @@ export function WarrantyDeskClient({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={pending || (resolving?.resolution.value !== "recovered" && !resolveNote.trim())}
+              disabled={pending || (resolving?.resolution.value !== "recovered" && !resolveNote.trim()) || (resolving?.resolution.value === "settled" && !(Number(settleAmount) > 0))}
               onClick={() => {
                 if (!resolving) return
                 const { charge, resolution } = resolving
                 startTransition(async () => {
                   const result = await resolveWarrantyBackchargeAction({
                     backcharge_id: charge.id, resolution: resolution.value,
-                    recovered_cents: resolution.value === "recovered" ? charge.amount_cents : undefined,
+                    recovered_cents: resolution.value === "recovered" ? charge.amount_cents : resolution.value === "settled" ? Math.round(Number(settleAmount) * 100) : undefined,
                     note: resolution.value === "recovered" ? undefined : resolveNote.trim(),
                   })
                   if (!result.success) { toast.error(result.error); return }

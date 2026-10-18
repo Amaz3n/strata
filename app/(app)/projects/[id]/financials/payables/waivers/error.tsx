@@ -1,10 +1,15 @@
 "use client"
-import { Button } from "@/components/ui/button"
-export default function ErrorPage({ reset }: { reset: () => void }) {
+
+import { DeskErrorState } from "@/components/layout/desk-error-state"
+
+export default function ProjectWaiverRegisterError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
-    <div className="space-y-3 p-6" role="alert">
-      <p>Could not load the waiver register.</p>
-      <Button onClick={reset}>Try again</Button>
-    </div>
+    <DeskErrorState
+      error={error}
+      retry={retry}
+      subject="The waiver register"
+      backHref="/projects"
+      backLabel="Back to projects"
+    />
   )
 }

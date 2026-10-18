@@ -382,6 +382,7 @@ export interface Task {
   estimated_hours?: number
   actual_hours?: number
   checklist?: TaskChecklistItem[]
+  mentioned_user_ids?: string[]
   tags?: string[]
   // Linked entities
   linked_schedule_item_id?: string
@@ -735,8 +736,11 @@ export interface ScheduleTemplate {
   project_type?: string
   property_type?: string
   items: Array<Partial<ScheduleItem> & {
+    key?: string
     start_offset_days?: number
     duration_days?: number
+    /** Predecessors by template key: `[{ key, type, lag_days }]`, written onto each home the template schedules. */
+    depends_on?: unknown
   }>
   is_public: boolean
   created_by?: string
@@ -794,6 +798,7 @@ export interface PortalPermissions {
   can_view_punch_items?: boolean     // Can see + work punch items assigned to their company
   can_view_purchase_orders?: boolean
   can_report_po_completion?: boolean
+  can_acknowledge_purchase_orders?: boolean
   // Reviewer-specific permissions
   can_review_submittals?: boolean    // Can decide submittal review steps routed to them
 }
@@ -849,6 +854,7 @@ export const REVIEWER_DEFAULT_PERMISSIONS: Partial<PortalPermissions> = {
   can_view_punch_items: false,
   can_view_purchase_orders: false,
   can_report_po_completion: false,
+  can_acknowledge_purchase_orders: false,
 }
 
 export type PortalTokenPurpose = "portal" | "vendor_payout"
@@ -1044,6 +1050,7 @@ export interface Photo {
 }
 
 export interface ChangeOrderLine {
+  metadata?: Record<string, any>
   id?: string
   cost_code_id?: string | null
   budget_line_id?: string | null

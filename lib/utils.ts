@@ -95,3 +95,10 @@ export function isDateExpired(validUntilStr: string | null | undefined): boolean
   return new Date() > d
 }
 
+
+/** Consecutive slices of at most `size` items, e.g. ids small enough for one `.in()` filter. */
+export function chunk<T>(items: readonly T[], size: number): T[][] {
+  const slices: T[][] = []
+  for (let index = 0; index < items.length; index += size) slices.push(items.slice(index, index + size))
+  return slices
+}

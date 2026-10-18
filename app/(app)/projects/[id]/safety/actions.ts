@@ -16,6 +16,7 @@ import {
   safetyIncidentInputSchema,
   safetyIncidentUpdateSchema,
   toolboxTalkInputSchema,
+  safetyRecordMutationIdentitySchema,
 } from "@/lib/validation/safety"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
@@ -33,7 +34,8 @@ export async function createSafetyIncidentAction(input: unknown) {
 
 export async function updateSafetyIncidentAction(projectId: string, incidentId: string, input: unknown) {
   return run(async () => {
-    const incident = await updateSafetyIncident(incidentId, safetyIncidentUpdateSchema.parse(input))
+    safetyRecordMutationIdentitySchema.parse({ projectId, recordId: incidentId })
+    const incident = await updateSafetyIncident(incidentId, safetyIncidentUpdateSchema.parse(input), undefined, projectId)
     revalidatePath(`/projects/${projectId}/safety`)
     return incident
   })
@@ -50,7 +52,8 @@ export async function createToolboxTalkAction(input: unknown) {
 
 export async function deleteToolboxTalkAction(projectId: string, talkId: string) {
   return run(async () => {
-    await deleteToolboxTalk(talkId)
+    safetyRecordMutationIdentitySchema.parse({ projectId, recordId: talkId })
+    await deleteToolboxTalk(talkId, undefined, projectId)
     revalidatePath(`/projects/${projectId}/safety`)
   })
 }
@@ -66,7 +69,8 @@ export async function createObservationAction(input: unknown) {
 
 export async function updateObservationAction(projectId: string, observationId: string, input: unknown) {
   return run(async () => {
-    const observation = await updateObservation(observationId, observationUpdateSchema.parse(input))
+    safetyRecordMutationIdentitySchema.parse({ projectId, recordId: observationId })
+    const observation = await updateObservation(observationId, observationUpdateSchema.parse(input), undefined, projectId)
     revalidatePath(`/projects/${projectId}/safety`)
     return observation
   })

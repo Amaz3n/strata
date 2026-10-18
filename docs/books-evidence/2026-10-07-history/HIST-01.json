@@ -1,0 +1,351 @@
+{
+  "scenario": "HIST-01",
+  "status": "PASSED",
+  "reviewedFrom": "B03.1-B03.3 definition of done (advisor-plans/013).",
+  "subcases": [
+    {
+      "name": "void-before-close",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "e0948917-b00f-482e-97e0-d93b63c63fa2",
+        "kept": "647423d6-b4c4-4151-b9fd-c9faed8c8aa2",
+        "voided": "50304261-afcb-41c5-af17-5ebc699e8d2d",
+        "agingKeys": [
+          "as_of",
+          "project_id",
+          "rows",
+          "totals"
+        ]
+      },
+      "checks": [
+        {
+          "label": "a void inside the open month leaves July without the invoice in the ledger, the aging and the tie-out",
+          "pass": true,
+          "expected": {
+            "ledgerAr": 100000,
+            "agingTotal": 100000,
+            "tieOut": {
+              "status": "passed",
+              "differenceCents": 0
+            }
+          },
+          "observed": {
+            "ledgerAr": 100000,
+            "agingTotal": 100000,
+            "tieOut": {
+              "status": "passed",
+              "differenceCents": 0
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T11:43:25.043Z"
+    },
+    {
+      "name": "removal-after-close-refused",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "1b8c22d1-62c2-4c26-a590-1ea8fa11a9e4"
+      },
+      "checks": [
+        {
+          "label": "removals from a closed month are refused with the cure; July's aging and tie-outs stand",
+          "pass": true,
+          "expected": {
+            "unapprove": "This bill is posted in July 2026, which is closed. Reopen July 2026 to return it to pending, or record a vendor credit in an open month.",
+            "voided": "This invoice is posted in July 2026, which is closed. Reopen July 2026 to void it, or record a credit memo in an open month.",
+            "agingUnchanged": true,
+            "apTieOut": "passed",
+            "arTieOut": "passed"
+          },
+          "observed": {
+            "unapprove": "This bill is posted in July 2026, which is closed. Reopen July 2026 to return it to pending, or record a vendor credit in an open month.",
+            "voided": "This invoice is posted in July 2026, which is closed. Reopen July 2026 to void it, or record a credit memo in an open month.",
+            "agingUnchanged": true,
+            "apTieOut": "passed",
+            "arTieOut": "passed"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T11:43:37.355Z"
+    },
+    {
+      "name": "frozen-aging",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "8d3ea459-efc0-42cb-922e-cdd59e0f6209"
+      },
+      "checks": [
+        {
+          "label": "the closed month-end aging is the saved one; other dates are live",
+          "pass": true,
+          "expected": {
+            "closedOpen": 100000,
+            "servedAsClosed": true,
+            "rereadOpen": 100000,
+            "liveDayBeforeOpen": 60000
+          },
+          "observed": {
+            "closedOpen": 100000,
+            "servedAsClosed": true,
+            "rereadOpen": 100000,
+            "liveDayBeforeOpen": 60000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T11:43:39.614Z"
+    },
+    {
+      "name": "ties-at-cutoffs",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "d915421f-972b-46bb-943d-ef86cfe8ed99"
+      },
+      "checks": [
+        {
+          "label": "aging equals the ledger and the tie-out at every cutoff",
+          "pass": true,
+          "expected": {
+            "2026-07-15": {
+              "ar": 100000,
+              "ledgerAr": 100000,
+              "arTieOut": "passed",
+              "arBucketsAdd": true,
+              "ap": 50000,
+              "ledgerAp": 50000,
+              "apTieOut": "passed",
+              "arOverdue1to30": 0
+            },
+            "2026-07-31": {
+              "ar": 120000,
+              "ledgerAr": 120000,
+              "arTieOut": "passed",
+              "arBucketsAdd": true,
+              "ap": 50000,
+              "ledgerAp": 50000,
+              "apTieOut": "passed",
+              "arOverdue1to30": 60000
+            },
+            "2026-08-31": {
+              "ar": 190000,
+              "ledgerAr": 190000,
+              "arTieOut": "passed",
+              "arBucketsAdd": true,
+              "ap": 80000,
+              "ledgerAp": 80000,
+              "apTieOut": "passed",
+              "arOverdue1to30": 130000
+            }
+          },
+          "observed": {
+            "2026-07-15": {
+              "ar": 100000,
+              "ledgerAr": 100000,
+              "arTieOut": "passed",
+              "arBucketsAdd": true,
+              "ap": 50000,
+              "ledgerAp": 50000,
+              "apTieOut": "passed",
+              "arOverdue1to30": 0
+            },
+            "2026-07-31": {
+              "ar": 120000,
+              "ledgerAr": 120000,
+              "arTieOut": "passed",
+              "arBucketsAdd": true,
+              "ap": 50000,
+              "ledgerAp": 50000,
+              "apTieOut": "passed",
+              "arOverdue1to30": 60000
+            },
+            "2026-08-31": {
+              "ar": 190000,
+              "ledgerAr": 190000,
+              "arTieOut": "passed",
+              "arBucketsAdd": true,
+              "ap": 80000,
+              "ledgerAp": 80000,
+              "apTieOut": "passed",
+              "arOverdue1to30": 130000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T11:43:41.428Z"
+    },
+    {
+      "name": "restatement",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "b1af621c-541a-4233-b103-48567e5addad"
+      },
+      "checks": [
+        {
+          "label": "both closes stay on record with the reason, and July reads the reclose",
+          "pass": true,
+          "expected": {
+            "events": [
+              "books.period_closed",
+              "books.period_reopened",
+              "books.period_closed"
+            ],
+            "reopenReason": "Late July invoice found after close",
+            "snapshotsReplaced": true,
+            "arAgingVersionsRetained": 2,
+            "julyAgingAsReclosed": {
+              "open": 125000,
+              "asClosed": true
+            }
+          },
+          "observed": {
+            "events": [
+              "books.period_closed",
+              "books.period_reopened",
+              "books.period_closed"
+            ],
+            "reopenReason": "Late July invoice found after close",
+            "snapshotsReplaced": true,
+            "arAgingVersionsRetained": 2,
+            "julyAgingAsReclosed": {
+              "open": 125000,
+              "asClosed": true
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T11:43:47.373Z"
+    },
+    {
+      "name": "volume-aging",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "621664cb-957c-4e9c-85e3-2155bddc87d6"
+      },
+      "checks": [
+        {
+          "label": "1200 bills age exactly once and tie to the ledger",
+          "pass": true,
+          "expected": {
+            "rows": 1200,
+            "distinct": 1200,
+            "open": 120000000,
+            "ledgerAp": 120000000,
+            "apTieOut": "passed"
+          },
+          "observed": {
+            "rows": 1200,
+            "distinct": 1200,
+            "open": 120000000,
+            "ledgerAp": 120000000,
+            "apTieOut": "passed"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T11:43:50.271Z"
+    },
+    {
+      "name": "opening-items",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "b18f8ceb-7882-4904-9761-052d98dd649f"
+      },
+      "checks": [
+        {
+          "label": "the opening subledger is the documents' own; the first collection clears its item; July closes tied; gaps are listed",
+          "pass": true,
+          "expected": {
+            "atCutover": {
+              "ar": 80000,
+              "ledgerAr": 80000,
+              "arTieOut": "passed",
+              "ap": 20000,
+              "ledgerAp": 20000,
+              "apTieOut": "passed",
+              "byDocument": {
+                "OLD-101": {
+                  "open": 50000,
+                  "bucket": "1_30"
+                },
+                "OLD-102": {
+                  "open": 30000,
+                  "bucket": "current"
+                }
+              }
+            },
+            "afterClose": {
+              "ar": 50000,
+              "ledgerAr": 50000,
+              "arTieOut": "passed",
+              "ap": 20000,
+              "ledgerAp": 20000,
+              "apTieOut": "passed",
+              "byDocument": {
+                "OLD-101": {
+                  "open": 50000,
+                  "bucket": "31_60"
+                },
+                "OLD-102": {
+                  "open": 0,
+                  "bucket": "paid"
+                }
+              }
+            },
+            "missingEvidence": {
+              "heading": "The opening balances need these 7 fixes before they can be saved:",
+              "fixes": 7,
+              "namesCustomer": true,
+              "namesVendor": true
+            }
+          },
+          "observed": {
+            "atCutover": {
+              "ar": 80000,
+              "ledgerAr": 80000,
+              "arTieOut": "passed",
+              "ap": 20000,
+              "ledgerAp": 20000,
+              "apTieOut": "passed",
+              "byDocument": {
+                "OLD-101": {
+                  "open": 50000,
+                  "bucket": "1_30"
+                },
+                "OLD-102": {
+                  "open": 30000,
+                  "bucket": "current"
+                }
+              }
+            },
+            "afterClose": {
+              "ar": 50000,
+              "ledgerAr": 50000,
+              "arTieOut": "passed",
+              "ap": 20000,
+              "ledgerAp": 20000,
+              "apTieOut": "passed",
+              "byDocument": {
+                "OLD-101": {
+                  "open": 50000,
+                  "bucket": "31_60"
+                },
+                "OLD-102": {
+                  "open": 0,
+                  "bucket": "paid"
+                }
+              }
+            },
+            "missingEvidence": {
+              "heading": "The opening balances need these 7 fixes before they can be saved:",
+              "fixes": 7,
+              "namesCustomer": true,
+              "namesVendor": true
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T11:44:38.154Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T11:44:40.116Z"
+}

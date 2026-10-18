@@ -1,0 +1,544 @@
+{
+  "scenario": "MONEY-01",
+  "reviewedFrom": "EP10 production money reports (docs/enterprise-production/completion-checklist.json).",
+  "subcases": {
+    "forecast-includes-starts-closings-takedowns": {
+      "derivation": "Fixture (all dates 2099, dollars): H1 is building, budget 300,000, agreement 450,000, billed 120,000 (20,000 paid deposit + a 100,000 progress invoice due Feb 10), one approved 40,000 bill due Feb 20, a 150,000 approved PO, project ends Apr 30, closing scheduled May 14, start already released. H2 is a planned start (Mar 2) with budget 250,000 of which 50,000 is committed (project ends Jun 30), agreement 400,000 with a 10,000 paid deposit, closing Jul 9. H3 (another division) is a planned start by target week Apr 6, budget 280,000, nothing committed, agreement 500,000, closing Aug 14. Cypress Landing takes down 10 lots at 72,000 on Mar 15 with a 50,000 deposit due Jan 15 credited against it. Receivables: Feb 100,000. Bills: Feb 40,000. Committed unbilled lands at project end: Apr 150,000 (H1), Jun 50,000 (H2). Planned starts cost uncommitted budget in the start month: Mar 250,000-50,000=200,000 (H2), Apr 280,000 (H3); the released start is not planned. Closing proceeds are the agreement less what is billed: May 450,000-120,000=330,000; Jul 400,000-10,000=390,000; Aug 500,000. Land: Jan 50,000 (deposit); Mar 720,000-50,000=670,000 (takedown net of its deposit). Net = receivables + closings - bills - committed - starts - land: Jan -50,000; Feb 100,000-40,000=60,000; Mar -670,000-200,000=-870,000; Apr -150,000-280,000=-430,000; May 330,000; Jun -50,000; Jul 390,000; Aug 500,000; total -120,000. REVIEW FIX: H1 also carries a 100,000 closing invoice a failed settlement left issued (due May 20), and H2 is still in pre-construction (phase precon): its 50,000 PO still counts once as committed unbilled (Jun) and nets out of its start. The closing invoice is a receivable (May 100,000) and counts in billed, so May proceeds are 450,000-(20,000+100,000+100,000)=230,000; May net is unchanged at 100,000+230,000=330,000 because the money is counted once.",
+      "expected": {
+        "net": {
+          "2099-01": -50000,
+          "2099-02": 60000,
+          "2099-03": -870000,
+          "2099-04": -430000,
+          "2099-05": 330000,
+          "2099-06": -50000,
+          "2099-07": 390000,
+          "2099-08": 500000
+        },
+        "starts": {
+          "2099-03": 200000,
+          "2099-04": 280000
+        },
+        "closings": {
+          "2099-05": 230000,
+          "2099-07": 390000,
+          "2099-08": 500000
+        },
+        "land": {
+          "2099-01": 50000,
+          "2099-03": 670000
+        },
+        "totalNet": -120000,
+        "receivables": {
+          "2099-02": 100000,
+          "2099-05": 100000
+        },
+        "bills": {
+          "2099-02": 40000
+        },
+        "committedUnbilled": {
+          "2099-04": 150000,
+          "2099-06": 50000
+        },
+        "financingNote": "not part of the forecast"
+      }
+    },
+    "forecast-respects-division-scope-and-reconciles": {
+      "derivation": "A member assigned only to Gulf Coast reads the same org. H3 (Atlantic) is outside their division, so its Apr 280,000 start and Aug 500,000 closing are absent; Cypress Landing's land is in Gulf Coast so it stays. Months: Jan -50,000 (deposit); Feb +60,000; Mar -670,000-200,000=-870,000; Apr -150,000 (H1's PO only); May +330,000; Jun -50,000; Jul +390,000; no August row; total -340,000 (= base -120,000 + 280,000 start - 500,000 closing, reversed). Reconciliation: the source tables summed in SQL for Gulf Coast give planned starts 200,000 (H2: 250,000-50,000; H1's start is released) and closing proceeds 330,000+390,000=720,000, and the report's totals equal both. One planned start and two closings contribute. REVIEW FIX: May proceeds are 230,000 and May also has a 100,000 receivable (H1's closing invoice left issued, counted once); May net stays 330,000 and the SQL source (price less every issued invoice) still gives 230,000+390,000=620,000.",
+      "expected": {
+        "net": {
+          "2099-01": -50000,
+          "2099-02": 60000,
+          "2099-03": -870000,
+          "2099-04": -150000,
+          "2099-05": 330000,
+          "2099-06": -50000,
+          "2099-07": 390000
+        },
+        "starts": {
+          "2099-03": 200000
+        },
+        "closings": {
+          "2099-05": 230000,
+          "2099-07": 390000
+        },
+        "land": {
+          "2099-01": 50000,
+          "2099-03": 670000
+        },
+        "totalNet": -340000,
+        "drivers": {
+          "starts": 1,
+          "closings": 2
+        },
+        "reconciles": {
+          "startsMatchSource": true,
+          "closingsMatchSource": true
+        }
+      }
+    },
+    "forecast-scenario-shifts-closings": {
+      "derivation": "Same fixture as the base plan, owner view, with closings +4 weeks and planned starts at 50%. Closings: May 14 + 28 days = Jun 11 (H1 330,000); Jul 9 + 28 days = Aug 6 (H2 390,000); Aug 14 + 28 days = Sep 11 (H3 500,000). Starts are scaled once per month: Mar 200,000 x 50% = 100,000; Apr 280,000 x 50% = 140,000. Receivables, bills, committed cost and land do not move. Net: Jan -50,000; Feb 60,000; Mar -670,000-100,000=-770,000; Apr -150,000-140,000=-290,000; no May or Jul row; Jun 330,000-50,000=280,000; Aug 390,000; Sep 500,000; total 120,000 (= base -120,000 + 240,000 saved start cost). Total closing proceeds (1,220,000), receivables and land are unchanged; starts total 240,000 against 480,000. REVIEW FIX: with H1's closing invoice receivable (100,000 in May, unmoved) the shifted Jun closing is 230,000, so May net is 100,000 and Jun 230,000-50,000=180,000; total unchanged at 120,000.",
+      "expected": {
+        "net": {
+          "2099-01": -50000,
+          "2099-02": 60000,
+          "2099-03": -770000,
+          "2099-04": -290000,
+          "2099-05": 100000,
+          "2099-06": 180000,
+          "2099-08": 390000,
+          "2099-09": 500000
+        },
+        "starts": {
+          "2099-03": 100000,
+          "2099-04": 140000
+        },
+        "closings": {
+          "2099-06": 230000,
+          "2099-08": 390000,
+          "2099-09": 500000
+        },
+        "land": {
+          "2099-01": 50000,
+          "2099-03": 670000
+        },
+        "totalNet": 120000,
+        "unchanged": {
+          "receivables": true,
+          "closingProceeds": true,
+          "land": true
+        },
+        "startsAtHalfPace": true
+      }
+    },
+    "house-margin-original-vs-revised": {
+      "derivation": "H1 was released at a 450,000 sale price and 280,000 cost, so its locked original margin is 170,000. Today: the agreement is still 450,000; the approved budget is 300,000 plus a 12,000 approved variance order = 312,000 revised budget; posted job cost is 60,000+40,000=100,000, below it, so revised cost is 312,000 (actuals already inside the budget are never added). Revised margin 450,000-312,000=138,000, 32,000 below the original.",
+      "expected": {
+        "originalSale": 450000,
+        "originalCost": 280000,
+        "originalMargin": 170000,
+        "revisedSale": 450000,
+        "revisedCost": 312000,
+        "revisedMargin": 138000,
+        "approvedVariance": 12000,
+        "budget": 300000,
+        "actual": 100000
+      }
+    },
+    "margin-rollup-uses-locked-baseline": {
+      "derivation": "Revised margin per home = agreement - max(posted cost, approved budget + approved variance). H1: 450,000-312,000=138,000 (original 450,000-280,000=170,000). H2: 400,000-250,000=150,000 (original 400,000-240,000=160,000). H3: 500,000-280,000=220,000, no baseline. Portfolio: 3 homes, revised 508,000, original 330,000 over the two baselined homes, drift (138,000+150,000)-330,000=-42,000, one home without a baseline. Gulf Coast = Cypress Landing = plan v1 = H1+H2: 288,000 revised, 330,000 original, drift -42,000. Atlantic = Harbor Walk = plan v2 = H3: 220,000, no original. Then H2's approved budget rises 40,000 after its baseline: H2 revised 110,000, so portfolio revised 468,000 (-40,000), Gulf Coast/Cypress/v1 248,000, drift -82,000 ((138,000+110,000)-330,000); every original stays 330,000 and Atlantic is unchanged.",
+      "expected": {
+        "before": {
+          "portfolio": {
+            "homes": 3,
+            "margin": 508000,
+            "originalMargin": 330000,
+            "drift": -42000,
+            "noBaseline": 1
+          },
+          "divisions": {
+            "Gulf Coast": {
+              "homes": 2,
+              "margin": 288000,
+              "originalMargin": 330000,
+              "drift": -42000,
+              "noBaseline": 0
+            },
+            "Atlantic": {
+              "homes": 1,
+              "margin": 220000,
+              "originalMargin": null,
+              "drift": null,
+              "noBaseline": 1
+            }
+          },
+          "planVersions": {
+            "v1": {
+              "homes": 2,
+              "margin": 288000,
+              "originalMargin": 330000,
+              "drift": -42000,
+              "noBaseline": 0
+            },
+            "v2": {
+              "homes": 1,
+              "margin": 220000,
+              "originalMargin": null,
+              "drift": null,
+              "noBaseline": 1
+            }
+          },
+          "communities": {
+            "Cypress Landing": {
+              "homes": 2,
+              "margin": 288000,
+              "originalMargin": 330000,
+              "drift": -42000
+            },
+            "Harbor Walk": {
+              "homes": 1,
+              "margin": 220000,
+              "originalMargin": null,
+              "drift": null
+            }
+          },
+          "cohort": "all"
+        },
+        "after": {
+          "portfolio": {
+            "homes": 3,
+            "margin": 468000,
+            "originalMargin": 330000,
+            "drift": -82000,
+            "noBaseline": 1
+          },
+          "divisions": {
+            "Gulf Coast": {
+              "homes": 2,
+              "margin": 248000,
+              "originalMargin": 330000,
+              "drift": -82000,
+              "noBaseline": 0
+            },
+            "Atlantic": {
+              "homes": 1,
+              "margin": 220000,
+              "originalMargin": null,
+              "drift": null,
+              "noBaseline": 1
+            }
+          },
+          "planVersions": {
+            "v1": {
+              "homes": 2,
+              "margin": 248000,
+              "originalMargin": 330000,
+              "drift": -82000,
+              "noBaseline": 0
+            },
+            "v2": {
+              "homes": 1,
+              "margin": 220000,
+              "originalMargin": null,
+              "drift": null,
+              "noBaseline": 1
+            }
+          },
+          "communities": {
+            "Cypress Landing": {
+              "homes": 2,
+              "margin": 248000,
+              "originalMargin": 330000,
+              "drift": -82000
+            },
+            "Harbor Walk": {
+              "homes": 1,
+              "margin": 220000,
+              "originalMargin": null,
+              "drift": null
+            }
+          },
+          "cohort": "all"
+        },
+        "originalMoved": false,
+        "revisedMoved": -40000
+      }
+    },
+    "margin-rollup-counts-every-home": {
+      "derivation": "A builder with 1,100 homes (past every 1,000-row API page and the old 2,000-fact caps' tenth) in one community, each with a 130,000 agreement, a 100,000 approved budget, two posted costs (30,000 + 20,000 = 50,000, below the budget) and a release baseline of 130,000 at 95,000. Cost rows: 1,100 x 2 = 2,200. Revenue 1,100 x 130,000 = 143,000,000; actual cost 1,100 x 50,000 = 55,000,000; revised cost 1,100 x 100,000 (the budget is higher than actuals) = 110,000,000; revised margin 1,100 x 30,000 = 33,000,000; original margin 1,100 x 35,000 = 38,500,000; drift 33,000,000-38,500,000 = -5,500,000; every home has a baseline.",
+      "expected": {
+        "sourceCostRows": 2200,
+        "homes": 1100,
+        "communityHomes": 1100,
+        "revenue": 143000000,
+        "actualCost": 55000000,
+        "revisedCost": 110000000,
+        "margin": 33000000,
+        "originalMargin": 38500000,
+        "drift": -5500000,
+        "noBaseline": 0
+      }
+    },
+    "reversed-land-acquisition-corrects-and-balances": {
+      "derivation": "Lot 1 is bought for $60,000 but keyed as $65,000 on June 2 (cash credited $65,000, lot basis $65,000). The land entry is reversed on June 5: the reversal debits cash and credits land $65,000, so land and cash net to zero, the lot returns to controlled with no acquisition link and no basis. The corrected acquisition is then recorded under the same settlement reference for $60,000: land $60,000, cash net -$60,000, lot owned with basis $60,000. Ledger holds three entries: the wrong one (reversed, $65,000 debit), its reversal ($65,000) and the replacement ($60,000), every one with equal debits and credits. Repeating the reversal returns the same reversal entry, and repeating the corrected acquisition returns the same entry.",
+      "inputs": {
+        "priceCents": 40000000,
+        "wrongCents": 6500000,
+        "rightCents": 6000000
+      },
+      "expected": {
+        "afterReversal": {
+          "status": "controlled",
+          "linkedToAcquisition": false,
+          "basisCents": null,
+          "landCents": 0
+        },
+        "reversalRetrySame": true,
+        "afterCorrection": {
+          "status": "owned",
+          "linkedToAcquisition": true,
+          "basisCents": 6000000,
+          "landCents": 6000000
+        },
+        "correctionRetrySame": true,
+        "entries": [
+          [
+            "adjusting",
+            "reversed",
+            6500000
+          ],
+          [
+            "reversal",
+            "posted",
+            6500000
+          ],
+          [
+            "adjusting",
+            "posted",
+            6000000
+          ]
+        ],
+        "everyEntryBalances": true,
+        "cashNetCents": -6000000
+      }
+    },
+    "reversed-start-transfer-reposts-once": {
+      "derivation": "Lot 1's $60,000 of land is moved into the house on June 3: construction in progress holds $60,000, the lot's land is zero, and the job-cost receipt is one posted $60,000 row. Reversing the acquisition now is refused because the land has moved into the house. The start is redated to June 10: the transfer is reversed (June 10) and posted again (June 10), so construction stays $60,000 and land zero; the first receipt is voided and a new posted $60,000 receipt replaces it. The lot's entries are the acquisition, the first transfer (reversed), the reversal and the new transfer: four, each balanced, the transfers dated June 3 (reversed) and June 10 (posted). Repeating the same correction finds the committed reversal and the posted transfer and adds nothing: the same entry ids, still four entries.",
+      "inputs": {
+        "priceCents": 40000000,
+        "landCents": 6000000
+      },
+      "expected": {
+        "before": {
+          "constructionCents": 6000000,
+          "landCents": 0,
+          "receipts": [
+            [
+              "posted",
+              6000000
+            ]
+          ]
+        },
+        "acquisitionAfterStart": "refused",
+        "after": {
+          "constructionCents": 6000000,
+          "landCents": 0,
+          "receipts": [
+            [
+              "voided",
+              6000000
+            ],
+            [
+              "posted",
+              6000000
+            ]
+          ]
+        },
+        "entries": [
+          [
+            "adjusting",
+            "posted",
+            6000000
+          ],
+          [
+            "adjusting",
+            "reversed",
+            6000000
+          ],
+          [
+            "reversal",
+            "posted",
+            6000000
+          ],
+          [
+            "adjusting",
+            "posted",
+            6000000
+          ]
+        ],
+        "startDates": [
+          [
+            "reversed",
+            "2026-06-03"
+          ],
+          [
+            "posted",
+            "2026-06-10"
+          ]
+        ],
+        "everyEntryBalances": true,
+        "retrySameEntries": true,
+        "entriesAfterRetry": 4,
+        "entriesAfterFirst": 4
+      }
+    },
+    "corrected-start-sells-as-one-land-line": {
+      "derivation": "Lot 1's $60,000 of land moves into the house on June 3 and the start is redated: reversed and posted again on June 10. $200,000 of construction is billed, the home is completed July 1 and sold July 25. The reversal entry has no source type of its own; it reverses the June 3 start, so it is land and development, and with the original and the re-post the land nets to $60,000. The sale relief is one land_and_development line of $60,000 and one construction line of $200,000 (5000 debits), and 1160 and 1170 are left at zero. Before the fix the reversal counted as construction: a construction line of $140,000 and a land line of $120,000.",
+      "checklist": [
+        "EP10-02",
+        "EP14-02"
+      ],
+      "inputs": {
+        "priceCents": 40000000,
+        "landCents": 6000000,
+        "constructionCents": 20000000,
+        "saleDate": "2026-07-25"
+      },
+      "expected": {
+        "reliefLines": [
+          [
+            "construction",
+            20000000
+          ],
+          [
+            "land_and_development",
+            6000000
+          ]
+        ],
+        "inventoryLeft": {
+          "1160": 0,
+          "1170": 0
+        }
+      }
+    },
+    "spec-home-adopted-by-books": {
+      "derivation": "A spec home is opened on a delivered lot by the starts desk: the package opens and the home has no contract at all (no placeholder fixed contract). When the sale later signs its purchase agreement, Books adopts the home as owned inventory with no refusal. Repair of homes created before the fix removes a placeholder (written by project settings, unsigned, no value) only when the home has an active purchase agreement and nothing references the placeholder: of three legacy homes, the untouched placeholder beside an agreement is removed (one removal, one audit row, the home keeps only its purchase agreement); the placeholder an allowance still points at stays with the agreement; the home with a placeholder and no agreement keeps it. Running the repair again removes nothing.",
+      "expected": {
+        "packageOpened": true,
+        "contractsAtOpening": [],
+        "booksAdoption": "adopted",
+        "repair": {
+          "removed": 1,
+          "removedAgain": 0,
+          "untouched": [
+            "purchase_agreement"
+          ],
+          "inUse": [
+            "fixed",
+            "purchase_agreement"
+          ],
+          "noAgreement": [
+            "fixed"
+          ]
+        },
+        "repairAudited": 1
+      }
+    },
+    "superintendent-reads-scope-and-options": {
+      "derivation": "On the FIELD-01 released home (five sheet rows; confirmed Flooring LVP Oak and ordered Cabinets Shaker White are the options, the merely selected Fixtures choice is not; scope is the approved Framing package with two lines then the approved Concrete package with one), the superintendent role now holds the price-free commitment.scope.read and selections.released.read beside drawing.read (not commitment.read, which opens amounts), so a superintendent sees the five sheets, the two options by category name and both awarded scopes with their lines in order. The superintendent limited to the home's division reads the same; the one limited to the other division is refused. The superintendent still cannot read the home's purchase-order positions (commitment amounts): refused.",
+      "expected": {
+        "superintendent": {
+          "sheets": 5,
+          "options": [
+            [
+              "Cabinets",
+              "Shaker White"
+            ],
+            [
+              "Flooring",
+              "LVP Oak"
+            ]
+          ],
+          "scope": [
+            [
+              "Framing package",
+              [
+                "Frame walls 2400 sf",
+                "Install trusses 24 ea"
+              ]
+            ],
+            [
+              "Concrete package",
+              [
+                "Pour slab 1800 sf"
+              ]
+            ]
+          ]
+        },
+        "commitmentAmounts": "refused",
+        "divisionLimitedSuperintendent": {
+          "sheets": 5,
+          "options": [
+            [
+              "Cabinets",
+              "Shaker White"
+            ],
+            [
+              "Flooring",
+              "LVP Oak"
+            ]
+          ],
+          "scope": [
+            [
+              "Framing package",
+              [
+                "Frame walls 2400 sf",
+                "Install trusses 24 ea"
+              ]
+            ],
+            [
+              "Concrete package",
+              [
+                "Pour slab 1800 sf"
+              ]
+            ]
+          ]
+        },
+        "otherDivisionSuperintendent": "refused"
+      }
+    },
+    "reversed-debt-funded-acquisition-nets-the-loan": {
+      "derivation": "Lot 1 is bought for $65,000 keyed as $25,000 cash and $40,000 from the land loan, then reversed on June 5 and recorded again as $20,000 cash and $40,000 loan ($60,000) under the same reference. The loan register holds a $40,000 draw, a $40,000 offsetting payment from the reversal, and a new $40,000 draw: net $40,000, equal to the loan liability in the ledger (the reversed pair nets to zero). Cash across the three entries nets to -$20,000, land to $60,000, and each of the three entries (wrong, reversal, replacement) has equal debits and credits.",
+      "inputs": {
+        "priceCents": 40000000,
+        "wrong": {
+          "cashCents": 2500000,
+          "debtCents": 4000000
+        },
+        "right": {
+          "cashCents": 2000000,
+          "debtCents": 4000000
+        }
+      },
+      "expected": {
+        "debtEvents": [
+          [
+            "draw",
+            4000000
+          ],
+          [
+            "payment",
+            4000000
+          ],
+          [
+            "draw",
+            4000000
+          ]
+        ],
+        "loanRegisterCents": 4000000,
+        "loanLiabilityCents": 4000000,
+        "cashNetCents": -2000000,
+        "landCents": 6000000,
+        "entries": [
+          [
+            "adjusting",
+            "reversed",
+            6500000
+          ],
+          [
+            "reversal",
+            "posted",
+            6500000
+          ],
+          [
+            "adjusting",
+            "posted",
+            6000000
+          ]
+        ],
+        "everyEntryBalances": true
+      }
+    }
+  }
+}

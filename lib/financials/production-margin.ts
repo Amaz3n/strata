@@ -44,22 +44,3 @@ export function projectedMargin(input: ProductionCostInputs & { revenueCents: nu
     marginPercent: input.revenueCents > 0 ? (marginCents / input.revenueCents) * 100 : 0,
   }
 }
-
-/**
- * Roll several houses up. Margin sums bottom-up from each house rather than
- * being recomputed from aggregate budget and actuals — a portfolio max over
- * summed columns is not the sum of the per-house maxima.
- */
-export function rollUpProjectedMargin(
-  rows: Array<{ revenueCents: number; projectedCostCents: number; marginCents: number }>,
-): ProductionMargin & { revenueCents: number } {
-  const revenueCents = rows.reduce((total, row) => total + row.revenueCents, 0)
-  const cost = rows.reduce((total, row) => total + row.projectedCostCents, 0)
-  const marginCents = rows.reduce((total, row) => total + row.marginCents, 0)
-  return {
-    revenueCents,
-    projectedCostCents: cost,
-    marginCents,
-    marginPercent: revenueCents > 0 ? (marginCents / revenueCents) * 100 : 0,
-  }
-}

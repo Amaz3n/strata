@@ -57,20 +57,50 @@ Open `Arc/Arc.xcodeproj`, select the `Arc` scheme, and run on an iPhone or iPad 
 
 ## Navigation model
 
-The native app has two explicit contexts:
+The global field workspace opens to Projects or My Houses. Opening a project on iPhone provides four tabs: Overview, Logs, Work, and Library. Work groups Tasks, Punch, and Schedule. Library provides Drawings, Documents, and Photos. The project menu retains Contacts, Project Details, RFIs, Field Tools, Receipts and Expenses, and Account. Field Tools exposes permission-filtered time, inspections, safety, warranty, submittals, selections, and decisions without adding office modules to the phone tabs.
 
-- The global workspace opens to the searchable Projects directory.
-- Opening a project enters a project workspace with Project, Docs, Drawings, Logs, and More destinations.
+Each iPhone tab keeps independent navigation history. iPad keeps an expanded field sidebar even in narrow windows and provides a separate native Workspace surface with organization/project scope, module sidebar, searchable records, and record details. Workspace uses SwiftUI throughout.
 
-On iPhone those destinations use a tab bar with independent navigation history. On iPad the same destinations appear in a project-scoped sidebar. The project name opens a searchable switcher from every module, while All Projects returns to the global workspace without discarding the last-project convenience selection.
+The native Workspace is under active implementation; it does not yet have full website parity. The permission-filtered catalog follows project posture, phase, module overrides, signature feature flags, and Books enablement. Organization-wide accounting access is required for Books.
 
-The initial screens are intentionally skeletal. The first production vertical slice should establish authentication, project selection, the versioned mobile API, and an offline-capable field workflow.
+Working native flows include:
+
+- Opportunity creation/editing, contact records, activity notes, follow-up dates/completion, early lead stages, and lost/reopen actions. Delivered deals stay locked.
+- Project proposals/estimates: budget and preconstruction-agreement drafts, native line items and commercial terms, draft revision with accounting/takeoff provenance preservation, PDF preview, explicit email sending, new revisions, and construction-agreement drafts derived from approved budgets. Existing executed PDFs use their stored signed snapshot, never a live replacement.
+- Create and edit tasks, decisions, inspections, meetings, safety incidents, closeout items, warranty requests, companies, contacts, communities, and house-plan metadata. RFIs and submittals support draft creation.
+- RFI responses and close/reopen; submittal items, submission/resubmission, unrouted reviews, and routed review-step decisions; inspection checklist responses and completion; meeting agenda items, attendees, attendance, finalization/distribution, and minutes PDFs.
+- Time entry for the signed-in user, notes, and permission-gated approval/rejection.
+- Correspondence conversation reading, attachment downloads, and classification; transmittal draft creation with native recipient/enclosure rows, project-document selection, recipient activity, and explicit sending.
+- Signature recipients, activity, source/executed documents, reminders, and voiding existing envelopes.
+- Dedicated project invoice draft creation and revision with native line items, quantities, unit prices, tax, and notes. Revisions preserve server-side accounting links and reject stale or issued/source-derived invoices. Invoice review requests/decisions, PDF preparation, and explicit issue/email actions are available.
+- Payable coding and approval evidence, document preview, and approve/reject with revision checks. Project bid draft creation, package-detail editing, and scope editing preserve existing cost codes and reject foreign/duplicate scope IDs. Commitment draft creation and draft schedule-of-values line creation/edit/removal use dollar inputs. Change-order draft creation supports line items, tax/markup and schedule impact, with line details and pricing/proposal transitions. Plans and start gates have expanded details.
+- Native schedule creation/editing and predecessor management, plus an organization schedule overview. Organization Tasks follows the web My Tasks visibility (created/assigned/mentioned) and filters inaccessible projects.
+- Punch creation/editing, project-company assignment, verification requirements, and canonical status transitions. Project tasks support team assignment. Both support photo/document attachments with stable upload IDs for retry.
+- Execute reports from the web report catalog with supported native filters, summary statistics, and formatted table rows. Report packets, exports, charts, and drilldowns remain pending.
+- Bank accounts, transactions, reconciliations, chart of accounts, general ledger, and asset/loan registers. Native actions support chart creation/editing/activation, bank mapping, categorization with project/cost coding, statement creation/close/reopen, and period-close checks/close/reopen. Canonical accounting services recheck every mutation.
+- Project photo albums, search, paginated browsing, full-screen image/video viewing, and image upload through the existing daily-log upload service.
+
+Workspace submission and photo uploads require connectivity; they are not queued for offline replay. Generic new-record forms recover locally saved drafts scoped to user, organization, project, and module. Editing/action sheets and the dedicated invoice editor do not yet persist drafts across app termination. Uncertain workspace submissions must not be automatically retried. List search currently searches loaded records. Some underlying services cap lists (e.g., latest 250 bank transactions); these views are not complete exports. Native report tables indicate truncation.
+
+Remaining substantial work includes:
+
+- Preconstruction pricing worksheets, trade-pricing comparison, advanced alternates/grouping and bid/takeoff linking in estimates, proposal photo/presentation editing, builder countersignature and project handoff; signature packet creation and PDF field placement; drawing takeoff and native 3D modeling.
+- Production workflows: selections/design-studio authoring, sales/lot/closing workflows, starts scheduling/release management, purchasing/price agreements, and warranty dispatch.
+- Financial workflow depth: source-derived billing, full change-order revision/approval/signing, bid invitations/comparison/awards, commitment issuance/execution, vendor bill creation/coding, cost inbox, and T&M ticket authoring.
+- Company schedule planning/baselines, advanced labor coding/correction, report packets/exports/charts/drilldowns, company-budget editing, bank-feed onboarding/imports and advanced matching, asset/loan lifecycle actions, and broader administrative settings.
+- Release validation: complete signed-in create/edit/attachment flows, offline/reconnect on physical devices, push provisioning/delivery, release signing, accessibility/large-text and performance checks, backend deployment, and TestFlight.
+
+A sidebar entry does not establish feature parity. Use `components/layout/app-sidebar.tsx`, `project-nav-items.ts`, and `books-nav-items.ts` as the coverage checklist. These are still implementation/test builds, not a complete native Arc release.
+
+The native Workspace depends on `/workspace`, `/workspace/{module}`, and `/workspace/{module}/{recordId}` in the versioned mobile API. Photos require the updated project photos route with signed native URLs. Use the matching backend; these local route changes have not been deployed by this task. Simulator builds and automated tests do not establish signed-in production workflow verification.
 
 ## Offline behavior
 
 SwiftData stores the authenticated user's last workspace and project snapshots locally. After one successful load, the app can restore that context during a cold launch without connectivity. Feature work can save editable payloads as durable drafts and enqueue API mutations with stable idempotency keys; the sync engine retries transient failures with exponential backoff whenever connectivity returns. A toolbar indicator shows offline, syncing, queued, failed, and up-to-date states.
 
 Large file and photo transfers use a background `URLSession`, allowing iOS to continue uploads after the app leaves the foreground. Individual field features remain responsible for copying selected files into app-owned durable storage before enqueueing a transfer.
+
+Documents support name search within a folder, explicit downloads, a downloaded-only filter, and cached folder listings with an offline notice. Drawing sheets support explicit image downloads and saved sheet details. Downloads are isolated by user and organization in Application Support, excluded from backups, and protected until the first device unlock. The Download Project screen saves a complete document manifest/folder tree and/or the currently published drawing images, with progress, failures, cancellation, and retry. Keep the screen open until completion. It records the last successful snapshot and does not imply continuous/background sync. A newer file or drawing revision needs a fresh download. Documents can search all project folders online or from a previously downloaded manifest. Drawing reads never substitute an older image for a missing current revision.
 
 ## Daily Logs
 
@@ -121,6 +151,14 @@ Task and punch status toggles update optimistically and, when offline or on a re
 `Core/Push/PushManager` requests notification authorization, registers for remote notifications, and uploads the APNs token to `POST /api/mobile/v1/devices` (removed on sign-out via `DELETE`). The `ArcAppDelegate` forwards the device token through `PushTokenBroker`. Server-side, `NotificationService.createAndQueue` enqueues a `deliver_push` outbox job and the `process-outbox` worker sends via `lib/services/apns.ts` — all **env-gated** on `APNS_KEY_ID` / `APNS_TEAM_ID` / `APNS_AUTH_KEY` / `APNS_BUNDLE_ID` (optional `APNS_ENVIRONMENT=sandbox`). When unset, every push path is a no-op.
 
 Debug builds set `ARC_PUSH_ENABLED=NO` so personal teams can install the app without a paid account. Release builds include `Resources/Arc.entitlements`, resolve `aps-environment=production`, and set `ARC_PUSH_ENABLED=YES`. Before push works on device you must ensure the Apple provisioning profile includes Push Notifications, run the `supabase/migrations/20260625120000_mobile_device_tokens.sql` migration, and set `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_AUTH_KEY`, `APNS_BUNDLE_ID`, and optional `APNS_ENVIRONMENT` in the web deployment.
+
+## Verification snapshot — October 1–2, 2026
+
+- Backend mobile regression suite: 60 passing cases; includes native document creation/editing, permission boundaries, project document pagination and isolation, invoice revision and accounting-link preservation.
+- Native suite: 43 passing tests on both iPhone and iPad Simulator, including field navigation, local cache/draft isolation, nested folder manifests, repeated form rows, invoice calculations and identity preservation.
+- Full repository TypeScript check passed after the preconstruction and PDF changes.
+- Signed-in local API reads and native workspace creation forms loaded in iPad Simulator. Simulator automation could not enter text reliably, so these checks do **not** establish end-to-end saved-record verification. No live record was created or message sent in this verification pass.
+- Debug and Release simulator builds compile. Matching backend changes are local, not deployed. Debug simulator builds use the running local backend on port 3000.
 
 ## Release readiness
 

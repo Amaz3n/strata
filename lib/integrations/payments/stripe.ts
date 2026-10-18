@@ -361,6 +361,10 @@ export function mapStripeEventToDomain(event: Stripe.Event) {
     case "payment_intent.processing":
     case "payment_intent.succeeded": {
       const intent = event.data.object as Stripe.PaymentIntent
+      // The Stripe account also receives subscription and standalone payments.
+      // Only Arc-attributed intents belong in the customer invoice ledger.
+      // Keep partial attribution on the error path rather than silently losing it.
+      if (!intent.metadata.invoice_id && !intent.metadata.org_id) return null
       const invoiceBalanceCents = Number.parseInt(intent.metadata.invoice_balance_cents ?? "", 10)
       return {
         type: event.type === "payment_intent.processing" ? "payment_processing" as const : "payment_succeeded" as const,

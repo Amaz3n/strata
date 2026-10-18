@@ -1,0 +1,102 @@
+{
+  "scenario": "REV-01",
+  "status": "INCOMPLETE",
+  "reviewedFrom": "B11.1 and B11.2 definitions of done (advisor-plans/013) and docs/books-revenue-recognition.md §2/§4b/§4c/§4d.",
+  "subcases": [
+    {
+      "name": "explicit-policy-by-kind",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "settings-change-cannot-rewrite",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "approved-change-from-its-date",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "superseded-contracts-reconstructible",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "mixed-contracts-reviewed",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "cost-plus-earns-once",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "billed-cost-corrections",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "gmp-cap-and-settlement",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "a1901134-292a-4654-9c5e-d55efab43fad"
+      },
+      "checks": [
+        {
+          "label": "the GMP cap holds unless overridden or raised by change order, and savings settle once on what was billed",
+          "pass": true,
+          "expected": {
+            "firstInvoice": 4400000,
+            "overCap": "refused",
+            "overriddenInvoice": 1100000,
+            "overrideEvents": 1,
+            "revisedGmp": 6000000,
+            "afterChangeOrder": "allowed",
+            "settleWithUnbilledCost": "Bill the 1 remaining cost inside the GMP before settling savings.",
+            "settlement": [
+              "refused: already settling or settled",
+              "settled"
+            ],
+            "builderInvoices": [
+              740000
+            ],
+            "recorded": {
+              "billed": 3520000,
+              "savings": 1480000,
+              "owner": 740000,
+              "builder": 740000
+            }
+          },
+          "observed": {
+            "firstInvoice": 4400000,
+            "overCap": "refused",
+            "overriddenInvoice": 1100000,
+            "overrideEvents": 1,
+            "revisedGmp": 6000000,
+            "afterChangeOrder": "allowed",
+            "settleWithUnbilledCost": "Bill the 1 remaining cost inside the GMP before settling savings.",
+            "settlement": [
+              "refused: already settling or settled",
+              "settled"
+            ],
+            "builderInvoices": [
+              740000
+            ],
+            "recorded": {
+              "billed": 3520000,
+              "savings": 1480000,
+              "owner": 740000,
+              "builder": 740000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T15:07:41.952Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T15:07:48.353Z"
+}

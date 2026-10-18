@@ -1,8 +1,9 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { PortalDrawingsSection } from "@/components/portal/portal-drawings"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
-import { loadReviewerPortalPage } from "../load-reviewer"
+import { loadReviewerPortalAccess } from "../load-reviewer"
 
 interface Props {
   params: Promise<{ token: string }>
@@ -10,8 +11,9 @@ interface Props {
 
 
 export default async function ReviewerDrawingsPage({ params }: Props) {
+  await connection()
   const { token } = await params
-  const { access } = await loadReviewerPortalPage(token)
+  const access = await loadReviewerPortalAccess(token)
 
   if (access.permissions.can_view_documents === false) {
     notFound()

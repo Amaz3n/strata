@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 
@@ -14,7 +15,8 @@ async function UsersData() {
 }
 
 async function UsersPageContent() {
-  await requireAnyPermissionGuard(["billing.manage", "platform.support.read"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.support.read"])
 
   return (
     <PageLayout
@@ -59,7 +61,17 @@ function UsersSkeleton() {
 
 export default function UsersPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="User Activity"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "User Activity" },
+      ]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <UsersPageContent />
     </Suspense>
   )

@@ -1,8 +1,8 @@
 "use client"
 
 import { newInvoiceHref } from "@/lib/financials/invoice-destinations"
-import { useEffect, useMemo, useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useMemo, useState, useTransition } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
@@ -314,6 +314,10 @@ export function ChangeOrdersClient({
   initialDraft,
 }: ChangeOrdersClientProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const changeOrderId = searchParams.get("changeOrder")
+  const initialChangeOrder = changeOrders.find((item) => item.id === changeOrderId) ?? null
+  const draftKey = initialDraft ? JSON.stringify([initialDraft.title ?? "", initialDraft.notes ?? ""]) : null
   const isMobile = useIsMobile()
   const [items, setItems] = useState<ChangeOrder[]>(changeOrders)
   const [filterProjectId, setFilterProjectId] = useState<string>(() =>
@@ -323,17 +327,37 @@ export function ChangeOrdersClient({
   const [sortColumn, setSortColumn] = useState<SortColumn>("created")
   const [sortDir, setSortDir] = useState<SortDirection>("desc")
   const [searchTerm, setSearchTerm] = useState("")
-const [sheetOpen, setSheetOpen] = useState(false)
-  const [detailSheetOpen, setDetailSheetOpen] = useState(false)
-  const [selectedChangeOrder, setSelectedChangeOrder] = useState<ChangeOrder | null>(null)
+  const [sheetOpen, setSheetOpen] = useState(Boolean(initialDraft))
+  const [detailSheetOpen, setDetailSheetOpen] = useState(Boolean(initialChangeOrder))
+  const [selectedChangeOrder, setSelectedChangeOrder] = useState<ChangeOrder | null>(initialChangeOrder)
   const [editingChangeOrder, setEditingChangeOrder] = useState<ChangeOrder | null>(null)
   const [isPending, startTransition] = useTransition()
-
-  // Arriving from a deep link with a reason already in hand: open the composer
-  // once, prefilled. Creating the CO itself stays the human's decision.
-  useEffect(() => {
-    if (initialDraft) setSheetOpen(true)
-  }, [initialDraft])
+  const [orderSource, setOrderSource] = useState(changeOrders)
+  const [orderIdSource, setOrderIdSource] = useState(changeOrderId)
+  const [draftSource, setDraftSource] = useState(draftKey)
+  if (orderSource !== changeOrders) {
+    setOrderSource(changeOrders)
+    setItems(changeOrders)
+    if (selectedChangeOrder) {
+      const updated = changeOrders.find((item) => item.id === selectedChangeOrder.id) ?? null
+      setSelectedChangeOrder(updated)
+      if (!updated) setDetailSheetOpen(false)
+    }
+    if (editingChangeOrder && !changeOrders.some((item) => item.id === editingChangeOrder.id)) {
+      setEditingChangeOrder(null)
+      setSheetOpen(false)
+    }
+  }
+  if (orderIdSource !== changeOrderId) {
+    setOrderIdSource(changeOrderId)
+    setSelectedChangeOrder(initialChangeOrder)
+    setDetailSheetOpen(Boolean(initialChangeOrder))
+  }
+  if (draftSource !== draftKey) {
+    setDraftSource(draftKey)
+    setEditingChangeOrder(null)
+    setSheetOpen(Boolean(initialDraft))
+  }
 
   const handleRowClick = (changeOrder: ChangeOrder) => {
     setSelectedChangeOrder(changeOrder)
@@ -961,6 +985,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
       </div>
 
       <ChangeOrderForm
+        key={editingChangeOrder?.id ?? `draft:${draftKey ?? "new"}`}
         open={sheetOpen}
         onOpenChange={(open) => {
           setSheetOpen(open)
@@ -978,6 +1003,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
       />
 
       <ChangeOrderDetailSheet
+        key={selectedChangeOrder?.id ?? "none"}
         changeOrder={selectedChangeOrder}
         project={projects.find((p) => p.id === selectedChangeOrder?.project_id)}
         open={detailSheetOpen}

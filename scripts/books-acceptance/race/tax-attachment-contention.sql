@@ -1,0 +1,15 @@
+-- Separate backend owns the mutex for a fresh file. Existing fixture files
+-- already have transaction locks, so never ask the probe to wait on those.
+create extension if not exists dblink with schema extensions;
+insert into public.files(id,org_id,file_name,storage_path,mime_type,size_bytes,checksum,uploaded_by,category,source) values('99300000-0000-4000-8000-000000000020','99300000-0000-4000-8000-000000000003','Concurrent source.txt','99300000-0000-4000-8000-000000000003/tax/concurrent.txt','text/plain',3,repeat('d',64),'99300000-0000-4000-8000-000000000001','financials','upload');
+insert into public.doc_versions(id,org_id,file_id,version_number,file_name,storage_path,mime_type,size_bytes,checksum) select '99300000-0000-4000-8000-000000000021',org_id,id,1,file_name,storage_path,mime_type,size_bytes,checksum from public.files where id='99300000-0000-4000-8000-000000000020';
+select extensions.dblink_connect('books_tax_lock_probe','host=/var/run/postgresql dbname='||current_database()||' user=postgres');
+select extensions.dblink_exec('books_tax_lock_probe','begin');
+select extensions.dblink_exec('books_tax_lock_probe','set local statement_timeout=''2s''');
+select * from extensions.dblink('books_tax_lock_probe',format('select 1 from (select pg_advisory_xact_lock(%s)) held',hashtextextended('tax-attachment:99300000-0000-4000-8000-000000000003:99300000-0000-4000-8000-000000000020',0))) as held(locked integer);
+select throws_ok($$select pg_temp.attachment_prepare('tax-contended-attachment-key',jsonb_build_array(jsonb_build_object('id','99300000-0000-4000-8000-000000000022','kind','permanent','amount_cents',1,'description','Concurrent attachment difference','evidence_reference','Concurrent calculation','evidence_file_id','99300000-0000-4000-8000-000000000020','evidence_snapshot',(select jsonb_build_object('version',1,'org_id',org_id,'file_id',id,'document_version_id',current_version_id,'file_name',file_name,'storage_path',storage_path,'mime_type',mime_type,'size_bytes',size_bytes,'checksum',checksum) from public.files where id='99300000-0000-4000-8000-000000000020')))))$$,'40001','Document evidence is changing concurrently; retry the operation','preparation refuses contended mutex without waiting');
+select throws_ok($$update public.files set file_name='Retry name.txt' where id='99300000-0000-4000-8000-000000000020'$$,'40001','Document evidence is changing concurrently; retry the operation','file writer refuses contended mutex after tuple lock');
+select throws_ok($$update public.doc_versions set notes='Retry annotation' where id='99300000-0000-4000-8000-000000000021'$$,'40001','Document evidence is changing concurrently; retry the operation','version writer refuses contended mutex after tuple lock');
+select extensions.dblink_exec('books_tax_lock_probe','commit');
+select extensions.dblink_disconnect('books_tax_lock_probe');
+select lives_ok($$update public.files set file_name='Retry name.txt' where id='99300000-0000-4000-8000-000000000020'$$,'writer succeeds after concurrent transaction releases mutex');

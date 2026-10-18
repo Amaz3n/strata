@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { PayablePreviewContext } from "./payable-preview-context";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   ArrowLeft,
@@ -29,6 +30,7 @@ export function PayableDetailShell({
   position?: string;
   paymentOpen: boolean;
 }) {
+  const [previewTarget, setPreviewTarget] = useState<HTMLDivElement | null>(null);
   const returnFocus = useRef<HTMLElement | null>(
     typeof document === "undefined"
       ? null
@@ -109,13 +111,14 @@ export function PayableDetailShell({
           </header>
           <div className="flex min-h-0 flex-1 flex-col min-[1100px]:flex-row">
             <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-              {children}
+              <PayablePreviewContext.Provider value={previewTarget}>{children}</PayablePreviewContext.Provider>
             </main>
             <aside
               aria-label="Invoice and supporting documents"
               className="flex h-[38%] min-h-[220px] min-w-0 shrink-0 flex-col border-t border-border/60 bg-muted/30 min-[1100px]:h-auto min-[1100px]:w-[46%] min-[1100px]:border-l min-[1100px]:border-t-0"
             >
-              {documentPane}
+              <div ref={setPreviewTarget} className="flex min-h-0 flex-1 flex-col empty:hidden [&:not(:empty)+div]:hidden" />
+              <div className="flex min-h-0 flex-1 flex-col">{documentPane}</div>
             </aside>
           </div>
         </DialogPrimitive.Content>

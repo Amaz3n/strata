@@ -1,11 +1,5 @@
 import type { ScheduleItem, ScheduleDependency } from "@/lib/types"
-import { addDays, parseDate, toDateString, daysBetween, isWeekend } from "@/components/schedule/types"
-
-export interface ScheduleImpact {
-  id: string
-  start_date?: string
-  end_date?: string
-}
+import { parseDate, daysBetween } from "@/components/schedule/types"
 
 export function wouldCreateDependencyCycle(
   dependencies: Array<{ item_id: string; depends_on_item_id: string }>,
@@ -31,82 +25,155 @@ export function wouldCreateDependencyCycle(
   return false
 }
 
-function skipWeekends(date: Date, days: number): Date {
-  const result = new Date(date)
-  let remaining = days
-  const step = days > 0 ? 1 : -1
-  while (remaining !== 0) {
-    result.setDate(result.getDate() + step)
-    if (!isWeekend(result)) {
-      remaining -= step
-    }
-  }
-  return result
+const MS_PER_DAY = 86_400_000
+
+function dayNumber(value: string | null | undefined): number | null {
+  if (!value) return null
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return null
+  const day = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / MS_PER_DAY
+  return dayToString(day) === value ? day : null
 }
 
-export function calculateScheduleImpacts(
-  items: ScheduleItem[],
-  dependencies: ScheduleDependency[],
-  initialUpdate: { id: string; start_date?: string; end_date?: string }
-): ScheduleImpact[] {
-  const impacts = new Map<string, ScheduleImpact>()
-  impacts.set(initialUpdate.id, { id: initialUpdate.id, start_date: initialUpdate.start_date, end_date: initialUpdate.end_date })
+function dayToString(day: number): string {
+  return new Date(day * MS_PER_DAY).toISOString().slice(0, 10)
+}
 
-  // Build dependency graph (forward direction: what items depend on item X)
-  const forwardDeps = new Map<string, ScheduleDependency[]>()
-  for (const dep of dependencies) {
-    if (!forwardDeps.has(dep.depends_on_item_id)) {
-      forwardDeps.set(dep.depends_on_item_id, [])
-    }
-    forwardDeps.get(dep.depends_on_item_id)!.push(dep)
+export interface ScheduleMove {
+  id: string
+  start_date: string
+  end_date: string
+}
+
+export interface PlannedScheduleChange {
+  id: string
+  start_date: string
+  end_date: string
+  /** The move that was asked for, or a successor the dependencies pulled along. */
+  cause: "requested" | "dependency"
+}
+
+export type ScheduleMovePlan =
+  | { ok: true; changes: PlannedScheduleChange[] }
+  | { ok: false; error: string }
+
+type PlannableItem = {
+  id: string
+  start_date?: string | null
+  end_date?: string | null
+  status?: string | null
+  constraint_type?: string | null
+}
+type PlannableDependency = Pick<ScheduleDependency, "item_id" | "depends_on_item_id" | "dependency_type" | "lag_days">
+
+/**
+ * What the schedule looks like once the requested moves land and every
+ * successor has been pushed to the latest date its predecessors allow.
+ *
+ * A successor with several predecessors starts when the LAST one lets it, so
+ * each item is settled once, after all of its predecessors, in topological
+ * order. Successors only move later: a predecessor finishing early never pulls
+ * work forward. Completed and cancelled work, and tasks pinned by a "must"
+ * constraint, keep their dates. Lags and durations are calendar days, computed
+ * in UTC so the plan does not shift with the viewer's timezone. A cycle in the
+ * stored graph is refused rather than looped over.
+ */
+export function planScheduleMove(
+  items: PlannableItem[],
+  dependencies: PlannableDependency[],
+  moves: ScheduleMove[],
+): ScheduleMovePlan {
+  const itemById = new Map(items.map((item) => [item.id, item]))
+  const current = new Map<string, { start: number; end: number }>()
+  for (const item of items) {
+    const start = dayNumber(item.start_date)
+    const end = dayNumber(item.end_date)
+    if (start === null && end === null) continue
+    current.set(item.id, { start: start ?? end ?? 0, end: end ?? start ?? 0 })
   }
 
-  // Queue for BFS propagation
-  const queue = [initialUpdate.id]
+  const planned = new Map<string, { start: number; end: number }>()
+  const requested = new Set<string>()
+  for (const move of moves) {
+    if (!itemById.has(move.id)) return { ok: false, error: "A schedule item in this move was not found" }
+    if (requested.has(move.id)) return { ok: false, error: "A schedule item appears twice in this move" }
+    const start = dayNumber(move.start_date)
+    const end = dayNumber(move.end_date)
+    if (start === null || end === null) return { ok: false, error: "Dates must be valid calendar dates" }
+    if (end < start) return { ok: false, error: "A task cannot end before it starts" }
+    requested.add(move.id)
+    planned.set(move.id, { start, end })
+  }
 
-  while (queue.length > 0) {
-    const currentId = queue.shift()!
-    const currentImpact = impacts.get(currentId)!
-    const currentItem = items.find(i => i.id === currentId)
-    if (!currentItem) continue
+  const forward = new Map<string, PlannableDependency[]>()
+  const incoming = new Map<string, PlannableDependency[]>()
+  for (const dependency of dependencies) {
+    if (!itemById.has(dependency.item_id) || !itemById.has(dependency.depends_on_item_id)) continue
+    forward.set(dependency.depends_on_item_id, [...(forward.get(dependency.depends_on_item_id) ?? []), dependency])
+    incoming.set(dependency.item_id, [...(incoming.get(dependency.item_id) ?? []), dependency])
+  }
 
-    const currentStart = parseDate(currentImpact.start_date || currentItem.start_date || currentImpact.end_date || currentItem.end_date || "")
-    const currentEnd = parseDate(currentImpact.end_date || currentItem.end_date || currentImpact.start_date || currentItem.start_date || "")
-    if (!currentStart || !currentEnd) continue
-
-    const outgoingDeps = forwardDeps.get(currentId) || []
-    
-    for (const dep of outgoingDeps) {
-      const targetId = dep.item_id // The item that depends on the current item
-      const targetItem = items.find(i => i.id === targetId)
-      if (!targetItem) continue
-      
-      const targetStart = parseDate(targetItem.start_date || "")
-      const targetEnd = parseDate(targetItem.end_date || "")
-      if (!targetStart || !targetEnd) continue
-
-      const duration = daysBetween(targetStart, targetEnd)
-      const lag = dep.lag_days ?? 0
-      const newStart = dep.dependency_type === "SS"
-        ? addDays(currentStart, lag)
-        : dep.dependency_type === "FF"
-          ? addDays(addDays(currentEnd, lag), -duration)
-          : dep.dependency_type === "SF"
-            ? addDays(addDays(currentStart, lag), -duration)
-            : addDays(currentEnd, lag)
-      const newStartStr = toDateString(newStart)
-      const newEndStr = toDateString(addDays(newStart, duration))
-
-      const existingImpact = impacts.get(targetId)
-      if (!existingImpact || existingImpact.start_date !== newStartStr || existingImpact.end_date !== newEndStr) {
-        impacts.set(targetId, { id: targetId, start_date: newStartStr, end_date: newEndStr })
-        queue.push(targetId)
-      }
+  const reachable = new Set<string>(requested)
+  const frontier = [...requested]
+  while (frontier.length > 0) {
+    const id = frontier.pop()
+    if (!id) break
+    for (const dependency of forward.get(id) ?? []) {
+      if (reachable.has(dependency.item_id)) continue
+      reachable.add(dependency.item_id)
+      frontier.push(dependency.item_id)
     }
   }
 
-  // Convert map to array
-  return Array.from(impacts.values())
+  const pending = new Map<string, number>()
+  for (const id of reachable) {
+    pending.set(id, (incoming.get(id) ?? []).filter((dependency) => reachable.has(dependency.depends_on_item_id)).length)
+  }
+  const ready = [...reachable].filter((id) => pending.get(id) === 0).sort()
+  const order: string[] = []
+  while (ready.length > 0) {
+    const id = ready.shift()
+    if (!id) break
+    order.push(id)
+    for (const dependency of forward.get(id) ?? []) {
+      const left = (pending.get(dependency.item_id) ?? 0) - 1
+      pending.set(dependency.item_id, left)
+      if (left === 0) ready.push(dependency.item_id)
+    }
+  }
+  if (order.length !== reachable.size) return { ok: false, error: "These tasks depend on each other in a loop; remove one dependency first" }
+
+  for (const id of order) {
+    if (requested.has(id)) continue
+    const item = itemById.get(id)
+    const own = current.get(id)
+    if (!item || !own) continue
+    if (item.status === "completed" || item.status === "cancelled") continue
+    if (item.constraint_type === "must_start_on" || item.constraint_type === "must_finish_on") continue
+    const duration = own.end - own.start
+    let start = own.start
+    for (const dependency of incoming.get(id) ?? []) {
+      const predecessor = planned.get(dependency.depends_on_item_id) ?? current.get(dependency.depends_on_item_id)
+      if (!predecessor) continue
+      const lag = dependency.lag_days ?? 0
+      const earliest = dependency.dependency_type === "SS" ? predecessor.start + lag
+        : dependency.dependency_type === "FF" ? predecessor.end + lag - duration
+          : dependency.dependency_type === "SF" ? predecessor.start + lag - duration
+            : predecessor.end + lag
+      if (earliest > start) start = earliest
+    }
+    if (start !== own.start) planned.set(id, { start, end: start + duration })
+  }
+
+  const changes: PlannedScheduleChange[] = []
+  for (const id of [...requested, ...order.filter((candidate) => !requested.has(candidate))]) {
+    const next = planned.get(id)
+    if (!next) continue
+    const before = current.get(id)
+    if (before && before.start === next.start && before.end === next.end) continue
+    changes.push({ id, start_date: dayToString(next.start), end_date: dayToString(next.end), cause: requested.has(id) ? "requested" : "dependency" })
+  }
+  return { ok: true, changes }
 }
 
 export function calculateCriticalPath(items: ScheduleItem[], dependencies: ScheduleDependency[]): Set<string> {
@@ -169,4 +236,50 @@ function getDuration(item?: ScheduleItem): number {
   const end = parseDate(item.end_date)
   if (!start || !end) return 1
   return Math.max(1, daysBetween(start, end))
+}
+
+const DEPENDENCY_TYPES = new Set(["FS", "SS", "FF", "SF"])
+
+export interface TemplateDependencyEdge {
+  item_id: string
+  depends_on_item_id: string
+  dependency_type: "FS" | "SS" | "FF" | "SF"
+  lag_days: number
+}
+
+/**
+ * The links a schedule template declares between its tasks, by stable template
+ * key (`depends_on: [{ key, type, lag_days }]`), resolved onto the items one
+ * home was given. `placed` is each template task's key and the item built for
+ * it, in template order. A link to a key the template does not have, to a key
+ * two tasks share, a task depending on itself, or a loop is a template defect:
+ * it is refused rather than half-applied, because a release that silently drops
+ * a link schedules the house as if the work were independent.
+ */
+export function resolveTemplateDependencies(
+  placed: Array<{ key: string; itemId: string; dependsOn: unknown }>,
+): TemplateDependencyEdge[] {
+  const idsByKey = new Map<string, string[]>()
+  for (const entry of placed) idsByKey.set(entry.key, [...(idsByKey.get(entry.key) ?? []), entry.itemId])
+  const edges: TemplateDependencyEdge[] = []
+  for (const entry of placed) {
+    if (entry.dependsOn === undefined || entry.dependsOn === null) continue
+    if (!Array.isArray(entry.dependsOn)) throw new Error(`The schedule template's "${entry.key}" task lists its predecessors in an unreadable form`)
+    for (const link of entry.dependsOn) {
+      const record = typeof link === "object" && link !== null ? link as Record<string, unknown> : {}
+      const key = typeof link === "string" ? link : record.key
+      if (typeof key !== "string" || !key) throw new Error(`The schedule template's "${entry.key}" task has a predecessor without a key`)
+      const targets = idsByKey.get(key) ?? []
+      if (targets.length === 0) throw new Error(`The schedule template's "${entry.key}" task depends on "${key}", which the template does not have`)
+      if (targets.length > 1) throw new Error(`The schedule template's "${entry.key}" task depends on "${key}", which more than one task uses as its key`)
+      const type = record.type ?? "FS"
+      if (typeof type !== "string" || !DEPENDENCY_TYPES.has(type)) throw new Error(`The schedule template's "${entry.key}" link to "${key}" has an unknown type`)
+      const lag = record.lag_days ?? 0
+      if (typeof lag !== "number" || !Number.isInteger(lag) || Math.abs(lag) > 365) throw new Error(`The schedule template's "${entry.key}" link to "${key}" has an invalid lag`)
+      if (targets[0] === entry.itemId) throw new Error(`The schedule template's "${entry.key}" task depends on itself`)
+      if (wouldCreateDependencyCycle(edges, targets[0], entry.itemId)) throw new Error(`The schedule template's links loop through "${entry.key}"`)
+      edges.push({ item_id: entry.itemId, depends_on_item_id: targets[0], dependency_type: type as TemplateDependencyEdge["dependency_type"], lag_days: lag })
+    }
+  }
+  return edges
 }

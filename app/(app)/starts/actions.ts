@@ -4,17 +4,21 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
-import { setReleaseSlot } from "@/lib/services/even-flow"
+import { setReleaseSlot, setThroughputTarget } from "@/lib/services/even-flow"
+import { clearSuperintendentLimits, setSuperintendentLimits } from "@/lib/services/superintendent-capacity"
 import {
   attestGate, cancelRelease, cancelStartPackage, getStartPackage, listSuperintendentCandidates,
-  openStartPackage, refreshAutoGates, releaseStart, releaseStarts, reopenGate, retryRelease,
+  openStartPackage, refreshAutoGates, releaseStart, releaseStarts, reopenGate, retryRelease, retryStartTradeNotice, retryStartConfirmation, retryStartNotificationDelivery, inspectStartNotificationDeliveries,
   seedDefaultGateDefinitions, setProjectSuperintendent, updateStartPackage, upsertGateDefinition,
   waiveGate,
 } from "@/lib/services/starts"
 import {
   gateAttestSchema, gateDefinitionSchema, gateWaiveSchema, releaseInputSchema,
-  startPackageInputSchema, startPackageUpdateSchema, targetWeekSchema,
+  startPackageInputSchema, startPackageUpdateSchema, superintendentAssignmentSchema, superintendentLimitSchema, targetWeekSchema,
+  throughputTargetSchema,
 } from "@/lib/validation/starts"
+import { resolveTradeNotice } from "@/lib/services/trade-notices"
+import { confirmationRecoveryInputSchema, notificationRecoveryInputSchema, deliveryInspectionInputSchema } from "@/lib/services/starts-confirmation-recovery"
 
 const uuid = z.string().uuid()
 
@@ -86,6 +90,26 @@ export async function retryReleaseAction(packageId: string) {
   return await run(() => retryRelease(uuid.parse(packageId)), packagePaths(packageId))
 }
 
+export async function retryStartConfirmationAction(packageId: string, input: unknown) {
+  return await run(() => retryStartConfirmation(uuid.parse(packageId), confirmationRecoveryInputSchema.parse(input)), packagePaths(packageId))
+}
+
+export async function retryStartNotificationDeliveryAction(packageId: string, input: unknown) {
+  return await run(() => retryStartNotificationDelivery(uuid.parse(packageId), notificationRecoveryInputSchema.parse(input)), packagePaths(packageId))
+}
+
+export async function inspectStartNotificationDeliveriesAction(packageId: string, input: unknown) {
+  return await run(() => inspectStartNotificationDeliveries(uuid.parse(packageId), deliveryInspectionInputSchema.parse(input)), [])
+}
+
+export async function retryStartTradeNoticeAction(packageId: string, noticeId: string) {
+  return await run(() => retryStartTradeNotice(uuid.parse(packageId), z.string().regex(/^[1-9]\d{0,18}$/).parse(noticeId)), packagePaths(packageId))
+}
+
+export async function resolveTradeNoticeAction(input: unknown, packageId?: string) {
+  return await run(() => resolveTradeNotice(input), [...packagePaths(packageId ? uuid.parse(packageId) : undefined), "/schedule/trades"])
+}
+
 export async function cancelReleaseAction(packageId: string) {
   return await run(() => cancelRelease(uuid.parse(packageId)), packagePaths(packageId))
 }
@@ -107,9 +131,21 @@ export async function seedDefaultGatesAction() {
   return await run(() => seedDefaultGateDefinitions(), ["/settings/starts"])
 }
 
-export async function setProjectSuperintendentAction(projectId: string, userId: string | null) {
+export async function setThroughputTargetAction(input: unknown) {
+  return await run(() => setThroughputTarget(throughputTargetSchema.parse(input)), ["/starts", "/settings/starts"])
+}
+
+export async function setSuperintendentLimitsAction(input: unknown) {
+  return await run(() => setSuperintendentLimits(superintendentLimitSchema.parse(input)), ["/settings/starts"])
+}
+
+export async function clearSuperintendentLimitsAction(userId: string) {
+  return await run(() => clearSuperintendentLimits(uuid.parse(userId)), ["/settings/starts"])
+}
+
+export async function setProjectSuperintendentAction(projectId: string, userId: string | null, input: unknown = {}) {
   return await run(
-    () => setProjectSuperintendent(uuid.parse(projectId), userId ? uuid.parse(userId) : null),
+    () => setProjectSuperintendent(uuid.parse(projectId), userId ? uuid.parse(userId) : null, superintendentAssignmentSchema.parse(input)),
     [`/projects/${projectId}`, "/", ...packagePaths()],
   )
 }

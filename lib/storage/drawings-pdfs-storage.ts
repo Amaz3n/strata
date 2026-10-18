@@ -1,4 +1,5 @@
 import "server-only"
+import { resolveDrawingPdfSourceKey } from "./drawing-pdf-source"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { Readable } from "node:stream"
@@ -7,6 +8,9 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   GetObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  ListPartsCommand,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
@@ -68,6 +72,18 @@ function normalizeKey(path: string): string {
   return `${R2_PREFIX}/${normalized}`
 }
 
+async function resolveReadKey(path: string): Promise<string> {
+  return resolveDrawingPdfSourceKey(path, async (Key) => {
+    try {
+      await getR2Client().send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key }));
+      return true;
+    } catch (error: any) {
+      if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NotFound" || error?.name === "NoSuchKey") return false;
+      throw error;
+    }
+  });
+}
+
 async function streamToBuffer(stream: any): Promise<Buffer> {
   if (stream instanceof Readable) {
     const chunks: Buffer[] = []
@@ -112,6 +128,10 @@ export async function createDrawingPdfUploadUrl(params: {
 }
 
 export async function createDrawingPdfMultipartUpload(params: {
+  transferId?: string
+  identity?: string
+  operationId?: string
+  generation?: string
   orgId: string
   path: string
   contentType: string
@@ -124,6 +144,7 @@ export async function createDrawingPdfMultipartUpload(params: {
   const client = getR2Client()
   const result = await client.send(
     new CreateMultipartUploadCommand({
+      Metadata: params.transferId && params.identity ? { "transfer-id": params.transferId, "content-identity": params.identity, ...(params.operationId ? { operation_id: params.operationId, generation: params.generation! } : {}) } : undefined,
       Bucket: R2_BUCKET,
       Key: normalizeKey(storagePath),
       ContentType: contentType,
@@ -202,6 +223,7 @@ export async function abortDrawingPdfMultipartUpload(params: {
   const storagePath = ensureOrgScopedPath(orgId, params.path)
 
   const client = getR2Client()
+  try {
   await client.send(
     new AbortMultipartUploadCommand({
       Bucket: R2_BUCKET,
@@ -209,6 +231,10 @@ export async function abortDrawingPdfMultipartUpload(params: {
       UploadId: params.uploadId,
     })
   )
+  } catch (error) {
+    const failure = error as { name?: string; $metadata?: { httpStatusCode?: number } }
+    if (failure.name !== "NoSuchUpload" && failure.$metadata?.httpStatusCode !== 404) throw error
+  }
 }
 
 export async function uploadDrawingPdfObject(params: {
@@ -250,7 +276,7 @@ export async function downloadDrawingPdfObject(params: {
   const result = await client.send(
     new GetObjectCommand({
       Bucket: R2_BUCKET,
-      Key: normalizeKey(storagePath),
+      Key: await resolveReadKey(storagePath),
     })
   )
   if (!result.Body) {
@@ -272,9 +298,58 @@ export async function getDrawingPdfSignedUrl(params: {
   const client = getR2Client()
   const command = new GetObjectCommand({
     Bucket: R2_BUCKET,
-    Key: normalizeKey(storagePath),
+    Key: await resolveReadKey(storagePath),
   })
   return getSignedUrl(client, command, {
     expiresIn: params.expiresIn ?? 3600,
   })
+}
+
+/** HEAD native uploads only; library fallback cannot prove transfer completion. */
+export async function headDrawingPdfObject(params: { orgId: string; path: string; resolveSource?: boolean }): Promise<{ size: number; etag?: string; metadata?: Record<string, string> }> {
+  getProvider()
+  const path = ensureOrgScopedPath(params.orgId, params.path)
+  const result = await getR2Client().send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: params.resolveSource ? await resolveReadKey(path) : normalizeKey(path) }))
+  if (typeof result.ContentLength !== "number") throw new Error("Storage omitted object length")
+  return { size: result.ContentLength, etag: result.ETag, metadata: result.Metadata }
+}
+
+export async function getDrawingPdfMultipartStatus(params: { orgId: string; path: string; uploadId: string; transferId: string; identity: string; fileSize: number }): Promise<{ state: "uploading" | "completed" | "unknown"; parts?: Array<{ partNumber: number; etag: string; size: number }> }> {
+  getProvider()
+  const path = ensureOrgScopedPath(params.orgId, params.path)
+  try {
+    const object = await headDrawingPdfObject({ orgId: params.orgId, path })
+    if (object.size === params.fileSize && object.metadata?.["transfer-id"] === params.transferId && object.metadata?.["content-identity"] === params.identity) return { state: "completed" }
+    return { state: "unknown" }
+  } catch (error) {
+    const storageError = error as { name?: string; $metadata?: { httpStatusCode?: number } }
+    if (storageError.$metadata?.httpStatusCode !== 404 && storageError.name !== "NotFound" && storageError.name !== "NoSuchKey") throw error
+  }
+  const parts: Array<{ partNumber: number; etag: string; size: number }> = []
+  let marker: string | undefined
+  do {
+    let result
+    try {
+      result = await getR2Client().send(new ListPartsCommand({ Bucket: R2_BUCKET, Key: normalizeKey(path), UploadId: params.uploadId, PartNumberMarker: marker, MaxParts: 1000 }))
+    } catch (error) {
+      if ((error as { name?: string }).name === "NoSuchUpload") return { state: "unknown" }
+      throw error
+    }
+    for (const part of result.Parts ?? []) {
+      if (!part.PartNumber || !part.ETag || typeof part.Size !== "number") throw new Error("Invalid remote part inventory")
+      parts.push({ partNumber: part.PartNumber, etag: part.ETag, size: part.Size })
+    }
+    if (!result.IsTruncated) break
+    if (!result.NextPartNumberMarker || result.NextPartNumberMarker === marker || parts.length > 10000) throw new Error("Invalid remote pagination")
+    marker = result.NextPartNumberMarker
+  } while (true)
+  return { state: "uploading", parts }
+}
+
+/** Deletes only an explicitly org-scoped native generation, never a library fallback. */
+export async function deleteDrawingPdfObject(params: { orgId: string; path: string }): Promise<void> {
+  const segments = params.path.split("/")
+  if (segments.length !== 6 || segments[0] !== params.orgId || segments[2] !== "drawings" || segments[3] !== "uploads" || segments.some(segment => !segment || segment === "." || segment === "..") || params.path.includes("\\")) throw new Error("Invalid native drawing upload path")
+  getProvider()
+  await getR2Client().send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: normalizeKey(params.path) }))
 }

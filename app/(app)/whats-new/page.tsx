@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -11,9 +12,10 @@ import {
 } from "@/lib/services/release-notes"
 
 
-const MANAGE_PERMISSIONS = ["platform.feature_flags.manage", "features.manage"]
+const MANAGE_PERMISSIONS = ["platform.feature_flags.manage"]
 
 async function WhatsNewPageContent() {
+  await connection()
   const { user, orgId } = await requireAuth()
   const canManage = await hasAnyPermission(MANAGE_PERMISSIONS, {
     userId: user.id,
@@ -44,7 +46,7 @@ async function WhatsNewPageContent() {
 
 export default function WhatsNewPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="What's New"><PageLoadingSkeleton /></PageLayout>}>
       <WhatsNewPageContent />
     </Suspense>
   )

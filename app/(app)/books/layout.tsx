@@ -1,16 +1,21 @@
 import { redirect } from "next/navigation"
+import { connection } from "next/server"
+import { Suspense, type ReactNode } from "react"
 
 import { isBooksWorkspaceEnabled } from "@/lib/services/books/module"
 
-// Workspace availability is organization/session data. A synthetic anonymous
-// build sample cannot decide it; real sessions remain validated in dev.
-export const instant = {
-  unstable_disableBuildValidation: true,
-}
+export const instant = true
 
-export default async function BooksLayout({ children }: { children: React.ReactNode }) {
+async function BooksAccess() {
+  await connection()
   if (!(await isBooksWorkspaceEnabled())) {
     redirect("/settings?tab=accounting&returnTo=%2Fbooks")
   }
-  return children
+  return null
+}
+
+export default function BooksLayout({ children }: { children: ReactNode }) {
+  // Each page's readers and mutations enforce the fresh workspace and permission
+  // gates. The layout redirect must not hold their public destination shells.
+  return <><Suspense fallback={null}><BooksAccess /></Suspense>{children}</>
 }

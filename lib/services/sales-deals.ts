@@ -1,8 +1,21 @@
+import { getAgreementSigningState } from "@/lib/services/agreement-signing-status"
+import type { AgreementSigningState } from "@/lib/sales/agreement-signing-state"
 import type { PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
-import { getDivisionAccessForUser } from "@/lib/services/authorization"
+import { salesAgreementDetailSchema, salesReservationDetailSchema } from "@/lib/validation/sales-deals"
+import { authorize, requireAuthorization, getDivisionAccessForUser } from "@/lib/services/authorization"
+import { shouldShowCustomBuildNavigation } from "@/lib/product-tier"
 import { requireOrgContext } from "@/lib/services/context"
-import { requirePermission } from "@/lib/services/permissions"
-import { getProspect, listProspectActivity, type Prospect, type ProspectActivity } from "@/lib/services/prospects"
+import { orgHasActiveNonProductionProjects } from "@/lib/services/production-desk-scope"
+import { hasPermission, requirePermission } from "@/lib/services/permissions"
+import { canWriteDeals } from "@/lib/services/prospect-write-access"
+import {
+  getProspect,
+  listProspectActivity,
+  listProspectAttributions,
+  type Prospect,
+  type ProspectActivity,
+  type ProspectAttributionHistory,
+} from "@/lib/services/prospects"
 
 /**
  * The seven stages of a production sale, in order. Observed from real state
@@ -153,28 +166,46 @@ export interface ListSalesDealsOptions {
   dealId?: string
 }
 
+export interface SalesBoard {
+  deals: SalesDeal[]
+  /**
+   * The read stopped at the row cap, so deals exist that are not here. Decided
+   * on what the database returned, before division filtering — a division-limited
+   * consultant whose visible rows fall under the cap is still looking at a cut list.
+   */
+  truncated: boolean
+}
+
 /**
  * Every deal the caller may see, one row per buyer. Division scoping mirrors
  * getBacklogReport: the RPC filters on the requested division, and an
  * assigned-only user is additionally filtered down to their own divisions.
  * Deals with no community (an unattributed lead) stay visible to everyone —
- * otherwise a brand-new inquiry would be invisible until someone tags it.
+ * otherwise a brand-new inquiry would be invisible until someone tags it —
+ * except on an org that also builds custom homes, where a lead with no
+ * community is a Pipeline deal (`leadDesk`) and is listed there only. A single
+ * deal asked for by id is always found, whichever desk lists it.
  */
-export async function listSalesDeals(opts: ListSalesDealsOptions = {}, orgId?: string): Promise<SalesDeal[]> {
+export async function listSalesBoard(opts: ListSalesDealsOptions = {}, orgId?: string): Promise<SalesBoard> {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
-  const access = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
+  const [access, hasCustomWork] = await Promise.all([
+    getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId }),
+    opts.dealId ? Promise.resolve(false) : orgHasActiveNonProductionProjects(context.orgId),
+  ])
   if (opts.divisionId && access.assignedOnly && !access.divisionIds.includes(opts.divisionId)) {
-    return []
+    return { deals: [], truncated: false }
   }
 
+  const limit = opts.limit ?? 500
   const { data, error } = await context.supabase.rpc("get_sales_deals", {
     p_org_id: context.orgId,
     p_division_id: opts.divisionId ?? null,
     p_community_id: opts.communityId ?? null,
     p_include_closed: opts.includeClosed ?? true,
-    p_limit: opts.limit ?? 500,
+    p_limit: limit,
     p_deal_id: opts.dealId ?? null,
+    p_include_communityless: Boolean(opts.dealId) || !shouldShowCustomBuildNavigation(context.productTier, hasCustomWork),
   })
   if (error) throw new Error(`Failed to load sales deals: ${error.message}`)
 
@@ -182,7 +213,12 @@ export async function listSalesDeals(opts: ListSalesDealsOptions = {}, orgId?: s
   const scoped = access.assignedOnly
     ? rows.filter((row) => !row.division_id || access.divisionIds.includes(row.division_id))
     : rows
-  return scoped.map(mapDeal)
+  return { deals: scoped.map(mapDeal), truncated: rows.length >= limit }
+}
+
+/** The deals alone, for callers that page or cap on their own. */
+export async function listSalesDeals(opts: ListSalesDealsOptions = {}, orgId?: string): Promise<SalesDeal[]> {
+  return (await listSalesBoard(opts, orgId)).deals
 }
 
 /**
@@ -206,6 +242,9 @@ export interface SalesDealReservation {
 }
 
 export interface SalesDealDetail {
+  viewer: { orgId: string; actorId: string }
+  capabilities: { canEditProspect: boolean; canManageSale: boolean }
+  signing: AgreementSigningState | null
   deal: SalesDeal
   reservation: SalesDealReservation | null
   /** Priced breakdown off the executed agreement snapshot, when there is one. */
@@ -217,6 +256,8 @@ export interface SalesDealDetail {
    * consultant edits. Null for a deal anchored by an imported agreement.
    */
   prospect: Prospect | null
+  /** Every touch that brought the buyer in, and the earlier deal when they came back. */
+  attribution: ProspectAttributionHistory | null
 }
 
 /**
@@ -246,39 +287,57 @@ export async function listLostReasons(prospectIds: string[], orgId?: string): Pr
  * price breakdown, and the event timeline. Everything the detail page renders.
  */
 export async function getSalesDealDetail(dealId: string, orgId?: string): Promise<SalesDealDetail | null> {
-  const deal = await getSalesDeal(dealId, orgId)
-  if (!deal) return null
-
   const context = await requireOrgContext(orgId)
-  const [reservationResult, contractResult, activity, prospect] = await Promise.all([
+  const deal = await getSalesDeal(dealId, context.orgId)
+  if (!deal) return null
+  await requirePermission("sales.read", context)
+  if (deal.projectId) await requireAuthorization({ ...context, projectId: deal.projectId, permission: "sales.read" })
+  const [editOrg, manageOrg, editHome, manageHome] = await Promise.all([
+    canWriteDeals(context), hasPermission("sales.manage", context),
+    deal.projectId ? authorize({ ...context, projectId: deal.projectId, permission: "project.manage" }).then(result => result.allowed) : Promise.resolve(true),
+    deal.projectId ? authorize({ ...context, projectId: deal.projectId, permission: "sales.manage" }).then(result => result.allowed) : Promise.resolve(true),
+  ])
+  const [reservationResult, contractResult, activity, prospect, signing, attribution] = await Promise.all([
     deal.reservationId
       ? context.supabase
           .from("lot_reservations")
-          .select("id, status, expires_at, asking_price_cents, deposit_required_cents, deposit_invoice_id, notes")
+          .select("id, lot_id, community_id, prospect_id, contract_id, status, expires_at, asking_price_cents, deposit_required_cents, deposit_invoice_id, notes")
           .eq("org_id", context.orgId)
           .eq("id", deal.reservationId)
           .maybeSingle()
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, error: null }),
     deal.contractId
       ? context.supabase
           .from("contracts")
-          .select("snapshot")
+          .select("project_id, contract_type, snapshot")
           .eq("org_id", context.orgId)
           .eq("id", deal.contractId)
           .maybeSingle()
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, error: null }),
     deal.prospectId ? listProspectActivity(deal.prospectId, context.orgId, 60) : Promise.resolve([]),
     deal.prospectId ? getProspect(deal.prospectId, context.orgId) : Promise.resolve(null),
+    deal.contractId && deal.contractStatus === "draft" ? getAgreementSigningState(deal.contractId,context.orgId) : Promise.resolve(null),
+    deal.prospectId ? listProspectAttributions(deal.prospectId, context.orgId) : Promise.resolve(null),
   ])
 
-  const reservationRow = reservationResult.data
-  const snapshot = contractResult.data?.snapshot as
-    | { purchase_agreement?: { pricing?: PurchaseAgreementPricing } }
-    | null
-    | undefined
+  if (reservationResult.error) throw new Error(`Failed to load deal reservation: ${reservationResult.error.message}`)
+  if (contractResult.error) throw new Error(`Failed to load deal agreement: ${contractResult.error.message}`)
+  if (deal.reservationId && !reservationResult.data) throw new Error("The deal reservation is unavailable. Reload the buyer file before continuing.")
+  if (deal.contractId && !contractResult.data) throw new Error("The deal agreement is unavailable. Reload the buyer file before continuing.")
+  const reservationRow = reservationResult.data ? salesReservationDetailSchema.parse(reservationResult.data) : null
+  const contract = contractResult.data ? salesAgreementDetailSchema.parse(contractResult.data) : null
+  if (reservationRow && (reservationRow.id !== deal.reservationId || reservationRow.lot_id !== deal.lotId || reservationRow.community_id !== deal.communityId || reservationRow.prospect_id !== deal.prospectId || reservationRow.contract_id !== deal.contractId)) throw new Error("The deal reservation changed. Reload the buyer file before continuing.")
+  if (contract && contract.project_id !== deal.projectId) throw new Error("The deal agreement belongs to another home. Reload the buyer file before continuing.")
+  if (reservationRow) {
+    const { data: lot, error: lotError } = await context.supabase.from("lots").select("id, community_id, project_id").eq("org_id", context.orgId).eq("id", reservationRow.lot_id).maybeSingle()
+    if (lotError || !lot || lot.community_id !== deal.communityId || lot.project_id !== deal.projectId) throw new Error("The reserved lot changed or is unavailable. Reload the buyer file before continuing.")
+  }
 
   return {
     deal,
+    viewer: { orgId: context.orgId, actorId: context.userId },
+    capabilities: { canEditProspect: editOrg && editHome, canManageSale: manageOrg && manageHome },
+    signing,
     reservation: reservationRow
       ? {
           id: String(reservationRow.id),
@@ -290,8 +349,9 @@ export async function getSalesDealDetail(dealId: string, orgId?: string): Promis
           notes: reservationRow.notes ?? null,
         }
       : null,
-    pricing: snapshot?.purchase_agreement?.pricing ?? null,
+    pricing: contract?.snapshot.purchase_agreement?.pricing ?? null,
     activity,
     prospect,
+    attribution,
   }
 }

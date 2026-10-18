@@ -45,6 +45,7 @@ const PORTAL_CAPABILITY_KEYS = [
   "can_view_punch_items",
   "can_view_purchase_orders",
   "can_report_po_completion",
+  "can_acknowledge_purchase_orders",
 ] as const
 
 export type PortalCapabilityKey = (typeof PORTAL_CAPABILITY_KEYS)[number]

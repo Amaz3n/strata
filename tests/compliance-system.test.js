@@ -465,8 +465,11 @@ test("compliance is checked before award, not only at the payable", () => {
   assert.match(bids, /getBidInviteComplianceWarnings/)
   assert.match(bids, /compliance_warning: complianceWarnings\.get\(invite\.company_id\)/)
 
-  const award = source("components/bids/bid-award-panel.tsx")
-  assert.match(award, /complianceWarning/)
+  const award = source("components/bids/bid-award-sheet.tsx")
+  assert.match(award, /submission\.invite\?\.compliance_warning/)
+  assert.match(award, /<Gate ok=\{!compliance\}/)
+  assert.match(award, /!needsException \|\| exception\.trim\(\)/)
+  assert.match(bids, /warnings\.length && !parsed\.readiness_exception\?\.trim\(\)/)
 })
 
 /* ================================================================

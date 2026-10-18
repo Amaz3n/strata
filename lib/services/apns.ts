@@ -77,6 +77,7 @@ export interface ApnsResult {
 }
 
 export interface ApnsPayload {
+  collapseId?: string
   deviceToken: string
   title: string
   body: string
@@ -85,6 +86,7 @@ export interface ApnsPayload {
 }
 
 export async function sendApnsNotification(input: ApnsPayload): Promise<ApnsResult> {
+  if (input.collapseId !== undefined && (!input.collapseId || Buffer.byteLength(input.collapseId) > 64)) throw new Error("Invalid APNs collapse identifier")
   const config = readConfig()
   if (!config) return { ok: false, status: 0, unregistered: false, reason: "apns_not_configured" }
 
@@ -117,6 +119,7 @@ export async function sendApnsNotification(input: ApnsPayload): Promise<ApnsResu
       "apns-topic": config.bundleId,
       "apns-push-type": "alert",
       "apns-priority": "10",
+      ...(input.collapseId ? { "apns-collapse-id": input.collapseId } : {}),
       "content-type": "application/json",
     })
 

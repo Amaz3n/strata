@@ -40,13 +40,38 @@ const forecastHistory: ReportDefinition = {
   },
 }
 
+const SHIFT_OPTIONS = [0, -4, -2, 2, 4, 8, 12].map((weeks) => ({ value: String(weeks), label: weeks === 0 ? "On schedule" : `${weeks > 0 ? "+" : "−"}${Math.abs(weeks)} week${Math.abs(weeks) === 1 ? "" : "s"}` }))
+const PACE_OPTIONS = [100, 125, 75, 50, 0].map((percent) => ({ value: String(percent), label: percent === 100 ? "Starts as planned" : `Starts at ${percent}%` }))
+
 const cashFlowForecast: ReportDefinition = {
   slug: "cash-flow-forecast", title: "Cash-Flow Forecast", group: "financial",
-  summary: "Expected owner receipts less approved bills and committed-but-unbilled cost by month.", scopes: ["org","project"], permissions: ["report.read"], ambientScope: "full",
+  summary: "Expected owner receipts and closing proceeds less approved bills, committed-but-unbilled cost, planned starts and land obligations (takedowns net of deposits, deposits, extension fees) by month.", scopes: ["org","project"], permissions: ["report.read"], ambientScope: "full",
+  params: [
+    { key: "closing_shift", kind: "select", label: "Closings", options: SHIFT_OPTIONS },
+    { key: "start_pace", kind: "select", label: "Starts", options: PACE_OPTIONS },
+  ],
   run: async (ctx) => {
-    const report = await getCashFlowForecast({ projectId: ctx.projectId, divisionId: ctx.divisionId, communityId: ctx.communityId })
-    const net = report.rows.reduce((sum, row) => sum + row.net_cents, 0)
-    return { stats: [{ key: "net", label: "Forecast net", value: formatMoneyCents(net), tone: net < 0 ? "warning" : "positive" }], tables: [{ key: "cash_flow", columns: [{ key: "month", header: "Month" }, { key: "inflow", header: "Inflows", type: "money" }, { key: "outflow", header: "Approved bills", type: "money" }, { key: "unbilled", header: "Committed unbilled", type: "money" }, { key: "net", header: "Net", type: "money" }], rows: report.rows.map((row) => ({ key: row.month, cells: { month: row.month, inflow: row.inflow_cents, outflow: row.outflow_cents, unbilled: row.committed_unbilled_cents, net: { value: row.net_cents, tone: row.net_cents < 0 ? "warning" : "positive" } } })), emptyMessage: "No forecast cash movements in this scope." }] }
+    const report = await getCashFlowForecast({
+      projectId: ctx.projectId, divisionId: ctx.divisionId, communityId: ctx.communityId,
+      scenario: { closingShiftWeeks: Number(ctx.params.closing_shift ?? 0), startPacePercent: Number(ctx.params.start_pace ?? 100) },
+    })
+    const { starts, closings } = report.drivers
+    const scenarioNote = report.scenario.closingShiftWeeks === 0 && report.scenario.startPacePercent === 100
+      ? "Base plan."
+      : `What-if: closings ${report.scenario.closingShiftWeeks >= 0 ? "+" : "−"}${Math.abs(report.scenario.closingShiftWeeks)} weeks, planned starts at ${report.scenario.startPacePercent}%.`
+    const gaps = [
+      starts.restricted ? "planned starts are not shown without budget and commitment access" : null,
+      closings.restricted ? "closing proceeds are not shown without invoice and sales access" : null,
+      starts.unbudgetedCount ? `${starts.unbudgetedCount} planned start${starts.unbudgetedCount === 1 ? " has" : "s have"} no approved budget` : null,
+      starts.undatedCount ? `${starts.undatedCount} planned start${starts.undatedCount === 1 ? " has" : "s have"} no date` : null,
+      closings.undatedCount ? `${closings.undatedCount} closing${closings.undatedCount === 1 ? " has" : "s have"} no date` : null,
+      closings.unsignedCount ? `${closings.unsignedCount} closing${closings.unsignedCount === 1 ? " has" : "s have"} no active agreement` : null,
+    ].filter((gap): gap is string => gap !== null)
+    return {
+      subtitle: `${scenarioNote} ${starts.count} planned start${starts.count === 1 ? "" : "s"}, ${closings.count} scheduled closing${closings.count === 1 ? "" : "s"}.`,
+      notice: { tone: "info", message: `Construction financing (loan draws, interest and payoffs) is not included.${gaps.length ? ` Left out for lack of data: ${gaps.join("; ")}.` : ""}` },
+      stats: [{ key: "net", label: "Forecast net", value: formatMoneyCents(report.totals.net_cents), tone: report.totals.net_cents < 0 ? "warning" : "positive" }],
+      tables: [{ key: "cash_flow", columns: [{ key: "month", header: "Month" }, { key: "inflow", header: "Receivables", type: "money" }, { key: "closings", header: "Closing proceeds", type: "money" }, { key: "outflow", header: "Approved bills", type: "money" }, { key: "unbilled", header: "Committed unbilled", type: "money" }, { key: "starts", header: "Planned starts", type: "money" }, { key: "land", header: "Land obligations", type: "money" }, { key: "net", header: "Net", type: "money" }], rows: report.rows.map((row) => ({ key: row.month, cells: { month: row.month, inflow: row.inflow_cents, closings: row.closing_proceeds_cents, outflow: row.outflow_cents, unbilled: row.committed_unbilled_cents, starts: row.starts_cost_cents, land: row.land_obligations_cents, net: { value: row.net_cents, tone: row.net_cents < 0 ? "warning" : "positive" } } })), totals: { month: "Total", inflow: report.totals.inflow_cents, closings: report.totals.closing_proceeds_cents, outflow: report.totals.outflow_cents, unbilled: report.totals.committed_unbilled_cents, starts: report.totals.starts_cost_cents, land: report.totals.land_obligations_cents, net: report.totals.net_cents }, emptyMessage: "No forecast cash movements in this scope." }] }
   },
 }
 

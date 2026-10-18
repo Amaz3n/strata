@@ -30,6 +30,8 @@ export interface TextRun {
   /** Bounding-box size, normalized the same way. */
   w: number
   h: number
+  /** Raw OCR transcription score (0–100), never geometric confidence. */
+  ocr?: { profile: string; confidence: number }
 }
 
 interface TextRunsPayload {
@@ -61,6 +63,7 @@ export function encodeTextRuns(runs: TextRun[]): string {
       y: round(run.y),
       w: round(run.w),
       h: round(run.h),
+      ...(run.ocr ? { ocr: run.ocr } : {}),
     })),
   }
   return JSON.stringify(payload)
@@ -92,7 +95,8 @@ export function parseTextRuns(body: string): TextRun[] {
     if (typeof run.text !== "string" || !run.text.trim()) continue
     if (!isFiniteNumber(run.x) || !isFiniteNumber(run.y)) continue
     if (!isFiniteNumber(run.w) || !isFiniteNumber(run.h)) continue
-    runs.push({ text: run.text, x: run.x, y: run.y, w: run.w, h: run.h })
+    if (Object.prototype.hasOwnProperty.call(run, 'ocr') && (!run.ocr || typeof run.ocr.profile !== 'string' || !run.ocr.profile || !isFiniteNumber(run.ocr.confidence) || run.ocr.confidence < 0 || run.ocr.confidence > 100)) continue
+    runs.push({ text: run.text, x: run.x, y: run.y, w: run.w, h: run.h, ...(run.ocr ? { ocr: run.ocr } : {}) })
     if (runs.length >= MAX_RUNS) break
   }
   return runs

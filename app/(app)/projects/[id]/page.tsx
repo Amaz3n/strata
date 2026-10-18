@@ -1,5 +1,7 @@
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
+import { cacheLife } from "next/cache"
+import { connection } from "next/server"
 
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectIdentity } from "@/lib/services/projects"
@@ -37,34 +39,37 @@ interface ProjectDetailPageProps {
  * slowest read on the page cannot hold back the name of the project you just
  * clicked, and a financial timeout cannot blank the whole workbench.
  */
-export default async function ProjectDetailPage({ params }: ProjectDetailPageProps) {
-  const { id } = await params
-
+export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   return (
     <>
       <PageLayout title="Project" breadcrumbs={[{ label: "Project" }]} fullBleed />
       <Suspense fallback={<IdentitySkeleton />}>
-        <ProjectOverview id={id} />
+        <ProjectOverview params={params} />
       </Suspense>
     </>
   )
 }
 
-async function ProjectOverview({ id }: { id: string }) {
-  // The org context read must come FIRST, before any span opens. Opening a span
-  // records a start time, and reading the clock outside a dynamic scope aborts
-  // this route's static shell prerender — which is the thing that makes the
-  // navigation feel instant in the first place. `getOrgProductTier` reads
-  // cookies, so everything after it is dynamic. The two reads are not really
-  // parallel anyway: both resolve the same request-cached org context, and only
-  // the projects select is real work.
-  const tier = await getOrgProductTier()
-  const project = await withSpan("project.identity", { tier }, () => getProjectIdentity(id))
+async function ProjectOverview({ params }: ProjectDetailPageProps) {
+  const { id } = await params
+  const { tier, project } = await loadOverviewIdentity(id)
   if (!project) notFound()
 
   const posture = getProjectPosture(project.property_type, tier)
   if (posture === "production") {
-    return <ProductionHouseOverview data={await getProductionHouseOverview(id)} />
+    return (
+      <Suspense fallback={
+        <div data-instant-shell="project-overview">
+          <header className="border-b px-5 py-5 sm:px-8">
+            <h1 className="text-xl font-semibold">{project.name}</h1>
+            <p className="text-sm text-muted-foreground">{project.address ?? "Address not assigned"}</p>
+          </header>
+          <StatsSkeleton />
+        </div>
+      }>
+        <ProductionOverviewData id={id} />
+      </Suspense>
+    )
   }
 
   return (
@@ -93,13 +98,26 @@ async function ProjectOverview({ id }: { id: string }) {
   )
 }
 
-async function StatsBand({
-  id,
-  project,
-}: {
+async function loadOverviewIdentity(id: string) {
+  "use cache: private"
+  cacheLife("session")
+  // Tier and authorized identity form one browser-private, URL-specific band.
+  // An uncached tier lookup before the identity kept it out of runtime prefetch.
+  const tier = await getOrgProductTier()
+  const project = await withSpan("project.identity", { tier }, () => getProjectIdentity(id))
+  return { tier, project }
+}
+
+async function ProductionOverviewData({ id }: { id: string }) {
+  await connection()
+  return <ProductionHouseOverview data={await getProductionHouseOverview(id)} />
+}
+
+async function StatsBand({ id, project }: {
   id: string
   project: { start_date?: string; end_date?: string }
 }) {
+  await connection()
   const [operations, financials] = await Promise.all([
     getProjectOverviewOperations(id),
     getProjectOverviewFinancials(id),
@@ -126,6 +144,7 @@ async function StatsBand({
 }
 
 async function AttentionBand({ id }: { id: string }) {
+  await connection()
   const [operations, financials] = await Promise.all([
     getProjectOverviewOperations(id),
     getProjectOverviewFinancials(id),
@@ -141,6 +160,7 @@ async function AttentionBand({ id }: { id: string }) {
 }
 
 async function WeekBand({ id }: { id: string }) {
+  await connection()
   const operations = await getProjectOverviewOperations(id)
   return <ProjectOverviewWeek items={operations.comingUp} truncated={operations.comingUpTruncated} />
 }

@@ -1,4 +1,5 @@
 import { render } from "@react-email/components"
+import { isPlaceholderEmail } from "@/lib/emails/recipient-policy"
 import type { ReactElement } from "react"
 import { BidInviteEmail } from "@/lib/emails/bid-invite-email"
 import { BidAddendumEmail } from "@/lib/emails/bid-addendum-email"
@@ -25,6 +26,8 @@ export interface EmailPayload {
   from?: string
   /** Stable provider key used to suppress duplicate transactional sends. */
   idempotencyKey?: string
+  /** Persist provider acceptance before considering a transactional send complete. */
+  onAccepted?: (providerId: string) => Promise<void>
   attachments?: Array<{
     filename: string
     content: string
@@ -167,6 +170,11 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
     console.warn("No email recipients provided; skipping email send")
     return false
   }
+  if (recipients.some(isPlaceholderEmail)) {
+    // Do not mark a mixed batch delivered after silently dropping recipients.
+    console.warn("Email contains placeholder recipients; correct recipient addresses before retrying")
+    return false
+  }
 
   try {
     const response = await fetch("https://api.resend.com/emails", {
@@ -193,6 +201,11 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
       const errorText = await response.text()
       console.error("Resend API error", response.status, errorText)
       return false
+    }
+    if (payload.onAccepted) {
+      const accepted = await response.json() as { id?: unknown }
+      if (typeof accepted.id !== "string" || !accepted.id) throw new Error("Email provider did not return a message identifier")
+      await payload.onAccepted(accepted.id)
     }
     return true
   } catch (error) {

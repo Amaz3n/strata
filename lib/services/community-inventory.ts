@@ -1,6 +1,6 @@
 import "server-only"
 
-import { LOT_STATUSES, UNPHASED_KEY, type LotStatus } from "@/lib/land/lot-lifecycle"
+import { activeDeliveryException, LOT_STATUSES, lotDeliveryRefusal, UNPHASED_KEY, type LotDeliveryException, type LotStatus } from "@/lib/land/lot-lifecycle"
 import {
   inventoryFilterClauses,
   inventoryWindow,
@@ -8,11 +8,16 @@ import {
   orderColumns,
   type InventoryFilters,
 } from "@/lib/land/inventory-query"
-import { readAllRows } from "@/lib/land/paging"
+import { readAllRows, readPageOrEmpty } from "@/lib/land/paging"
 import { getCommunity } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
-import { mapDimensions, type LotDimensions } from "@/lib/services/lots"
+import { readLotDimensions, type LotDimensions } from "@/lib/land/lot-dimensions"
 import { requirePermission } from "@/lib/services/permissions"
+import { chunk } from "@/lib/utils"
+import { offeringOverridePlanId } from "@/lib/sales/plan-offering"
+
+/** Lot ids per `.in()` filter; a page of 250 overflows the request line. */
+const LOT_ID_FILTER_BATCH = 100
 
 /** A hold or reservation still standing against a lot. */
 export interface InventoryBuyerDTO {
@@ -49,6 +54,12 @@ export interface InventoryLotDTO {
   acquiredDate: string | null
   notes: string | null
   planId: string | null
+  /** The plan this lot carries an offering override for, if a person recorded one. */
+  offeringOverridePlanId: string | null
+  /** Why land development's delivery is not on record, or null when delivered or excepted. */
+  deliveryRefusal: string | null
+  /** The live, authorized exception letting a house start on undelivered land. */
+  deliveryException: LotDeliveryException | null
   planName: string | null
   elevationName: string | null
   projectId: string | null
@@ -99,7 +110,7 @@ const PHASE_COUNT_SCAN_CAP = 20_000
 
 /** One literal: PostgREST derives the row type from the select string itself. */
 const LOT_SELECT =
-  "id, lot_number, block, address, status, community_phase_id, takedown_id, dimensions, swing, premium_cents, cost_basis_cents, asking_price_override_cents, acquired_date, notes, house_plan_id, house_plan_elevation_id, project_id, plat_x, plat_y, phase:community_phases(name), takedown:lot_takedowns(name), project:projects(name), plan:house_plans(name, code), elevation:house_plan_elevations(name)"
+  "id, lot_number, block, address, status, community_phase_id, takedown_id, dimensions, swing, premium_cents, cost_basis_cents, asking_price_override_cents, acquired_date, notes, house_plan_id, house_plan_elevation_id, project_id, delivered_at, metadata, plat_x, plat_y, phase:community_phases(name), takedown:lot_takedowns(name), project:projects(name), plan:house_plans(name, code), elevation:house_plan_elevations(name), delivery_exceptions:lot_delivery_exceptions(id, reason, approved_by, approved_at, revoked_at)"
 
 /** A live hold or reservation; anything else has already left the lot. */
 const LIVE_RESERVATION_STATUSES = ["hold", "reserved"]
@@ -249,21 +260,22 @@ export async function listCommunityInventory(
     maxPageSize: INVENTORY_MAP_PAGE_SIZE,
   })
 
-  let query = context.supabase
-    .from("lots")
-    .select(LOT_SELECT, { count: "exact" })
-    .eq("org_id", context.orgId)
-    .eq("community_id", communityId)
-    .range(from, to)
-
-  for (const clause of inventoryFilterClauses(filters)) {
-    query = clause.kind === "eq" ? query.eq(clause.column, clause.value) : query.or(clause.filter)
-  }
-  for (const column of orderColumns(filters)) {
-    query = query.order(column.name, { ascending: column.ascending, nullsFirst: column.ascending })
-  }
-
-  const { data, error, count } = await query
+  // A stale ?page= past the last lot reads as an empty page with the true total, not an error.
+  const { data, error, count } = await readPageOrEmpty((rangeFrom, rangeTo) => {
+    let query = context.supabase
+      .from("lots")
+      .select(LOT_SELECT, { count: "exact" })
+      .eq("org_id", context.orgId)
+      .eq("community_id", communityId)
+      .range(rangeFrom, rangeTo)
+    for (const clause of inventoryFilterClauses(filters)) {
+      query = clause.kind === "eq" ? query.eq(clause.column, clause.value) : query.or(clause.filter)
+    }
+    for (const column of orderColumns(filters)) {
+      query = query.order(column.name, { ascending: column.ascending, nullsFirst: column.ascending })
+    }
+    return query
+  }, from, to)
   if (error) throw new Error(`Failed to load the inventory: ${error.message}`)
 
   const rows = data ?? []
@@ -271,31 +283,32 @@ export async function listCommunityInventory(
 
   // Buyer and closing ride the page, not the community, so a 400-lot community
   // never pulls its whole sales history to render 100 rows.
+  // A filter of 250 uuids overflows the request line, so ids go in batches.
   const [reservations, closings] = await Promise.all([
-    lotIds.length > 0
-      ? context.supabase
-          .from("lot_reservations")
-          .select("id, lot_id, status, expires_at, contract_id, asking_price_cents, prospect_id, prospect:prospects(name)")
-          .eq("org_id", context.orgId)
-          .in("lot_id", lotIds)
-          .in("status", LIVE_RESERVATION_STATUSES)
-          .limit(INVENTORY_MAP_PAGE_SIZE)
-      : Promise.resolve({ data: [], error: null }),
-    lotIds.length > 0
-      ? context.supabase
-          .from("closings")
-          .select("lot_id, status, scheduled_date, actual_date")
-          .eq("org_id", context.orgId)
-          .in("lot_id", lotIds)
-          .neq("status", "cancelled")
-          .limit(INVENTORY_MAP_PAGE_SIZE)
-      : Promise.resolve({ data: [], error: null }),
+    Promise.all(chunk(lotIds, LOT_ID_FILTER_BATCH).map((ids) => context.supabase
+      .from("lot_reservations")
+      .select("id, lot_id, status, expires_at, contract_id, asking_price_cents, prospect_id, prospect:prospects(name)")
+      .eq("org_id", context.orgId)
+      .in("lot_id", ids)
+      .in("status", LIVE_RESERVATION_STATUSES)
+      .limit(INVENTORY_MAP_PAGE_SIZE))),
+    Promise.all(chunk(lotIds, LOT_ID_FILTER_BATCH).map((ids) => context.supabase
+      .from("closings")
+      .select("lot_id, status, scheduled_date, actual_date")
+      .eq("org_id", context.orgId)
+      .in("lot_id", ids)
+      .neq("status", "cancelled")
+      .limit(INVENTORY_MAP_PAGE_SIZE))),
   ])
-  if (reservations.error) throw new Error(`Failed to load lot holds: ${reservations.error.message}`)
-  if (closings.error) throw new Error(`Failed to load lot closings: ${closings.error.message}`)
+  const reservationError = reservations.find((result) => result.error)?.error
+  const closingError = closings.find((result) => result.error)?.error
+  const reservationRows = reservations.flatMap((result) => result.data ?? [])
+  const closingRows = closings.flatMap((result) => result.data ?? [])
+  if (reservationError) throw new Error(`Failed to load lot holds: ${reservationError.message}`)
+  if (closingError) throw new Error(`Failed to load lot closings: ${closingError.message}`)
 
   const buyerByLot = new Map<string, InventoryBuyerDTO>()
-  for (const row of reservations.data ?? []) {
+  for (const row of reservationRows) {
     buyerByLot.set(row.lot_id as string, {
       reservationId: row.id as string,
       status: row.status as string,
@@ -308,7 +321,7 @@ export async function listCommunityInventory(
   }
 
   const closingByLot = new Map<string, InventoryClosingDTO>()
-  for (const row of closings.data ?? []) {
+  for (const row of closingRows) {
     closingByLot.set(row.lot_id as string, {
       status: row.status as string,
       scheduledDate: (row.scheduled_date as string | null) ?? null,
@@ -330,7 +343,7 @@ export async function listCommunityInventory(
       takedownName: relation(row.takedown as { name?: string | null } | null)?.name ?? null,
       // Stored snake_case alongside imported address parts, so it goes through
       // the same mapper every other lot read uses.
-      dimensions: mapDimensions(row.dimensions as Record<string, unknown> | null),
+      dimensions: readLotDimensions(row.dimensions as Record<string, unknown> | null),
       swing: (row.swing as InventoryLotDTO["swing"] | null) ?? "either",
       premiumCents: Number(row.premium_cents ?? 0),
       costBasisCents: row.cost_basis_cents == null ? null : Number(row.cost_basis_cents),
@@ -339,6 +352,9 @@ export async function listCommunityInventory(
       acquiredDate: (row.acquired_date as string | null) ?? null,
       notes: (row.notes as string | null) ?? null,
       planId: (row.house_plan_id as string | null) ?? null,
+      offeringOverridePlanId: offeringOverridePlanId(row.metadata),
+      deliveryRefusal: lotDeliveryRefusal({ deliveredAt: (row.delivered_at as string | null) ?? null, deliveryExceptions: row.delivery_exceptions }),
+      deliveryException: activeDeliveryException(row.delivery_exceptions),
       planName: plan ? [plan.code, plan.name].filter(Boolean).join(" · ") || null : null,
       elevationName: relation(row.elevation as { name?: string | null } | null)?.name ?? null,
       projectId: (row.project_id as string | null) ?? null,

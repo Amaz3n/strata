@@ -37,6 +37,8 @@ export interface BidPortalPackage {
   due_tz?: string | null
   mode: "quote" | "tender"
   bond_required: boolean
+  scope_revision: number
+  pricing_available?: boolean
   status: string
 }
 
@@ -86,7 +88,8 @@ export interface BidPortalAccess {
   pin_locked_until?: string | null
   invite: BidPortalInvite
   bidPackage: BidPortalPackage
-  project: { id: string; name: string; status: string }
+  /** What the package is for: a project, a prospect's deal, or a community/plan price book. Only a project owns RFIs and files by `project_id`. */
+  job: { kind: "project" | "prospect" | "community_plan"; id: string; name: string; status: string }
   org: { id: string; name: string; logo_url?: string | null }
 }
 
@@ -319,7 +322,9 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     return null
   }
 
-  let job: { id: string; org_id: string; name: string; status: string } | null = null
+  const revisionResult = await supabase.from("bid_packages").select("scope_revision").eq("id",inviteRow.bid_package_id).maybeSingle()
+  if (revisionResult.error && !["42703","PGRST204"].includes(revisionResult.error.code)) throw new Error(revisionResult.error.message)
+  let job: { kind: "project" | "prospect" | "community_plan"; id: string; org_id: string; name: string; status: string } | null = null
 
   if (bidPackage.project_id) {
     const projectResult = await supabase
@@ -327,7 +332,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       .select("id, org_id, name, status")
       .eq("id", bidPackage.project_id)
       .maybeSingle()
-    job = projectResult.data
+    job = projectResult.data ? { kind: "project", ...projectResult.data } : null
   } else if (bidPackage.prospect_id) {
     const prospectResult = await supabase
       .from("prospects")
@@ -336,6 +341,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       .maybeSingle()
     job = prospectResult.data
       ? {
+          kind: "prospect",
           id: prospectResult.data.id,
           org_id: prospectResult.data.org_id,
           name: prospectResult.data.name,
@@ -354,6 +360,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     const context = communityResult.data ?? planResult.data
     if (context) {
       job = {
+        kind: "community_plan",
         id: context.id,
         org_id: context.org_id,
         name: [communityResult.data?.name, planResult.data?.name].filter(Boolean).join(" — "),
@@ -423,9 +430,12 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       due_tz: bidPackage.due_tz ?? null,
       mode: (bidPackage.mode as "quote" | "tender") ?? "quote",
       bond_required: !!bidPackage.bond_required,
+      scope_revision: revisionResult.data?.scope_revision ?? 1,
+      pricing_available: !revisionResult.error,
       status: bidPackage.status,
     },
-    project: {
+    job: {
+      kind: job.kind,
       id: job.id,
       name: job.name,
       status: job.status,
@@ -762,6 +772,7 @@ export async function submitBidFromPortal({
 }: {
   access: BidPortalAccess
   input: {
+    scope_revision: number
     total_cents: number
     currency?: string | null
     valid_until?: string | null
@@ -784,9 +795,10 @@ export async function submitBidFromPortal({
     }>
   }
 }): Promise<BidPortalSubmission> {
+  if (access.bidPackage.pricing_available === false) throw new Error("Bid submission is temporarily unavailable while the builder completes a database update.")
   const supabase = createServiceSupabaseClient()
 
-  const disallowedStatuses = ["closed", "awarded", "cancelled"]
+  const disallowedStatuses = ["draft", "closed", "awarded", "cancelled"]
   if (disallowedStatuses.includes(access.bidPackage.status)) {
     throw new Error("Bidding is closed for this package")
   }
@@ -846,7 +858,7 @@ export async function submitBidFromPortal({
           (response.unit_rate_cents != null && response.quantity != null
             ? Math.round(response.unit_rate_cents * response.quantity)
             : null)
-        if (amount == null || amount < 0) {
+        if (amount == null || (amount < 0 && scopeRow.item_type !== "alternate")) {
           throw new Error(`A price is required for scope line "${scopeRow.description}"`)
         }
       }
@@ -893,10 +905,21 @@ export async function submitBidFromPortal({
     })
   }
 
+  // Only files this invite uploaded can hang off its submission; checked before anything is written.
+  const attachments: string[] = []
+  if (input.file_ids && input.file_ids.length > 0) {
+    const { data: ownFiles, error: filesError } = await supabase.from("files").select("id")
+      .eq("org_id", access.org_id).eq("metadata->>bid_invite_id", access.bid_invite_id).in("id", input.file_ids)
+    if (filesError) throw new Error(`Failed to verify the bid's attachments: ${filesError.message}`)
+    if ((ownFiles ?? []).length !== new Set(input.file_ids).size) throw new Error("An attachment does not belong to this bid")
+    attachments.push(...(ownFiles ?? []).map((file) => file.id))
+  }
+
   const { data: rpcResult, error: rpcError } = await supabase.rpc("create_bid_submission_version", {
     p_org_id: access.org_id,
     p_bid_invite_id: access.bid_invite_id,
     p_payload: {
+      scope_revision: input.scope_revision,
       total_cents: input.total_cents,
       currency: input.currency ?? "usd",
       valid_until: input.valid_until ?? null,
@@ -909,6 +932,8 @@ export async function submitBidFromPortal({
       submitted_by_name: input.submitted_by_name ?? null,
       submitted_by_email: input.submitted_by_email ?? null,
       line_items: [],
+      // Linked by the function inside the submission's own transaction.
+      file_ids: attachments,
     },
     p_items: rpcItems,
     p_source: "portal",
@@ -923,17 +948,6 @@ export async function submitBidFromPortal({
   const createdVersion = Number((rpcResult as any).version ?? 1)
   const createdStatus = ((rpcResult as any).status as string) ?? "submitted"
   const now = new Date().toISOString()
-
-  // Link uploaded files to the submission
-  if (input.file_ids && input.file_ids.length > 0) {
-    const fileLinks = input.file_ids.map((fileId) => ({
-      org_id: access.org_id,
-      file_id: fileId,
-      entity_type: "bid_submission",
-      entity_id: createdId,
-    }))
-    await supabase.from("file_links").insert(fileLinks)
-  }
 
   const submission: BidPortalSubmission = {
     id: createdId,
@@ -999,7 +1013,7 @@ export async function submitBidFromPortal({
           to: receiptTo,
           companyName: access.invite.company?.name,
           contactName: access.invite.contact?.full_name ?? input.submitted_by_name,
-          projectName: access.project.name,
+          projectName: access.job.name,
           bidPackageTitle: access.bidPackage.title,
           orgName: access.org.name,
           totalCents: submission.total_cents,
@@ -1111,7 +1125,7 @@ export async function declineBidFromPortal({
   const supabase = createServiceSupabaseClient()
   const now = new Date().toISOString()
 
-  const disallowedStatuses = ["closed", "awarded", "cancelled"]
+  const disallowedStatuses = ["draft", "closed", "awarded", "cancelled"]
   if (disallowedStatuses.includes(access.bidPackage.status)) {
     throw new Error("Bidding is closed for this package")
   }

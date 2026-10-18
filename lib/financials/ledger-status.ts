@@ -37,6 +37,18 @@ export const BILLED_INVOICE_STATUSES = ["sent", "partial", "paid", "overdue"] as
  */
 export const PAYABLE_VENDOR_BILL_STATUSES = ["approved", "partial", "paid"] as const
 
+/**
+ * Payment statuses whose money moved and therefore posts. `refunded` is a
+ * payment that happened and was then fully reversed: every path that sets it
+ * also records the payment_reversals rows, which post on their own. Dropping it
+ * here retired the payment while its reversal still posted — cash and AP/AR
+ * counted the money back twice.
+ */
+export const POSTED_PAYMENT_STATUSES = ["succeeded", "completed", "paid", "refunded"] as const
+
+/** Expense statuses that count as incurred cost — and therefore as projectable facts. */
+export const POSTED_EXPENSE_STATUSES = ["approved", "locked"] as const
+
 export type BilledInvoiceStatus = (typeof BILLED_INVOICE_STATUSES)[number]
 export type PayableVendorBillStatus = (typeof PAYABLE_VENDOR_BILL_STATUSES)[number]
 

@@ -1,5 +1,4 @@
-import { notFound } from "next/navigation"
-import { connection } from "next/server"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import {
   assertPortalActionAccess,
@@ -13,14 +12,24 @@ import {
 } from "@/lib/services/pay-applications"
 
 async function loadClientPortalAccess(token: string) {
-  // Pages render in parallel with the portal layout, so they need their own
-  // request boundary before independently re-validating the shared token.
-  await connection()
   try {
     return await assertPortalActionAccess(token, { portalType: "client", requireProject: true })
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     notFound()
   }
+}
+
+function loadClientPortalPayload(access: Awaited<ReturnType<typeof loadClientPortalAccess>>, token: string) {
+  return loadClientPortalData({
+    orgId: access.org_id,
+    projectId: access.project_id,
+    permissions: access.permissions,
+    companyId: access.company_id,
+    contactId: access.contact_id ?? null,
+    scopedRfiId: access.scoped_rfi_id ?? null,
+    portalToken: token,
+  })
 }
 
 /**
@@ -30,17 +39,15 @@ async function loadClientPortalAccess(token: string) {
  */
 export async function loadClientPortalPage(token: string) {
   const access = await loadClientPortalAccess(token)
+  const data = await loadClientPortalPayload(access, token)
+  return { access, data }
+}
 
-  const data = await loadClientPortalData({
-    orgId: access.org_id,
-    projectId: access.project_id,
-    permissions: access.permissions,
-    companyId: access.company_id,
-    contactId: access.contact_id ?? null,
-    scopedRfiId: access.scoped_rfi_id ?? null,
-    portalToken: token,
-  })
-
+/** Photo-disabled links must be rejected before the portal payload is read. */
+export async function loadClientPortalPhotosPage(token: string) {
+  const access = await loadClientPortalAccess(token)
+  if (access.permissions.can_view_photos === false) notFound()
+  const data = await loadClientPortalPayload(access, token)
   return { access, data }
 }
 

@@ -128,6 +128,13 @@ export function PlanLibraryClient({
         .sort((a, b) => (a.heated_sqft ?? Number.MAX_SAFE_INTEGER) - (b.heated_sqft ?? Number.MAX_SAFE_INTEGER)),
     [rungs, query, status, seriesFilter, communityFilter, attentionFilter],
   )
+  const filterKey = JSON.stringify([query, status, seriesFilter, communityFilter, attentionFilter])
+  const [pagination, setPagination] = useState({ filterKey, page: 1 })
+  const setPage = (page: number) => setPagination({ filterKey, page })
+  const pageSize = 25
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const currentPage = Math.min(pagination.filterKey === filterKey ? pagination.page : 1, pageCount)
+  const visibleRungs = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   const attentionCounts = useMemo(() => buildAttentionCounts(rungs), [rungs])
 
   const createControl = canWrite ? <NewPlanSheet divisions={divisions} /> : null
@@ -266,7 +273,7 @@ export function PlanLibraryClient({
       ) : (
         <div className="p-4">
           <div className="border">
-            {filtered.map((rung) => {
+            {visibleRungs.map((rung) => {
               const pct = marginPct(rung)
               return (
                 <Link
@@ -359,6 +366,13 @@ export function PlanLibraryClient({
           </div>
         </div>
       )}
+      <nav aria-label="Plan pages" className="flex items-center justify-between border-t px-4 py-3 text-sm">
+        <span>Page {currentPage} of {pageCount} · {filtered.length} plans</span>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}>Previous</Button>
+          <Button variant="outline" size="sm" disabled={currentPage === pageCount} onClick={() => setPage(currentPage + 1)}>Next</Button>
+        </div>
+      </nav>
     </div>
   )
 }

@@ -11,6 +11,8 @@ export type AuthorizationReasonCode =
   | "deny_no_org_membership"
   | "deny_no_project_membership"
   | "deny_invalid_context"
+  | "deny_project_org_mismatch"
+  | "deny_division_scope"
 
 export function uniquePermissions(values: string[]): string[] {
   return Array.from(new Set(values))
@@ -44,6 +46,11 @@ export interface AuthorizationPolicyResult {
   permissions: string[]
 }
 
+export function hasAllProjectAccess(orgPermissions: string[], assignedOnly: boolean) {
+  return orgPermissions.includes("*") || orgPermissions.includes("org.admin") ||
+    (!assignedOnly && (orgPermissions.includes("project.read") || orgPermissions.includes("project.manage")))
+}
+
 /**
  * Decide whether an action is allowed given the already-resolved permission facts.
  * Mirrors the rules enforced in `authorize()`:
@@ -60,15 +67,10 @@ export function decideAuthorization(input: AuthorizationPolicyInput): Authorizat
     (permission) => !denied.includes(permission),
   )
 
-  const hasAllProjectAccess =
-    input.orgPermissionSet.includes("*") ||
-    input.orgPermissionSet.includes("org.admin") ||
-    (!input.assignedOnly &&
-      (input.orgPermissionSet.includes("project.read") ||
-        input.orgPermissionSet.includes("project.manage")))
+  const allProjectAccess = hasAllProjectAccess(input.orgPermissionSet, input.assignedOnly)
 
   const blockedByProjectScope = Boolean(
-    input.hasProjectScope && !input.hasProjectMembership && !hasAllProjectAccess,
+    input.hasProjectScope && !input.hasProjectMembership && !allProjectAccess,
   )
 
   const allowed =

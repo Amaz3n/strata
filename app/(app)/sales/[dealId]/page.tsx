@@ -1,12 +1,16 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
 import { BAND_X } from "@/components/overview/primitives"
+import { AgreementCommissionSigningHold } from "@/components/sales/agreement-commission-plan"
+import { AgreementSigningRecovery } from "@/components/sales/agreement-signing-recovery"
 import { DealActionsMenu } from "@/components/sales/deal-actions-menu"
 import { DealPrimaryAction } from "@/components/sales/deal-primary-action"
 import { DealStageTrack } from "@/components/sales/deal-stage-track"
+import { PurchaseAgreementRecord, PurchaseAgreementRecordSkeleton } from "@/components/sales/purchase-agreement-record"
 import type { HoldBuyer } from "@/components/sales/lot-hold-form"
 import type { ReserveLotTarget } from "@/components/sales/reserve-lot-dialog"
 import {
@@ -41,16 +45,17 @@ const ACTIVITY_CAP = 60
  * control: the log has Log activity, the attention list has the follow-up.
  */
 async function DealDetailPageContent({ params }: { params: Promise<{ dealId: string }> }) {
+  await connection()
   const { dealId } = await params
   const [detail, ambient, teamMembers] = await Promise.all([
     getSalesDealDetail(decodeURIComponent(dealId)),
     getAmbientDeskContext(),
-    listTeamMembers().catch(() => []),
+    listTeamMembers(undefined, { includeProjectCounts: false }),
   ])
   if (!detail) notFound()
 
-  const { deal, reservation, pricing, activity, prospect } = detail
-  const primary = resolveDealPrimaryAction(deal)
+  const { deal, reservation, pricing, activity, prospect, signing, capabilities } = detail
+  const primary = resolveDealPrimaryAction(deal,signing)
   const contacts = prospect?.contacts ?? []
   const buyerContact = prospect?.primary_contact ?? contacts[0] ?? null
   const lostReason = formatLostReason(prospect?.lost_reason ?? null)
@@ -64,9 +69,8 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
   const reserveTarget: ReserveLotTarget | null = reservation
     ? {
         reservationId: reservation.id,
+        conversionScope: { ...detail.viewer, reservationId: reservation.id },
         lotLabel: deal.lotLabel,
-        buyerName: deal.buyerName,
-        askingPriceCents: reservation.askingPriceCents ?? deal.priceCents,
         depositRequiredCents: reservation.depositRequiredCents,
         hasProject: Boolean(deal.projectId),
       }
@@ -91,6 +95,7 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
       contacts.some((contact) => contact.phone || contact.email),
   )
   const attention = dealAttentionItems({
+    signing,
     deal,
     reservation,
     hasContactDetails,
@@ -122,6 +127,7 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
             <>
               {prospect ? (
                 <DealActionsMenu
+                  key={`actions:${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
                   deal={{
                     prospectId: prospect.id,
                     fullName: deal.buyerName,
@@ -140,6 +146,8 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
                   }}
                   teamMembers={teamOptions}
                   communities={communityOptions}
+                  canEditProspect={capabilities.canEditProspect}
+                  canManageSale={capabilities.canManageSale}
                   isLost={deal.stage === "lost"}
                   isClosed={deal.stage === "closed"}
                   isDeletable={!deal.projectId && !deal.reservationId && !deal.contractId}
@@ -156,14 +164,31 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
                 />
               ) : null}
               <DealPrimaryAction
+                key={`primary:${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
                 deal={deal}
                 buyer={holdBuyer}
                 communities={communityOptions}
                 reserveTarget={reserveTarget}
+                canManageSale={capabilities.canManageSale}
               />
             </>
           }
         />
+
+        {signing && deal.contractId && deal.projectId && deal.contractStatus === "draft" ? <AgreementSigningRecovery contractId={deal.contractId} projectId={deal.projectId} state={signing} /> : null}
+
+        {agreement && deal.projectId ? (
+          <section className={cn(BAND_X, "border-b py-4")} aria-label="Commissions">
+            <p className="mb-3 text-sm font-medium">Commissions</p>
+            <AgreementCommissionSigningHold contractId={agreement.contractId} projectId={deal.projectId} />
+          </section>
+        ) : null}
+
+        {deal.contractId ? (
+          <Suspense fallback={<PurchaseAgreementRecordSkeleton />}>
+            <PurchaseAgreementRecord contractId={deal.contractId} canManageSale={capabilities.canManageSale} />
+          </Suspense>
+        ) : null}
 
         {deal.stage === "lost" ? (
           <p
@@ -182,12 +207,16 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
             runs the full page. Stacked on phones, each pane sizes to content. */}
         <div className="grid grid-cols-1 lg:grid-cols-2 lg:flex-1">
           <DealOverviewHistory
+            key={`history:${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
+            canLog={capabilities.canEditProspect && prospect?.status !== "lost" && prospect?.status !== "won"}
             activity={activity}
             truncated={activity.length >= ACTIVITY_CAP}
             prospectId={prospect?.id ?? null}
             buyerName={deal.buyerName}
           />
           <DealOverviewMeta
+            key={`meta:${deal.dealId}:${detail.viewer.orgId}:${detail.viewer.actorId}`}
+            canEditProspect={capabilities.canEditProspect && prospect?.status !== "lost" && prospect?.status !== "won"}
             deal={deal}
             reservation={reservation}
             pricing={pricing}
@@ -196,6 +225,7 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
             contacts={contacts}
             attention={attention}
             links={links}
+            attribution={detail.attribution}
           />
         </div>
       </div>
@@ -205,7 +235,11 @@ async function DealDetailPageContent({ params }: { params: Promise<{ dealId: str
 
 export default function DealDetailPage(props: Parameters<typeof DealDetailPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout title="Sales deal" breadcrumbs={[{ label: "Sales", href: "/sales" }, { label: "Sales deal" }]} fullBleed>
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <DealDetailPageContent {...props} />
     </Suspense>
   )

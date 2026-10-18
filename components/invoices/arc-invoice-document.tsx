@@ -1,3 +1,4 @@
+import { documentCanvasStyle } from "@/lib/pdfs/document-theme"
 import type { Invoice } from "@/lib/types"
 
 /**
@@ -197,7 +198,7 @@ export function ArcInvoiceDocument({
   return (
     <div
       className="flex flex-col bg-white text-[#111111]"
-      style={{ width, height, paddingTop: 58, paddingBottom: 52, paddingLeft: 64, paddingRight: 64, fontSize: 13 }}
+      style={{ ...documentCanvasStyle, width, height }}
     >
       {/* Title + memo, logo */}
       <div className="flex items-start justify-between gap-6">

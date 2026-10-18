@@ -135,6 +135,7 @@ export type DocumentTableItem =
   | { type: "folder"; path: string; name: string; itemCount: number }
 
 export interface DocumentsFileTableProps {
+  preconstruction?: boolean
   items: DocumentTableItem[]
   isLoading?: boolean
   selectedFileIds: Set<string>
@@ -210,6 +211,7 @@ function SortableTableHead({
 // ---------------------------------------------------------------------------
 
 export function DocumentsFileTable({
+  preconstruction = false,
   items,
   isLoading,
   selectedFileIds,
@@ -253,6 +255,7 @@ export function DocumentsFileTable({
   if (items.length === 0) {
     return (
       <EmptyState
+        preconstruction={preconstruction}
         hasFilters={hasFilters}
         onUploadClick={onUploadClick}
       />
@@ -767,6 +770,11 @@ const FileRow = memo(function FileRow({
                   View signature...
                 </DropdownMenuItem>
               )}
+              {!isArchived && file.project_id && file.mime_type === "application/pdf" && (
+                <DropdownMenuItem onClick={() => router.push(file.source_contexts?.find((source) => source.type === "drawing_set" || source.type === "drawing_sheet")?.href ?? `/projects/${file.project_id}/drawings?sourceFile=${file.id}`)}>
+                  <FileText className="h-4 w-4 mr-2" /> Open in Plans & takeoff
+                </DropdownMenuItem>
+              )}
               {hasSourceHref && (
                 <DropdownMenuItem onClick={() => primarySource?.href && router.push(primarySource.href)}>
                   <Link2 className="h-4 w-4 mr-2" />
@@ -863,9 +871,11 @@ function TableSkeleton({ rows, cols }: { rows: number; cols: number }) {
 }
 
 function EmptyState({
+  preconstruction = false,
   hasFilters,
   onUploadClick,
 }: {
+  preconstruction?: boolean
   hasFilters?: boolean
   onUploadClick: () => void
 }) {
@@ -883,9 +893,9 @@ function EmptyState({
 
   return (
     <div
-      className="flex flex-col items-center justify-center gap-3 py-24 px-4"
+      className={cn("flex flex-col items-center justify-center gap-3 py-24 px-4", preconstruction && "py-16")}
     >
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+      <div className={cn("flex h-12 w-12 items-center justify-center rounded-none bg-muted", preconstruction && "rounded-[16px] border border-border/60 bg-muted/40")}>
         {hasFilters ? (
           <FileText className="h-6 w-6 text-muted-foreground" />
         ) : (
@@ -899,7 +909,7 @@ function EmptyState({
         <p className="text-sm text-muted-foreground mt-0.5">
           {hasFilters
             ? "Try adjusting your filters or search query."
-            : "Upload drawings, contracts, photos, permits, and closeout files to this document library."}
+            : preconstruction ? "Add scopes, quotes, permits, and project records." : "Upload drawings, contracts, photos, permits, and closeout files to this document library."}
         </p>
       </div>
       <div className="mt-2">

@@ -1,13 +1,13 @@
 import { formatDocNumber, type DocumentNumberingSettings } from "@/lib/document-number"
 import { renderMeetingMinutesPdf } from "@/lib/pdfs/meeting-minutes-pdf"
 import { recordAudit } from "@/lib/services/audit"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { listDistributionMembers } from "@/lib/services/distribution-lists"
 import { recordEvent } from "@/lib/services/events"
 import { createFileShareLink } from "@/lib/services/file-share-links"
 import { persistGeneratedProjectPdf } from "@/lib/services/generated-project-pdfs"
 import { escapeHtml, getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
-import { requirePermission } from "@/lib/services/permissions"
 import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
 import { createTask } from "@/lib/services/tasks"
 import { createMeetingSchema, meetingAttendeeSchema, meetingItemSchema, updateMeetingAttendeeSchema, updateMeetingItemSchema, updateMeetingSchema, type CreateMeetingInput, type MeetingAttendeeInput, type MeetingItemInput, type UpdateMeetingInput } from "@/lib/validation/meetings"
@@ -86,8 +86,9 @@ async function loadNumbering(supabase: Awaited<ReturnType<typeof requireOrgConte
 }
 
 export async function listMeetings(projectId: string, orgId?: string): Promise<Array<Meeting & { display_number: string }>> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.read", { supabase, orgId: resolvedOrgId, userId })
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = context
+  await requireAuthorization({ ...context, permission: "project.read", projectId, resourceType: "project", resourceId: projectId })
   const [{ data, error }, numbering] = await Promise.all([
     supabase.from("meetings").select(MEETING_SELECT).eq("org_id", resolvedOrgId).eq("project_id", projectId).order("series").order("meeting_number", { ascending: false }).limit(250),
     loadNumbering(supabase, resolvedOrgId),
@@ -97,16 +98,19 @@ export async function listMeetings(projectId: string, orgId?: string): Promise<A
 }
 
 export async function getMeeting(meetingId: string, orgId?: string): Promise<MeetingDetail> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.read", { supabase, orgId: resolvedOrgId, userId })
-  const [{ data: meeting, error }, { data: items }, { data: attendees }, { data: distributionRows }, numbering] = await Promise.all([
-    supabase.from("meetings").select(MEETING_SELECT).eq("org_id", resolvedOrgId).eq("id", meetingId).single(),
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = context
+  // The meeting names its project; the project (and its division) decides who may read it.
+  const { data: meeting, error } = await supabase.from("meetings").select(MEETING_SELECT).eq("org_id", resolvedOrgId).eq("id", meetingId).single()
+  if (error || !meeting) throw new Error("Meeting not found")
+  await requireAuthorization({ ...context, permission: "project.read", projectId: meeting.project_id,
+    resourceType: "meeting", resourceId: meetingId, logDecision: true })
+  const [{ data: items }, { data: attendees }, { data: distributionRows }, numbering] = await Promise.all([
     supabase.from("meeting_items").select(ITEM_SELECT).eq("org_id", resolvedOrgId).eq("meeting_id", meetingId).order("sort_order"),
     supabase.from("meeting_attendees").select(ATTENDEE_SELECT).eq("org_id", resolvedOrgId).eq("meeting_id", meetingId).order("display_name"),
     supabase.from("meeting_distribution_recipients").select(DISTRIBUTION_SELECT).eq("org_id", resolvedOrgId).eq("meeting_id", meetingId).order("sent_at"),
     loadNumbering(supabase, resolvedOrgId),
   ])
-  if (error || !meeting) throw new Error("Meeting not found")
   const itemRows = items ?? []
   const linkedIds = (type: string) => itemRows.filter((item) => item.linked_entity_type === type && item.linked_entity_id).map((item) => item.linked_entity_id as string)
   const firstMeetingIds = [...new Set(itemRows.map((item) => item.first_meeting_id).filter((id): id is string => Boolean(id)))]
@@ -148,8 +152,10 @@ export async function getMeeting(meetingId: string, orgId?: string): Promise<Mee
 
 export async function createNextMeeting(input: CreateMeetingInput, orgId?: string): Promise<MeetingDetail> {
   const parsed = createMeetingSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("meeting.write", { supabase, orgId: resolvedOrgId, userId })
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
+  await requireAuthorization({ ...context, permission: "meeting.write", projectId: parsed.project_id,
+    resourceType: "project", resourceId: parsed.project_id, logDecision: true })
   const { data: previous } = await supabase.from("meetings").select("id").eq("org_id", resolvedOrgId).eq("project_id", parsed.project_id).eq("series", parsed.series).eq("status", "finalized").order("meeting_number", { ascending: false }).limit(1).maybeSingle()
   const { data: meeting } = await insertWithProjectNumberRetry<Meeting>({
     supabase,
@@ -185,9 +191,10 @@ export async function createNextMeeting(input: CreateMeetingInput, orgId?: strin
 
 async function requireEditableMeeting(meetingId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
-  await requirePermission("meeting.write", { supabase: context.supabase, orgId: context.orgId, userId: context.userId })
   const { data } = await context.supabase.from("meetings").select(MEETING_SELECT).eq("org_id", context.orgId).eq("id", meetingId).single()
   if (!data) throw new Error("Meeting not found")
+  await requireAuthorization({ ...context, permission: "meeting.write", projectId: data.project_id,
+    resourceType: "meeting", resourceId: meetingId, logDecision: true })
   if (data.status === "finalized") throw new Error("Finalized meeting minutes are locked")
   return { ...context, meeting: data as Meeting }
 }
@@ -292,10 +299,13 @@ export async function distributeMeetingMinutes({
   recipients?: Array<{ email: string; display_name?: string | null; company_name?: string | null; contact_id?: string | null; user_id?: string | null }>
   orgId?: string
 }) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("meeting.write", { supabase, orgId: resolvedOrgId, userId })
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
   const { data: meeting } = await supabase.from("meetings").select(MEETING_SELECT).eq("org_id", resolvedOrgId).eq("id", meetingId).single()
-  if (!meeting || meeting.status !== "finalized" || !meeting.pdf_file_id) throw new Error("Finalize the meeting before distributing minutes")
+  if (!meeting) throw new Error("Meeting not found")
+  await requireAuthorization({ ...context, permission: "meeting.write", projectId: meeting.project_id,
+    resourceType: "meeting", resourceId: meetingId, logDecision: true })
+  if (meeting.status !== "finalized" || !meeting.pdf_file_id) throw new Error("Finalize the meeting before distributing minutes")
   const [{ data: project }, { data: org }, attendees, distribution] = await Promise.all([
     supabase.from("projects").select("name").eq("org_id", resolvedOrgId).eq("id", meeting.project_id).single(),
     supabase.from("orgs").select("name, slug").eq("id", resolvedOrgId).single(),

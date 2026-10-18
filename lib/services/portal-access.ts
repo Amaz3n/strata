@@ -58,7 +58,7 @@ import { getLatestPrequalificationWithClient } from "@/lib/services/prequalifica
 import { getComplianceRulesWithClient } from "@/lib/services/compliance"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import { readCertification, readSentToOwner } from "@/lib/financials/pay-app-lifecycle"
-import { getProjectPosture, normalizeProductTier } from "@/lib/product-tier"
+import { getProjectPosture, isProductionProjectPosture, normalizeProductTier } from "@/lib/product-tier"
 import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
 
 /** Posted: the owner never sees a draft, a return in progress, or a void. */
@@ -99,6 +99,7 @@ function mapPermissions(row: any): PortalPermissions {
     can_view_punch_items: row.can_view_punch_items ?? false,
     can_view_purchase_orders: row.can_view_purchase_orders ?? false,
     can_report_po_completion: row.can_report_po_completion ?? false,
+    can_acknowledge_purchase_orders: row.can_acknowledge_purchase_orders ?? false,
     // Reviewer-specific permissions
     can_review_submittals: row.can_review_submittals ?? false,
   }
@@ -315,6 +316,7 @@ const VENDOR_ACCOUNT_PERMISSIONS: Partial<PortalPermissions> = {
   can_view_punch_items: false,
   can_view_purchase_orders: false,
   can_report_po_completion: false,
+  can_acknowledge_purchase_orders: false,
   can_review_submittals: false,
 }
 
@@ -1092,9 +1094,10 @@ export async function listOrgExternalAccess(
 }
 
 /**
- * Removes one person from every project in the org. Loops the per-token revoke
- * rather than doing a bulk update so each access record still gets its own
- * grant cascade, event and audit entry.
+ * Revokes the supplied access records through the canonical per-token revoke,
+ * including each grant cascade, event and audit entry. The caller's token set
+ * may be incomplete and this loop can partially succeed; this is not an atomic
+ * person-wide removal contract.
  */
 export async function revokeOrgExternalPersonAccess({
   tokenIds,
@@ -1492,17 +1495,31 @@ async function loadPortalFinancialSummary({
 
 async function loadProductionPortalFinancialSummary({ orgId, projectId }: { orgId: string; projectId: string }): Promise<PortalFinancialSummary> {
   const supabase = createServiceSupabaseClient()
-  const [{ data: contract }, { data: changeOrders }, { data: invoices }, { data: closing }] = await Promise.all([
-    supabase.from("contracts").select("total_cents").eq("org_id", orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").eq("status", "active").order("signed_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("change_orders").select("total_cents").eq("org_id", orgId).eq("project_id", projectId).eq("status", "approved").eq("client_visible", true),
+  const [terms, { data: invoices }, { data: closing }] = await Promise.all([
+    readActiveAgreementTerms(supabase, orgId, projectId),
     supabase.from("invoices").select("id, metadata, payments(amount_cents, status)").eq("org_id", orgId).eq("project_id", projectId).contains("metadata", { invoice_kind: "earnest_deposit" }),
     supabase.from("closings").select("scheduled_date").eq("org_id", orgId).eq("project_id", projectId).neq("status", "cancelled").maybeSingle(),
   ])
-  const purchasePriceCents = Number(contract?.total_cents ?? 0)
-  const approvedChangeOrdersCents = (changeOrders ?? []).reduce((sum, row) => sum + Number(row.total_cents ?? 0), 0)
+  // The signed price and what the buyer's signed change orders added to it: the
+  // agreement's versions, not the original contract total or every approved change.
+  const purchasePriceCents = terms?.originalTotalCents ?? 0
+  const approvedChangeOrdersCents = terms ? terms.authorizedTotalCents - terms.originalTotalCents : 0
   const depositsReceivedCents = (invoices ?? []).reduce((sum, invoice: any) => sum + (invoice.payments ?? []).filter((payment: any) => payment.status === "succeeded").reduce((paymentSum: number, payment: any) => paymentSum + Number(payment.amount_cents ?? 0), 0), 0)
   const finalPrice = purchasePriceCents + approvedChangeOrdersCents
   return { mode: "closing", contractTotal: finalPrice, totalPaid: depositsReceivedCents, balanceRemaining: finalPrice - depositsReceivedCents, purchasePriceCents, depositsReceivedCents, approvedChangeOrdersCents, balanceDueAtClosingCents: finalPrice - depositsReceivedCents, scheduledClosingDate: closing?.scheduled_date ?? null, draws: [] }
+}
+
+/** The active purchase agreement's authorized price, from its signed versions; null before one is signed. */
+async function readActiveAgreementTerms(supabase: SupabaseClient, orgId: string, projectId: string) {
+  const { data: contract, error } = await supabase.from("contracts").select("id").eq("org_id", orgId).eq("project_id", projectId)
+    .eq("contract_type", "purchase_agreement").eq("status", "active").order("signed_at", { ascending: false }).limit(1).maybeSingle()
+  if (error) throw new Error(`Unable to read the purchase agreement: ${error.message}`)
+  if (!contract) return null
+  const { data: terms, error: termsError } = await supabase.from("purchase_agreement_authorized_terms")
+    .select("authorized_total_cents, original_total_cents").eq("org_id", orgId).eq("contract_id", contract.id).maybeSingle()
+  if (termsError) throw new Error(`Unable to read the agreement's authorized price: ${termsError.message}`)
+  if (!terms) throw new Error("The signed agreement has no recorded version")
+  return { authorizedTotalCents: Number(terms.authorized_total_cents), originalTotalCents: Number(terms.original_total_cents) }
 }
 
 function mapPortalDailyLog(row: any): DailyLog {
@@ -1751,8 +1768,9 @@ export async function loadClientPortalData({
 }): Promise<ClientPortalData> {
   const supabase = createServiceSupabaseClient()
 
-  const [aboutData, scheduleItems, dailyLogs, documentsData, defaultFinancialSummary] = await Promise.all([
+  const [aboutData, orgTierRow, scheduleItems, dailyLogs, documentsData, defaultFinancialSummary] = await Promise.all([
     loadClientPortalAboutDataWithClient(supabase, { orgId, projectId }),
+    supabase.from("orgs").select("product_tier").eq("id", orgId).single(),
     permissions.can_view_schedule ? listProjectScheduleItemsWithClient(supabase, orgId, projectId) : Promise.resolve([]),
     permissions.can_view_daily_logs ? fetchSharedDailyLogsForPortal(supabase, orgId, projectId) : Promise.resolve([]),
     permissions.can_view_documents
@@ -1761,7 +1779,10 @@ export async function loadClientPortalData({
     permissions.can_view_budget ? loadPortalFinancialSummary({ orgId, projectId }) : Promise.resolve(undefined),
   ])
 
-  const isProductionBuyerPortal = aboutData.project.property_type === "production"
+  if (orgTierRow.error) throw new Error(`Failed to load org tier for portal: ${orgTierRow.error.message}`)
+  const isProductionBuyerPortal = isProductionProjectPosture(
+    getProjectPosture(aboutData.project.property_type, normalizeProductTier(orgTierRow.data?.product_tier)),
+  )
   const financialSummary = isProductionBuyerPortal
     ? await loadProductionPortalFinancialSummary({ orgId, projectId })
     : defaultFinancialSummary
@@ -2425,7 +2446,7 @@ export async function loadClientPortalShellContext({
     },
     hasInvoices: (invoiceCount.count ?? 0) > 0,
     hasPayApplications: payApplications.length > 0,
-    roadmapLabel: projectResult.data?.property_type === "production" ? "Milestones" : "Roadmap",
+    roadmapLabel: isProductionProjectPosture(posture) ? "Milestones" : "Roadmap",
   }
 }
 
@@ -2616,6 +2637,7 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_view_punch_items: overrides?.can_view_punch_items ?? false,
     can_view_purchase_orders: overrides?.can_view_purchase_orders ?? false,
     can_report_po_completion: overrides?.can_report_po_completion ?? false,
+    can_acknowledge_purchase_orders: overrides?.can_acknowledge_purchase_orders ?? false,
     // Reviewer-specific permissions (least-privilege: opt-in only)
     can_review_submittals: overrides?.can_review_submittals ?? false,
   }

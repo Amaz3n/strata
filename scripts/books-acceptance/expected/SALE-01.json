@@ -1,0 +1,256 @@
+{
+  "scenario": "SALE-01",
+  "reviewedFrom": "EP05-03, EP05-04, EP05-05, EP05-06, EP05-07 and EP05-10 (docs/enterprise-production/completion-checklist.json) and the EP05 owner decisions of 2026-10-12: orgs author their own agreement templates and addenda, published versions are immutable, the packet is assembled at creation and bound by hash; buyer-signed change orders are the amendments and each is the agreement's next version; cancellation reconciles against a reviewed plan; contingencies and lender/title milestones are one model, seeded from the signed agreement, holding closing until satisfied with evidence or waived with a reason, with a signed feed that reconciles to agreement, buyer and home; the certificate-of-occupancy gate needs its evidence file; co-op broker and consultant commissions are approved by a second person, settled once per closing on the authorized price and reversed without paying twice. Code: lib/services/{community-sales,agreement-templates,agreement-versions,agreement-milestones,sales-commissions,closings,closing-readiness}.ts, lib/sales/{agreement-packet,agreement-milestones}.ts, lib/financials/sales-commissions.ts; migrations 20261013020000_agreement_packets_and_versions, 20261013030000_agreement_milestones, 20261013040000_sales_commissions. Values are derived from each module's inputs (named in the module headers) and are confirmed by the first run on the acceptance stack.",
+  "subcases": {
+    "agreement-packet-follows-community-and-state": {
+      "derivation": "The packet org has the seeded Florida agreement (state-level). The owner publishes a Georgia agreement, a Cypress Landing agreement (community-level, so more specific than the Florida one), a required Florida HOA addendum, an optional Florida waterfront addendum and a required Georgia disclosure. A Cypress Landing home resolves to the community agreement and the HOA addendum (agreement first, then addenda by name); the waterfront addendum is offered and joins only when picked, which changes the hash; the Georgia disclosure does not apply in Florida and is refused as a changed packet; a Peach Grove (GA) community resolves to the Georgia documents.",
+      "expected": {
+        "jurisdiction": "FL",
+        "documents": ["Cypress Landing purchase agreement v1", "HOA disclosure v1"],
+        "offered": ["Waterfront addendum"],
+        "withWaterfront": ["Cypress Landing purchase agreement v1", "HOA disclosure v1", "Waterfront addendum v1"],
+        "hashChangesWithThePick": true,
+        "inapplicableAddendum": "AGREEMENT_PACKET_CHANGED",
+        "georgia": ["Georgia purchase agreement v1", "Georgia disclosure v1"]
+      }
+    },
+    "published-agreement-versions-are-immutable": {
+      "derivation": "A required Florida warranty addendum is published as v1 and a draft is written on it. Editing the published version through the service or SQL is refused, a sales consultant cannot publish, and publishing v2 supersedes v1. The earlier draft keeps v1; a draft written after gets v2.",
+      "expected": {
+        "editPublished": "refused: only drafts are edited",
+        "sqlEdit": "refused: document is immutable",
+        "consultantPublishes": "refused: needs agreement template management",
+        "statuses": ["v1 superseded", "v2 published"],
+        "pinnedDraft": 1,
+        "newDraft": 2,
+        "secondIsLive": true
+      }
+    },
+    "signing-is-refused-without-a-required-addendum": {
+      "derivation": "A draft with no signing document is not prepared. Publishing a newly required flood addendum makes it stale; a refresh against a hash the seller did not review is refused; the refresh on the reviewed packet clears it (the stack has no storage, so signing stays unprepared) and leaves four documents (community agreement, HOA, warranty v2, flood). Withdrawing the flood version makes it stale again. EP05 review: the sales consultant writing the draft row directly through the data API (executing it, or replacing its snapshot and price) is refused by the database, so it stays a draft.",
+      "expected": {
+        "before": "not_prepared",
+        "afterRequired": "packet_stale",
+        "staleRefresh": "AGREEMENT_PACKET_CHANGED",
+        "afterRefresh": "not_prepared",
+        "afterWithdrawal": "packet_stale",
+        "refreshedDocuments": 4,
+        "memberActivates": "refused: sales desk only",
+        "memberEditsSnapshot": "refused: sales desk only",
+        "stillDraft": "draft"
+      }
+    },
+    "no-agreement-without-a-published-template": {
+      "derivation": "The org publishes agreements for Florida and Georgia only, so a Texas community resolves to no packet.",
+      "expected": { "texas": "AGREEMENT_PACKET_UNAVAILABLE" }
+    },
+    "agreement-packet-hash-binds-snapshot-and-signing": {
+      "derivation": "The packet resolved for the lot before the sale is the one creation stored, the one the executed signature records and the one version 1 carries. Source bytes are bound only when the run has storage.",
+      "expected": {
+        "snapshotIsResolved": true,
+        "signatureBindsPacket": true,
+        "versions": [{ "version": 1, "kind": "original", "bindsPacket": true }],
+        "sourceBytesBound": "requires storage"
+      }
+    },
+    "signed-change-orders-version-the-agreement": {
+      "derivation": "The buyer signs a +$12,500 kitchen change on the portal and a -$3,000 fireplace deletion offline with the signed copy attached. They are versions 2 and 3; the authorized price is the agreement plus $9,500, the signed agreement row is untouched, and the settlement prices the head version.",
+      "expected": {
+        "versions": [
+          { "version": 1, "kind": "original", "deltaCents": "agreement price", "authorizedCents": 0 },
+          { "version": 2, "kind": "amendment", "deltaCents": 1250000, "authorizedCents": 1250000 },
+          { "version": 3, "kind": "amendment", "deltaCents": -300000, "authorizedCents": 950000 }
+        ],
+        "signedAgreementUntouched": true,
+        "settlementAmendmentsCents": 950000,
+        "settlementOverAgreementCents": 950000
+      }
+    },
+    "amendment-requires-the-buyers-signature": {
+      "derivation": "An offline approval without the buyer's signed copy is refused; once the buyer signs, the amendment cannot be voided by the service or by SQL. After the sale is cancelled, a change the buyer signs amends nothing, so the voided agreement keeps its original and one amendment. EP05 review: the owner writing the approval directly through the data API with an e-signature flag, or with a signed-copy id that is no file on the home, is refused.",
+      "expected": {
+        "unsignedApproval": "refused: needs the buyer's signed copy",
+        "voidAmendment": "refused: amendment cannot be voided",
+        "sqlVoid": "refused: amendment cannot be voided",
+        "forgedEnvelope": "refused: needs the buyer's signature",
+        "forgedSignedCopy": "refused: needs the signed copy on file",
+        "versionsAfterCancellation": ["original", "amendment"]
+      }
+    },
+    "resold-home-settles-only-its-own-amendments": {
+      "derivation": "The first buyer signs a $20,000 pool and cancels; the second buyer buys the same home. The first agreement keeps its two versions; the second settles at its own agreement price with no amendments.",
+      "expected": {
+        "sameHome": true,
+        "firstBuyerVersions": 2,
+        "secondBuyerAmendmentsCents": 0,
+        "secondBuyerPriceIsTheirAgreement": true
+      }
+    },
+    "cancelling-a-sale-reconciles-what-was-committed": {
+      "derivation": "A $10,000 received deposit, one unsigned $2,000 change order and a projected closing are what the plan shows. A stale plan hash is refused. Cancelling with a split forfeits $2,500 and refunds $7,500, voids the agreement and the unsigned change order, releases the reservation, cancels the closing and records one receipt; a second cancellation finds nothing to cancel. EP05 review: voiding the agreement row directly through the data API is refused, so the deposit, lot and receipt are always reconciled by the cancellation.",
+      "expected": {
+        "plan": { "availableCents": 1000000, "pendingChangeOrders": 1, "closing": "projected" },
+        "stalePlan": "AGREEMENT_CANCELLATION_CHANGED",
+        "memberVoid": "refused: sales desk only",
+        "contract": "void",
+        "pendingChangeOrder": "cancelled",
+        "reservation": "released",
+        "closing": "cancelled",
+        "receipt": { "disposition": "split", "forfeitCents": 250000, "refundCents": 750000, "settlement": "completed" },
+        "refundedCents": 750000,
+        "forfeitureInvoiceCents": [250000],
+        "secondCancellation": "refused: nothing left to cancel"
+      }
+    },
+    "settled-sale-cannot-be-voided": {
+      "derivation": "A sale whose closing is recorded shows a blocked plan; voiding it is refused until the closing is reversed, and the agreement stays active.",
+      "expected": {
+        "closing": "closed",
+        "blocked": "reverse the closing first",
+        "voided": "refused: reverse the closing first",
+        "contract": "active"
+      }
+    },
+    "contingencies-come-from-the-signed-agreement": {
+      "derivation": "The seller writes a financed sale with one contingency on the agreement sheet: the sale of the buyer's home, due 45 days after signing, holding closing, evidence required. Execution seeds the five lender and title milestones (the loan application holds nothing and needs no evidence; the rest hold closing and need evidence) and the signed contingency, once: re-running the seed adds nothing. The warranty program is bound at the agreement, and a sales consultant cannot resolve a milestone.",
+      "expected": {
+        "seeded": {
+          "milestones": [
+            { "key": "lender:loan_application", "requiredBefore": null, "evidence": false, "contingency": false },
+            { "key": "lender:appraisal", "requiredBefore": "closing", "evidence": true, "contingency": false },
+            { "key": "lender:loan_approval", "requiredBefore": "closing", "evidence": true, "contingency": false },
+            { "key": "title:title_commitment", "requiredBefore": "closing", "evidence": true, "contingency": false },
+            { "key": "lender:clear_to_close", "requiredBefore": "closing", "evidence": true, "contingency": false },
+            { "key": "contingency:home_sale:1", "requiredBefore": "closing", "evidence": true, "contingency": true }
+          ],
+          "contingencyDueIn45Days": true,
+          "afterRerun": 6,
+          "programBound": true,
+          "salesResolves": "refused"
+        }
+      }
+    },
+    "required-milestones-block-close": {
+      "derivation": "With every checklist gate done, an open appraisal refuses clear-to-close in the service and in SQL. A waiver with a short reason and a satisfaction without evidence are refused; satisfied with its file, and the rest waived by the coordinator, the closing clears. The appraisal's history is its seeding and the coordinator's satisfaction.",
+      "expected": {
+        "blocked": {
+          "serviceRefusal": "refused",
+          "sqlRefusal": "refused",
+          "shortWaiver": "refused",
+          "noEvidence": "refused",
+          "cleared": "cleared_to_close",
+          "history": [
+            { "source": "materialized", "to_status": "open", "attributed": false },
+            { "source": "manual", "to_status": "satisfied", "attributed": true }
+          ]
+        }
+      }
+    },
+    "lender-title-dependencies-aging-and-desk": {
+      "derivation": "Clear to close cannot be satisfied before its prerequisites; moving the loan approval's due date needs a reason; with a reason it is 4 days late, ages on the workbench, makes clear to close blocked, leads the Sales desk as an overdue chase, and two sweeps announce it once.",
+      "expected": {
+        "aging": {
+          "ctcEarly": "refused",
+          "noReason": "refused",
+          "overdueDays": 4,
+          "blockedBy": true,
+          "desk": { "label": "Chase Loan approval issued", "tone": "overdue" },
+          "reminders": 1
+        }
+      }
+    },
+    "signed-update-reconciles-and-mismatch-refused": {
+      "derivation": "A sales consultant cannot create a feed. The owner's title feed posts: a loan application satisfied (no evidence needed, applied), an appraisal satisfied (evidence required, so reported, still open), the same delivery again (duplicate), the same delivery id with a different body (conflict), a wrong buyer email and a wrong lot (refused with their reasons, kept on the feed log and the home), and a bad signature (401, counted on the feed). EP05 review: the delivery id is part of the signed body, so a captured report re-sent under a new header id is refused (400) and records nothing; a coordinator writing a reported status directly is refused.",
+      "expected": {
+        "feed": {
+          "salesCreates": "refused",
+          "receipts": {
+            "application": { "status": 200, "outcome": "applied", "reason": null },
+            "appraisal": { "status": 200, "outcome": "reported", "reason": null },
+            "replay": { "status": 200, "outcome": "duplicate", "reason": null },
+            "altered": { "status": 409, "outcome": "conflict", "reason": "delivery_conflict" },
+            "wrongBuyer": { "status": 422, "outcome": "refused", "reason": "buyer_mismatch" },
+            "wrongHome": { "status": 422, "outcome": "refused", "reason": "home_mismatch" },
+            "badSignature": { "status": 401, "outcome": "unauthorized", "reason": null },
+            "replayedAsNew": { "status": 400, "outcome": "delivery_id is required in the signed body and must match x-arc-delivery", "reason": null }
+          },
+          "statuses": { "loan_application": "satisfied", "appraisal": "open", "title_commitment": "open" },
+          "appraisalReported": { "reported_status": "satisfied", "reported_reference": "APR-77" },
+          "feedRejected": 1,
+          "feedRefused": ["buyer_mismatch", "home_mismatch"],
+          "homeRefused": ["buyer_mismatch", "home_mismatch"],
+          "memberReport": "refused: feed only"
+        }
+      }
+    },
+    "co-gate-needs-evidence": {
+      "derivation": "The certificate of occupancy gate refuses completion without a file, refuses a waiver through the service and SQL, refuses another home's file, and completes with a file on this home. EP05 review: the gate cannot be un-gated or deleted, even by SQL. EP05 second review: a superintendent's direct write of a settlement credit or a gate completion is refused (closing.manage), and the owner cannot record the closing by writing its status; it is recorded only by settlement.",
+      "expected": {
+        "coGate": {
+          "withoutFile": "refused",
+          "waived": "refused",
+          "sqlWaive": "refused",
+          "otherHomesFile": "refused",
+          "ownFile": "allowed",
+          "ungate": "refused",
+          "deleteGate": "refused",
+          "superintendentCredit": "refused",
+          "ownerRecordsClosing": "refused",
+          "superintendentCompletesGate": "refused"
+        }
+      }
+    },
+    "settlement-enrolls-once-and-reversal-reenrolls": {
+      "derivation": "A home sold, built and closed enrolls the program its agreement sold once; a completion retry adds nothing; coverage terms cannot be edited; reversing the closing voids the coverage; the re-closing the day after the first closing (and after the home's completion) enrolls one new live coverage. Two enrollment events in all.",
+      "expected": {
+        "warranty": {
+          "first": [{ "voided": false, "soldProgram": true }],
+          "afterRetry": 1,
+          "termsEdit": "refused",
+          "afterReversal": [true],
+          "final": [{ "voided": true, "newDate": false }, { "voided": false, "newDate": true }],
+          "events": 2
+        }
+      }
+    },
+    "commission-terms-approved-with-the-agreement": {
+      "derivation": "On a $450,000 agreement the sales consultant (org_sales_agent holds sales.commission_manage) proposes a co-op broker at 2.5% ($11,250) and their own flat $2,500 consultant comp: $13,750 estimated. The consultant cannot approve (no sales.commission_approve). Signing is held until the owner approves; then nothing holds it. Both lines are recorded. EP05 review: once those terms are approved, the consultant declaring no commissions does not stand on its own; it waits as proposed, and the consultant cannot approve it.",
+      "expected": {
+        "proposedStatus": "proposed",
+        "estimateTotalCents": 1375000,
+        "selfApproval": "Missing permission: sales.commission_approve",
+        "heldBeforeApproval": true,
+        "approvedStatus": "approved",
+        "holdAfterApproval": null,
+        "lines": 2,
+        "noneAfterApproval": "proposed",
+        "consultantApprovesNone": "Missing permission: sales.commission_approve"
+      }
+    },
+    "settlement-creates-commission-payables-once": {
+      "derivation": "The buyer signs a $12,500 change order (version 2 of the agreement) and the closing carries a $4,000 seller credit. The basis is the authorized price, $462,500, never reduced by the credit: the broker is owed 2.5% = $11,562.50 on one pending AP bill, the consultant $2,500 accrued for payroll (Cr 2240). Three completion attempts record each line once; commissions never reach job cost. EP05 review: the consultant (not on the home's team) writing the broker bill's status directly changes nothing and the bill stays pending for AP; a team member without bill.approve is refused by the database (tests/sales-commissions-db.test.js).",
+      "expected": {
+        "obligations": [
+          { "line": 1, "channel": "accounts_payable", "amountCents": 1156250, "basisCents": 46250000, "status": "open", "billStatus": "pending", "commissionBill": true },
+          { "line": 2, "channel": "payroll", "amountCents": 250000, "basisCents": 46250000, "status": "open", "billStatus": null, "commissionBill": false }
+        ],
+        "agreementVersions": ["original", "amendment"],
+        "bills": 1,
+        "accrued2240": 250000,
+        "commissionJobCostEntries": 0,
+        "consultantApprovesBill": "no row updated",
+        "billStatus": "pending"
+      }
+    },
+    "closing-reversal-reconciles-commissions-without-duplicate-payment": {
+      "derivation": "The broker bill ($11,562.50) is approved and paid by check except $1,000, then the closing is reversed twice. The payroll line was never paid, so it is cleared; the broker line is reversed with one vendor credit for the bill's total, of which the unpaid $1,000 is applied to the bill and $10,562.50 stays open against the brokerage's next payment. No payroll clawback; nothing is paid twice.",
+      "expected": {
+        "obligations": [{ "line": 1, "status": "reversed" }, { "line": 2, "status": "cleared" }],
+        "credits": [-1156250],
+        "brokerBill": { "status": "paid", "paidCents": 1156250 },
+        "cashPaidCents": 1056250,
+        "payrollClawbacks": []
+      }
+    }
+  }
+}

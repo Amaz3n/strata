@@ -9,7 +9,7 @@ import type { ReportResult, ReportTable } from "@/lib/reports/types"
 
 function escapeCell(value: string | number | null): string {
   if (value === null || value === undefined) return ""
-  const raw = String(value)
+  const raw = typeof value === "string" && /^[=+@\-\t\r]/.test(value) ? `'${value}` : String(value)
   if (raw.includes('"') || raw.includes(",") || raw.includes("\n") || raw.includes("\r")) {
     return `"${raw.replaceAll('"', '""')}"`
   }
@@ -19,6 +19,7 @@ function escapeCell(value: string | number | null): string {
 function tableToCsv(table: ReportTable): string[] {
   const lines: string[] = []
   if (table.title) lines.push(escapeCell(table.title))
+  if (table.description) lines.push(escapeCell(table.description))
   lines.push(table.columns.map((column) => escapeCell(column.header)).join(","))
 
   for (const row of table.rows) {
@@ -42,6 +43,10 @@ function tableToCsv(table: ReportTable): string[] {
 
 export function reportToCsv(result: ReportResult): string {
   const sections: string[] = []
+  if (result.provenance) sections.push(escapeCell([result.provenance.source, result.provenance.status, result.provenance.scope, result.provenance.generatedAt].join(" · ")))
+  if (result.subtitle) sections.push(escapeCell(result.subtitle))
+  if (result.commentary) sections.push(escapeCell(result.commentary))
+  if (result.notice) sections.push(escapeCell(result.notice.message))
 
   if (result.stats?.length) {
     sections.push([...result.stats.map((stat) => escapeCell(stat.label))].join(","))

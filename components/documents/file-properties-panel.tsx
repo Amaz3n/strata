@@ -1,6 +1,6 @@
 "use client"
 
-import { useRouter } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import {
   Download,
   Eye,
@@ -131,6 +131,7 @@ export function FilePropertiesPanel({
   onDelete,
 }: FilePropertiesPanelProps) {
   const router = useRouter()
+  const preconBase = usePathname().match(/^\/pipeline\/prospects\/[^/]+/)?.[0]
   const terms = useProductTerminology()
 
   if (!file) return null
@@ -264,6 +265,7 @@ export function FilePropertiesPanel({
             <DetailRow label="Version" value={file.version_number ? `v${file.version_number}` : null} />
           </div>
           <div className="mt-4 border bg-card p-4">
+            {file.project_id && file.mime_type === "application/pdf" && <Button variant="outline" size="sm" className="w-full" onClick={() => router.push(preconBase ? `${preconBase}/drawings?sourceFile=${file.id}` : file.source_contexts?.find((source) => source.type === "drawing_set" || source.type === "drawing_sheet")?.href ?? `/projects/${file.project_id}/drawings?sourceFile=${file.id}`)}>Open in Plans & takeoff</Button>}
             {primarySource ? (
               <>
                 <div className="min-w-0 space-y-2">

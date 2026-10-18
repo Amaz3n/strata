@@ -1,11 +1,11 @@
 import type React from "react"
-import { notFound } from "next/navigation"
+import { notFound, unstable_rethrow } from "next/navigation"
+import { cacheLife } from "next/cache"
 import { Suspense } from "react"
 
 import { ProjectContextSetter } from "@/components/layout/project-context-setter"
-import { getProjectIdentity } from "@/lib/services/projects"
+import { getProjectIdentity, getProjectNavigationItemWithClient } from "@/lib/services/projects"
 
-import { unwrapAction } from "@/lib/action-result"
 import { requireOrgContext } from "@/lib/services/context"
 import { getProjectPosture } from "@/lib/product-tier"
 import { getProjectLotContext } from "@/lib/services/lots"
@@ -21,28 +21,43 @@ export const instant = {
   unstable_disableBuildValidation: true,
 }
 
-async function ProjectContext({ params }: Pick<ProjectLayoutProps, "params">) {
-  const { id } = await params
-  const [project, { productTier }] = await Promise.all([
+async function loadProjectContext(id: string) {
+  "use cache: private"
+  cacheLife("session")
+
+  const context = requireOrgContext()
+  const [project, { productTier }, navigation] = await Promise.all([
     getProjectIdentity(id),
-    requireOrgContext(),
+    context,
+    context.then(({ supabase, orgId }) => getProjectNavigationItemWithClient(supabase, orgId, id)),
   ])
-  if (!project) notFound()
+  if (!project || !navigation) return null
   const posture = getProjectPosture(project.property_type, productTier)
-  const lotContext = posture === "production" ? await getProjectLotContext(project.id).catch(() => null) : null
+  const lotContext = posture === "production"
+    ? await getProjectLotContext(project.id).catch((error) => {
+        unstable_rethrow(error)
+        return null
+      })
+    : null
   const lotLabel = lotContext
     ? `${lotContext.communityName} · Lot ${lotContext.block ? `${lotContext.block}-` : ""}${lotContext.lotNumber}`
     : undefined
 
-  return (
-    <ProjectContextSetter
-      id={project.id}
-      name={project.name}
-      posture={posture}
-      contextLabel={lotLabel}
-      contextHref={lotContext ? `/communities/${lotContext.communityId}` : undefined}
-    />
-  )
+  return {
+    id: project.id,
+    name: project.name,
+    posture,
+    contextLabel: lotLabel,
+    contextHref: lotContext ? `/communities/${lotContext.communityId}` : undefined,
+    navigation,
+  }
+}
+
+async function ProjectContext({ params }: Pick<ProjectLayoutProps, "params">) {
+  const { id } = await params
+  const context = await loadProjectContext(id)
+  if (!context) notFound()
+  return <ProjectContextSetter {...context} />
 }
 
 export default function ProjectLayout({ children, params }: ProjectLayoutProps) {

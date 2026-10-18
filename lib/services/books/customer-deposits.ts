@@ -29,7 +29,7 @@ export async function getCustomerDepositWorkspace(orgId?: string) {
   const [{ data: depositInvoices, error: depositError }, { data: applications, error: applicationError }, { data: targets, error: targetError }] = await Promise.all([
     service
       .from("invoices")
-      .select("id, invoice_number, title, project_id, metadata, total_cents, status, payments(id, amount_cents, status, received_at, payment_reversals(amount_cents,status))")
+      .select("id, invoice_number, title, project_id, metadata, total_cents, status, payments(id, amount_cents, status, provider, received_at, payment_reversals(amount_cents,status))")
       .eq("org_id", context.orgId)
       .contains("metadata", { invoice_kind: "earnest_deposit" })
       .order("created_at", { ascending: false })
@@ -62,11 +62,12 @@ export async function getCustomerDepositWorkspace(orgId?: string) {
       .filter((payment: any) => ["succeeded", "completed"].includes(String(payment.status)))
       .map((payment: any) => {
         const refundedCents = (payment.payment_reversals ?? [])
-          .filter((row: any) => row.status === "succeeded")
+          .filter((row: any) => ["pending", "succeeded"].includes(row.status))
           .reduce((sum: number, row: any) => sum + Number(row.amount_cents ?? 0), 0)
         const appliedCents = appliedByPayment.get(String(payment.id)) ?? 0
         return {
           paymentId: String(payment.id),
+          provider: payment.provider as string | null,
           invoiceId: String(invoice.id),
           invoiceNumber: String(invoice.invoice_number ?? "Deposit"),
           title: String(invoice.title ?? "Customer deposit"),

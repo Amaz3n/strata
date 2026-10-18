@@ -6,9 +6,10 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { assertApprovedCostsMeetProjectFinancialRules } from "@/lib/services/project-financial-setup"
 import { enqueueInvoiceSync } from "@/lib/services/accounting-sync"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { InvoiceDraft } from "@/lib/services/cost-plus"
 
-type ApprovedCostInvoiceStatus = "draft" | "saved" | "sent" | "partial" | "paid" | "overdue" | "void"
+type ApprovedCostInvoiceStatus = "draft" | "sent" | "partial" | "paid" | "overdue" | "void"
 
 export type CreateApprovedCostInvoiceParams = {
   supabase: SupabaseClient
@@ -73,7 +74,9 @@ export async function createApprovedCostInvoiceFromPreview(params: CreateApprove
       reservationId: params.reservationId,
     })
 
-  const { data: rpcResult, error: rpcError } = await params.supabase.rpc("create_invoice_from_billable_costs_atomic", {
+  // Callers prove invoice.write on the project first; the atomic function is
+  // service-only so a member cannot invoke it around that check.
+  const { data: rpcResult, error: rpcError } = await createServiceSupabaseClient().rpc("create_invoice_from_billable_costs_atomic", {
     p_org_id: params.orgId,
     p_project_id: params.projectId,
     p_actor_id: params.actorId,
@@ -89,7 +92,7 @@ export async function createApprovedCostInvoiceFromPreview(params: CreateApprove
     p_preview: preview,
     p_idempotency_key: idempotencyKey,
     p_reservation_id: params.reservationId ?? null,
-    p_status: params.status ?? "saved",
+    p_status: params.status ?? "draft",
     p_client_visible: params.clientVisible ?? false,
     p_notes: params.notes ?? null,
     p_sent_to_emails: params.sentToEmails ?? null,
@@ -135,7 +138,7 @@ export async function createApprovedCostInvoiceFromPreview(params: CreateApprove
     },
   })
 
-  if (params.clientVisible || ["saved", "sent", "partial", "paid", "overdue"].includes(params.status ?? "saved")) {
+  if (params.clientVisible || ["sent", "partial", "paid", "overdue"].includes(params.status ?? "draft")) {
     await enqueueInvoiceSync(invoiceId, params.orgId)
   }
 

@@ -2,11 +2,6 @@ import "server-only";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
-import {
-  buildBalanceSheet,
-  buildProfitAndLoss,
-  buildTrialBalance,
-} from "@/lib/services/books/statements";
 import { requireOrgContext } from "@/lib/services/context";
 import { requireBooksWorkspaceEnabled } from "@/lib/services/books/module";
 import { getUserPermissions } from "@/lib/services/permissions";
@@ -15,15 +10,15 @@ import { getUserPermissions } from "@/lib/services/permissions";
 const RECONCILIATION_ITEM_CAP = 100;
 
 export type BooksWorkspaceSection =
-  | "overview"
-  | "statements"
   | "banking"
   | "overhead"
+  | "calendar"
   | "chart"
   | "ledger"
   | "close"
   | "opening-balances"
-  | "accountant"
+  | "exports"
+  | "taxes"
   | "cutover";
 
 async function queryForSection<T>(enabled: boolean, query: PromiseLike<T>) {
@@ -31,16 +26,10 @@ async function queryForSection<T>(enabled: boolean, query: PromiseLike<T>) {
   return { data: [], error: null, count: 0 } as T;
 }
 
-function monthStart() {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-    .toISOString()
-    .slice(0, 10);
-}
-
 export async function getBooksWorkspace(
   orgId?: string,
-  section: BooksWorkspaceSection = "overview",
+  section: BooksWorkspaceSection = "banking",
+  options: { includeTransactions?: boolean } = {},
 ) {
   const context = await requireOrgContext(orgId);
   await requireAuthorization({
@@ -68,20 +57,16 @@ export async function getBooksWorkspace(
     );
 
   const needsAccounts = new Set([
-    "overview",
     "banking",
     "chart",
     "ledger",
     "overhead",
     "opening-balances",
   ]).has(section);
-  const needsBanking = new Set(["overview", "banking"]).has(
-    section,
-  );
+  const needsBanking = section === "banking";
   const needsClose = section === "close";
   const needsCutover = section === "cutover";
-  const needsAccountant = section === "accountant";
-  const needsStatements = section === "overview";
+  const needsExports = section === "exports";
 
   const [
     accounts,
@@ -91,7 +76,6 @@ export async function getBooksWorkspace(
     bankTransactions,
     bankReconciliations,
     comparisons,
-    reconciliations,
     reconciliationItems,
     accountingConnections,
     exports,
@@ -99,26 +83,24 @@ export async function getBooksWorkspace(
     openingBatches,
     cutovers,
     closeItems,
-    trialBalance,
-    profitLoss,
-    balanceSheet,
+    companies,
   ] = await Promise.all([
     queryForSection(
       needsAccounts,
       service
         .from("gl_accounts")
         .select(
-          "id, code, name, description, account_type, subtype, normal_balance, cash_flow_category, active, is_system",
+          "id, code, name, description, account_type, subtype, normal_balance, cash_flow_category, active, is_system, parent_id",
         )
         .eq("org_id", context.orgId)
         .order("code"),
     ),
     queryForSection(
-      needsClose || needsCutover,
+      needsClose || needsCutover || section === "calendar",
       service
         .from("accounting_periods")
         .select(
-          "id, period_start, period_end, fiscal_year, fiscal_period, status, closed_at, reopened_at, close_digest",
+          "id, period_start, period_end, fiscal_year, fiscal_period, status, closed_at, reopened_at, close_digest, close_started_at",
         )
         .eq("org_id", context.orgId)
         .order("period_end", { ascending: false })
@@ -141,14 +123,14 @@ export async function getBooksWorkspace(
       service
         .from("bank_accounts")
         .select(
-          "id, name, official_name, mask, account_type, account_subtype, gl_account_id, current_balance_cents, available_balance_cents, balance_as_of, active, last_reconciled_on, connection:bank_feed_connections(institution_name,status,last_refresh_at,last_error)",
+          "id, name, official_name, mask, account_type, account_subtype, currency, gl_account_id, current_balance_cents, available_balance_cents, balance_as_of, active, last_reconciled_on, connection:bank_feed_connections(institution_name,status,last_refresh_at,last_error)",
         )
         .eq("org_id", context.orgId)
         .eq("active", true)
         .order("name"),
     ),
     queryForSection(
-      needsBanking,
+      needsBanking && options.includeTransactions !== false,
       service
         .from("bank_transactions")
         .select(
@@ -182,15 +164,6 @@ export async function getBooksWorkspace(
         .order("completed_at", { ascending: false })
         .limit(12),
     ),
-    queryForSection(
-      needsStatements,
-      service
-        .from("accounting_reconciliation_runs")
-        .select("id, run_date, status, discrepancy_count, completed_at")
-        .eq("org_id", context.orgId)
-        .order("created_at", { ascending: false })
-        .limit(12),
-    ),
     // The unresolved findings themselves, not just the run that observed them:
     // these are what the blocking `accounting_drift` close check counts, so the
     // person closing the period has to be able to see and dispose of them.
@@ -217,7 +190,7 @@ export async function getBooksWorkspace(
         .order("created_at", { ascending: false }),
     ),
     queryForSection(
-      needsAccountant,
+      needsExports,
       service
         .from("books_exports")
         .select(
@@ -228,7 +201,7 @@ export async function getBooksWorkspace(
         .limit(12),
     ),
     queryForSection(
-      needsAccountant,
+      needsExports,
       service
         .from("accountant_packages")
         .select(
@@ -261,7 +234,7 @@ export async function getBooksWorkspace(
         .limit(10),
     ),
     queryForSection(
-      needsClose || needsStatements,
+      needsClose,
       service
         .from("books_close_items")
         .select(
@@ -271,15 +244,16 @@ export async function getBooksWorkspace(
         .order("category")
         .order("label"),
     ),
-    needsStatements
-      ? buildTrialBalance(context.orgId, asOf)
-      : Promise.resolve(null),
-    needsStatements
-      ? buildProfitAndLoss(context.orgId, monthStart(), asOf)
-      : Promise.resolve(null),
-    needsStatements
-      ? buildBalanceSheet(context.orgId, asOf)
-      : Promise.resolve(null),
+    queryForSection(
+      section === "opening-balances",
+      service
+        .from("books_legal_entities")
+        .select("id, name, is_primary")
+        .eq("org_id", context.orgId)
+        .eq("status", "active")
+        .order("is_primary", { ascending: false })
+        .order("name"),
+    ),
   ]);
   const queryErrors = [
     accounts.error,
@@ -289,7 +263,6 @@ export async function getBooksWorkspace(
     bankTransactions.error,
     bankReconciliations.error,
     comparisons.error,
-    reconciliations.error,
     reconciliationItems.error,
     accountingConnections.error,
     exports.error,
@@ -297,6 +270,7 @@ export async function getBooksWorkspace(
     openingBatches.error,
     cutovers.error,
     closeItems.error,
+    companies.error,
   ].filter(Boolean);
   if (queryErrors.length > 0)
     throw new Error(
@@ -330,6 +304,7 @@ export async function getBooksWorkspace(
   return {
     initialized: true as const,
     orgId: context.orgId,
+    actorId: context.userId,
     asOf,
     settings,
     accounts: accounts.data ?? [],
@@ -343,7 +318,6 @@ export async function getBooksWorkspace(
     ),
     bankTransactionsTruncated,
     comparisons: comparisons.data ?? [],
-    reconciliations: reconciliations.data ?? [],
     reconciliationItems: reconciliationItems.data ?? [],
     reconciliationItemTotal: reconciliationItems.count ?? 0,
     reconciliationItemCap: RECONCILIATION_ITEM_CAP,
@@ -351,12 +325,30 @@ export async function getBooksWorkspace(
     exports: exports.data ?? [],
     accountantPackages: accountantPackages.data ?? [],
     openingBatches: openingBatches.data ?? [],
+    companies: companies.data ?? [],
     cutovers: cutovers.data ?? [],
-    closeItems: closeItems.data ?? [],
-    statements:
-      trialBalance && profitLoss && balanceSheet
-        ? { trialBalance, profitLoss, balanceSheet }
-        : null,
+    closeItems: (closeItems.data ?? []).map((item) => {
+      const evidence = item.evidence;
+      // Existing close results retain their original destination until rerun.
+      if (
+        evidence &&
+        typeof evidence === "object" &&
+        !Array.isArray(evidence) &&
+        (evidence.href === "/books/accountant" || evidence.href === "/books")
+      ) {
+        return {
+          ...item,
+          evidence: {
+            ...evidence,
+            href:
+              evidence.href === "/books"
+                ? "/books/assets"
+                : "/settings/accounting/taxes",
+          },
+        };
+      }
+      return item;
+    }),
     capabilities: {
       manage: allowed("books.manage"),
       adjust: allowed("books.adjust"),

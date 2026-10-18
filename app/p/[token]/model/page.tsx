@@ -1,4 +1,5 @@
-import { notFound } from "next/navigation"
+import { connection } from "next/server"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { Plan3dViewerPanel } from "@/components/portal/tabs/portal-model-tab"
@@ -19,11 +20,13 @@ interface Props {
  * through is a claim the builder made on purpose.
  */
 export default async function ClientPortalModelPage({ params }: Props) {
+  await connection()
   const { token } = await params
   let access
   try {
     access = await assertPortalActionAccess(token, { portalType: "client", requireProject: true })
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     notFound()
   }
 

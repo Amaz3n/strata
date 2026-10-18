@@ -43,9 +43,24 @@ export const repriceAgreementSchema = z.object({
   unit_cost_cents: z.number().int().min(0).nullable().optional(),
   lump_sum_cents: z.number().int().min(0).nullable().optional(),
   notes: z.string().trim().max(5_000).nullable().optional(),
+  reason: z.string().trim().min(3, "Say why the price is changing").max(1_000),
+})
+
+const agreementReasonSchema = z.string().trim().min(3, "Say why").max(1_000)
+
+export const agreementVoidSchema = z.object({ reason: agreementReasonSchema })
+
+export const agreementEndSchema = z.object({ effective_to: z.string().date(), reason: agreementReasonSchema })
+
+export const renewalFiltersSchema = z.object({
+  divisionId: optionalUuid,
+  windowDays: z.number().int().min(1).max(365).default(60),
+  page: z.number().int().min(1).default(1),
+  pageSize: z.number().int().min(1).max(50).default(25),
 })
 
 export const priceAgreementFiltersSchema = z.object({
+  agreementIds: z.array(z.string().uuid()).min(1).max(100).optional(),
   companyId: optionalUuid,
   costCodeId: optionalUuid,
   communityId: optionalUuid,
@@ -60,3 +75,4 @@ export const priceAgreementFiltersSchema = z.object({
 export type PriceAgreementInput = z.infer<typeof priceAgreementInputSchema>
 export type RepriceAgreementInput = z.infer<typeof repriceAgreementSchema>
 export type PriceAgreementFilters = z.infer<typeof priceAgreementFiltersSchema>
+export type RenewalFilters = z.infer<typeof renewalFiltersSchema>

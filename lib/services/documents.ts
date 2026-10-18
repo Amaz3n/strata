@@ -61,7 +61,6 @@ export async function createDocument(
       | "contract"
       | "change_order"
       | "lien_waiver"
-      | "selection"
       | "subcontract"
       | "subcontract_change_order"
       | "closeout"
@@ -397,46 +396,12 @@ export async function replaceDocumentFields({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
 
-  const { error: deleteError } = await supabase
-    .from("document_fields")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("document_id", documentId)
-    .eq("revision", revision)
-
-  if (deleteError) {
-    throw new Error(`Failed to clear document fields: ${deleteError.message}`)
-  }
-
-  if (parsedFields.length === 0) {
-    return []
-  }
-
-  const rows = parsedFields.map((field, index) => ({
-    org_id: resolvedOrgId,
-    document_id: documentId,
-    revision,
-    page_index: field.page_index,
-    field_type: field.field_type,
-    label: field.label ?? null,
-    required: field.required ?? true,
-    signer_role: field.signer_role ?? "client",
-    x: field.x,
-    y: field.y,
-    w: field.w,
-    h: field.h,
-    sort_order: field.sort_order ?? index,
-    metadata: field.metadata ?? {},
-  }))
-
-  const { data, error } = await supabase
-    .from("document_fields")
-    .insert(rows)
-    .select("*")
-
-  if (error) {
-    throw new Error(`Failed to save document fields: ${error.message}`)
-  }
+  const { data, error } = await supabase.rpc("replace_draft_signing_fields", {
+    p_org_id: resolvedOrgId, p_document_id: documentId, p_revision: revision,
+    p_fields: parsedFields.map((field, index) => ({ ...field, sort_order: field.sort_order ?? index })),
+  })
+  if (error) throw new Error(`Failed to save draft fields: ${error.message}`)
+  const rows = parsedFields
 
   await recordAudit({
     orgId: resolvedOrgId,

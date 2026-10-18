@@ -1,6 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
+import { isSsnFiler, ssnProblem } from "@/lib/services/books/vendor-1099-filing-rules";
 
 import { recordAudit } from "@/lib/services/audit";
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
@@ -104,6 +105,14 @@ export async function storeCompanyTaxIdentity(
     })
     .parse(input);
   const service = createServiceSupabaseClient();
+  // An individual's ID is an SSN; one the SSA never issues is refused here, not
+  // when the IRS rejects the 1099 months later.
+  const { data: company, error: companyError } = await service.from("companies").select("tax_entity_type")
+    .eq("org_id", context.orgId).eq("id", parsed.companyId).maybeSingle();
+  if (companyError) throw new Error(`Failed to load the company: ${companyError.message}`);
+  if (!company) throw new Error("Company not found");
+  const invalidSsn = isSsnFiler(company.tax_entity_type) ? ssnProblem(parsed.tin) : null;
+  if (invalidSsn) throw new Error(invalidSsn);
   const { data, error } = await service.rpc(
     "store_company_tax_identity_atomic",
     {

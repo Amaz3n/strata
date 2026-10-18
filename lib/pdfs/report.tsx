@@ -1,11 +1,30 @@
-import fs from "node:fs"
-import path from "node:path"
+import fs from "node:fs";
+import path from "node:path";
 
-import { Document, Font, Image, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer"
-import sharp from "sharp"
+import {
+  Document,
+  Font,
+  Image,
+  Page,
+  StyleSheet,
+  Text,
+  View,
+  renderToBuffer,
+} from "@react-pdf/renderer";
+import sharp from "sharp";
 
-import { formatCell, isNumericColumn, visibleColumns } from "@/lib/reports/format"
-import type { ReportColumn, ReportResult, ReportRow, ReportTable } from "@/lib/reports/types"
+import {
+  formatCell,
+  isNumericColumn,
+  visibleColumns,
+  unwrapCell,
+} from "@/lib/reports/format";
+import type {
+  ReportColumn,
+  ReportResult,
+  ReportRow,
+  ReportTable,
+} from "@/lib/reports/types";
 
 /**
  * One PDF renderer for the whole catalog. It reads the same `ReportResult` the
@@ -14,19 +33,19 @@ import type { ReportColumn, ReportResult, ReportRow, ReportTable } from "@/lib/r
  */
 
 export interface ReportPdfBranding {
-  org_name: string | null
-  org_logo_url: string | null
+  org_name: string | null;
+  org_logo_url: string | null;
 }
 
 /* Fonts — bundled DM Sans, with a Helvetica fallback. Mirrors lib/pdfs/invoice.tsx. */
-let resolvedFamily = "Helvetica"
-let fontsInitialized = false
+let resolvedFamily = "Helvetica";
+let fontsInitialized = false;
 function ensureFonts(): string {
-  if (fontsInitialized) return resolvedFamily
-  fontsInitialized = true
+  if (fontsInitialized) return resolvedFamily;
+  fontsInitialized = true;
   try {
-    const dir = path.join(process.cwd(), "lib/pdfs/fonts")
-    const regular = path.join(dir, "DMSans-Regular.ttf")
+    const dir = path.join(process.cwd(), "lib/pdfs/fonts");
+    const regular = path.join(dir, "DMSans-Regular.ttf");
     if (fs.existsSync(regular)) {
       Font.register({
         family: "DM Sans",
@@ -35,23 +54,29 @@ function ensureFonts(): string {
           { src: path.join(dir, "DMSans-Medium.ttf"), fontWeight: 500 },
           { src: path.join(dir, "DMSans-Bold.ttf"), fontWeight: 700 },
         ],
-      })
-      Font.registerHyphenationCallback((word) => [word])
-      resolvedFamily = "DM Sans"
+      });
+      Font.registerHyphenationCallback((word) => [word]);
+      resolvedFamily = "DM Sans";
     }
   } catch {
-    resolvedFamily = "Helvetica"
+    resolvedFamily = "Helvetica";
   }
-  return resolvedFamily
+  return resolvedFamily;
 }
 
-const INK = "#1a1a1a"
-const MUTED = "#6b7280"
-const RULE = "#1a1a1a"
-const HAIRLINE = "#e5e5e5"
+const INK = "#1a1a1a";
+const MUTED = "#6b7280";
+const RULE = "#1a1a1a";
+const HAIRLINE = "#e5e5e5";
 
 const styles = StyleSheet.create({
-  page: { paddingTop: 42, paddingBottom: 48, paddingHorizontal: 34, fontSize: 8, color: INK },
+  page: {
+    paddingTop: 42,
+    paddingBottom: 48,
+    paddingHorizontal: 34,
+    fontSize: 8,
+    color: INK,
+  },
 
   header: { marginBottom: 18 },
   logo: { height: 28, maxWidth: 170, objectFit: "contain", marginBottom: 8 },
@@ -59,24 +84,69 @@ const styles = StyleSheet.create({
   reportName: { fontSize: 15, fontWeight: 700 },
   provenance: { fontSize: 8.5, color: MUTED, marginTop: 3 },
 
-  notice: { marginTop: 10, padding: 6, borderWidth: 0.5, borderColor: HAIRLINE, fontSize: 8, color: MUTED },
+  notice: {
+    marginTop: 10,
+    padding: 6,
+    borderWidth: 0.5,
+    borderColor: HAIRLINE,
+    fontSize: 8,
+    color: MUTED,
+  },
 
-  statGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 12, borderTopWidth: 1, borderTopColor: RULE },
+  statGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: RULE,
+  },
   stat: { width: "20%", paddingVertical: 6, paddingRight: 8 },
-  statLabel: { fontSize: 6.5, fontWeight: 700, color: MUTED, letterSpacing: 0.5 },
+  statLabel: {
+    fontSize: 6.5,
+    fontWeight: 700,
+    color: MUTED,
+    letterSpacing: 0.5,
+  },
   statValue: { fontSize: 11, fontWeight: 700, marginTop: 2 },
   statDetail: { fontSize: 7, color: MUTED, marginTop: 1 },
 
-  tableTitle: { fontSize: 9.5, fontWeight: 700, marginTop: 16, marginBottom: 4 },
+  tableTitle: {
+    fontSize: 9.5,
+    fontWeight: 700,
+    marginTop: 16,
+    marginBottom: 4,
+  },
   tableDescription: { fontSize: 7.5, color: MUTED, marginBottom: 4 },
 
-  headRow: { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: RULE, paddingBottom: 3 },
-  headCell: { fontSize: 6.5, fontWeight: 700, color: MUTED, letterSpacing: 0.4, paddingRight: 5 },
+  headRow: {
+    flexDirection: "row",
+    borderBottomWidth: 1,
+    borderBottomColor: RULE,
+    paddingBottom: 3,
+  },
+  headCell: {
+    fontSize: 6.5,
+    fontWeight: 700,
+    color: MUTED,
+    letterSpacing: 0.4,
+    paddingRight: 5,
+  },
 
-  row: { flexDirection: "row", paddingVertical: 2.5, borderBottomWidth: 0.5, borderBottomColor: HAIRLINE },
+  row: {
+    flexDirection: "row",
+    paddingVertical: 2.5,
+    borderBottomWidth: 0.5,
+    borderBottomColor: HAIRLINE,
+  },
   groupRow: { flexDirection: "row", paddingTop: 6, paddingBottom: 2 },
   groupText: { fontSize: 7, fontWeight: 700, color: MUTED, letterSpacing: 0.4 },
-  totalRow: { flexDirection: "row", paddingVertical: 4, borderTopWidth: 1, borderTopColor: RULE, marginTop: 1 },
+  totalRow: {
+    flexDirection: "row",
+    paddingVertical: 4,
+    borderTopWidth: 1,
+    borderTopColor: RULE,
+    marginTop: 1,
+  },
   cell: { paddingRight: 5 },
   bold: { fontWeight: 700 },
 
@@ -92,7 +162,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   footerText: { fontSize: 7, color: MUTED },
-})
+});
 
 /**
  * Column widths are proportional to a weight per type — numbers need less room
@@ -100,16 +170,26 @@ const styles = StyleSheet.create({
  */
 function columnWidths(columns: ReportColumn[]): string[] {
   const weights = columns.map((column, index) => {
-    if (isNumericColumn(column)) return 1
-    if (column.type === "date") return 0.9
-    if (column.type === "status") return 0.9
-    return index === 0 ? 2 : 1.4
-  })
-  const total = weights.reduce((sum, weight) => sum + weight, 0)
-  return weights.map((weight) => `${((weight / total) * 100).toFixed(3)}%`)
+    if (isNumericColumn(column)) return 1;
+    if (column.type === "date") return 0.9;
+    if (column.type === "status") return 0.9;
+    return index === 0 ? 2 : 1.4;
+  });
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  return weights.map((weight) => `${((weight / total) * 100).toFixed(3)}%`);
 }
 
-function Cells({ row, columns, widths, bold }: { row: ReportRow; columns: ReportColumn[]; widths: string[]; bold?: boolean }) {
+function Cells({
+  row,
+  columns,
+  widths,
+  bold,
+}: {
+  row: ReportRow;
+  columns: ReportColumn[];
+  widths: string[];
+  bold?: boolean;
+}) {
   return (
     <>
       {columns.map((column, index) => (
@@ -117,7 +197,10 @@ function Cells({ row, columns, widths, bold }: { row: ReportRow; columns: Report
           key={column.key}
           style={[
             styles.cell,
-            { width: widths[index], textAlign: isNumericColumn(column) ? "right" : "left" },
+            {
+              width: widths[index],
+              textAlign: isNumericColumn(column) ? "right" : "left",
+            },
             ...(bold ? [styles.bold] : []),
           ]}
         >
@@ -125,23 +208,107 @@ function Cells({ row, columns, widths, bold }: { row: ReportRow; columns: Report
         </Text>
       ))}
     </>
-  )
+  );
+}
+
+function ChartBlock({ table }: { table: ReportTable }) {
+  const label = table.columns.find((column) => !isNumericColumn(column));
+  const measure = table.columns.find(isNumericColumn);
+  if (!label || !measure) return null;
+  const rows = table.rows.filter((row) => !row.emphasis).slice(0, 15);
+  const maximum = Math.max(
+    1,
+    ...rows.map((row) =>
+      Math.abs(Number(unwrapCell(row.cells[measure.key]).value) || 0),
+    ),
+  );
+  return (
+    <View style={{ marginVertical: 12 }} wrap={false}>
+      <Text style={styles.tableTitle}>
+        {measure.header} · first {rows.length} rows
+      </Text>
+      {rows.map((row) => {
+        const amount = Number(unwrapCell(row.cells[measure.key]).value) || 0;
+        return (
+          <View
+            key={row.key}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              marginVertical: 3,
+            }}
+          >
+            <Text style={{ width: "25%", fontSize: 7 }}>
+              {formatCell(row.cells[label.key])}
+            </Text>
+            <View
+              style={{ width: "55%", backgroundColor: "#eeeeee", height: 8 }}
+            >
+              <View
+                style={{
+                  width: `${(Math.abs(amount) / maximum) * 100}%`,
+                  height: 8,
+                  backgroundColor: amount < 0 ? "#a43b38" : "#414b56",
+                }}
+              />
+            </View>
+            <Text style={{ width: "20%", textAlign: "right", fontSize: 7 }}>
+              {formatCell(row.cells[measure.key], measure.type)}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+/** Repeat row labels across horizontal panels rather than shrinking 24 months onto one page. */
+function printTables(tables: ReportTable[]): ReportTable[] {
+  return tables.flatMap((table) => {
+    const columns = visibleColumns(table.columns);
+    if (columns.length <= 9) return [table];
+    const [label, ...measures] = columns;
+    const panels: ReportTable[] = [];
+    for (let index = 0; index < measures.length; index += 8) {
+      const chunk = measures.slice(index, index + 8);
+      panels.push({
+        ...table,
+        key: `${table.key}:panel:${index}`,
+        chart: index === 0 && table.chart,
+        pageBreak: index > 0 || table.pageBreak,
+        title: `${table.title ?? "Report"} · ${chunk[0].header} – ${chunk[chunk.length - 1].header}`,
+        columns: [label, ...chunk],
+      });
+    }
+    return panels;
+  });
 }
 
 function TableBlock({ table }: { table: ReportTable }) {
-  const columns = visibleColumns(table.columns)
-  const widths = columnWidths(columns)
+  const columns = visibleColumns(table.columns);
+  const widths = columnWidths(columns);
 
   return (
-    <View>
-      {table.title ? <Text style={styles.tableTitle}>{table.title}</Text> : null}
-      {table.description ? <Text style={styles.tableDescription}>{table.description}</Text> : null}
+    <View break={table.pageBreak}>
+      {table.chart ? <ChartBlock table={table} /> : null}
+      {table.title ? (
+        <Text style={styles.tableTitle}>{table.title}</Text>
+      ) : null}
+      {table.description ? (
+        <Text style={styles.tableDescription}>{table.description}</Text>
+      ) : null}
 
       <View style={styles.headRow} fixed>
         {columns.map((column, index) => (
           <Text
             key={column.key}
-            style={[styles.headCell, { width: widths[index], textAlign: isNumericColumn(column) ? "right" : "left" }]}
+            style={[
+              styles.headCell,
+              {
+                width: widths[index],
+                textAlign: isNumericColumn(column) ? "right" : "left",
+              },
+            ]}
           >
             {column.header.toUpperCase()}
           </Text>
@@ -149,13 +316,18 @@ function TableBlock({ table }: { table: ReportTable }) {
       </View>
 
       {table.rows.length === 0 ? (
-        <Text style={styles.empty}>{table.emptyMessage ?? "No rows for this report."}</Text>
+        <Text style={styles.empty}>
+          {table.emptyMessage ?? "No rows for this report."}
+        </Text>
       ) : (
         table.rows.map((row) =>
           row.emphasis === "group" ? (
             <View key={row.key} style={styles.groupRow} wrap={false}>
               <Text style={styles.groupText}>
-                {formatCell(row.cells[columns[0].key] ?? null, "text").toUpperCase()}
+                {formatCell(
+                  row.cells[columns[0].key] ?? null,
+                  "text",
+                ).toUpperCase()}
               </Text>
             </View>
           ) : (
@@ -164,7 +336,12 @@ function TableBlock({ table }: { table: ReportTable }) {
               style={row.emphasis === "total" ? styles.totalRow : styles.row}
               wrap={false}
             >
-              <Cells row={row} columns={columns} widths={widths} bold={row.emphasis !== undefined} />
+              <Cells
+                row={row}
+                columns={columns}
+                widths={widths}
+                bold={row.emphasis !== undefined}
+              />
             </View>
           ),
         )
@@ -172,17 +349,23 @@ function TableBlock({ table }: { table: ReportTable }) {
 
       {table.totals && table.rows.length > 0 ? (
         <View style={styles.totalRow} wrap={false}>
-          <Cells row={{ key: "totals", cells: table.totals }} columns={columns} widths={widths} bold />
+          <Cells
+            row={{ key: "totals", cells: table.totals }}
+            columns={columns}
+            widths={widths}
+            bold
+          />
         </View>
       ) : null}
 
       {table.cap ? (
         <Text style={styles.cap}>
-          Showing {table.cap.shown.toLocaleString()} of {table.cap.total.toLocaleString()} rows.
+          Showing {table.cap.shown.toLocaleString()} of{" "}
+          {table.cap.total.toLocaleString()} rows.
         </Text>
       ) : null}
     </View>
-  )
+  );
 }
 
 function ReportDocument({
@@ -194,73 +377,89 @@ function ReportDocument({
   family,
   generatedAt,
 }: {
-  title: string
-  provenance: string
-  result: ReportResult
-  branding: ReportPdfBranding
-  logo: string | null
-  family: string
-  generatedAt: string
+  title: string;
+  provenance: string;
+  result: ReportResult;
+  branding: ReportPdfBranding;
+  logo: string | null;
+  family: string;
+  generatedAt: string;
 }) {
-  const landscape = result.tables.some((table) => visibleColumns(table.columns).length > 6)
+  const landscape = result.tables.some(
+    (table) => visibleColumns(table.columns).length > 6,
+  );
 
   return (
-    <Document title={title} author={branding.org_name ?? "Arc"}>
-      <Page size="LETTER" orientation={landscape ? "landscape" : "portrait"} style={[styles.page, { fontFamily: family }]}>
+    <Document
+      title={title}
+      author={branding.org_name ?? "Arc"}
+      creationDate={new Date(result.provenance?.generatedAt ?? Date.now())}
+      modificationDate={new Date(result.provenance?.generatedAt ?? Date.now())}
+    >
+      <Page
+        size="LETTER"
+        orientation={landscape ? "landscape" : "portrait"}
+        style={[styles.page, { fontFamily: family }]}
+      >
         <View style={styles.header}>
           {logo ? <Image src={logo} style={styles.logo} /> : null}
-          {branding.org_name ? <Text style={styles.orgName}>{branding.org_name}</Text> : null}
+          {branding.org_name ? (
+            <Text style={styles.orgName}>{branding.org_name}</Text>
+          ) : null}
           <Text style={styles.reportName}>{title}</Text>
           <Text style={styles.provenance}>{provenance}</Text>
         </View>
 
-        {result.notice ? <Text style={styles.notice}>{result.notice.message}</Text> : null}
-
-        {result.stats && result.stats.length > 0 ? (
-          <View style={styles.statGrid}>
-            {result.stats.map((stat) => (
-              <View key={stat.key} style={styles.stat}>
-                <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
-                <Text style={styles.statValue}>{stat.value}</Text>
-                {stat.detail ? <Text style={styles.statDetail}>{stat.detail}</Text> : null}
-              </View>
-            ))}
-          </View>
+        {result.commentary ? (
+          <Text style={styles.notice}>{result.commentary}</Text>
+        ) : null}
+        {result.notice ? (
+          <Text style={styles.notice}>{result.notice.message}</Text>
         ) : null}
 
-        {result.tables.map((table) => (
+        {printTables(result.tables).map((table) => (
           <TableBlock key={table.key} table={table} />
         ))}
 
         <View style={styles.footer} fixed>
           <Text style={styles.footerText}>Generated {generatedAt}</Text>
-          <Text style={styles.footerText} render={({ pageNumber, totalPages }) => `${pageNumber} of ${totalPages}`} />
+          <Text
+            style={styles.footerText}
+            render={({ pageNumber, totalPages }) =>
+              `${pageNumber} of ${totalPages}`
+            }
+          />
         </View>
       </Page>
     </Document>
-  )
+  );
 }
 
 /**
  * @react-pdf mis-renders PNG logos with an alpha channel (ghosting/duplication).
  * Flatten onto white and re-encode to a clean PNG. Returns null on any failure.
  */
-async function flattenLogoForPdf(logoUrl?: string | null): Promise<string | null> {
-  if (!logoUrl) return null
+async function flattenLogoForPdf(
+  logoUrl?: string | null,
+): Promise<string | null> {
+  if (!logoUrl) return null;
   try {
-    let input: Buffer
+    let input: Buffer;
     if (logoUrl.startsWith("data:")) {
-      input = Buffer.from(logoUrl.split(",")[1] ?? "", "base64")
+      input = Buffer.from(logoUrl.split(",")[1] ?? "", "base64");
     } else {
-      const res = await fetch(logoUrl)
-      if (!res.ok) return null
-      if ((res.headers.get("content-type") ?? "").includes("svg")) return null
-      input = Buffer.from(await res.arrayBuffer())
+      const res = await fetch(logoUrl);
+      if (!res.ok) return null;
+      if ((res.headers.get("content-type") ?? "").includes("svg")) return null;
+      input = Buffer.from(await res.arrayBuffer());
     }
-    const flattened = await sharp(input).flatten({ background: "#ffffff" }).png().toBuffer()
-    return `data:image/png;base64,${flattened.toString("base64")}`
+    const flattened = await sharp(input)
+      .flatten({ background: "#ffffff" })
+      .png()
+      .toBuffer();
+    return `data:image/png;base64,${flattened.toString("base64")}`;
   } catch {
-    return null
+    return null;
   }
 }
 
@@ -270,20 +469,22 @@ export async function renderReportPdf({
   result,
   branding,
 }: {
-  title: string
-  provenance: string
-  result: ReportResult
-  branding: ReportPdfBranding
+  title: string;
+  provenance: string;
+  result: ReportResult;
+  branding: ReportPdfBranding;
 }): Promise<Buffer> {
-  const family = ensureFonts()
-  const logo = await flattenLogoForPdf(branding.org_logo_url)
-  const generatedAt = new Date().toLocaleString("en-US", {
+  const family = ensureFonts();
+  const logo = await flattenLogoForPdf(branding.org_logo_url);
+  const generatedAt = new Date(
+    result.provenance?.generatedAt ?? Date.now(),
+  ).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  })
+  });
 
   const pdf = await renderToBuffer(
     <ReportDocument
@@ -295,6 +496,6 @@ export async function renderReportPdf({
       family={family}
       generatedAt={generatedAt}
     />,
-  )
-  return Buffer.from(pdf)
+  );
+  return Buffer.from(pdf);
 }

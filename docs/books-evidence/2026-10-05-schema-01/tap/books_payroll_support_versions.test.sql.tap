@@ -1,0 +1,10 @@
+1..9
+ok 1 - Supporting versions use invoker privileges
+ok 2 - Supporting version read is stable
+ok 3 - Anonymous callers cannot list private supporting versions
+ok 4 - Ordinary authenticated callers cannot list private supporting versions
+ok 5 - Private service can list supporting versions
+ok 6 - Null organization rejected
+ok 7 - Oversized page rejected
+ok 8 - Oversized search rejected
+ok 9 - Organization and UUID pagination index exists

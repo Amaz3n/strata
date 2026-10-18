@@ -34,6 +34,7 @@ const TYPEFACE_OPTIONS: FontOption[] = [
 
 interface SignatureCaptureProps {
   fieldLabel: string
+  preferredMethod?: string
   adoptedSignature?: string | null
   onApply: (value: string, options: { adopt: boolean }) => void
 }
@@ -47,12 +48,12 @@ function dataUrlToImage(dataUrl: string) {
   })
 }
 
-export function SignatureCapture({ fieldLabel, adoptedSignature, onApply }: SignatureCaptureProps) {
+export function SignatureCapture({ fieldLabel, adoptedSignature, preferredMethod, onApply }: SignatureCaptureProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const contextRef = useRef<CanvasRenderingContext2D | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
-  const [activeTab, setActiveTab] = useState<SignatureTab>("draw")
+  const [activeTab, setActiveTab] = useState<SignatureTab>(preferredMethod === "type" || preferredMethod === "upload" ? preferredMethod : "draw")
   const [typedName, setTypedName] = useState("")
   const [fontId, setFontId] = useState(TYPEFACE_OPTIONS[0].id)
   const [uploadedDataUrl, setUploadedDataUrl] = useState<string | null>(null)

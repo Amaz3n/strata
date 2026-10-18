@@ -1,0 +1,530 @@
+{
+  "scenario": "BILL-01",
+  "status": "PASSED",
+  "reviewedFrom": "Standard accrual practice for general (no-project) invoices recognised on invoice; progress billing per docs/books-revenue-recognition.md §4b. Customer receipts debit 1010 Undeposited funds until deposited (the policy document's §4e still says 1000 — reconcile in B16.1). Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "general-invoice-income-and-tax",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "1a36ac5c-efa0-4790-bd7c-c27cfd4aab60",
+        "invoiceId": "74788807-ad0c-4334-9ae0-f322f3e6d8c8"
+      },
+      "checks": [
+        {
+          "label": "invoice entry: income by line account, tax to 2250",
+          "pass": true,
+          "expected": {
+            "1100": 108000,
+            "2250": -8000,
+            "4110": -60000,
+            "4120": -40000
+          },
+          "observed": {
+            "1100": 108000,
+            "2250": -8000,
+            "4110": -60000,
+            "4120": -40000
+          }
+        },
+        {
+          "label": "issued invoice totals",
+          "pass": true,
+          "expected": {
+            "status": "sent",
+            "totalCents": 108000,
+            "taxCents": 8000,
+            "balanceDueCents": 108000
+          },
+          "observed": {
+            "status": "sent",
+            "totalCents": 108000,
+            "taxCents": 8000,
+            "balanceDueCents": 108000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:00:33.638Z"
+    },
+    {
+      "name": "installments-credit-refund-count-once",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "1b3d4a7c-e553-4ba1-a8f0-edfc06ca1202",
+        "invoiceId": "d40a99fd-713d-497b-a02b-49e6a4f351d2"
+      },
+      "checks": [
+        {
+          "label": "ledger after installments, credit and refund",
+          "pass": true,
+          "expected": {
+            "1010": 92200,
+            "1100": 5000,
+            "2250": -7200,
+            "4110": -54000,
+            "4120": -36000
+          },
+          "observed": {
+            "1010": 92200,
+            "1100": 5000,
+            "2250": -7200,
+            "4110": -54000,
+            "4120": -36000
+          }
+        },
+        {
+          "label": "invoice balance after credit and refund",
+          "pass": true,
+          "expected": {
+            "status": "partial",
+            "balanceDueCents": 5000
+          },
+          "observed": {
+            "status": "partial",
+            "balanceDueCents": 5000
+          }
+        },
+        {
+          "label": "a second projection adds nothing",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        }
+      ],
+      "startedAt": "2026-10-08T02:00:49.564Z"
+    },
+    {
+      "name": "account-rename-preserves-posted-history",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "74e3800a-25f5-4a4c-91d6-c3c1a90cd9a8"
+      },
+      "checks": [
+        {
+          "label": "posted amounts, codes and classification survive a rename",
+          "pass": true,
+          "expected": [
+            {
+              "line_no": 1,
+              "debit_cents": 108000,
+              "credit_cents": 0,
+              "classification": {
+                "code": "1100",
+                "subtype": "accounts_receivable",
+                "version": 1,
+                "account_id": "55b1e86a-9c9a-4066-99c4-5250da961bc2",
+                "account_type": "asset",
+                "normal_balance": "debit",
+                "cash_flow_category": "operating"
+              }
+            },
+            {
+              "line_no": 2,
+              "debit_cents": 0,
+              "credit_cents": 40000,
+              "classification": {
+                "code": "4120",
+                "subtype": "other_revenue",
+                "version": 1,
+                "account_id": "ffa62048-bd64-4988-af65-c69d94cddb41",
+                "account_type": "income",
+                "normal_balance": "credit",
+                "cash_flow_category": null
+              }
+            },
+            {
+              "line_no": 3,
+              "debit_cents": 0,
+              "credit_cents": 60000,
+              "classification": {
+                "code": "4110",
+                "subtype": "other_revenue",
+                "version": 1,
+                "account_id": "b5583c21-0089-49ea-b705-ca7a4680f36d",
+                "account_type": "income",
+                "normal_balance": "credit",
+                "cash_flow_category": null
+              }
+            },
+            {
+              "line_no": 4,
+              "debit_cents": 0,
+              "credit_cents": 8000,
+              "classification": {
+                "code": "2250",
+                "subtype": "sales_use_tax",
+                "version": 1,
+                "account_id": "4e0b6233-c50f-496f-8ba0-33b60b759973",
+                "account_type": "liability",
+                "normal_balance": "credit",
+                "cash_flow_category": "operating"
+              }
+            }
+          ],
+          "observed": [
+            {
+              "line_no": 1,
+              "debit_cents": 108000,
+              "credit_cents": 0,
+              "classification": {
+                "code": "1100",
+                "subtype": "accounts_receivable",
+                "version": 1,
+                "account_id": "55b1e86a-9c9a-4066-99c4-5250da961bc2",
+                "account_type": "asset",
+                "normal_balance": "debit",
+                "cash_flow_category": "operating"
+              }
+            },
+            {
+              "line_no": 2,
+              "debit_cents": 0,
+              "credit_cents": 40000,
+              "classification": {
+                "code": "4120",
+                "subtype": "other_revenue",
+                "version": 1,
+                "account_id": "ffa62048-bd64-4988-af65-c69d94cddb41",
+                "account_type": "income",
+                "normal_balance": "credit",
+                "cash_flow_category": null
+              }
+            },
+            {
+              "line_no": 3,
+              "debit_cents": 0,
+              "credit_cents": 60000,
+              "classification": {
+                "code": "4110",
+                "subtype": "other_revenue",
+                "version": 1,
+                "account_id": "b5583c21-0089-49ea-b705-ca7a4680f36d",
+                "account_type": "income",
+                "normal_balance": "credit",
+                "cash_flow_category": null
+              }
+            },
+            {
+              "line_no": 4,
+              "debit_cents": 0,
+              "credit_cents": 8000,
+              "classification": {
+                "code": "2250",
+                "subtype": "sales_use_tax",
+                "version": 1,
+                "account_id": "4e0b6233-c50f-496f-8ba0-33b60b759973",
+                "account_type": "liability",
+                "normal_balance": "credit",
+                "cash_flow_category": "operating"
+              }
+            }
+          ]
+        }
+      ],
+      "startedAt": "2026-10-08T02:00:53.224Z"
+    },
+    {
+      "name": "progress-invoice-retainage",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "d6ab74ca-2777-4775-a538-cee0165934ae",
+        "invoiceId": "fa109b02-357b-4e3f-bcfe-ecb31ba298ae"
+      },
+      "checks": [
+        {
+          "label": "progress invoice: retainage to 1110, billing to contract liabilities",
+          "pass": true,
+          "expected": {
+            "1100": 90000,
+            "1110": 10000,
+            "2350": -100000
+          },
+          "observed": {
+            "1100": 90000,
+            "1110": 10000,
+            "2350": -100000
+          }
+        },
+        {
+          "label": "net invoice total and recorded retainage",
+          "pass": true,
+          "expected": {
+            "totalCents": 90000,
+            "retainageHeldCents": 10000
+          },
+          "observed": {
+            "totalCents": 90000,
+            "retainageHeldCents": 10000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:00:55.180Z"
+    },
+    {
+      "name": "cross-month-credit-and-write-off",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "455ac206-09c8-496f-b50a-da107df0a967",
+        "invoiceId": "c3dd129b-9873-4320-96c9-161f90e45532",
+        "intoClosed": "August 2026 is closed. Date the credit memo in an open month, or reopen August 2026 first."
+      },
+      "checks": [
+        {
+          "label": "a credit dated into closed August is refused; August stands; September carries the credit, receipt and write-off",
+          "pass": true,
+          "expected": {
+            "intoClosedRefused": true,
+            "augustUnchanged": true,
+            "september": {
+              "1010": 77200,
+              "1100": -108000,
+              "2250": 800,
+              "4110": 6000,
+              "4120": 4000,
+              "6090": 20000
+            },
+            "total": {
+              "1010": 77200,
+              "2250": -7200,
+              "4110": -54000,
+              "4120": -36000,
+              "6090": 20000
+            },
+            "invoice": {
+              "status": "paid",
+              "balanceDueCents": 0
+            }
+          },
+          "observed": {
+            "intoClosedRefused": true,
+            "augustUnchanged": true,
+            "september": {
+              "1010": 77200,
+              "1100": -108000,
+              "2250": 800,
+              "4110": 6000,
+              "4120": 4000,
+              "6090": 20000
+            },
+            "total": {
+              "1010": 77200,
+              "2250": -7200,
+              "4110": -54000,
+              "4120": -36000,
+              "6090": 20000
+            },
+            "invoice": {
+              "status": "paid",
+              "balanceDueCents": 0
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:00:56.927Z"
+    },
+    {
+      "name": "limits-and-retries",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "88f956e8-2661-4e75-9c81-dd98dbb2165d",
+        "refusals": {
+          "creditOverBalance": "Failed to post receivable adjustment: Adjustment exceeds the open invoice balance",
+          "writeOffOverBalance": "Failed to post receivable adjustment: Adjustment exceeds the open invoice balance",
+          "receiptToAnotherBuilder": "One or more invoices are unavailable",
+          "receiptSplitAcrossBuilders": "One or more invoices are unavailable",
+          "creditOnAnotherBuilder": "Invoice not found"
+        }
+      },
+      "checks": [
+        {
+          "label": "over-balance and foreign allocations are refused; retries record once",
+          "pass": true,
+          "expected": {
+            "refused": {
+              "creditOverBalance": true,
+              "writeOffOverBalance": true,
+              "receiptToAnotherBuilder": true,
+              "receiptSplitAcrossBuilders": true,
+              "creditOnAnotherBuilder": true
+            },
+            "retriesRecordOnce": {
+              "payments": 1,
+              "credits": 1
+            },
+            "retriedPaymentRefusedOrReplayed": "allowed",
+            "retriedCreditRefusedOrReplayed": "allowed",
+            "ledger": {
+              "1010": 50000,
+              "1100": 47200,
+              "2250": -7200,
+              "4110": -54000,
+              "4120": -36000
+            },
+            "anotherBuilderUntouched": {
+              "1100": 108000,
+              "2250": -8000,
+              "4110": -60000,
+              "4120": -40000
+            },
+            "balanceDueCents": 47200
+          },
+          "observed": {
+            "refused": {
+              "creditOverBalance": true,
+              "writeOffOverBalance": true,
+              "receiptToAnotherBuilder": true,
+              "receiptSplitAcrossBuilders": true,
+              "creditOnAnotherBuilder": true
+            },
+            "retriesRecordOnce": {
+              "payments": 1,
+              "credits": 1
+            },
+            "retriedPaymentRefusedOrReplayed": "allowed",
+            "retriedCreditRefusedOrReplayed": "allowed",
+            "ledger": {
+              "1010": 50000,
+              "1100": 47200,
+              "2250": -7200,
+              "4110": -54000,
+              "4120": -36000
+            },
+            "anotherBuilderUntouched": {
+              "1100": 108000,
+              "2250": -8000,
+              "4110": -60000,
+              "4120": -40000
+            },
+            "balanceDueCents": 47200
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:01:00.098Z"
+    },
+    {
+      "name": "voids",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "ff47cfa5-6d49-4273-b791-20d744f6bf95",
+        "paidVoid": "Paid or partially paid invoices cannot be voided."
+      },
+      "checks": [
+        {
+          "label": "the voided invoice nets to zero; the paid one stands",
+          "pass": true,
+          "expected": {
+            "voided": {},
+            "paidVoidRefused": true,
+            "ledger": {
+              "1010": 50000,
+              "1100": 58000,
+              "2250": -8000,
+              "4110": -60000,
+              "4120": -40000
+            },
+            "voidedStatus": "void"
+          },
+          "observed": {
+            "voided": {},
+            "paidVoidRefused": true,
+            "ledger": {
+              "1010": 50000,
+              "1100": 58000,
+              "2250": -8000,
+              "4110": -60000,
+              "4120": -40000
+            },
+            "voidedStatus": "void"
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:01:05.863Z"
+    },
+    {
+      "name": "progress-tax-retainage-release",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "954f8c54-a92e-4d3d-a810-789a550b1861",
+        "invoiceId": "e9a50d31-725e-4604-9861-24ff0c4a9ebb",
+        "releaseInvoiceId": "03336704-f5bd-404f-82cd-5fc2d5c98070"
+      },
+      "checks": [
+        {
+          "label": "the document ties; the release moves retainage into receivables in the current month only; both are collected",
+          "pass": true,
+          "expected": {
+            "document": {
+              "totalCents": 98000,
+              "taxCents": 8000,
+              "retainageHeldCents": 10000,
+              "tiesToBillingPlusTax": true
+            },
+            "previousMonth": {
+              "1100": 98000,
+              "1110": 10000,
+              "2250": -8000,
+              "2350": -100000
+            },
+            "previousMonthUnchanged": true,
+            "release": {
+              "1100": 10000,
+              "1110": -10000
+            },
+            "currentMonth": {
+              "1010": 108000,
+              "1100": -98000,
+              "1110": -10000
+            },
+            "retainageLeft": 0,
+            "balances": [
+              0,
+              0
+            ],
+            "cashBasis": {
+              "income": 100000,
+              "salesTax": 8000,
+              "cashMovement": 108000
+            }
+          },
+          "observed": {
+            "document": {
+              "totalCents": 98000,
+              "taxCents": 8000,
+              "retainageHeldCents": 10000,
+              "tiesToBillingPlusTax": true
+            },
+            "previousMonth": {
+              "1100": 98000,
+              "1110": 10000,
+              "2250": -8000,
+              "2350": -100000
+            },
+            "previousMonthUnchanged": true,
+            "release": {
+              "1100": 10000,
+              "1110": -10000
+            },
+            "currentMonth": {
+              "1010": 108000,
+              "1100": -98000,
+              "1110": -10000
+            },
+            "retainageLeft": 0,
+            "balances": [
+              0,
+              0
+            ],
+            "cashBasis": {
+              "income": 100000,
+              "salesTax": 8000,
+              "cashMovement": 108000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:01:10.784Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T02:01:14.480Z"
+}

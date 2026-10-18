@@ -63,6 +63,7 @@ export async function listFileSourceContexts(
   const [
     linksResult,
     drawingSetsResult,
+    drawingRevisionsResult,
     sheetVersionsResult,
     sourceDocsResult,
     executedDocsResult,
@@ -78,6 +79,8 @@ export async function listFileSourceContexts(
       .select("id, project_id, title, status, source_file_id")
       .eq("org_id", resolvedOrgId)
       .in("source_file_id", uniqueIds),
+    supabase.from("drawing_revisions").select("id,project_id,drawing_set_id,revision_label,status,source_file_id")
+      .eq("org_id", resolvedOrgId).in("source_file_id", uniqueIds),
     supabase
       .from("drawing_sheet_versions")
       .select("id, drawing_sheet_id, drawing_revision_id, file_id, thumbnail_file_id, drawing_sheets(project_id, sheet_number, sheet_title), drawing_revisions(revision_label)")
@@ -127,6 +130,12 @@ export async function listFileSourceContexts(
       primary_action_label: "Open drawings",
     })
   }
+
+  if (drawingRevisionsResult.error && drawingRevisionsResult.error.code !== "42P01") throw new Error(`Failed to load drawing revision contexts: ${drawingRevisionsResult.error.message}`);
+  for (const row of drawingRevisionsResult.data ?? []) addContext(contextsByFileId, row.source_file_id, {
+    type: "drawing_set", entity_id: row.drawing_set_id, label: `Drawing issuance · ${row.revision_label}`,
+    status: row.status, href: projectHref(row.project_id, `/drawings?set=${row.drawing_set_id}`), primary_action_label: "Open Plans & takeoff",
+  });
 
   for (const row of sheetVersionsResult.data ?? []) {
     const sheet = Array.isArray((row as any).drawing_sheets)

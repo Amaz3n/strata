@@ -1,5 +1,5 @@
-import { BooksSectionPage } from "../_components/books-section-page"
+import { redirect } from "next/navigation"
 
-export default function BooksStatementsPage() {
-  return <BooksSectionPage section="statements" />
-}
+export const instant = false
+
+export default function BooksStatementsPage() { redirect("/reports?collection=statements") }

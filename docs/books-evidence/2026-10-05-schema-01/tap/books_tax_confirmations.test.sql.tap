@@ -1,0 +1,17 @@
+1..16
+ok 1 - browser roles cannot withdraw or prepare confirmations
+ok 2 - empty adjustments require substantive evidence
+ok 3 - explicit no-adjustment confirmation prepared
+ok 4 - no artificial zero-value line is posted
+ok 5 - same evidence preparation is idempotent
+ok 6 - retry cannot rewrite no-adjustment rationale
+ok 7 - confirmation rationale is immutable
+ok 8 - service-role separate reviewer approves confirmation
+ok 9 - approved confirmation cannot be withdrawn
+ok 10 - second draft prepared
+ok 11 - withdrawal requires reason
+ok 12 - foreign actor cannot withdraw
+ok 13 - service-role withdrawal preserves history
+ok 14 - withdrawal retry is idempotent
+ok 15 - withdrawal retains preparation evidence and closure identity
+ok 16 - withdrawing replacement preserves original approval

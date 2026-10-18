@@ -149,3 +149,18 @@ export function resolvedPriceTotal(input: PriceResolutionInput, resolved: Resolv
     ? Math.round(resolved.lumpSumCents ?? 0)
     : Math.round(input.quantity * (resolved.unitCostCents ?? 0))
 }
+
+/** An explicit purchasing choice resolves a tie, never an eligibility rule. */
+export function resolveSelectedAgreement(
+  input: PriceResolutionInput,
+  candidates: PriceAgreementCandidate[],
+  agreementId: string,
+): PriceResolutionResult {
+  const selected = candidates.find((candidate) => candidate.id === agreementId)
+  if (!selected) throw new Error("The selected price agreement is no longer available. Refresh the exception and choose again.")
+  const result = resolvePriceForLinePure(input, [selected])
+  if (result.exception) {
+    throw new Error(`The selected price agreement cannot price this line: ${result.exception.reason.replaceAll("_", " ")}.`)
+  }
+  return result
+}

@@ -1,4 +1,5 @@
-import { PAYABLE_BANDS, parsePayableSort, payableBandPage, type PayableBandKey, type PayableSort } from "@/lib/financials/payables-book"
+import { PAYABLE_BANDS, PAYABLE_SELECTION_CAP, parsePayableSort, payableBandPage, type PayableBandKey, type PayableSort } from "@/lib/financials/payables-book"
+import { readAllRows } from "@/lib/land/paging"
 import { getCodingAutomationStats, type CodingAutomationStats } from "@/lib/services/books/coding-rules"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
 import { getComplianceRules } from "@/lib/services/compliance"
@@ -321,7 +322,7 @@ export async function loadOrgPayablesDesk(
   const search = String(input.search ?? "").trim().slice(0, 120)
   const searchFilter = search.replace(/[,%()]/g, " ").trim()
   const page = Math.max(1, Math.floor(Number.isFinite(input.page) ? input.page! : 1))
-  const pageSize = input.selectionOnly ? 500 : Math.min(input.banded ? 50 : MAX_PAGE_SIZE, Math.max(10, Math.floor(Number.isFinite(input.pageSize) ? input.pageSize! : input.banded ? 25 : DEFAULT_PAGE_SIZE)))
+  const pageSize = input.selectionOnly ? PAYABLE_SELECTION_CAP : Math.min(input.banded ? 50 : MAX_PAGE_SIZE, Math.max(10, Math.floor(Number.isFinite(input.pageSize) ? input.pageSize! : input.banded ? 25 : DEFAULT_PAGE_SIZE)))
   const from = (page - 1) * pageSize
 
   const scoped = (select: string, count = false) => {
@@ -352,13 +353,26 @@ export async function loadOrgPayablesDesk(
    * load. `.then` is what actually dispatches a Supabase builder.
    */
   const orgPromise = input.selectionOnly ? Promise.resolve({ data: null }) : supabase.from("orgs").select("slug").eq("id", orgId).maybeSingle().then((result) => result)
-  const summaryPromise = input.selectionOnly ? Promise.resolve({ data: [], count: 0 }) : scoped(SUMMARY_SELECT)
-    .not("status", "in", `(${[...CLOSED_STATUSES, "paid"].join(",")})`)
-    // Ordered so that if the scan ever truncates, what it covers is the most
-    // urgent 2,000 rather than an arbitrary 2,000.
-    .order("due_date", { ascending: true, nullsFirst: false })
-    .limit(SUMMARY_SCAN_LIMIT)
-    .then((result: unknown) => result)
+  // PostgREST caps a response at max_rows (1,000), so the scan pages. It reads one
+  // row past the limit: that extra row is the proof that open bills were left out.
+  const summaryPromise: Promise<{ data: SummaryRow[]; truncated: boolean }> = input.selectionOnly
+    ? Promise.resolve({ data: [], truncated: false })
+    : readAllRows<SummaryRow>(
+        (rangeFrom, rangeTo) =>
+          scoped(SUMMARY_SELECT)
+            .not("status", "in", `(${[...CLOSED_STATUSES, "paid"].join(",")})`)
+            // Ordered so that if the scan ever truncates, what it covers is the most
+            // urgent 2,000 rather than an arbitrary 2,000. `id` makes the order total,
+            // so no row is read twice or skipped between pages.
+            .order("due_date", { ascending: true, nullsFirst: false })
+            .order("id", { ascending: true })
+            .range(rangeFrom, rangeTo)
+            .returns<SummaryRow[]>(),
+        { cap: SUMMARY_SCAN_LIMIT + 1, label: "Failed to load payable totals" },
+      ).then(({ rows }) => ({
+        data: rows.slice(0, SUMMARY_SCAN_LIMIT),
+        truncated: rows.length > SUMMARY_SCAN_LIMIT,
+      }))
   const paidCountPromise = input.selectionOnly ? Promise.resolve({ count: 0 }) : workingScope(scoped("id", true)).eq("status", "paid").then((result: unknown) => result)
   const allCountPromise = input.selectionOnly ? Promise.resolve({ count: 0 }) : scoped("id", true)
     .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
@@ -388,24 +402,15 @@ export async function loadOrgPayablesDesk(
     return query.not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
   }
 
-  const [matchingCompanies, matchingProjects] = searchFilter
-    ? await Promise.all([
-        supabase.from("companies").select("id").eq("org_id", orgId).ilike("name", `%${searchFilter}%`).limit(200),
-        supabase.from("projects").select("id").eq("org_id", orgId).ilike("name", `%${searchFilter}%`).limit(200),
-      ])
-    : [{ data: [], error: null }, { data: [], error: null }]
-  if (matchingCompanies.error) throw new Error(`Failed to search payable vendors: ${matchingCompanies.error.message}`)
-  if (matchingProjects.error) throw new Error(`Failed to search payable projects: ${matchingProjects.error.message}`)
-  const matchingCompanyIds = (matchingCompanies.data ?? []).map((row) => row.id).filter(Boolean)
-  const matchingProjectIds = (matchingProjects.data ?? []).map((row) => row.id).filter(Boolean)
-
+  // Vendor and project names are matched in the database through the
+  // `bill_search_text` computed column, so the search never depends on
+  // a bounded list of ids fetched first.
   const applySearch = (query: any) => {
     if (!searchFilter) return query
     return query.or([
       `bill_number.ilike.%${searchFilter}%`,
       `qbo_vendor_name.ilike.%${searchFilter}%`,
-      ...(matchingCompanyIds.length > 0 ? [`company_id.in.(${matchingCompanyIds.join(",")})`] : []),
-      ...(matchingProjectIds.length > 0 ? [`project_id.in.(${matchingProjectIds.join(",")})`] : []),
+      `bill_search_text.ilike.%${searchFilter}%`,
     ].join(","))
   }
 
@@ -455,13 +460,13 @@ export async function loadOrgPayablesDesk(
   ])) as [
     { data: { slug?: string } | null },
     { data: unknown[] | null; error: { message: string } | null; count: number | null },
-    { data: SummaryRow[] | null; count: number | null },
+    { data: SummaryRow[]; truncated: boolean },
     { count: number | null },
     { count: number | null },
     { data: unknown | null; error: { message: string } | null },
   ]
 
-  for (const result of [summaryResult, paidCount, allCount]) {
+  for (const result of [paidCount, allCount]) {
     const error = (result as { error?: { message: string } }).error
     if (error) throw new Error(`Failed to load payable totals: ${error.message}`)
   }
@@ -512,7 +517,7 @@ export async function loadOrgPayablesDesk(
       bills: [], selectionIds: (pageResult.data as Array<{ id: string }> ?? []).map((row) => row.id),
       selectedBill: null, costCodes: [], complianceRules: DEFAULT_COMPLIANCE_RULES,
       complianceStatusByCompanyId: {}, paymentReadinessByCompanyId: {}, electronicReadinessByBillId: {}, runMembershipByBillId: {},
-      truncated: false, pagination: { page, pageSize, total: pageResult.count ?? 0, pageCount: 1 },
+      truncated: (pageResult.data?.length ?? 0) < (pageResult.count ?? 0), pagination: { page, pageSize, total: pageResult.count ?? 0, pageCount: 1 },
       query: { tab, search }, tabs, summaryTruncated: false, inboundBillsEmail: null, codingAutomation: null,
     }
   }
@@ -628,13 +633,13 @@ export async function loadOrgPayablesDesk(
     paymentReadinessByCompanyId,
     electronicReadinessByBillId,
     runMembershipByBillId,
-    truncated: (pageResult.count ?? 0) > from + pageSize,
+    truncated: input.banded
+      ? bandResults.some((band) => (band.page - 1) * pageSize + band.billIds.length < band.total)
+      : from + rows.length < (pageResult.count ?? 0),
     pagination: { page, pageSize, total: pageResult.count ?? 0, pageCount: Math.max(1, Math.ceil((pageResult.count ?? 0) / pageSize)) },
     query: { tab, search },
     tabs,
-    // The scan's own exact count knows how many open payables there really are,
-    // so truncation is a fact rather than an inference from a full page.
-    summaryTruncated: (summaryResult.count ?? 0) > SUMMARY_SCAN_LIMIT,
+    summaryTruncated: summaryResult.truncated,
     inboundBillsEmail: org.data?.slug
       ? orgBillsInboundAddress(org.data.slug as string)
       : null,

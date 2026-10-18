@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { format } from "date-fns"
 import { unwrapAction } from "@/lib/action-result"
-import type { Observation, SafetyIncident, ToolboxTalk } from "@/lib/services/safety"
+import type { Observation, SafetyIncident, ToolboxTalk, ToolboxTalkSummary, getSafetyWorkspace } from "@/lib/services/safety"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -33,7 +33,7 @@ import { AlertTriangle, Eye, Users, Plus, Search, Shield, CalendarDays, FileText
 import { cn } from "@/lib/utils"
 import { useOfflineSafetyDrafts, type OfflineSafetyDraft } from "@/lib/hooks/use-offline-safety-drafts"
 import { AttachmentField } from "@/components/files"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   createObservationAction,
   createSafetyIncidentAction,
@@ -84,7 +84,7 @@ type RecordType = "incident" | "observation" | "talk"
 type SafetyRecord =
   | { type: "incident"; id: string; data: SafetyIncident }
   | { type: "observation"; id: string; data: Observation }
-  | { type: "talk"; id: string; data: ToolboxTalk }
+  | { type: "talk"; id: string; data: ToolboxTalkSummary }
 
 const typeMeta: Record<RecordType, { label: string; short: string; icon: React.ComponentType<{ className?: string }>; dot: string }> = {
   incident: { label: "Incident", short: "Incidents", icon: AlertTriangle, dot: "bg-destructive" },
@@ -151,7 +151,8 @@ function TagCell({ record }: { record: SafetyRecord }) {
       <span className="text-xs capitalize text-muted-foreground">{record.data.kind}</span>
     )
   }
-  const count = record.data.attendee_count ?? record.data.attendees.length
+  const count = record.data.attendee_count
+  if (count === null) return <span className="text-xs text-muted-foreground">Attendance on record</span>
   return <span className="text-xs text-muted-foreground tabular-nums">{count} attendee{count === 1 ? "" : "s"}</span>
 }
 
@@ -180,23 +181,26 @@ export function SafetyClient({
   talks,
   observations,
   companies,
-  initialTab,
   initialIncidentId,
   initialObservationId,
   locations,
   canManageLocations,
+  canWrite, workspace, selection,
 }: {
   projectId: string
   incidents: SafetyIncident[]
-  talks: ToolboxTalk[]
+  talks: ToolboxTalkSummary[]
   observations: Observation[]
   companies: CompanyOption[]
-  initialTab?: string
   initialIncidentId?: string
   initialObservationId?: string
   locations: ProjectLocation[]
   canManageLocations: boolean
+  canWrite: boolean
+  workspace: Awaited<ReturnType<typeof getSafetyWorkspace>>
+  selection: { incident: SafetyIncident | null; observation: Observation | null; talk: ToolboxTalk | null }
 }) {
+  const router = useRouter()
   const isMobile = useIsMobile()
   const offline = useOfflineSafetyDrafts(projectId)
 
@@ -209,36 +213,47 @@ export function SafetyClient({
     return all.sort((a, b) => recordDate(b) - recordDate(a))
   }, [incidents, observations, talks])
 
-  const [search, setSearch] = useState("")
+  const [search, setSearch] = useState(workspace.filters.q)
   const [typeFilter, setTypeFilter] = useState<"all" | RecordType>(
-    initialTab === "talks" ? "talk" : initialTab === "observations" ? "observation" : "all",
+    workspace.filters.type,
   )
-  const [statusFilter, setStatusFilter] = useState<"all" | "open" | "closed">("all")
+  const [statusFilter, setStatusFilter] = useState<"all" | "open" | "closed">(workspace.filters.status)
 
   const [incidentSheet, setIncidentSheet] = useState<{ open: boolean; selected: SafetyIncident | null }>(() => {
-    const initial = initialIncidentId ? incidents.find((incident) => incident.id === initialIncidentId) ?? null : null
+    const initial = selection.incident ?? (initialIncidentId ? incidents.find((incident) => incident.id === initialIncidentId) ?? null : null)
     return { open: Boolean(initial), selected: initial }
   })
   const [observationSheet, setObservationSheet] = useState<{ open: boolean; selected: Observation | null }>(() => {
-    const initial = initialObservationId ? observations.find((observation) => observation.id === initialObservationId) ?? null : null
+    const initial = selection.observation ?? (initialObservationId ? observations.find((observation) => observation.id === initialObservationId) ?? null : null)
     return { open: Boolean(initial), selected: initial }
   })
-  const [talkSheet, setTalkSheet] = useState<{ open: boolean; selected: ToolboxTalk | null }>({ open: false, selected: null })
+  const [talkSheet, setTalkSheet] = useState<{ open: boolean; selected: ToolboxTalk | null }>({ open: Boolean(selection.talk), selected: selection.talk })
+
+  function filteredUrl(type = typeFilter, status = statusFilter, after?: string, q = search.trim()) {
+    const query = new URLSearchParams({ q, type, status })
+    if (after) query.set("after", after)
+    return `/projects/${projectId}/safety?${query}`
+  }
+  function searchRecords() { router.push(filteredUrl()) }
 
   const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase()
+    const term = workspace.filters.q.toLowerCase()
     return records.filter((record) => {
       if (typeFilter !== "all" && record.type !== typeFilter) return false
       if (statusFilter !== "all" && statusBucket(record) !== statusFilter) return false
       if (term.length === 0) return true
       return [recordRef(record), recordSummary(record), recordParty(record) ?? ""].some((value) => value.toLowerCase().includes(term))
     })
-  }, [records, search, typeFilter, statusFilter])
+  }, [records, workspace.filters.q, typeFilter, statusFilter])
 
   const openRecord = (record: SafetyRecord) => {
     if (record.type === "incident") setIncidentSheet({ open: true, selected: record.data })
     else if (record.type === "observation") setObservationSheet({ open: true, selected: record.data })
-    else setTalkSheet({ open: true, selected: record.data })
+    else {
+      const query = new URLSearchParams({ q: workspace.filters.q, type: workspace.filters.type, status: workspace.filters.status, talk: record.id })
+      if (workspace.currentAfter) query.set("after", workspace.currentAfter)
+      router.push(`/projects/${projectId}/safety?${query}`)
+    }
   }
 
   const openStates = [
@@ -259,6 +274,7 @@ export function SafetyClient({
         companies={companies}
         locations={locations}
         canManageLocations={canManageLocations}
+        canWrite={canWrite}
         saveOfflineDraft={offline.saveDraft}
       />
       <ObservationSheet
@@ -269,6 +285,7 @@ export function SafetyClient({
         companies={companies}
         locations={locations}
         canManageLocations={canManageLocations}
+        canWrite={canWrite}
         saveOfflineDraft={offline.saveDraft}
       />
       <ToolboxTalkSheet
@@ -276,6 +293,7 @@ export function SafetyClient({
         selected={talkSheet.selected}
         onOpenChange={(open) => setTalkSheet((prev) => ({ ...prev, open }))}
         projectId={projectId}
+        canWrite={canWrite}
         saveOfflineDraft={offline.saveDraft}
       />
 
@@ -283,15 +301,15 @@ export function SafetyClient({
         {isMobile ? (
           <div className="sticky top-0 z-20 shrink-0 border-b bg-background/95 backdrop-blur-sm">
             <div className="flex items-center gap-2 px-3 pt-3">
-              <Input placeholder="Search safety..." className="h-10 text-sm" value={search} onChange={(event) => setSearch(event.target.value)} inputMode="search" />
-              <DropdownMenu>
+              <Input maxLength={120} placeholder="Search descriptions or topics..." className="h-10 text-sm" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") searchRecords() }} inputMode="search" />
+              {canWrite && <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button size="icon" className="h-10 w-10 shrink-0" aria-label="New safety record"><Plus className="h-4 w-4" /></Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   {openStates.map((item) => <DropdownMenuItem key={item.key} onClick={item.onClick}>{item.label}</DropdownMenuItem>)}
                 </DropdownMenuContent>
-              </DropdownMenu>
+              </DropdownMenu>}
             </div>
             <div className="flex gap-1.5 overflow-x-auto px-3 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {filterOptions.map((key) => {
@@ -300,7 +318,7 @@ export function SafetyClient({
                   <button
                     key={key}
                     type="button"
-                    onClick={() => setTypeFilter(key)}
+                    onClick={() => { setTypeFilter(key); router.push(filteredUrl(key)) }}
                     className={cn(
                       "shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
                       active ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-muted-foreground active:bg-muted",
@@ -317,9 +335,9 @@ export function SafetyClient({
             <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
               <div className="relative w-full sm:w-72">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input placeholder="Search safety..." className="pl-9" value={search} onChange={(event) => setSearch(event.target.value)} />
+                <Input maxLength={120} placeholder="Search descriptions or topics..." className="pl-9" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") searchRecords() }} />
               </div>
-              <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as "all" | RecordType)}>
+              <Select value={typeFilter} onValueChange={(value) => { const next = value as "all" | RecordType; setTypeFilter(next); router.push(filteredUrl(next)) }}>
                 <SelectTrigger className="w-full sm:w-40"><SelectValue placeholder="Type" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All types</SelectItem>
@@ -328,7 +346,7 @@ export function SafetyClient({
                   <SelectItem value="talk">Toolbox Talks</SelectItem>
                 </SelectContent>
               </Select>
-              <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as "all" | "open" | "closed")}>
+              <Select value={statusFilter} onValueChange={(value) => { const next = value as "all" | "open" | "closed"; setStatusFilter(next); router.push(filteredUrl(typeFilter, next)) }}>
                 <SelectTrigger className="w-full sm:w-36"><SelectValue placeholder="Status" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All statuses</SelectItem>
@@ -337,18 +355,25 @@ export function SafetyClient({
                 </SelectContent>
               </Select>
             </div>
-            <DropdownMenu>
+            {canWrite && <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button className="w-full sm:w-auto"><Plus className="mr-2 h-4 w-4" />New</Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 {openStates.map((item) => <DropdownMenuItem key={item.key} onClick={item.onClick}>{item.label}</DropdownMenuItem>)}
               </DropdownMenuContent>
-            </DropdownMenu>
+            </DropdownMenu>}
           </div>
         )}
 
-        {offline.drafts.length > 0 ? (
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-2 text-xs text-muted-foreground">
+          <Button size="sm" variant="outline" onClick={searchRecords}>Search all records</Button>
+          <span>{records.length} records on this page · {workspace.total} matching records</span>
+          {workspace.nextAfter && <a className="text-primary underline underline-offset-4" href={filteredUrl(workspace.filters.type, workspace.filters.status, workspace.nextAfter, workspace.filters.q)}>Next page</a>}
+          <a className="underline underline-offset-4" href={filteredUrl(workspace.filters.type, workspace.filters.status, undefined, workspace.filters.q)}>First page</a>
+        </div>
+
+        {canWrite && offline.drafts.length > 0 ? (
           <div className="shrink-0 border-b px-4 py-3">
             <OfflineDraftQueue drafts={offline.drafts} isOnline={offline.isOnline} onDiscard={offline.discardDraft} />
           </div>
@@ -357,7 +382,7 @@ export function SafetyClient({
         {isMobile ? (
           <div className="min-h-0 flex-1 overflow-auto">
             {filtered.length === 0 ? (
-              <MobileEmpty onNew={openStates[0].onClick} hasRecords={records.length > 0} />
+              <MobileEmpty canWrite={canWrite} onNew={openStates[0].onClick} hasRecords={records.length > 0} />
             ) : (
               <ul className="divide-y">
                 {filtered.map((record) => {
@@ -421,7 +446,7 @@ export function SafetyClient({
                     {records.length ? "Try a different search, type, or status." : "Report an incident, log an observation, or record a toolbox talk to get started."}
                   </p>
                 </div>
-                {records.length ? null : (
+                {records.length || !canWrite ? null : (
                   <Button size="sm" className="mt-1" onClick={openStates[0].onClick}><Plus className="mr-2 h-4 w-4" />Report incident</Button>
                 )}
               </div>
@@ -433,7 +458,7 @@ export function SafetyClient({
   )
 }
 
-function MobileEmpty({ onNew, hasRecords }: { onNew: () => void; hasRecords: boolean }) {
+function MobileEmpty({ onNew, hasRecords, canWrite }: { canWrite: boolean; onNew: () => void; hasRecords: boolean }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 px-6 py-20 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted">
@@ -443,7 +468,7 @@ function MobileEmpty({ onNew, hasRecords }: { onNew: () => void; hasRecords: boo
         <p className="font-medium">{hasRecords ? "Nothing matches" : "No safety records yet"}</p>
         <p className="mt-0.5 text-sm text-muted-foreground">{hasRecords ? "Try a different filter." : "Report your first safety record."}</p>
       </div>
-      {hasRecords ? null : <Button className="mt-1" onClick={onNew}><Plus className="mr-2 h-4 w-4" />Report incident</Button>}
+      {hasRecords || !canWrite ? null : <Button className="mt-1" onClick={onNew}><Plus className="mr-2 h-4 w-4" />Report incident</Button>}
     </div>
   )
 }
@@ -472,7 +497,7 @@ function useSubmit() {
   const [pending, startTransition] = useTransition()
   const submit = (work: () => Promise<void>) =>
     startTransition(() => {
-      void work().catch((error) => toast.error(error instanceof Error ? error.message : "Something went wrong"))
+      return work().catch((error) => { toast.error(error instanceof Error ? error.message : "Something went wrong") })
     })
   return { pending, submit }
 }
@@ -480,7 +505,7 @@ function useSubmit() {
 const sheetContentClass = "flex flex-col p-0 shadow-2xl fast-sheet-animation sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-lg"
 const sheetStyle = { animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties
 
-function IncidentSheet({ open, selected, onOpenChange, projectId, companies, locations, canManageLocations, saveOfflineDraft }: {
+function IncidentSheet({ open, selected, onOpenChange, projectId, companies, locations, canManageLocations, canWrite, saveOfflineDraft }: {
   open: boolean
   selected: SafetyIncident | null
   onOpenChange: (open: boolean) => void
@@ -488,6 +513,7 @@ function IncidentSheet({ open, selected, onOpenChange, projectId, companies, loc
   companies: CompanyOption[]
   locations: ProjectLocation[]
   canManageLocations: boolean
+  canWrite: boolean
   saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"]
 }) {
   const router = useRouter()
@@ -529,10 +555,11 @@ function IncidentSheet({ open, selected, onOpenChange, projectId, companies, loc
             {selected ? "Investigation record — update status and root cause as it progresses." : "Lost-time and fatality reports alert org admins by email."}
           </SheetDescription>
         </SheetHeader>
-        <form
+        <fieldset disabled={!canWrite} className="contents"><form
           className="flex min-h-0 flex-1 flex-col"
           onSubmit={(event) => {
             event.preventDefault()
+            if (!canWrite) return
             if (!occurredDate) {
               toast.error("Select the date it occurred")
               return
@@ -633,7 +660,7 @@ function IncidentSheet({ open, selected, onOpenChange, projectId, companies, loc
                 </div>
                 <div className="space-y-2 sm:col-span-2">
                   <Label>Location</Label>
-                  <LocationPicker projectId={projectId} locations={locations} value={locationId} canCreate={canManageLocations} disabled={pending} placeholder={selected?.location ?? "Select location"} onValueChange={(id, path) => { setLocationId(id); setLocationPath(path) }} />
+                  <LocationPicker projectId={projectId} locations={locations} value={locationId} canCreate={canWrite && canManageLocations} disabled={pending || !canWrite} placeholder={selected?.location ?? "Select location"} onValueChange={(id, path) => { setLocationId(id); setLocationPath(path) }} />
                 </div>
                 <div className="space-y-2 sm:col-span-2">
                   <Label>Description</Label>
@@ -687,7 +714,7 @@ function IncidentSheet({ open, selected, onOpenChange, projectId, companies, loc
                   folderPath="/safety/incidents"
                   label="Photos & evidence"
                   emptyHint="Drag and drop or click to add site photos, statements, or documents"
-                  disabled={pending}
+                  disabled={pending || !canWrite}
                 />
               ) : (
                 <div className="space-y-2">
@@ -699,7 +726,7 @@ function IncidentSheet({ open, selected, onOpenChange, projectId, companies, loc
                     emptyHint="Drag and drop or click to add an incident photo"
                     pendingFiles={pendingFiles}
                     onPendingChange={setPendingFiles}
-                    disabled={pending}
+                    disabled={pending || !canWrite}
                   />
                   <p className="text-xs text-muted-foreground">More photos and documents can be attached after the incident is saved.</p>
                 </div>
@@ -739,15 +766,15 @@ function IncidentSheet({ open, selected, onOpenChange, projectId, companies, loc
           <div className="flex shrink-0 items-center gap-2 border-t bg-muted/30 p-4">
             <div className="flex-1" />
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
-            <Button type="submit" disabled={pending}>{pending ? "Saving..." : selected ? "Save changes" : "Report incident"}</Button>
+            <Button type="submit" disabled={pending || !canWrite}>{pending ? "Saving..." : selected ? "Save changes" : "Report incident"}</Button>
           </div>
-        </form>
+        </form></fieldset>
       </SheetContent>
     </Sheet>
   )
 }
 
-function ObservationSheet({ open, selected, onOpenChange, projectId, companies, locations, canManageLocations, saveOfflineDraft }: {
+function ObservationSheet({ open, selected, onOpenChange, projectId, companies, locations, canManageLocations, canWrite, saveOfflineDraft }: {
   open: boolean
   selected: Observation | null
   onOpenChange: (open: boolean) => void
@@ -755,6 +782,7 @@ function ObservationSheet({ open, selected, onOpenChange, projectId, companies, 
   companies: CompanyOption[]
   locations: ProjectLocation[]
   canManageLocations: boolean
+  canWrite: boolean
   saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"]
 }) {
   const router = useRouter()
@@ -772,7 +800,7 @@ function ObservationSheet({ open, selected, onOpenChange, projectId, companies, 
   }, [open, selected])
 
   const resolve = () => {
-    if (!selected) return
+    if (!canWrite || !selected) return
     submit(async () => {
       unwrapAction(await updateObservationAction(projectId, selected.id, { status: "resolved" }))
       toast.success("Observation resolved")
@@ -799,10 +827,11 @@ function ObservationSheet({ open, selected, onOpenChange, projectId, companies, 
             {selected ? "Update the observation, reassign it, or mark it resolved." : "Capture a safety or quality observation from the field."}
           </SheetDescription>
         </SheetHeader>
-        <form
+        <fieldset disabled={!canWrite} className="contents"><form
           className="flex min-h-0 flex-1 flex-col"
           onSubmit={(event) => {
             event.preventDefault()
+            if (!canWrite) return
             const form = new FormData(event.currentTarget)
             const companyValue = String(form.get("company_id") || "__none__")
             const shared = {
@@ -856,7 +885,7 @@ function ObservationSheet({ open, selected, onOpenChange, projectId, companies, 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Type</Label>
-                  <Select name="kind" defaultValue={selected?.kind ?? "safety"} disabled={Boolean(selected)}>
+                  <Select name="kind" defaultValue={selected?.kind ?? "safety"} disabled={!canWrite || Boolean(selected)}>
                     <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="safety">Safety</SelectItem>
@@ -899,7 +928,7 @@ function ObservationSheet({ open, selected, onOpenChange, projectId, companies, 
                 </div>
                 <div className="space-y-2">
                   <Label>Location</Label>
-                  <LocationPicker projectId={projectId} locations={locations} value={locationId} canCreate={canManageLocations} disabled={pending} placeholder={selected?.location ?? "Select location"} onValueChange={(id, path) => { setLocationId(id); setLocationPath(path) }} />
+                  <LocationPicker projectId={projectId} locations={locations} value={locationId} canCreate={canWrite && canManageLocations} disabled={pending || !canWrite} placeholder={selected?.location ?? "Select location"} onValueChange={(id, path) => { setLocationId(id); setLocationPath(path) }} />
                 </div>
               </div>
               {selected ? (
@@ -929,7 +958,7 @@ function ObservationSheet({ open, selected, onOpenChange, projectId, companies, 
                   folderPath="/safety/observations"
                   label="Photos"
                   emptyHint="Drag and drop or click to add photos"
-                  disabled={pending}
+                  disabled={pending || !canWrite}
                 />
               ) : (
                 <AttachmentField
@@ -940,30 +969,31 @@ function ObservationSheet({ open, selected, onOpenChange, projectId, companies, 
                   emptyHint="Drag and drop or click to add a photo"
                   pendingFiles={pendingFiles}
                   onPendingChange={setPendingFiles}
-                  disabled={pending}
+                  disabled={pending || !canWrite}
                 />
               )}
             </section>
           </div>
           <div className="flex shrink-0 items-center gap-2 border-t bg-muted/30 p-4">
             {selected && selected.status === "open" ? (
-              <Button type="button" variant="outline" onClick={resolve} disabled={pending}>Resolve</Button>
+              <Button type="button" variant="outline" onClick={resolve} disabled={pending || !canWrite}>Resolve</Button>
             ) : null}
             <div className="flex-1" />
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
-            <Button type="submit" disabled={pending}>{pending ? "Saving..." : selected ? "Save changes" : "Log observation"}</Button>
+            <Button type="submit" disabled={pending || !canWrite}>{pending ? "Saving..." : selected ? "Save changes" : "Log observation"}</Button>
           </div>
-        </form>
+        </form></fieldset>
       </SheetContent>
     </Sheet>
   )
 }
 
-function ToolboxTalkSheet({ open, selected, onOpenChange, projectId, saveOfflineDraft }: {
+function ToolboxTalkSheet({ open, selected, onOpenChange, projectId, canWrite, saveOfflineDraft }: {
   open: boolean
   selected: ToolboxTalk | null
   onOpenChange: (open: boolean) => void
   projectId: string
+  canWrite: boolean
   saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"]
 }) {
   const router = useRouter()
@@ -975,7 +1005,7 @@ function ToolboxTalkSheet({ open, selected, onOpenChange, projectId, saveOffline
   }, [open, selected])
 
   const remove = () => {
-    if (!selected) return
+    if (!canWrite || !selected) return
     submit(async () => {
       unwrapAction(await deleteToolboxTalkAction(projectId, selected.id))
       toast.success("Toolbox talk deleted")
@@ -1049,16 +1079,17 @@ function ToolboxTalkSheet({ open, selected, onOpenChange, projectId, saveOffline
               ) : null}
             </div>
             <div className="flex shrink-0 items-center gap-2 border-t bg-muted/30 p-4">
-              <Button type="button" variant="outline" onClick={remove} disabled={pending} className="text-destructive hover:text-destructive">Delete</Button>
+              <Button type="button" variant="outline" onClick={remove} disabled={pending || !canWrite} className="text-destructive hover:text-destructive">Delete</Button>
               <div className="flex-1" />
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Close</Button>
             </div>
           </div>
         ) : (
-          <form
+          <fieldset disabled={!canWrite} className="contents"><form
             className="flex min-h-0 flex-1 flex-col"
             onSubmit={(event) => {
               event.preventDefault()
+            if (!canWrite) return
               const form = new FormData(event.currentTarget)
               submit(async () => {
                 const attendees = String(form.get("attendees") ?? "")
@@ -1105,24 +1136,24 @@ function ToolboxTalkSheet({ open, selected, onOpenChange, projectId, saveOffline
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Date held</Label>
-                  <Input name="held_at" type="date" required disabled={pending} />
+                  <Input name="held_at" type="date" required disabled={pending || !canWrite} />
                 </div>
                 <div className="space-y-2">
                   <Label>Presenter</Label>
-                  <Input name="presenter_name" placeholder="Presenter" disabled={pending} />
+                  <Input name="presenter_name" placeholder="Presenter" disabled={pending || !canWrite} />
                 </div>
               </div>
               <div className="space-y-2">
                 <Label>Topic</Label>
-                <Input name="topic" required placeholder="e.g. Ladder safety" disabled={pending} />
+                <Input name="topic" required placeholder="e.g. Ladder safety" disabled={pending || !canWrite} />
               </div>
               <div className="space-y-2">
                 <Label>Attendees</Label>
-                <Textarea name="attendees" rows={5} placeholder={"Attendees, one per line\nName | Company"} disabled={pending} />
+                <Textarea name="attendees" rows={5} placeholder={"Attendees, one per line\nName | Company"} disabled={pending || !canWrite} />
               </div>
               <div className="space-y-2">
                 <Label>Attendee count (if names unavailable)</Label>
-                <Input name="attendee_count" type="number" min={0} placeholder="0" disabled={pending} />
+                <Input name="attendee_count" type="number" min={0} placeholder="0" disabled={pending || !canWrite} />
               </div>
               <AttachmentField
                 projectId={projectId}
@@ -1132,15 +1163,15 @@ function ToolboxTalkSheet({ open, selected, onOpenChange, projectId, saveOffline
                 emptyHint="Drag and drop or click to add the signed sheet"
                 pendingFiles={signInFiles}
                 onPendingChange={setSignInFiles}
-                disabled={pending}
+                disabled={pending || !canWrite}
               />
             </div>
             <div className="flex shrink-0 items-center gap-2 border-t bg-muted/30 p-4">
               <div className="flex-1" />
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
-              <Button type="submit" disabled={pending}>{pending ? "Saving..." : "Record talk"}</Button>
+              <Button type="submit" disabled={pending || !canWrite}>{pending ? "Saving..." : "Record talk"}</Button>
             </div>
-          </form>
+          </form></fieldset>
         )}
       </SheetContent>
     </Sheet>

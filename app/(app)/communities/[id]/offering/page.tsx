@@ -1,13 +1,16 @@
+import { connection } from "next/server"
 import { CommunitySpecInventory, type SpecRow } from "@/components/communities/community-spec-inventory"
 import { CommunityTrafficPanel, weekOf, type TrafficWeek } from "@/components/communities/community-traffic-panel"
 import { OfferingIncentives } from "@/components/communities/offering-incentives"
 import { OfferingPriceSheet, type OfferingPlanRow } from "@/components/communities/offering-price-sheet"
 import { OfferingSummary } from "@/components/communities/offering-summary"
 import { getCommunityLane } from "@/lib/services/community-portfolio"
-import { getCommunityOfferingCosts, getCommunityPriceSheet, listOfferablePlans, listSpecInventory } from "@/lib/services/community-sales"
+import { getCommunityOfferingCosts, getCommunityPriceSheet, getSpecPriceApprovalBands, listSpecInventory } from "@/lib/services/community-sales"
+import { DEFAULT_SPEC_PRICE_APPROVAL_BANDS } from "@/lib/sales/spec-price-approval-thresholds"
 import { listCommunityTraffic } from "@/lib/services/community-traffic"
 import { listPlansWithPublishedModels } from "@/lib/services/floorplan-models"
-import { getCurrentUserPermissions } from "@/lib/services/permissions"
+import { getCurrentUserPermissions, hasPermission } from "@/lib/services/permissions"
+import { permissionLabel } from "@/lib/permission-denied"
 import { grossMarginPct } from "@/lib/plans/margin"
 import { isIncentiveLive, offeringPrice, type OfferingIncentive } from "@/lib/sales/offering"
 
@@ -19,6 +22,9 @@ import { isIncentiveLive, offeringPrice, type OfferingIncentive } from "@/lib/sa
  */
 const TRAFFIC_WINDOW_DAYS = 90
 
+const canManagePlans = (granted: readonly string[]) =>
+  granted.some((permission) => ["sales.manage", "org.admin", "*"].includes(permission))
+
 /**
  * The offer this community is making, as one document: what it sells, for how
  * much, what is coming off that price, and what the market is doing with it.
@@ -29,25 +35,41 @@ const TRAFFIC_WINDOW_DAYS = 90
  * below because they are the evidence the decision is made against.
  */
 export default async function CommunityOfferingPage({ params }: { params: Promise<{ id: string }> }) {
+  await connection()
   const { id } = await params
-  const [sheet, permissions, traffic, specs, lane, costs] = await Promise.all([
-    getCommunityPriceSheet(id),
-    getCurrentUserPermissions(),
+  // The offer is the sales team's document (price sheet, incentives, traffic,
+  // spec inventory). The land manager shares this community's tabs but not its
+  // sales read, so say so here instead of letting the first read refuse.
+  if (!(await hasPermission("sales.read"))) {
+    return (
+      <div className="flex min-h-64 flex-col items-center justify-center gap-2 p-6 text-center" role="note">
+        <p className="text-sm font-medium">The offering is limited to sales.</p>
+        <p className="max-w-md text-xs text-muted-foreground">
+          Pricing, incentives, traffic and spec inventory need{" "}
+          <span className="font-medium">{permissionLabel("sales.read")}</span>{" "}
+          <span className="font-mono text-muted-foreground">sales.read</span>. An organization admin can grant it from
+          Settings, Team. Lots and takedowns are on the Inventory and Land tabs.
+        </p>
+      </div>
+    )
+  }
+  const sheetPromise = getCommunityPriceSheet(id)
+  const modelsPromise = sheetPromise.then((sheet) =>
+    listPlansWithPublishedModels([...new Set(sheet.rows.map((row) => row.planId))])
+      .catch(() => new Set<string>()),
+  )
+  const permissionsPromise = getCurrentUserPermissions()
+  const [sheet, permissions, traffic, specs, lane, costs, plansWith3d, priceBands] = await Promise.all([
+    sheetPromise,
+    permissionsPromise,
     listCommunityTraffic(id, { days: TRAFFIC_WINDOW_DAYS }).catch(() => []),
     listSpecInventory({ communityId: id, limit: 100 }).catch(() => []),
     getCommunityLane(id).catch(() => null),
     getCommunityOfferingCosts(id).catch(() => null),
+    modelsPromise,
+    getSpecPriceApprovalBands().catch(() => DEFAULT_SPEC_PRICE_APPROVAL_BANDS),
   ])
-  const offerablePlans = await listOfferablePlans(id).catch((error) => {
-    console.error("Failed to load offerable plans for the community offering tab", { communityId: id, error })
-    return []
-  })
-  const canManage = permissions.permissions.some((permission) =>
-    ["sales.manage", "org.admin", "*"].includes(permission),
-  )
-  const plansWith3d = await listPlansWithPublishedModels([
-    ...new Set(sheet.rows.map((row) => row.planId)),
-  ]).catch(() => new Set<string>())
+  const canManage = canManagePlans(permissions.permissions)
 
   const rows: OfferingPlanRow[] = sheet.rows.map((row, index) => ({
     key: `${row.planId}:${row.elevationId ?? index}`,
@@ -126,7 +148,14 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
       baths: spec.baths,
       sqft: spec.sqft,
       agingDays: spec.agingDays,
+      underConstruction: spec.underConstruction,
+      completedAt: spec.completedAt,
+      completionFromBooks: spec.completionFromBooks,
       askingPriceCents: spec.askingPriceCents,
+      incentiveCents: spec.incentiveCents,
+      incentiveExpiresOn: spec.incentiveExpiresOn,
+      pendingChange: spec.pendingChange,
+      disposition: spec.disposition,
     }))
 
   return (
@@ -159,7 +188,6 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
           buildCostByPlanId={costs?.buildCostByPlanId ?? {}}
           lotsTruncated={sheet.lotsTruncated}
           plansWith3d={plansWith3d}
-          offerablePlans={offerablePlans}
           canManage={canManage}
         />
         <OfferingIncentives
@@ -184,7 +212,7 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
           requiredPacePerMonth={lane?.requiredPacePerMonth ?? null}
           canManage={canManage}
         />
-        <CommunitySpecInventory rows={specRows} />
+        <CommunitySpecInventory rows={specRows} communityId={id} canManage={canManage} currentUserId={permissions.userId} bands={priceBands} />
       </div>
     </div>
   )

@@ -14,7 +14,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { listPunchItems } from "@/lib/services/punch-lists"
 import { getInspection } from "@/lib/services/inspections"
-import { listSafetyIncidents } from "@/lib/services/safety"
+import { getSafetyRecord } from "@/lib/services/safety"
 import { listRfiResponses, listRfis } from "@/lib/services/rfis"
 import { listSubmittalItems, listSubmittalReviewSteps, listSubmittals } from "@/lib/services/submittals"
 import { getContingencyUsageReport } from "@/lib/services/reports/contingency-usage"
@@ -237,9 +237,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     if (kind === "incident") {
       if (!entityId) return NextResponse.json({ error: "Incident id is required" }, { status: 400 })
-      const incidents = await listSafetyIncidents(projectId, orgId)
-      const incident = incidents.find((item) => item.id === entityId)
-      if (!incident) return NextResponse.json({ error: "Incident not found" }, { status: 404 })
+      const selected = await getSafetyRecord(projectId, "incident", entityId, orgId)
+      if (!selected || selected.kind !== "incident") return NextResponse.json({ error: "Incident not found" }, { status: 404 })
+      const incident = selected.data
       const pdf = await renderIncidentPdf({
         header: {
           ...baseHeader,

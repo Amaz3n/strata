@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 
@@ -50,6 +51,29 @@ actor KeychainStore {
         return data
     }
 
+    /// SecItemAdd is atomic across callers; an existing submission is never overwritten.
+    func insertIfAbsent(_ data: Data, for key: String) throws -> Data {
+        var item = baseQuery(for: key)
+        item[kSecValueData as String] = data
+        item[kSecAttrGeneric as String] = Data(SHA256.hash(data: data))
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(item as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            guard let existing = try self.data(for: key) else { throw KeychainError.invalidData }
+            return existing
+        }
+        guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+        return data
+    }
+
+    /// Remove only this exact reserved record, never a newer attempt from another screen/process.
+    func deleteMatching(_ data: Data, for key: String) throws {
+        var query = baseQuery(for: key)
+        query[kSecAttrGeneric as String] = Data(SHA256.hash(data: data))
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError.unexpectedStatus(status) }
+    }
+
     func delete(_ key: String) throws {
         let status = SecItemDelete(baseQuery(for: key) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -65,3 +89,5 @@ actor KeychainStore {
         ]
     }
 }
+
+extension KeychainStore: ServiceCompletionSecrets {}

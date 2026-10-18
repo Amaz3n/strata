@@ -1,9 +1,12 @@
 "use client"
 
+import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
+import { buildTradeNavGroups } from "./trade-nav-items"
+import { buildBooksNavItems } from "./books-nav-items"
+
 import { useEffect, useMemo, useState, useTransition } from "react"
-import { useSearchParams } from "next/navigation"
 import { AnimatePresence, motion } from "framer-motion"
-import { OptimisticLink, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
+import { OptimisticLink, useOptimisticHref, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
 import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
   Building2,
@@ -37,6 +40,7 @@ import type { ProductTier } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
 import { cn } from "@/lib/utils"
 import { useNavigationBadges } from "./navigation-badge-context"
+import { useShellProject } from "./page-title-context"
 import {
   buildProjectNavGroups,
   getProjectIdFromPath,
@@ -52,6 +56,7 @@ interface MobileBottomNavProps {
   canAccessPlatform?: boolean
   permissions?: string[]
   productTier?: ProductTier
+  businessProfile?: BusinessProfile
   showProductionNavigation?: boolean
   showPipelineNavigation?: boolean
   showPurchasingNavigation?: boolean
@@ -105,6 +110,7 @@ export function MobileBottomNav({
   canAccessPlatform,
   permissions = [],
   productTier = "residential",
+  businessProfile = BUILDER_PROFILE,
   showProductionNavigation = false,
   showPipelineNavigation = true,
   showPurchasingNavigation = false,
@@ -119,7 +125,7 @@ export function MobileBottomNav({
     whatsNewUnreadCount,
   } = useNavigationBadges()
   const pathname = useOptimisticPathname()
-  const searchParams = useSearchParams()
+  const currentUrl = useOptimisticHref()
   const { action } = useMobileAction()
   const permissionSet = useMemo(() => new Set(permissions), [permissions])
   const [menuOpen, setMenuOpen] = useState(false)
@@ -130,10 +136,7 @@ export function MobileBottomNav({
   const projectId = getProjectIdFromPath(pathname)
   const isProject = Boolean(projectId)
   const section = getProjectSection(pathname)
-  const currentProject = useMemo(
-    () => projects.find((project) => project.id === projectId),
-    [projects, projectId],
-  )
+  const currentProject = useShellProject(projects, projectId)
 
   useEffect(() => {
     setMenuOpen(false)
@@ -162,7 +165,6 @@ export function MobileBottomNav({
     return () => window.removeEventListener("keydown", handler)
   }, [menuOpen])
 
-  const currentUrl = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`
   const settingsHref = `/settings?tab=profile&returnTo=${encodeURIComponent(currentUrl)}`
 
   useEffect(() => {
@@ -181,6 +183,14 @@ export function MobileBottomNav({
   }, [])
 
   const { primary, menuSections } = useMemo<{ primary: NavItem[]; menuSections: MenuSection[] }>(() => {
+    const tradeMenu: MenuSection[] = buildTradeNavGroups(pathname).map((group) => ({
+      label: group.label ?? "Arc Trade",
+      items: group.items.map(toMobileNavItem).filter((item): item is NavItem => item !== null),
+    }))
+    if (booksEnabled) tradeMenu.push({ label: "Accounting", items: [{
+      title: "Books", url: "/books", subItems: buildBooksNavItems(pathname), icon: FileSpreadsheet,
+      isActive: pathname.startsWith("/books"), requiredAny: ["books.read"],
+    }] })
     if (isProject && projectId) {
       const projectItems =
         buildProjectNavGroups({
@@ -190,6 +200,7 @@ export function MobileBottomNav({
           reviewBadgeCount: projectReviewBadgeCounts[projectId],
           correspondenceBadgeCount: projectCorrespondenceBadgeCounts[projectId],
           orgTier: productTier,
+          businessProfile,
         })[0]?.items ?? []
       const closeItem = projectItems.find((item) => item.title === "Close")
       const projectPrimary = projectItems
@@ -242,7 +253,15 @@ export function MobileBottomNav({
         },
       ]
 
-      return { primary: projectPrimary, menuSections: projectMenu }
+      return { primary: projectPrimary, menuSections: businessProfile.kind === "trade" ? [
+        ...(projectMenuItems.length ? [{ label: "Job", items: projectMenuItems }] : []),
+        ...tradeMenu,
+      ] : projectMenu }
+    }
+
+    if (businessProfile.kind === "trade") {
+      const sections = tradeMenu
+      return { primary: sections[0].items.filter((item) => ["Today", "Jobs", "Schedule & crew"].includes(item.title)), menuSections: sections }
     }
 
     const orgTerms = terminology(productTier)
@@ -338,6 +357,7 @@ export function MobileBottomNav({
           ...(booksEnabled ? [{
             title: "Books",
             url: "/books",
+            subItems: buildBooksNavItems(pathname),
             icon: FileSpreadsheet,
             isActive: pathname.startsWith("/books"),
             requiredAny: ["books.read"],
@@ -346,7 +366,7 @@ export function MobileBottomNav({
       },
     ]
     return { primary: workspacePrimary, menuSections: workspaceMenu }
-  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, showProductionNavigation, showPipelineNavigation, showPurchasingNavigation, booksEnabled])
+  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, businessProfile, showProductionNavigation, showPipelineNavigation, showPurchasingNavigation, booksEnabled])
 
   const visiblePrimary = useMemo(
     () =>
@@ -735,6 +755,7 @@ function MenuRow({ item, onSelect }: { item: NavItem; onSelect: () => void }) {
 function MenuGroupRows({ item, onSelect }: { item: NavItem; onSelect: () => void }) {
   return (
     <div className="flex flex-col">
+      {item.url === "/books" ? <p className="px-4 pt-3 pb-1 text-xs font-semibold text-muted-foreground">Books</p> : null}
       {item.subItems!.map((sub) => (
         <OptimisticLink
           key={sub.url + sub.title}

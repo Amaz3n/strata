@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useTransition } from "react"
 import { AlertTriangle, CheckCircle2 } from "lucide-react"
 import { toast } from "sonner"
 
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   saveProjectComplianceDocumentAction,
   type ProjectComplianceSettings,

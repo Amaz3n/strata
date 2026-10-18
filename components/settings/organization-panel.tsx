@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
 
@@ -19,8 +19,10 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
+import { AuditExportGroup } from "@/components/settings/audit-export-group"
 import { ContractTemplateSettings } from "@/components/settings/contract-template-settings"
 import { DocumentNumberingForm } from "@/components/settings/document-numbering-form"
+import { OrgSecurityGroup } from "@/components/settings/org-security-group"
 import { InfoRow, RowControl, SettingsError, SettingsField, SettingsGroup } from "@/components/settings/settings-section"
 import {
   getOrganizationSettingsAction,
@@ -98,15 +100,28 @@ export function OrganizationPanel({
   initialDocumentNumbering,
   teamMembers,
   teamLoading = false,
+  initialContractTemplates,
+  canExportAuditTrail,
 }: {
   initialSettings: OrgSettings
   onSettingsSaved: (settings: OrgSettings) => void
   initialDocumentNumbering: DocumentNumberingSettings | null
   teamMembers: Pick<TeamMember, "user" | "status">[]
   teamLoading?: boolean
+  initialContractTemplates: ComponentProps<typeof ContractTemplateSettings>["initialTemplates"]
+  canExportAuditTrail: boolean
 }) {
   const [settings, setSettings] = useState<OrgSettings>(initialSettings)
-  const [numbering, setNumbering] = useState<DocumentNumberingSettings | null>(initialDocumentNumbering)
+  const [numberingState, setNumberingState] = useState({
+    source: initialDocumentNumbering,
+    value: initialDocumentNumbering,
+  })
+  if (numberingState.source !== initialDocumentNumbering) {
+    setNumberingState({ source: initialDocumentNumbering, value: initialDocumentNumbering })
+  }
+  const numbering = numberingState.source === initialDocumentNumbering
+    ? numberingState.value
+    : initialDocumentNumbering
   const [editing, setEditing] = useState<EditKey | null>(null)
 
   // Logo — the one thing edited in place, mirroring the Profile avatar.
@@ -406,7 +421,7 @@ export function OrganizationPanel({
         title="Contract templates"
         description="Standard terms PDFs prepended to signature packets as the paper terms, with the Arc document as the exhibit."
       >
-        <ContractTemplateSettings canManage={canManage} />
+        <ContractTemplateSettings canManage={canManage} initialTemplates={initialContractTemplates} />
       </SettingsGroup>
 
       {numbering ? (
@@ -415,7 +430,7 @@ export function OrganizationPanel({
           description="Prefixes and zero-padding for RFIs, submittals, change orders, meetings, and transmittals."
         >
           <SettingsField label="Numbering" hint="Display format only — stored sequence numbers never change.">
-            <RowControl canManage buttonLabel="Configure" onEdit={() => setEditing("numbering")}>
+            <RowControl canManage={canManage} buttonLabel="Configure" onEdit={() => setEditing("numbering")}>
               <span className="truncate font-mono text-xs tabular-nums text-muted-foreground">
                 {[
                   formatDocNumber("rfi", 7, numbering),
@@ -427,6 +442,10 @@ export function OrganizationPanel({
           </SettingsField>
         </SettingsGroup>
       ) : null}
+
+      {canManage ? <OrgSecurityGroup /> : null}
+
+      {canExportAuditTrail ? <AuditExportGroup /> : null}
 
       <SettingsGroup title="Workspace">
         <InfoRow label="Workspace ID">
@@ -507,9 +526,13 @@ export function OrganizationPanel({
               </DialogDescription>
             </DialogHeader>
             <DocumentNumberingForm
+              key={initialSettings.id}
               initial={numbering}
+              canManage={canManage}
               onSaved={(next) => {
-                setNumbering(next)
+                setNumberingState((current) => current.source === initialDocumentNumbering
+                  ? { ...current, value: next }
+                  : current)
                 setEditing(null)
               }}
             />

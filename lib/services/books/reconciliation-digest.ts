@@ -28,6 +28,7 @@ const ORG_CATEGORY_LABELS: Record<string, string> = {
   retainage_control: "Retainage control out of balance",
   projection_blocked_by_closed_period: "Postings blocked by a closed period",
   projection_failed: "Postings failed to project",
+  ledger_proof: "Ledger entries that differ from their sources",
 }
 
 /**
@@ -51,6 +52,7 @@ const ORG_CATEGORY_SEVERITY: Record<string, ReconciliationSeverity> = {
   retainage_control: "critical",
   projection_blocked_by_closed_period: "warning",
   projection_failed: "warning",
+  ledger_proof: "critical",
 }
 
 /** Every ledger tie-out shares one label and one severity: the books do not balance. */
@@ -64,6 +66,7 @@ const TIE_OUT_LABELS: Record<string, string> = {
   ap_control: "AP control does not tie to open bills",
   retainage_receivable_control: "Retainage receivable does not tie",
   retainage_payable_control: "Retainage payable does not tie",
+  cash_control: "Cash is on the books of a company that does not own the account",
 }
 
 export interface ReconciliationDigestRow {

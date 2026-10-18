@@ -73,6 +73,7 @@ import {
   SaveBudgetTemplateDialog,
   UnifiedBudgetEmptyState,
 } from "./import-dialogs";
+import { formatDate } from "@/lib/reports/format";
 import {
   dollarsToCents,
   formatCurrency,
@@ -144,7 +145,7 @@ function KpiCell({
         kpiCellBorders[position],
       )}
     >
-      <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">
+      <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
         {hint ? <Hint label={label} hint={hint} /> : label}
       </div>
       <div
@@ -855,7 +856,7 @@ export function BudgetTab({
       try {
         unwrapAction(await lockBudgetBaselineAction(projectId));
         toast({
-          title: baselineLockedAt ? "Baseline updated" : "Baseline locked",
+          title: "Baseline locked",
         });
         router.refresh();
       } catch (error) {
@@ -1037,10 +1038,10 @@ export function BudgetTab({
         ) : baselineLockedAt ? (
           <span
             className="hidden items-center gap-1.5 border px-2 py-1 text-xs text-muted-foreground lg:inline-flex"
-            title={`Baseline locked ${new Date(baselineLockedAt).toLocaleString()}`}
+            title={`Baseline locked ${formatDate(baselineLockedAt)}`}
           >
             <Lock className="h-3 w-3" />
-            Baseline {new Date(baselineLockedAt).toLocaleDateString()}
+            Baseline {formatDate(baselineLockedAt)}
           </span>
         ) : null}
         <div className="ml-auto flex items-center gap-2">
@@ -1138,15 +1139,13 @@ export function BudgetTab({
                 <Download className="h-4 w-4" />
                 Export CSV
               </DropdownMenuItem>
-              {canWrite && (
+              {canWrite && !baselineLockedAt && (
                 <DropdownMenuItem
                   onClick={lockBaseline}
                   disabled={isPending || unifiedRows.length === 0}
                 >
                   <Lock className="h-4 w-4" />
-                  {baselineLockedAt
-                    ? "Re-baseline budget"
-                    : "Lock budget baseline"}
+                  Lock budget baseline
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>

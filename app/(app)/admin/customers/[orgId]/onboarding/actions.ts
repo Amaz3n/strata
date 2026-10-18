@@ -4,12 +4,12 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
-import { requireAuth } from "@/lib/auth/context"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { IMPORTER_KEYS, type ImporterKey } from "@/lib/services/import-definitions"
 import { parseCsv } from "@/lib/services/import-parsers"
 import { suggestImportColumnMapping } from "@/lib/services/import-mapping"
-import { commitImportBatch, discardImportBatch, getImportMappingProfile, patchImportRow, setImportUpdateExisting, stageImportBatch } from "@/lib/services/imports"
+import { cancelImportBatch, commitImportBatch, discardImportBatch, getImportMappingProfile, patchImportRow, setImportUpdateExisting, stageImportBatch } from "@/lib/services/imports"
 import { completeOnboardingStage, createOnboardingRun, getOnboardingRun, markRunLive, ONBOARDING_STAGE_KEYS, skipOnboardingStage, updateOnboardingRun } from "@/lib/services/onboarding"
 import { ONBOARDING_READINESS_ITEMS } from "@/lib/data/onboarding-readiness"
 import { deleteSampleCommunity, seedSampleCommunity } from "@/lib/services/demo-community-seed"
@@ -80,8 +80,8 @@ export async function markRunLiveAction(formData: FormData) {
 export async function resetSampleCommunityAction(formData: FormData) {
   return run(async () => {
     const orgId = uuid.parse(formData.get("orgId"))
+    const user = await requireAnyPlatformPermission(["platform.support.write"])
     await getOnboardingRun(orgId)
-    const { user } = await requireAuth()
     const supabase = createServiceSupabaseClient()
     const { data: existing } = await supabase.from("communities").select("id").eq("org_id", orgId).contains("metadata", { is_sample: true }).maybeSingle()
     if (existing) await deleteSampleCommunity(orgId, existing.id, user.id)
@@ -94,6 +94,7 @@ export async function resetSampleCommunityAction(formData: FormData) {
 export async function previewImportAction(input: { orgId: string; importer: ImporterKey; csvText: string }) {
   return run(async () => {
     const parsedInput = z.object({ orgId: uuid, importer: importerSchema, csvText: z.string().min(1).max(10 * 1024 * 1024) }).parse(input)
+    await requireAnyPlatformPermission(["platform.support.write"])
     const parsed = parseCsv(parsedInput.csvText)
     const profile = await getImportMappingProfile(parsedInput.importer, parsed.headers, platformAccess(parsedInput.orgId))
     const suggestion = profile
@@ -115,7 +116,7 @@ export async function stageImportAction(input: { orgId: string; importer: Import
 export async function patchImportRowAction(input: { orgId: string; importer: ImporterKey; batchId: string; rowId: string; patch?: Record<string, string | number | boolean | null>; skip?: boolean }) {
   return run(async () => {
     const parsed = z.object({ orgId: uuid, importer: importerSchema, batchId: uuid, rowId: uuid, patch: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(), skip: z.boolean().optional() }).parse(input)
-    const result = await patchImportRow({ batchId: parsed.batchId, rowId: parsed.rowId, patch: parsed.patch ?? {}, skip: parsed.skip }, platformAccess(parsed.orgId))
+    const result = await patchImportRow({ batchId: parsed.batchId, rowId: parsed.rowId, patch: parsed.patch ?? {}, skip: parsed.skip }, { ...platformAccess(parsed.orgId), expectedImporter: parsed.importer })
     revalidatePath(`/admin/customers/${parsed.orgId}/onboarding/import/${parsed.importer}`)
     return result
   })
@@ -124,7 +125,7 @@ export async function patchImportRowAction(input: { orgId: string; importer: Imp
 export async function setImportUpdateExistingAction(input: { orgId: string; importer: ImporterKey; batchId: string; updateExisting: boolean }) {
   return run(async () => {
     const parsed = z.object({ orgId: uuid, importer: importerSchema, batchId: uuid, updateExisting: z.boolean() }).parse(input)
-    await setImportUpdateExisting(parsed.batchId, parsed.updateExisting, platformAccess(parsed.orgId))
+    await setImportUpdateExisting(parsed.batchId, parsed.updateExisting, { ...platformAccess(parsed.orgId), expectedImporter: parsed.importer })
     revalidatePath(`/admin/customers/${parsed.orgId}/onboarding/import/${parsed.importer}`)
   })
 }
@@ -132,9 +133,18 @@ export async function setImportUpdateExistingAction(input: { orgId: string; impo
 export async function commitImportAction(input: { orgId: string; importer: ImporterKey; batchId: string }) {
   return run(async () => {
     const parsed = z.object({ orgId: uuid, importer: importerSchema, batchId: uuid }).parse(input)
-    const result = await commitImportBatch(parsed.batchId, platformAccess(parsed.orgId))
+    const result = await commitImportBatch(parsed.batchId, { ...platformAccess(parsed.orgId), expectedImporter: parsed.importer })
     revalidatePath(`/admin/customers/${parsed.orgId}/onboarding/import/${parsed.importer}`)
     revalidatePath(`/admin/customers/${parsed.orgId}/onboarding`)
+    return result
+  })
+}
+
+export async function cancelImportAction(input: { orgId: string; importer: ImporterKey; batchId: string }) {
+  return run(async () => {
+    const parsed = z.object({ orgId: uuid, importer: importerSchema, batchId: uuid }).parse(input)
+    const result = await cancelImportBatch(parsed.batchId, { ...platformAccess(parsed.orgId), expectedImporter: parsed.importer })
+    revalidatePath(`/admin/customers/${parsed.orgId}/onboarding/import/${parsed.importer}`)
     return result
   })
 }
@@ -142,7 +152,7 @@ export async function commitImportAction(input: { orgId: string; importer: Impor
 export async function discardImportAction(input: { orgId: string; importer: ImporterKey; batchId: string }) {
   return run(async () => {
     const parsed = z.object({ orgId: uuid, importer: importerSchema, batchId: uuid }).parse(input)
-    await discardImportBatch(parsed.batchId, platformAccess(parsed.orgId))
+    await discardImportBatch(parsed.batchId, { ...platformAccess(parsed.orgId), expectedImporter: parsed.importer })
     revalidatePath(`/admin/customers/${parsed.orgId}/onboarding/import/${parsed.importer}`)
   })
 }

@@ -50,14 +50,25 @@ export type SearchEntityType =
   | 'project_location'
   | 'community'
   | 'lot'
+  | 'land_opportunity'
+  | 'land_entitlement'
+  | 'land_contract'
   | 'house_plan'
   | 'budget_template'
+  | 'agreement_template'
   | 'selection_option'
+  | 'selection_exception'
   | 'design_studio_appointment'
+  | 'design_studio_location'
+  | 'selection_approval'
   | 'price_agreement'
   | 'commitment_change_order'
+  | 'po_completion'
   | 'start_package'
+  | 'permit_application'
   | 'closing'
+  | 'spec_price_proposal'
+  | 'spec_disposition'
   | 'warranty_request'
   | 'warranty_backcharge'
   | 'takeoff_condition'
@@ -126,6 +137,22 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     hrefTemplate: '/projects/{project_id}/closing',
     joins: ['LEFT JOIN projects p ON closings.project_id = p.id'],
   },
+  spec_price_proposal: {
+    table: 'spec_price_proposals',
+    titleField: 'reason',
+    subtitleFields: ['kind', 'status', 'community_id'],
+    descriptionFields: ['reason', 'decision_note'],
+    searchableFields: ['reason', 'decision_note', 'kind', 'status'],
+    hrefTemplate: '/communities/{community_id}/offering',
+  },
+  spec_disposition: {
+    table: 'spec_dispositions',
+    titleField: 'reason',
+    subtitleFields: ['kind', 'status', 'community_id'],
+    descriptionFields: ['reason', 'decision_note'],
+    searchableFields: ['reason', 'decision_note', 'kind', 'status'],
+    hrefTemplate: '/communities/{community_id}/offering',
+  },
   start_package: {
     table: 'start_packages',
     titleField: 'status',
@@ -133,6 +160,14 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     descriptionFields: ['notes'],
     searchableFields: ['status', 'notes'],
     hrefTemplate: '/starts/{id}',
+  },
+  permit_application: {
+    table: 'permit_applications',
+    titleField: 'permit_number',
+    subtitleFields: ['permit_type', 'decision', 'decided_on'],
+    descriptionFields: ['decision_note'],
+    searchableFields: ['permit_number', 'permit_type', 'decision_note'],
+    hrefTemplate: '/projects/{project_id}/permits?permit={id}',
   },
   commitment_change_order: {
     table: 'commitment_change_orders',
@@ -142,6 +177,14 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     searchableFields: ['title', 'description', 'status', 'origin'],
     hrefTemplate: '/projects/{project_id}/financials/budget?vpo={id}',
   },
+  po_completion: {
+    table: 'po_completions',
+    titleField: 'status',
+    subtitleFields: ['status', 'reported_source', 'amount_cents'],
+    descriptionFields: ['notes', 'rejected_reason'],
+    searchableFields: ['status', 'notes', 'rejected_reason', 'reported_source'],
+    hrefTemplate: '/purchasing?tab=completions&project={project_id}',
+  },
   price_agreement: {
     table: 'vendor_price_agreements',
     titleField: 'scope_of_work',
@@ -149,6 +192,14 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     descriptionFields: ['notes'],
     searchableFields: ['scope_of_work', 'notes', 'status', 'uom'],
     hrefTemplate: '/purchasing?tab=price-book&agreement={id}',
+  },
+  selection_exception: {
+    table: 'selection_exceptions',
+    titleField: 'reason',
+    subtitleFields: ['status', 'opened_at'],
+    descriptionFields: ['resolution_reason'],
+    searchableFields: ['reason', 'status', 'resolution_reason'],
+    hrefTemplate: '/projects/{project_id}/selections?exception={id}',
   },
   selection_option: {
     table: 'selection_options',
@@ -161,10 +212,25 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
   design_studio_appointment: {
     table: 'design_studio_appointments',
     titleField: 'scheduled_at',
-    subtitleFields: ['status', 'location', 'contact_id'],
-    descriptionFields: ['notes'],
-    searchableFields: ['location', 'notes', 'status'],
-    hrefTemplate: '/design-studio?tab=appointments&appointment={id}',
+    subtitleFields: ['status', 'ends_at'],
+    descriptionFields: ['notes', 'cancel_reason'],
+    searchableFields: ['notes', 'status', 'cancel_reason'],
+    hrefTemplate: '/design-studio/sheet/{project_id}',
+  },
+  design_studio_location: {
+    table: 'design_studio_locations',
+    titleField: 'name',
+    subtitleFields: ['address', 'time_zone'],
+    searchableFields: ['name', 'address'],
+    hrefTemplate: '/design-studio/studios?location={id}',
+  },
+  selection_approval: {
+    table: 'selection_approvals',
+    titleField: 'status',
+    subtitleFields: ['channel', 'total_cents', 'sent_at'],
+    descriptionFields: ['decline_reason', 'void_reason'],
+    searchableFields: ['status', 'channel', 'decline_reason', 'void_reason'],
+    hrefTemplate: '/projects/{project_id}/selections?approval={id}',
   },
   house_plan: {
     table: 'house_plans',
@@ -182,6 +248,14 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     searchableFields: ['name', 'description', 'property_type'],
     hrefTemplate: '/settings/templates?budgetTemplate={id}',
   },
+  agreement_template: {
+    table: 'agreement_templates',
+    titleField: 'name',
+    subtitleFields: ['kind', 'status'],
+    descriptionFields: [],
+    searchableFields: ['name', 'kind'],
+    hrefTemplate: '/settings/templates?section=agreements&template={id}',
+  },
   community: {
     table: 'communities',
     titleField: 'name',
@@ -189,6 +263,29 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     descriptionFields: ['description'],
     searchableFields: ['name', 'code', 'city', 'state', 'description'],
     hrefTemplate: '/communities/{id}',
+  },
+  land_opportunity: {
+    table: 'land_opportunities',
+    titleField: 'name',
+    subtitleFields: ['city', 'state', 'planned_lot_count'],
+    descriptionFields: ['notes'],
+    searchableFields: ['name', 'code', 'address', 'city', 'county', 'notes'],
+    hrefTemplate: '/communities/land-deals/{id}',
+  },
+  land_entitlement: {
+    table: 'land_entitlements',
+    titleField: 'name',
+    subtitleFields: ['kind', 'status', 'jurisdiction', 'community_id'],
+    descriptionFields: ['notes'],
+    searchableFields: ['name', 'reference_number', 'jurisdiction', 'notes'],
+    hrefTemplate: '/communities/{community_id}/land?entitlement={id}#entitlements',
+  },
+  land_contract: {
+    table: 'land_contracts',
+    titleField: 'title',
+    subtitleFields: ['contract_number', 'kind', 'status', 'community_id'],
+    searchableFields: ['title', 'contract_number', 'kind', 'status'],
+    hrefTemplate: '/communities/{community_id}/land#land-contracts',
   },
   lot: {
     table: 'lots',
@@ -515,7 +612,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'name',
     subtitleFields: ['status', 'project_type'],
     searchableFields: ['name', 'status', 'project_type', 'notes'],
-    hrefTemplate: '/pipeline?prospectId={id}',
+    hrefTemplate: '/pipeline/{id}',
   },
 }
 
@@ -528,9 +625,15 @@ export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
   "warranty_request",
   "warranty_backcharge",
   "closing",
+  "spec_price_proposal",
+  "spec_disposition",
   "start_package",
+  "permit_application",
   "commitment_change_order",
+  "po_completion",
+  "selection_exception",
   "design_studio_appointment",
+  "selection_approval",
   "task",
   "file",
   "invoice",

@@ -5,6 +5,7 @@ import Link from "next/link"
 import { ArrowUpRight, X } from "lucide-react"
 
 import { loadAccountActivityAction } from "@/app/(app)/books/actions"
+import type { StatementDimension } from "@/lib/services/books/statements"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -32,11 +33,15 @@ type ActivityResult = {
 }
 
 export type ActivityTarget = {
+  operatingOnly?: boolean
+  unassignedOnly?: boolean
   accountId: string
   code: string
   name: string
   projectId?: string | null
   projectName?: string | null
+  /** One slice of a sliced statement: its lines carry this value (none when null). */
+  dimension?: { key: StatementDimension; value: string | null; label: string }
 }
 
 export function AccountActivitySheet({
@@ -61,10 +66,13 @@ export function AccountActivitySheet({
     setError(null)
     setData(null)
     loadAccountActivityAction({
+      operatingOnly: target.operatingOnly,
+      unassignedOnly: target.unassignedOnly,
       accountId: target.accountId,
       startDate,
       endDate,
       projectId: target.projectId ?? null,
+      dimension: target.dimension ? { key: target.dimension.key, value: target.dimension.value } : undefined,
     })
       .then((result) => {
         if (cancelled) return
@@ -77,7 +85,7 @@ export function AccountActivitySheet({
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
-    // Re-fetch when the account, the project lens, or the period changes.
+    // Re-fetch when the account, the project or dimension lens, or the period changes.
     return () => {
       cancelled = true
     }
@@ -93,7 +101,7 @@ export function AccountActivitySheet({
         <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
           <div className="min-w-0">
             <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Account register
+              {target?.operatingOnly ? "Statement activity" : "Account register"}
             </p>
             <h2 className="truncate text-sm font-semibold">
               <span className="font-mono text-muted-foreground">{target?.code}</span>{" "}
@@ -102,6 +110,7 @@ export function AccountActivitySheet({
             <p className="mt-0.5 text-xs text-muted-foreground">
               {startDate} → {endDate}
               {target?.projectName ? <> · {target.projectName}</> : null}
+              {target?.dimension ? <> · {target.dimension.label}</> : null}
             </p>
           </div>
           <Button variant="ghost" size="icon" onClick={() => onOpenChange(false)} aria-label="Close">

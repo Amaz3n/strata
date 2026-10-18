@@ -1,25 +1,21 @@
 "use server"
 
-import { createHash, createHmac, randomBytes } from "crypto"
+import { assertWaiverRecipientEmail, requiresWaiverCompanyMember, waiverRecipientConsent } from "@/lib/invoices/waiver-recipient"
+
+import { createHmac } from "crypto"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
-import { ENVELOPE_EVENT_TYPES, buildUnifiedSigningUrl } from "@/lib/esign/unified-contracts"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { generateExecutedPdf } from "@/lib/pdfs/esign"
-import { SignatureEmail } from "@/lib/emails/signature-email"
-import { recordESignEvent } from "@/lib/services/esign-events"
-import { recordEvent } from "@/lib/services/events"
-import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { createExecutedFileAccessToken } from "@/lib/services/esign-executed-links"
-import { renderEmailTemplate, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { submitEstimateBuilderSignatureBySigningToken } from "@/lib/services/estimate-portal"
-import {
-  buildOrgScopedPath,
-  downloadFilesObject,
-  getFilesStorageProvider,
-  uploadFilesObject,
-} from "@/lib/storage/files-storage"
+import { getFilesStorageProvider } from "@/lib/storage/files-storage"
+import { resolveSigningRequestToken } from "@/lib/esign/signing-tokens"
+import { requireSigningAccess, unlockSigningAccess } from "@/lib/esign/access-code"
+import { parseSignerFieldValues } from "@/lib/esign/field-values"
+import { ELECTRONIC_SIGNATURE_CONSENT_TEXT, ESIGN_CONSENT_VERSION } from "@/lib/esign/consent"
+import { finalizeDocumentSigning, ensureFrozenSigningSource, loadFrozenSigningBytes } from "@/lib/services/esign-execution"
 
 function requireDocumentSigningSecret() {
   const secret = process.env.DOCUMENT_SIGNING_SECRET
@@ -34,65 +30,6 @@ function buildExecutedDocumentUrl(token: string) {
   return appUrl ? `${appUrl}/api/esign/executed/${token}` : `/api/esign/executed/${token}`
 }
 
-function sha256Hex(bytes: Uint8Array | Buffer) {
-  return createHash("sha256").update(bytes).digest("hex")
-}
-
-type SigningRequestRoutingRow = {
-  id: string
-  sequence?: number | null
-  required?: boolean | null
-  status?: string | null
-  sent_to_email?: string | null
-}
-
-function getNextRequiredSequence(requests: SigningRequestRoutingRow[]) {
-  const ordered = [...requests].sort((a, b) => (a.sequence ?? 1) - (b.sequence ?? 1))
-  const next = ordered.find(
-    (request) =>
-      request.required !== false &&
-      request.status !== "signed" &&
-      request.status !== "voided" &&
-      request.status !== "expired",
-  )
-
-  if (!next) return null
-  const nextSequence = next.sequence ?? 1
-  return ordered.filter(
-    (request) =>
-      (request.sequence ?? 1) === nextSequence &&
-      request.required !== false &&
-      request.status !== "signed" &&
-      request.status !== "voided" &&
-      request.status !== "expired",
-  )
-}
-
-async function issueSigningLinkForRequest(
-  supabase: any,
-  params: { orgId: string; requestId: string },
-) {
-  const token = randomBytes(32).toString("hex")
-  const tokenHash = createHmac("sha256", requireDocumentSigningSecret()).update(token).digest("hex")
-  const nowIso = new Date().toISOString()
-
-  const { error } = await supabase
-    .from("document_signing_requests")
-    .update({
-      token_hash: tokenHash,
-      status: "sent",
-      sent_at: nowIso,
-    })
-    .eq("org_id", params.orgId)
-    .eq("id", params.requestId)
-
-  if (error) {
-    throw new Error(`Failed to issue next signing link: ${error.message}`)
-  }
-
-  return buildUnifiedSigningUrl(token)
-}
-
 export async function submitDocumentSignatureAction(input: {
   token: string
   signerName: string
@@ -100,45 +37,56 @@ export async function submitDocumentSignatureAction(input: {
   values: Record<string, any>
   consentText: string
 }) {
-  let executedDocumentUrl: string | null = null
-
   if (!input.token) {
     throw new Error("Missing signing token")
-  }
-  if (!input.signerName?.trim()) {
-    throw new Error("Signer name is required")
-  }
-  if (!input.signerEmail?.trim()) {
-    throw new Error("Signer email is required")
-  }
-  if (!input.consentText?.trim()) {
-    throw new Error("Consent text is required")
   }
 
   const supabase = createServiceSupabaseClient()
   const tokenHash = createHmac("sha256", requireDocumentSigningSecret()).update(input.token).digest("hex")
 
-  const { data: signingRequest, error } = await supabase
-    .from("document_signing_requests")
-    .select("*")
-    .eq("token_hash", tokenHash)
-    .maybeSingle()
+  const { data: signingRequest, error } = await resolveSigningRequestToken(supabase, input.token)
 
   if (error || !signingRequest) {
     throw new Error(`Signing request not found: ${error?.message ?? "Invalid link"}`)
   }
 
+  await requireSigningAccess(signingRequest)
   const now = new Date()
-  const submittedSignerEmail = input.signerEmail.trim()
   if (signingRequest.expires_at && new Date(signingRequest.expires_at) < now) {
     throw new Error("Signing link has expired")
   }
   if (signingRequest.status === "voided" || signingRequest.status === "expired") {
     throw new Error("Signing request is no longer valid")
   }
-  if (signingRequest.used_count >= signingRequest.max_uses) {
+  if (signingRequest.status !== "signed" && signingRequest.used_count >= signingRequest.max_uses) {
     throw new Error("Signing link has already been used")
   }
+
+  if (signingRequest.status === "signed") {
+    const { data: receiptDocument, error: receiptError } = await supabase.from("documents").select("status")
+      .eq("org_id", signingRequest.org_id).eq("id", signingRequest.document_id).single()
+    if (receiptError || !receiptDocument) throw new Error("Signing document not found")
+    if (["voided", "expired"].includes(receiptDocument.status)) throw new Error("Signing request is no longer valid")
+    if (signingRequest.envelope_id) {
+      const { data: envelope, error: envelopeError } = await supabase.from("envelopes").select("status,expires_at")
+        .eq("org_id", signingRequest.org_id).eq("id", signingRequest.envelope_id).single()
+      if (envelopeError || !envelope || ["voided", "expired"].includes(envelope.status) ||
+          (envelope.expires_at && new Date(envelope.expires_at) < now)) throw new Error("Signing request is no longer valid")
+    }
+    return acceptedSignatureReceipt(signingRequest, input.token)
+  }
+
+  if (typeof input.signerName !== "string" || !input.signerName.trim() || input.signerName.length > 256) {
+    throw new Error("Signer name is required")
+  }
+  if (typeof input.signerEmail !== "string" || input.signerEmail.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.signerEmail.trim())) {
+    throw new Error("Signer email is required")
+  }
+  if (typeof input.consentText !== "string" || !input.consentText.trim()) {
+    throw new Error("Consent text is required")
+  }
+
+  const submittedSignerEmail = input.signerEmail!.trim()
 
   const envelopeId = signingRequest.envelope_id ?? signingRequest.group_id ?? signingRequest.id
   const sequence = signingRequest.sequence ?? 1
@@ -185,15 +133,9 @@ export async function submitDocumentSignatureAction(input: {
     throw new Error(`Document not found: ${documentError?.message ?? "missing"}`)
   }
 
-  const { data: org } = await supabase
-    .from("orgs")
-    .select("name, logo_url, slug")
-    .eq("id", signingRequest.org_id)
-    .maybeSingle()
-
   const { data: fields, error: fieldsError } = await supabase
     .from("document_fields")
-    .select("id, page_index, field_type, required, signer_role, x, y, w, h")
+    .select("id, page_index, field_type, required, signer_role, x, y, w, h, metadata")
     .eq("document_id", document.id)
     .eq("revision", signingRequest.revision)
     .order("sort_order", { ascending: true })
@@ -203,6 +145,9 @@ export async function submitDocumentSignatureAction(input: {
   }
 
   if (document.metadata?.waiver_signing_experience === "review") {
+    assertWaiverRecipientEmail(signingRequest.sent_to_email, submittedSignerEmail)
+  }
+  if (document.metadata?.waiver_signing_experience === "review" && requiresWaiverCompanyMember(signerRole)) {
     const { listWaiverSigners } = await import("@/lib/services/waiver-signers")
     const member = (await listWaiverSigners(supabase, signingRequest.org_id)).find(person => person.id === document.metadata?.waiver_signer_id)
     if (!member || member.email.toLowerCase() !== submittedSignerEmail.toLowerCase() || member.email.toLowerCase() !== String(signingRequest.sent_to_email).toLowerCase()) {
@@ -210,33 +155,23 @@ export async function submitDocumentSignatureAction(input: {
     }
   }
 
-  const visibleFields = (fields ?? []).filter((field) => !field.signer_role || field.signer_role === signerRole)
-  const requiredFields = visibleFields.filter((field) => field.required !== false)
-  const isFieldComplete = (field: any) => {
-    const value = input.values?.[field.id]
-    if (field.field_type === "checkbox") return value === true
-    if (field.field_type === "signature") return typeof value === "string" && value.length > 0
-    return typeof value === "string" && value.trim().length > 0
+  const canonicalConsent = document.metadata?.waiver_signing_experience === "review"
+    ? waiverRecipientConsent(signerRole) : ELECTRONIC_SIGNATURE_CONSENT_TEXT
+  // The internal waiver self-sign flow uses the shared general disclosure.
+  if (input.consentText !== canonicalConsent && !(document.metadata?.invoice_lien_waiver_id && input.consentText === ELECTRONIC_SIGNATURE_CONSENT_TEXT)) {
+    throw new Error("Please review and accept the current electronic signature consent")
   }
-  const missingRequired = requiredFields.filter((field) => !isFieldComplete(field))
-  if (missingRequired.length > 0) {
-    throw new Error("Please complete all required fields")
-  }
-
-  const { data: sourceFile, error: sourceError } = await supabase
-    .from("files")
-    .select("id, storage_path, file_name, mime_type, size_bytes")
-    .eq("id", document.source_file_id)
-    .single()
-
-  if (sourceError || !sourceFile) {
-    throw new Error(`Source file missing: ${sourceError?.message ?? "missing"}`)
-  }
+  const consentText = input.consentText === ELECTRONIC_SIGNATURE_CONSENT_TEXT ? ELECTRONIC_SIGNATURE_CONSENT_TEXT : canonicalConsent
+  const values = await parseSignerFieldValues({ fields: fields ?? [], signerRole, values: input.values })
+  const source = await ensureFrozenSigningSource(document.org_id, document.id)
+  const sourceBytes = await loadFrozenSigningBytes(document.org_id, source)
+  await generateExecutedPdf({ pdfBytes: sourceBytes, fields: fields ?? [], values,
+    auditTrail: [{ label: "Signer", value: input.signerName.trim() }, { label: "Email", value: submittedSignerEmail }, { label: "Consent", value: consentText }] })
 
   const nowIso = now.toISOString()
   const auditData = {
-    consent_version: "esign-consent-2026-05-24",
-    consent_presented_at: nowIso,
+    consent_version: ESIGN_CONSENT_VERSION,
+    consent_accepted_at: nowIso,
     signed_at: nowIso,
     signer_role: signerRole,
     signer_email_on_request: signingRequest.sent_to_email ?? null,
@@ -250,7 +185,8 @@ export async function submitDocumentSignatureAction(input: {
     document_id: signingRequest.document_id,
     document_revision: signingRequest.revision,
     envelope_id: envelopeId,
-    source_file_id: sourceFile.id,
+    source_file_id: source.file_id,
+    source_sha256: source.sha256,
   }
 
   const { error: recordSignatureError } = await supabase.rpc("record_document_signature_atomic", {
@@ -262,8 +198,8 @@ export async function submitDocumentSignatureAction(input: {
     p_signer_email: submittedSignerEmail,
     p_signer_ip: signerIp,
     p_user_agent: userAgent,
-    p_consent_text: input.consentText,
-    p_values: input.values ?? {},
+    p_consent_text: consentText,
+    p_values: values,
     p_audit_data: auditData,
     p_signed_at: nowIso,
   })
@@ -272,390 +208,24 @@ export async function submitDocumentSignatureAction(input: {
     throw new Error(`Failed to record signature: ${recordSignatureError.message}`)
   }
 
-  await recordESignEvent({
-    supabase,
-    orgId: signingRequest.org_id,
-    eventType: ENVELOPE_EVENT_TYPES.recipientSigned,
-    envelopeId,
-    documentId: signingRequest.document_id,
-    payload: {
-      signing_request_id: signingRequest.id,
-      sequence: sequence,
-      signer_role: signerRole,
-      signer_name: input.signerName.trim(),
-      signer_email_on_request: signingRequest.sent_to_email ?? null,
-      submitted_signer_email: submittedSignerEmail,
-      identity_mismatch: auditData.identity_mismatch,
-      signer_ip: signerIp,
-      user_agent: userAgent,
-      consent_text: input.consentText,
-      consent_version: "esign-consent-2026-05-24",
-      signed_at: nowIso,
-    },
-  })
+  return acceptedSignatureReceipt(signingRequest, input.token)
+}
 
-  await recordEvent({
-    orgId: signingRequest.org_id,
-    eventType: ENVELOPE_EVENT_TYPES.recipientSigned,
-    entityType: "document",
-    entityId: signingRequest.document_id,
-    payload: {
-      project_id: document.project_id,
-      title: `${input.signerName.trim()} signed ${document.title}`,
-      signing_request_id: signingRequest.id,
-      signer_role: signerRole,
-      signed_at: nowIso,
-    },
-  })
-
-  let remainingQuery = supabase
-    .from("document_signing_requests")
-    .select("id, status, required, sequence, sent_to_email")
-    .eq("org_id", signingRequest.org_id)
-
-  if (signingRequest.envelope_id) {
-    remainingQuery = remainingQuery.eq("envelope_id", signingRequest.envelope_id)
-  } else {
-    remainingQuery = remainingQuery.eq("group_id", signingRequest.group_id ?? signingRequest.id)
+async function acceptedSignatureReceipt(signingRequest: { org_id: string; id: string; document_id: string }, token: string) {
+  const supabase = createServiceSupabaseClient()
+  let executedDocumentUrl: string | null = null
+  // Acceptance is committed with an outbox job. Inline execution only improves latency;
+  // its failure never asks a signer to sign again or loses the retry.
+  try {
+    await finalizeDocumentSigning(signingRequest.org_id, signingRequest.id)
+  } catch (error) {
+    console.error("Accepted signature awaits durable finalization", { requestId: signingRequest.id, error })
   }
+  const { data: completed } = await supabase.from("documents").select("executed_file_id")
+    .eq("org_id", signingRequest.org_id).eq("id", signingRequest.document_id).single()
+  if (completed?.executed_file_id) executedDocumentUrl = buildExecutedDocumentUrl(createExecutedFileAccessToken(completed.executed_file_id))
 
-  const { data: remaining, error: remainingError } = await remainingQuery
-
-  if (remainingError) {
-    throw new Error(`Failed to check signing completion: ${remainingError.message}`)
-  }
-
-  const allRequiredSigned = (remaining ?? []).every(
-    (req) => req.required === false || req.status === "signed",
-  )
-  const requiredSignedCount = (remaining ?? []).filter(
-    (req) => req.required !== false && req.status === "signed",
-  ).length
-  const requiredPendingCount = (remaining ?? []).filter(
-    (req) =>
-      req.required !== false &&
-      req.status !== "signed" &&
-      req.status !== "voided" &&
-      req.status !== "expired",
-  ).length
-
-  if (allRequiredSigned) {
-    let groupRequestsQuery = supabase
-      .from("document_signing_requests")
-      .select("id")
-
-    if (signingRequest.envelope_id) {
-      groupRequestsQuery = groupRequestsQuery.eq("envelope_id", signingRequest.envelope_id)
-    } else {
-      groupRequestsQuery = groupRequestsQuery.eq("group_id", signingRequest.group_id ?? signingRequest.id)
-    }
-
-    const { data: groupRequests, error: groupRequestsError } = await groupRequestsQuery
-
-    if (groupRequestsError) {
-      throw new Error(`Failed to load signing group requests: ${groupRequestsError.message}`)
-    }
-
-    const requestIds = (groupRequests ?? []).map((req) => req.id)
-    const { data: signatures, error: signaturesError } = await supabase
-      .from("document_signatures")
-      .select("values, signing_request_id, signer_name, signer_email, signer_ip, user_agent, consent_text, created_at")
-      .in("signing_request_id", requestIds)
-      .order("created_at", { ascending: true })
-
-    if (signaturesError) {
-      throw new Error(`Failed to load signatures: ${signaturesError.message}`)
-    }
-
-    const mergedValues = (signatures ?? []).reduce<Record<string, any>>((acc, sig: any) => {
-      return { ...acc, ...(sig.values ?? {}) }
-    }, {})
-
-    const sourceBytes = await downloadFilesObject({
-      supabase,
-      orgId: document.org_id,
-      path: sourceFile.storage_path,
-    })
-    const sourceSha256 = sha256Hex(sourceBytes)
-    const signerAuditTrail = (signatures ?? []).flatMap((signature: any, index: number) => [
-      { label: `Signer ${index + 1} name`, value: signature.signer_name },
-      { label: `Signer ${index + 1} email`, value: signature.signer_email },
-      { label: `Signer ${index + 1} signed at`, value: signature.created_at },
-      { label: `Signer ${index + 1} IP`, value: signature.signer_ip },
-      { label: `Signer ${index + 1} user agent`, value: signature.user_agent },
-      { label: `Signer ${index + 1} consent`, value: signature.consent_text },
-    ])
-    const auditTrail = [
-      { label: "Document ID", value: document.id },
-      { label: "Envelope ID", value: envelopeId },
-      { label: "Document revision", value: String(signingRequest.revision) },
-      { label: "Source file ID", value: sourceFile.id },
-      { label: "Source SHA-256", value: sourceSha256 },
-      { label: "Executed at", value: nowIso },
-      { label: "Consent version", value: "esign-consent-2026-05-24" },
-      ...signerAuditTrail,
-    ]
-
-    const executedBytes = await generateExecutedPdf({
-      pdfBytes: sourceBytes,
-      fields: (fields ?? []).map((field) => ({
-        id: field.id,
-        page_index: field.page_index,
-        field_type: field.field_type,
-        x: field.x,
-        y: field.y,
-        w: field.w,
-        h: field.h,
-      })),
-      values: mergedValues,
-      auditTrail,
-    })
-    const executedSha256 = sha256Hex(executedBytes)
-
-    const timestamp = Date.now()
-    const safeTitle = document.title.replace(/[^a-zA-Z0-9.-]/g, "_").slice(0, 80)
-    const executedName = `${safeTitle || "document"}_executed.pdf`
-    const projectId = (document.project_id as string | null) ?? null
-    const prospectId = (document.prospect_id as string | null) ?? null
-    const storageContextType = projectId ? "projects" : prospectId ? "prospects" : "documents"
-    const storageContextId = projectId ?? prospectId ?? document.id
-    const executedPath = buildOrgScopedPath(
-      document.org_id,
-      storageContextType,
-      storageContextId,
-      "esign",
-      document.id,
-      "executed",
-      `${timestamp}_${executedName}`,
-    )
-
-    await uploadFilesObject({
-      supabase,
-      orgId: document.org_id,
-      path: executedPath,
-      bytes: executedBytes,
-      contentType: "application/pdf",
-      upsert: false,
-    })
-
-    const uploaderId = signingRequest.created_by ?? document.created_by ?? null
-
-    const { data: executedFile, error: executedFileError } = await supabase
-      .from("files")
-      .insert({
-        org_id: document.org_id,
-        project_id: projectId,
-        prospect_id: prospectId,
-        file_name: executedName,
-        storage_path: executedPath,
-        mime_type: "application/pdf",
-        size_bytes: executedBytes.length,
-        visibility: "private",
-        category: "contracts",
-        folder_path: projectId ? `/projects/${projectId}/esign/executed` : `/prospects/${storageContextId}/esign/executed`,
-        source: "generated",
-        uploaded_by: uploaderId,
-        share_with_clients: false,
-        share_with_subs: false,
-        metadata: {
-          source_file_id: sourceFile.id,
-          source_sha256: sourceSha256,
-          executed_sha256: executedSha256,
-          audit_certificate: "appended_to_executed_pdf",
-          consent_version: "esign-consent-2026-05-24",
-        },
-      })
-      .select("id")
-      .single()
-
-    if (executedFileError || !executedFile) {
-      throw new Error(`Failed to create executed file record: ${executedFileError?.message}`)
-    }
-
-    const { data: version, error: versionError } = await supabase
-      .from("doc_versions")
-      .insert({
-        org_id: document.org_id,
-        file_id: executedFile.id,
-        version_number: 1,
-        label: "Executed",
-        notes: "Signed via client portal",
-        storage_path: executedPath,
-        file_name: executedName,
-        mime_type: "application/pdf",
-        size_bytes: executedBytes.length,
-        created_by: uploaderId,
-      })
-      .select("id")
-      .single()
-
-    if (versionError || !version) {
-      throw new Error(`Failed to create executed version: ${versionError?.message}`)
-    }
-
-    await supabase
-      .from("files")
-      .update({ current_version_id: version.id })
-      .eq("id", executedFile.id)
-
-    await supabase
-      .from("documents")
-      .update({ status: "signed", executed_file_id: executedFile.id, updated_at: nowIso })
-      .eq("id", signingRequest.document_id)
-
-    await supabase
-      .from("envelopes")
-      .update({
-        status: "executed",
-        executed_at: nowIso,
-        updated_at: nowIso,
-      })
-      .eq("org_id", signingRequest.org_id)
-      .eq("id", envelopeId)
-
-    await recordESignEvent({
-      supabase,
-      orgId: signingRequest.org_id,
-      eventType: ENVELOPE_EVENT_TYPES.executed,
-      envelopeId,
-      documentId: signingRequest.document_id,
-      payload: {
-        executed_file_id: executedFile.id,
-        executed_at: nowIso,
-        source_file_id: sourceFile.id,
-        source_sha256: sourceSha256,
-        executed_sha256: executedSha256,
-        audit_certificate: "appended_to_executed_pdf",
-      },
-    })
-
-    await enqueueOutboxJob({
-      orgId: signingRequest.org_id,
-      jobType: "process_esign_execution_side_effects",
-      payload: {
-        document_id: document.id,
-        envelope_id: envelopeId,
-        executed_file_id: executedFile.id,
-        signer_name: input.signerName.trim(),
-        signer_email: submittedSignerEmail,
-        signer_ip: signerIp,
-      },
-      dedupeByPayloadKeys: ["executed_file_id"],
-    })
-
-    const executedToken = createExecutedFileAccessToken(executedFile.id)
-    const executedUrl = buildExecutedDocumentUrl(executedToken)
-    executedDocumentUrl = executedUrl
-    const metadataRecipients = Array.isArray((document as any).metadata?.envelope_recipients)
-      ? ((document as any).metadata.envelope_recipients as Array<{
-          name?: string | null
-          email?: string | null
-          role?: string | null
-        }>)
-      : []
-    const recipients = metadataRecipients
-      .map((recipient) => ({
-        name: recipient.name?.trim() || "",
-        email: recipient.email?.trim() || "",
-        role: recipient.role?.trim() || "",
-      }))
-      .filter((recipient) => recipient.email.length > 0)
-
-    const fallbackRecipients =
-      recipients.length > 0
-        ? recipients
-        : (remaining ?? [])
-            .map((request) => ({
-              name: "",
-              email: request.sent_to_email?.trim() || "",
-              role: "signer",
-            }))
-            .filter((recipient) => recipient.email.length > 0)
-
-    await Promise.all(
-      fallbackRecipients.map(async (recipient) => {
-        const result = await enqueueOutboxJob({
-          orgId: signingRequest.org_id,
-          jobType: "send_esign_executed_email",
-          payload: {
-            document_id: document.id,
-            document_title: document.title,
-            executed_file_id: executedFile.id,
-            executed_file_name: executedName,
-            recipient_name: recipient.name,
-            recipient_email: recipient.email,
-          },
-          dedupeByPayloadKeys: ["executed_file_id", "recipient_email"],
-        })
-        if (!result.enqueued && result.reason !== "duplicate") {
-          console.error("Failed to enqueue executed document email", {
-            documentId: document.id,
-            recipientEmail: recipient.email,
-          })
-        }
-      }),
-    )
-  } else {
-    await supabase
-      .from("envelopes")
-      .update({
-        status: requiredSignedCount > 0 && requiredPendingCount > 0 ? "partially_signed" : "sent",
-        updated_at: nowIso,
-      })
-      .eq("org_id", signingRequest.org_id)
-      .eq("id", envelopeId)
-
-    const nextBatch = getNextRequiredSequence((remaining ?? []) as SigningRequestRoutingRow[])
-    const sendableNextBatch = (nextBatch ?? []).filter(
-      (request) => request.status === "draft" && !!request.sent_to_email,
-    )
-
-    await Promise.all(
-      sendableNextBatch.map(async (request) => {
-        const url = await issueSigningLinkForRequest(supabase, {
-          orgId: signingRequest.org_id,
-          requestId: request.id,
-        })
-        const html = await renderEmailTemplate(
-          SignatureEmail({
-            documentTitle: document.title,
-            signingLink: url,
-            orgName: org?.name ?? null,
-            orgLogoUrl: org?.logo_url ?? null,
-            eventLabel: "Signature Request",
-            headline: "Document ready for signature",
-            bodyText: "The document is now ready for your signature.",
-            detailLabel: "Signature",
-            detailText: "Open the document to review all pages, complete required fields, and sign electronically.",
-            buttonText: "Review and Sign",
-          }),
-        )
-
-        await sendEmail({
-          to: [request.sent_to_email as string],
-          subject: `Signature requested: ${document.title}`,
-          html,
-          from: getOrgSenderEmail(org?.slug, org?.name),
-        })
-      }),
-    )
-
-    if (sendableNextBatch.length > 0) {
-      await recordESignEvent({
-        supabase,
-        orgId: signingRequest.org_id,
-        eventType: ENVELOPE_EVENT_TYPES.sent,
-        envelopeId,
-        documentId: signingRequest.document_id,
-        payload: {
-          sent_now: sendableNextBatch.length,
-          trigger: "next_required_sequence",
-        },
-      })
-    }
-  }
-
-  revalidatePath(`/d/${input.token}`)
+  revalidatePath(`/d/${token}`)
   return { success: true, executedDocumentUrl }
 }
 
@@ -663,16 +233,12 @@ export async function declineDocumentSignatureAction(input: { token: string; rea
   if (!input.token) throw new Error("Missing signing token")
 
   const supabase = createServiceSupabaseClient()
-  const tokenHash = createHmac("sha256", requireDocumentSigningSecret()).update(input.token).digest("hex")
-  const { data: signingRequest, error } = await supabase
-    .from("document_signing_requests")
-    .select("id, org_id, document_id, group_id, envelope_id, sequence, required, status, sent_to_email, signer_role, expires_at")
-    .eq("token_hash", tokenHash)
-    .maybeSingle()
+  const { data: signingRequest, error } = await resolveSigningRequestToken(supabase, input.token)
 
   if (error || !signingRequest) {
     throw new Error(`Signing request not found: ${error?.message ?? "Invalid link"}`)
   }
+  await requireSigningAccess(signingRequest)
   if (signingRequest.status === "signed") throw new Error("This request has already been signed")
   if (signingRequest.status === "voided" || signingRequest.status === "expired") {
     throw new Error("This signing request is no longer active")
@@ -683,94 +249,11 @@ export async function declineDocumentSignatureAction(input: { token: string; rea
 
   const envelopeId = signingRequest.envelope_id ?? signingRequest.group_id ?? signingRequest.id
   const reason = input.reason?.trim() || null
-  const nowIso = new Date().toISOString()
-  const forwardedFor = (await headers()).get("x-forwarded-for")
-  const signerIp = forwardedFor?.split(",")?.[0]?.trim() ?? null
-  const userAgent = (await headers()).get("user-agent") ?? null
-
-  const { data: document } = await supabase
-    .from("documents")
-    .select("id, metadata")
-    .eq("org_id", signingRequest.org_id)
-    .eq("id", signingRequest.document_id)
-    .maybeSingle()
-
-  if (signingRequest.envelope_id) {
-    const { data: envelope } = await supabase
-      .from("envelopes")
-      .select("metadata")
-      .eq("org_id", signingRequest.org_id)
-      .eq("id", signingRequest.envelope_id)
-      .maybeSingle()
-
-    const { error: envelopeError } = await supabase
-      .from("envelopes")
-      .update({
-        status: "voided",
-        voided_at: nowIso,
-        updated_at: nowIso,
-        metadata: {
-          ...(envelope?.metadata ?? {}),
-          declined_by_request_id: signingRequest.id,
-          declined_by_email: signingRequest.sent_to_email ?? null,
-          decline_reason: reason,
-          declined_at: nowIso,
-        },
-      })
-      .eq("org_id", signingRequest.org_id)
-      .eq("id", signingRequest.envelope_id)
-
-    if (envelopeError) throw new Error(`Failed to decline envelope: ${envelopeError.message}`)
-  }
-
-  let requestsUpdateQuery = supabase
-    .from("document_signing_requests")
-    .update({ status: "voided" })
-    .eq("org_id", signingRequest.org_id)
-    .in("status", ["draft", "sent", "viewed"])
-
-  requestsUpdateQuery = signingRequest.envelope_id
-    ? requestsUpdateQuery.eq("envelope_id", signingRequest.envelope_id)
-    : requestsUpdateQuery.eq("group_id", signingRequest.group_id ?? signingRequest.id)
-
-  const { error: requestError } = await requestsUpdateQuery
-
-  if (requestError) throw new Error(`Failed to void signing requests: ${requestError.message}`)
-
-  await supabase
-    .from("documents")
-    .update({
-      status: "voided",
-      updated_at: nowIso,
-      metadata: {
-        ...(document?.metadata ?? {}),
-        declined_signature_request: {
-          signing_request_id: signingRequest.id,
-          signer_email: signingRequest.sent_to_email ?? null,
-          reason,
-          declined_at: nowIso,
-        },
-      },
-    })
-    .eq("org_id", signingRequest.org_id)
-    .eq("id", signingRequest.document_id)
-    .in("status", ["draft", "sent", "expired", "voided"])
-
-  await recordESignEvent({
-    supabase,
-    orgId: signingRequest.org_id,
-    eventType: "recipient_declined",
-    envelopeId,
-    documentId: signingRequest.document_id,
-    payload: {
-      signing_request_id: signingRequest.id,
-      signer_email: signingRequest.sent_to_email ?? null,
-      signer_role: signingRequest.signer_role ?? null,
-      reason,
-      signer_ip: signerIp,
-      user_agent: userAgent,
-    },
+  const { error: declineError } = await supabase.rpc("cancel_esign_envelope", {
+    p_org_id: signingRequest.org_id, p_envelope_id: envelopeId, p_reason: reason,
+    p_request_id: signingRequest.id, p_actor_id: null,
   })
+  if (declineError) throw new Error(declineError.message)
 
   revalidatePath(`/d/${input.token}`)
   return { success: true }
@@ -790,4 +273,13 @@ export async function submitEstimateBuilderSignatureAction(input: {
   const result = await submitEstimateBuilderSignatureBySigningToken({ ...input, signerIp })
   revalidatePath(`/d/${input.token}`)
   return result
+}
+
+export async function unlockDocumentSigningAction(input: { token: string; code: string }) {
+  try {
+    const { data: request, error } = await resolveSigningRequestToken(createServiceSupabaseClient(), input.token)
+    if (error || !request) throw new Error("Invalid signing link")
+    await unlockSigningAccess(request, input.code)
+    return { success: true }
+  } catch (error) { return { success: false, error: error instanceof Error ? error.message : "Unable to unlock document" } }
 }

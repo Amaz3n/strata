@@ -1,3 +1,6 @@
+import { requireAuthorization } from "@/lib/services/authorization"
+import { readAllRowsById } from "@/lib/land/paging"
+import { safetyWorkspaceQuerySchema, safetyWorkspaceCursorSchema, safetyRowIdentitySchema, toolboxTalkRecordSchema, toolboxTalkSummarySchema } from "@/lib/validation/safety"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -58,6 +61,9 @@ export type ToolboxTalk = {
   created_at: string
 }
 
+export type ToolboxTalkSummary = Pick<ToolboxTalk,
+  "id" | "org_id" | "project_id" | "created_at" | "held_at" | "topic" | "presenter_name" | "attendee_count">
+
 export type Observation = {
   id: string
   org_id: string
@@ -100,6 +106,22 @@ function mapObservation(row: Record<string, any>): Observation {
   return { ...rest, company_name: companyRow?.name ?? null } as Observation
 }
 
+async function validateSafetyReferences({ supabase, orgId, projectId, companyId, fileId }: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string; projectId: string; companyId?: string | null; fileId?: string | null
+}) {
+  await Promise.all([
+    companyId ? (async () => {
+      const { data, error } = await supabase.from("companies").select("id").eq("org_id", orgId).eq("id", companyId).maybeSingle()
+      if (error || !data) throw new Error("Safety company is unavailable in this organization")
+    })() : Promise.resolve(),
+    fileId ? (async () => {
+      const { data, error } = await supabase.from("files").select("id").eq("org_id", orgId).eq("project_id", projectId).eq("id", fileId).maybeSingle()
+      if (error || !data) throw new Error("Safety evidence does not belong to this home or is unavailable")
+    })() : Promise.resolve(),
+  ])
+}
+
 // ---------------------------------------------------------------------------
 // Incidents
 // ---------------------------------------------------------------------------
@@ -107,21 +129,22 @@ function mapObservation(row: Record<string, any>): Observation {
 export async function listSafetyIncidents(projectId: string, orgId?: string): Promise<SafetyIncident[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.read", { supabase, orgId: resolvedOrgId, userId })
-  const { data, error } = await supabase
-    .from("safety_incidents")
-    .select(INCIDENT_SELECT)
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-    .order("incident_number", { ascending: false })
-    .limit(250)
-  if (error) throw new Error(`Failed to load incidents: ${error.message}`)
-  return (data ?? []).map(mapIncident)
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "safety.read", projectId: projectId, resourceType: "project", resourceId: projectId })
+  const rows = await readAllRowsById((after, limit) => {
+    let query = supabase.from("safety_incidents").select(INCIDENT_SELECT).eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId).order("id", { ascending: true }).limit(limit)
+    if (after) query = query.gt("id", after)
+    return query
+  }, { cap: 10000, pageSize: 100, label: "Failed to load safety_incidents" })
+  return rows.map(mapIncident)
 }
 
 export async function createSafetyIncident(input: SafetyIncidentInput, orgId?: string): Promise<SafetyIncident> {
   const parsed = safetyIncidentInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.write", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "safety.write", projectId: parsed.project_id, resourceType: "project", resourceId: parsed.project_id })
+  await validateSafetyReferences({ supabase, orgId: resolvedOrgId, projectId: parsed.project_id, companyId: parsed.involved_company_id, fileId: parsed.photo_file_id })
   const location = await resolveProjectLocation(parsed.project_id, parsed.location_id, resolvedOrgId)
 
   const { data } = await insertWithProjectNumberRetry<Record<string, any>>({
@@ -186,18 +209,23 @@ export async function createSafetyIncident(input: SafetyIncidentInput, orgId?: s
   return incident
 }
 
-export async function updateSafetyIncident(incidentId: string, input: SafetyIncidentUpdate, orgId?: string): Promise<SafetyIncident> {
+export async function updateSafetyIncident(incidentId: string, input: SafetyIncidentUpdate, orgId?: string, expectedProjectId?: string): Promise<SafetyIncident> {
   const parsed = safetyIncidentUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.write", { supabase, orgId: resolvedOrgId, userId })
 
-  const { data: existing } = await supabase
+  const { data: existing, error: lookupError } = await supabase
     .from("safety_incidents")
     .select(INCIDENT_SELECT)
     .eq("org_id", resolvedOrgId)
     .eq("id", incidentId)
     .maybeSingle()
+  if (lookupError) throw new Error(`Failed to load incident: ${lookupError.message}`)
   if (!existing) throw new Error("Incident not found")
+  if (expectedProjectId && existing.project_id !== expectedProjectId) throw new Error("Safety record belongs to another home")
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "safety.write", projectId: existing.project_id, resourceType: "project", resourceId: existing.project_id })
+  await validateSafetyReferences({ supabase, orgId: resolvedOrgId, projectId: existing.project_id, companyId: parsed.involved_company_id, fileId: parsed.photo_file_id })
+
 
   const updateData: Record<string, unknown> = {}
   if (parsed.location_id !== undefined) {
@@ -229,11 +257,17 @@ export async function updateSafetyIncident(incidentId: string, input: SafetyInci
     .from("safety_incidents")
     .update(updateData)
     .eq("org_id", resolvedOrgId)
-    .eq("id", incidentId)
+    .eq("id", incidentId).eq("project_id", existing.project_id)
     .select(INCIDENT_SELECT)
     .single()
   if (error || !data) throw new Error(`Failed to update incident: ${error?.message}`)
 
+  if (parsed.severity && parsed.severity !== existing.severity && ALERT_SEVERITIES.has(parsed.severity)) {
+    await recordEvent({ orgId: resolvedOrgId, eventType: "safety_incident_alert", entityType: "safety_incident", entityId: incidentId,
+      payload: { project_id: existing.project_id, severity: parsed.severity,
+        title: `Serious safety incident escalation (${parsed.severity.replace(/_/g, " ")})`,
+        message: String(data.description).slice(0, 280), actor_id: userId } })
+  }
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "safety_incident", entityId: incidentId, before: existing, after: data })
   return mapIncident(data)
 }
@@ -243,22 +277,24 @@ export async function updateSafetyIncident(incidentId: string, input: SafetyInci
 // ---------------------------------------------------------------------------
 
 export async function listToolboxTalks(projectId: string, orgId?: string): Promise<ToolboxTalk[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const { data, error } = await supabase
-    .from("toolbox_talks")
-    .select(TALK_SELECT)
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-    .order("held_at", { ascending: false })
-    .limit(250)
-  if (error) throw new Error(`Failed to load toolbox talks: ${error.message}`)
-  return (data ?? []) as ToolboxTalk[]
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("safety.read", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "safety.read", projectId: projectId, resourceType: "project", resourceId: projectId })
+  const rows = await readAllRowsById((after, limit) => {
+    let query = supabase.from("toolbox_talks").select(TALK_SELECT).eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId).order("id", { ascending: true }).limit(limit)
+    if (after) query = query.gt("id", after)
+    return query
+  }, { cap: 10000, pageSize: 100, label: "Failed to load toolbox_talks" })
+  return rows as ToolboxTalk[]
 }
 
 export async function createToolboxTalk(input: ToolboxTalkInput, orgId?: string): Promise<ToolboxTalk> {
   const parsed = toolboxTalkInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.write", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "safety.write", projectId: parsed.project_id, resourceType: "project", resourceId: parsed.project_id })
+  await validateSafetyReferences({ supabase, orgId: resolvedOrgId, projectId: parsed.project_id, companyId: undefined, fileId: parsed.file_id })
 
   const { data, error } = await supabase
     .from("toolbox_talks")
@@ -282,13 +318,17 @@ export async function createToolboxTalk(input: ToolboxTalkInput, orgId?: string)
   return data as ToolboxTalk
 }
 
-export async function deleteToolboxTalk(talkId: string, orgId?: string): Promise<void> {
+export async function deleteToolboxTalk(talkId: string, orgId?: string, expectedProjectId?: string): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.write", { supabase, orgId: resolvedOrgId, userId })
-  const { data: existing } = await supabase.from("toolbox_talks").select(TALK_SELECT).eq("org_id", resolvedOrgId).eq("id", talkId).maybeSingle()
+  const { data: existing, error: lookupError } = await supabase.from("toolbox_talks").select(TALK_SELECT).eq("org_id", resolvedOrgId).eq("id", talkId).maybeSingle()
+  if (lookupError) throw new Error(`Failed to load toolbox talk: ${lookupError.message}`)
   if (!existing) throw new Error("Toolbox talk not found")
-  const { error } = await supabase.from("toolbox_talks").delete().eq("org_id", resolvedOrgId).eq("id", talkId)
-  if (error) throw new Error(`Failed to delete toolbox talk: ${error.message}`)
+  if (expectedProjectId && existing.project_id !== expectedProjectId) throw new Error("Safety record belongs to another home")
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "safety.write", projectId: existing.project_id, resourceType: "project", resourceId: existing.project_id })
+
+  const { data: deleted, error } = await supabase.from("toolbox_talks").delete().eq("org_id", resolvedOrgId).eq("id", talkId).eq("project_id", existing.project_id).select("id")
+  if (error || deleted?.length !== 1) throw new Error(`Failed to delete toolbox talk: ${error?.message ?? "Record changed or is unavailable"}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "delete", entityType: "toolbox_talk", entityId: talkId, before: existing })
 }
 
@@ -297,22 +337,24 @@ export async function deleteToolboxTalk(talkId: string, orgId?: string): Promise
 // ---------------------------------------------------------------------------
 
 export async function listObservations(projectId: string, orgId?: string): Promise<Observation[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const { data, error } = await supabase
-    .from("observations")
-    .select(OBSERVATION_SELECT)
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-    .order("observation_number", { ascending: false })
-    .limit(500)
-  if (error) throw new Error(`Failed to load observations: ${error.message}`)
-  return (data ?? []).map(mapObservation)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("safety.read", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "safety.read", projectId: projectId, resourceType: "project", resourceId: projectId })
+  const rows = await readAllRowsById((after, limit) => {
+    let query = supabase.from("observations").select(OBSERVATION_SELECT).eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId).order("id", { ascending: true }).limit(limit)
+    if (after) query = query.gt("id", after)
+    return query
+  }, { cap: 10000, pageSize: 100, label: "Failed to load observations" })
+  return rows.map(mapObservation)
 }
 
 export async function createObservation(input: ObservationInput, orgId?: string): Promise<Observation> {
   const parsed = observationInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.write", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "safety.write", projectId: parsed.project_id, resourceType: "project", resourceId: parsed.project_id })
+  await validateSafetyReferences({ supabase, orgId: resolvedOrgId, projectId: parsed.project_id, companyId: parsed.company_id, fileId: parsed.photo_file_id })
   const location = await resolveProjectLocation(parsed.project_id, parsed.location_id, resolvedOrgId)
 
   const { data } = await insertWithProjectNumberRetry<Record<string, any>>({
@@ -353,18 +395,23 @@ export async function createObservation(input: ObservationInput, orgId?: string)
   return observation
 }
 
-export async function updateObservation(observationId: string, input: ObservationUpdate, orgId?: string): Promise<Observation> {
+export async function updateObservation(observationId: string, input: ObservationUpdate, orgId?: string, expectedProjectId?: string): Promise<Observation> {
   const parsed = observationUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.write", { supabase, orgId: resolvedOrgId, userId })
 
-  const { data: existing } = await supabase
+  const { data: existing, error: lookupError } = await supabase
     .from("observations")
     .select(OBSERVATION_SELECT)
     .eq("org_id", resolvedOrgId)
     .eq("id", observationId)
     .maybeSingle()
+  if (lookupError) throw new Error(`Failed to load observation: ${lookupError.message}`)
   if (!existing) throw new Error("Observation not found")
+  if (expectedProjectId && existing.project_id !== expectedProjectId) throw new Error("Safety record belongs to another home")
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "safety.write", projectId: existing.project_id, resourceType: "project", resourceId: existing.project_id })
+  await validateSafetyReferences({ supabase, orgId: resolvedOrgId, projectId: existing.project_id, companyId: parsed.company_id, fileId: undefined })
+
 
   const updateData: Record<string, unknown> = {}
   if (parsed.location_id !== undefined) {
@@ -384,11 +431,83 @@ export async function updateObservation(observationId: string, input: Observatio
     .from("observations")
     .update(updateData)
     .eq("org_id", resolvedOrgId)
-    .eq("id", observationId)
+    .eq("id", observationId).eq("project_id", existing.project_id)
     .select(OBSERVATION_SELECT)
     .single()
   if (error || !data) throw new Error(`Failed to update observation: ${error?.message}`)
 
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "observation", entityId: observationId, before: existing, after: data })
   return mapObservation(data)
+}
+
+export async function getSafetyWorkspace(projectId: string, input: unknown = {}, orgId?: string) {
+  const filters = safetyWorkspaceQuerySchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
+  await requirePermission("safety.read", context)
+  await requireAuthorization({ ...context, permission: "safety.read", projectId, resourceType: "project", resourceId: projectId })
+  const positions = { incident: null, observation: null, talk: null }
+  const cursor = filters.after ? safetyWorkspaceCursorSchema.parse(JSON.parse(Buffer.from(filters.after, "base64url").toString("utf8"))) : null
+  if (cursor && (cursor.org !== resolvedOrgId || cursor.home !== projectId || cursor.actor !== userId || cursor.q !== filters.q || cursor.type !== filters.type || cursor.status !== filters.status)) {
+    throw new Error("Safety filters or home changed. Restart from the first page.")
+  }
+  const current = cursor?.positions ?? positions
+  const definitions = [
+    { kind: "incident", table: "safety_incidents", select: INCIDENT_SELECT, text: "description", closed: "closed" },
+    { kind: "observation", table: "observations", select: OBSERVATION_SELECT, text: "description", closed: "resolved" },
+    { kind: "talk", table: "toolbox_talks", select: "id, org_id, project_id, created_at, held_at, topic, presenter_name, attendee_count", text: "topic", closed: null },
+  ] as const
+  const pages = await Promise.all(definitions.map(async definition => {
+    const eligible = (filters.type === "all" || filters.type === definition.kind) && (definition.kind !== "talk" || filters.status === "all")
+    if (!eligible) return { kind: definition.kind, rows: [], count: 0, more: false, position: current[definition.kind] }
+    const scoped = (head: boolean) => {
+      let query = supabase.from(definition.table).select(head ? "id" : definition.select, head ? { count: "exact", head: true } : {})
+        .eq("org_id", resolvedOrgId).eq("project_id", projectId)
+      if (filters.q) query = query.ilike(definition.text, `%${filters.q.replace(/[\\%_]/g, "\\$&")}%`)
+      if (filters.status !== "all" && definition.closed) query = filters.status === "closed" ? query.eq("status", definition.closed) : query.neq("status", definition.closed)
+      return query
+    }
+    let query = scoped(false).order("created_at", { ascending: false }).order("id", { ascending: false }).limit(51)
+    const position = current[definition.kind]
+    if (position) query = query.or(`created_at.lt.${position.date},and(created_at.eq.${position.date},id.lt.${position.id})`)
+    const [page, total] = await Promise.all([query, scoped(true)])
+    if (page.error || total.error || !Array.isArray(page.data) || typeof total.count !== "number" || !Number.isSafeInteger(total.count) || total.count < 0) throw new Error(`Failed to load safety ${definition.kind}: ${page.error?.message ?? total.error?.message ?? "Source unavailable"}`)
+    const rows = page.data.slice(0, 50).map(row => safetyRowIdentitySchema.parse(row))
+    if (rows.some(row => row.org_id !== resolvedOrgId || row.project_id !== projectId)) throw new Error("Safety source returned another home")
+    const last = rows.at(-1)
+    let more = page.data.length > 50
+    if (last && !more) {
+      const probe = await scoped(false).select("id").or(`created_at.lt.${last.created_at},and(created_at.eq.${last.created_at},id.lt.${last.id})`).limit(1)
+      if (probe.error || !Array.isArray(probe.data)) throw new Error(`Failed to confirm safety continuation: ${probe.error?.message ?? "Source unavailable"}`)
+      more = probe.data.length > 0
+    }
+    return { kind: definition.kind, rows, count: total.count, more, position: last ? { date: last.created_at, id: last.id } : position }
+  }))
+  const [incidents, observations, talks] = pages
+  const nextPositions = { incident: incidents.position, observation: observations.position, talk: talks.position }
+  const nextAfter = pages.some(page => page.more) ? Buffer.from(JSON.stringify(safetyWorkspaceCursorSchema.parse({ org: resolvedOrgId, home: projectId, actor: userId, q: filters.q, type: filters.type, status: filters.status, positions: nextPositions }))).toString("base64url") : null
+  return {
+    incidents: incidents.rows.map(mapIncident), observations: observations.rows.map(mapObservation),
+    talks: talks.rows.map(row => toolboxTalkSummarySchema.parse(row)),
+    total: pages.reduce((sum, page) => sum + page.count, 0),
+    counts: { incident: incidents.count, observation: observations.count, talk: talks.count },
+    nextAfter, currentAfter: filters.after ?? null, filters: { q: filters.q, type: filters.type, status: filters.status },
+  }
+}
+
+export async function getSafetyRecord(projectId: string, kind: "incident" | "observation" | "talk", recordId: string, orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("safety.read", context)
+  await requireAuthorization({ ...context, permission: "safety.read", projectId, resourceType: "project", resourceId: projectId })
+  const definition = kind === "incident" ? { table: "safety_incidents", select: INCIDENT_SELECT } : kind === "observation" ? { table: "observations", select: OBSERVATION_SELECT } : { table: "toolbox_talks", select: TALK_SELECT }
+  const { data, error } = await context.supabase.from(definition.table).select(definition.select)
+    .eq("org_id", context.orgId).eq("project_id", projectId).eq("id", recordId).maybeSingle()
+  if (error) throw new Error(`Failed to load selected safety record: ${error.message}`)
+  if (!data) return null
+  const identity = safetyRowIdentitySchema.parse(data)
+  if (identity.org_id !== context.orgId || identity.project_id !== projectId || identity.id !== recordId) throw new Error("Selected safety source differs from the requested home or record")
+  if (kind === "incident") return { kind, data: mapIncident(data) }
+  if (kind === "observation") return { kind, data: mapObservation(data) }
+  const talk = toolboxTalkRecordSchema.parse(data)
+  return { kind, data: talk }
 }

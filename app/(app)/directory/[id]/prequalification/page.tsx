@@ -1,7 +1,7 @@
 // Browser-private account data; runtime-prefetched by the bounded tab strip.
 export const instant = true;
 
-import { notFound, redirect } from "next/navigation";
+import { notFound, redirect, unstable_rethrow } from "next/navigation";
 import { Suspense } from "react";
 import { z } from "zod";
 
@@ -42,7 +42,10 @@ async function CompanyPrequalificationContent({ id }: { id: string }) {
   // them should not take the tab down with them.
   const [data, documentTypes] = await Promise.all([
     getPrequalificationPackage(id),
-    listComplianceDocumentTypes().catch(() => []),
+    listComplianceDocumentTypes().catch((error) => {
+      unstable_rethrow(error);
+      return [];
+    }),
   ]);
 
   return (

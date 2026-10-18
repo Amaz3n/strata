@@ -1,0 +1,6 @@
+1..5
+ok 1 - native money remains private and invoker governed
+ok 2 - authorized server owns four scoped monetary operations
+ok 3 - native facts money holds and fences are private
+ok 4 - native approval and journal completeness are deferred atomic constraints
+ok 5 - all five native financial history families are immutable

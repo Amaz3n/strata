@@ -150,7 +150,7 @@ export async function uploadBidFileAction({
 
     const timestamp = Date.now()
     const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
-    const storagePath = `${access.org_id}/${access.project.id}/bid-submissions/${access.bid_invite_id}/${timestamp}_${safeName}`
+    const storagePath = `${access.org_id}/${access.job.id}/bid-submissions/${access.bid_invite_id}/${timestamp}_${safeName}`
 
     const fileBytes = Buffer.from(await file.arrayBuffer())
     try {
@@ -171,7 +171,10 @@ export async function uploadBidFileAction({
       .from("files")
       .insert({
         org_id: access.org_id,
-        project_id: access.project.id,
+        // A community or plan package has no project: the file hangs off the
+        // invite in its metadata, and a prospect's package off the prospect.
+        project_id: access.bidPackage.project_id ?? null,
+        prospect_id: access.bidPackage.project_id ? null : access.bidPackage.prospect_id ?? null,
         file_name: file.name,
         storage_path: storagePath,
         mime_type: file.type,
@@ -221,9 +224,12 @@ export async function createBidPortalRfiAction({ token, input }: { token: string
 
   try {
     const access = await assertBidPortalActionAccess(token)
+    if (!access.bidPackage.project_id) {
+      return { success: false, error: "This package takes questions through addenda. Put anything the builder should know in your bid's clarifications." as const }
+    }
     const created = await createPortalRfi({
       orgId: access.org_id,
-      projectId: access.project.id,
+      projectId: access.bidPackage.project_id,
       bidPackageId: access.bidPackage.id,
       companyId: access.invite.company?.id ?? null,
       contactId: access.invite.contact?.id ?? null,
@@ -305,6 +311,7 @@ export async function declineBidAction({
 
 export async function listBidPortalRfiResponsesAction({ token, rfiId }: { token: string; rfiId: string }) {
   const access = await assertBidPortalActionAccess(token)
+  if (!access.bidPackage.project_id) throw new Error("RFI not found")
 
   const supabase = createServiceSupabaseClient()
   const { data: rfi } = await supabase
@@ -312,7 +319,7 @@ export async function listBidPortalRfiResponsesAction({ token, rfiId }: { token:
     .select("id, org_id, project_id, status, assigned_company_id")
     .eq("id", rfiId)
     .eq("org_id", access.org_id)
-    .eq("project_id", access.project.id)
+    .eq("project_id", access.bidPackage.project_id)
     .maybeSingle()
   if (!rfi) throw new Error("RFI not found")
   if (rfi.status === "draft") throw new Error("RFI not available")
@@ -331,13 +338,14 @@ export async function addBidPortalRfiResponseAction({ token, input }: { token: s
 
   try {
     const access = await assertBidPortalActionAccess(token)
+    if (!access.bidPackage.project_id) return { success: false, error: "RFI not found" as const }
     const supabase = createServiceSupabaseClient()
     const { data: rfi } = await supabase
       .from("rfis")
       .select("id, status, assigned_company_id")
       .eq("id", parsed.data.rfi_id)
       .eq("org_id", access.org_id)
-      .eq("project_id", access.project.id)
+      .eq("project_id", access.bidPackage.project_id)
       .maybeSingle()
     if (!rfi) return { success: false, error: "RFI not found" as const }
     if (rfi.status === "draft") return { success: false, error: "RFI not available" as const }

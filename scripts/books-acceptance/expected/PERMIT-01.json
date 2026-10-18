@@ -1,0 +1,301 @@
+{
+  "scenario": "PERMIT-01",
+  "reviewedFrom": "EP06-06, EP06-07 and EP06-08 (docs/enterprise-production/completion-checklist.json) and the EP06 decisions of 2026-10-12 (jurisdiction as a vendor party, fees paid through bills and expenses on the home's job cost, the permit gate never waived, pre-issuance fees reconciled before approval, only the building application drives the gate). Code: lib/services/permits.ts; lib/permits/{lifecycle,fees}.ts; lib/validation/permits.ts; lib/services/starts.ts (start_gate_sql_evidence for permit_approved and plot_plan_file); migration 20261013120000_permits (permit tables with read-only member access, the definer functions create/set_document/record_submission/record_correction_round/update_correction_round/record_decision/assess/void/link, round history trigger, evidence-file and fee-payable guards, guard_system_start_gates, start_gate_definitions start.release policies, mutate_start_gate and refresh_start_package_gates replaced). Fixture: one production builder from production-seed (productionBuilder, seedCommunity, seedProduct, takeDownTranche) whose community's permitting authority is Collier County Growth Management (21-day review; construction plans before submission, energy calculations before decision); lots 1-6 pinned to The Mangrove elevation A and opened on the starts desk; a Treasure Coast starts coordinator limited to another division.",
+  "subcases": {
+    "application-needs-its-documents": {
+      "derivation": "The coordinator opens the building application on lot 1's home: the checklist is the plot plan (always, for a building permit) and the county's two documents. Submitting is refused naming the two missing submission documents; a file from lot 2's home is refused; a viewer cannot submit. The submission and a revision are recorded as 1 initial and 2 revision, each expecting a decision 21 days later, and the application carries the lot's pinned plan and elevation. The approval is refused without the energy calculations, then without the approved plan set, then without a number; with all of it, it is recorded by the coordinator, after which the checklist cannot change. A direct insert or update of permit_applications by a member is refused by the database. Seven audit rows: opened, three documents, two submissions, the decision.",
+      "inputs": {
+        "reviewDays": 21,
+        "submissions": [
+          "D-40",
+          "D-35"
+        ]
+      },
+      "expected": {
+        "checklist": [
+          {
+            "document_kind": "plot_plan",
+            "required_for": "submission"
+          },
+          {
+            "document_kind": "construction_plans",
+            "required_for": "submission"
+          },
+          {
+            "document_kind": "energy_calcs",
+            "required_for": "decision"
+          }
+        ],
+        "submitWithoutDocuments": "Attach the documents the authority needs before submitting: Plot / site plan, Construction plans",
+        "anotherHomesFile": "The document must be a file on this home",
+        "viewerSubmits": "refused",
+        "submit": "allowed",
+        "revision": "allowed",
+        "submissions": [
+          {
+            "submission_no": 1,
+            "kind": "initial",
+            "on_the_authority_clock": true
+          },
+          {
+            "submission_no": 2,
+            "kind": "revision",
+            "on_the_authority_clock": true
+          }
+        ],
+        "reviewedPlanIsTheLotsPin": true,
+        "approveWithoutEnergyCalcs": "Approval needs every required document on file: Energy calculations",
+        "approveWithoutApprovedPlans": "The approved plan set is required",
+        "approveWithoutPermitNumber": "Record the permit number",
+        "approve": "allowed",
+        "decided": {
+          "decision": "approved",
+          "permit_number": "BLD-26-1001",
+          "by_the_coordinator": true
+        },
+        "decidedIsARecord": "The authority has decided this application; open a revision to change it",
+        "directInsert": "permission denied for table permit_applications",
+        "directApproval": "permission denied for table permit_applications",
+        "audited": 7
+      }
+    },
+    "corrections-keep-history": {
+      "derivation": "Lot 2's application is submitted 30 days ago. The county returns round 1 twenty days ago, due ten days ago, owned by the coordinator (the application's owner). The coordinator hands it to the superintendent and moves the due date to six days ago with a note. Resolving it before it is answered is refused. A resubmission eight days ago answers it (responded), and plan review accepts it (resolved). Round 2 arrives five days ago, due in five days; the approval is refused while it waits on a response. Round 1's history has four rows, all by the coordinator: received (owner coordinator, due D-10), reassigned and re-dated (coordinator -> superintendent, D-10 -> D-6), responded (note: the submission), resolved. Members cannot edit rounds or history.",
+      "inputs": {},
+      "expected": {
+        "resolveUnanswered": "A round moves open → responded (by a submission) → resolved; the authority can send a response back, and an open round can be withdrawn",
+        "approveWithRoundOpen": "A correction round is still waiting on a response",
+        "rounds": [
+          {
+            "round": 1,
+            "status": "resolved",
+            "owner": "superintendent",
+            "due": "D-6"
+          },
+          {
+            "round": 2,
+            "status": "open",
+            "owner": "starts coordinator",
+            "due": "D5"
+          }
+        ],
+        "firstRoundHistory": [
+          {
+            "actor": "starts coordinator",
+            "from": null,
+            "to": "open",
+            "fromOwner": null,
+            "toOwner": "starts coordinator",
+            "fromDue": null,
+            "toDue": "D-10",
+            "note": "Corrections received"
+          },
+          {
+            "actor": "starts coordinator",
+            "from": "open",
+            "to": "open",
+            "fromOwner": "starts coordinator",
+            "toOwner": "superintendent",
+            "fromDue": "D-10",
+            "toDue": "D-6",
+            "note": "Superintendent takes the field redraw"
+          },
+          {
+            "actor": "starts coordinator",
+            "from": "open",
+            "to": "responded",
+            "fromOwner": "superintendent",
+            "toOwner": "superintendent",
+            "fromDue": "D-6",
+            "toDue": "D-6",
+            "note": "Responded with submission 2"
+          },
+          {
+            "actor": "starts coordinator",
+            "from": "responded",
+            "to": "resolved",
+            "fromOwner": "superintendent",
+            "toOwner": "superintendent",
+            "fromDue": "D-6",
+            "toDue": "D-6",
+            "note": "Accepted by plan review"
+          }
+        ],
+        "editHistory": "permission denied for table permit_correction_round_history",
+        "editRound": "permission denied for table permit_correction_rounds"
+      }
+    },
+    "coordinator-queue-shows-overdue-and-unresolved": {
+      "derivation": "Lot 3 was submitted 60 days ago (decision expected D-39, 21-day review): the authority is late. Lot 4 was submitted 20 days ago and its round 1 response was due three days ago: the builder is late. Lot 5 was submitted five days ago (decision expected D+16): on schedule. The Starts desk band (listPermitQueue in Cypress Landing) holds lots 3 and 4, both overdue, the authority's 39-day lateness first (neither house has a start target week), and not lot 5; each row deep-links to the home's permit. The Treasure Coast coordinator's band holds none of them. The daily sweep announces the late response (permit_correction.due) and the late decision (permit_application.decision_overdue) once each and nothing for lot 5; a second sweep adds nothing. Each owner (the coordinator) receives one in-app notification of each allowlisted type.",
+      "inputs": {
+        "submitted": {
+          "lot 3": "D-60",
+          "lot 4": "D-20",
+          "lot 5": "D-5"
+        },
+        "lot4RoundDue": "D-3"
+      },
+      "expected": {
+        "coordinatorBand": [
+          {
+            "home": "lot 3",
+            "stage": "In review",
+            "decision": "D-39",
+            "response": null,
+            "attention": "overdue",
+            "href": true
+          },
+          {
+            "home": "lot 4",
+            "stage": "Corrections requested",
+            "decision": null,
+            "response": "D-3",
+            "attention": "overdue",
+            "href": true
+          }
+        ],
+        "treasureCoastBand": [],
+        "firstSweep": {
+          "correctionDue": 1,
+          "decisionOverdue": 1,
+          "onTrack": 0
+        },
+        "secondSweep": {
+          "correctionDue": 1,
+          "decisionOverdue": 1,
+          "onTrack": 0
+        },
+        "roundOwnerNotified": 1,
+        "applicationOwnerNotified": 1
+      }
+    },
+    "fees-reconcile-to-payments": {
+      "derivation": "Lot 6's application carries plan review $450 (before submission), permit $2,180 (before issuance) and impact $6,500 (before certificate of occupancy): $9,130 obligated. The home's costs are coded, so a fee assessed without a cost code is refused before it exists. The coordinator cannot pay by bill (no bill.write). The office records the $450 counter payment as an expense to the county with its receipt; it counts as paid once the owner approves it, and the county becomes a vendor (it had no role). The approval is refused naming the unpaid permit fee. The office enters the county's $2,180 invoice as a bill on lot 6's home (its line on the home); the owner approves it and the office pays $1,000 then $1,180 (the approver does not also record the payment): paid $1,450, still refused, then $2,630 with the $6,500 impact fee owed. The paid bill's total cannot be edited or the bill deleted; it stays $2,180, paid. A $300 re-inspection bill entered on lot 1's home cannot pay lot 6's re-inspection fee; that fee is voided with its reason and re-assessed at $250, both rows kept. Final: $9,380 obligated, $2,630 paid, $6,750 owed, not reconciled; the approval is now recorded because the impact and re-inspection fees do not hold issuance.",
+      "inputs": {
+        "fees": {
+          "plan_review": 45000,
+          "permit": 218000,
+          "impact": 650000
+        },
+        "billPayments": [
+          100000,
+          118000
+        ]
+      },
+      "expected": {
+        "assessed": {
+          "obligated": 913000,
+          "paid": 0,
+          "owed": 913000,
+          "reconciled": false
+        },
+        "uncodedFee": "This home's costs are coded: choose the cost code the fee is paid to",
+        "authorityRolesBefore": [],
+        "coordinatorPaysByBill": "refused",
+        "counterPaymentRecorded": {
+          "obligated": 913000,
+          "paid": 0,
+          "owed": 913000,
+          "reconciled": false
+        },
+        "counterPaymentApproved": {
+          "obligated": 913000,
+          "paid": 45000,
+          "owed": 868000,
+          "reconciled": false
+        },
+        "authorityRolesAfter": [
+          "vendor"
+        ],
+        "approveBeforePermitFeePaid": "Fees due before issuance are not paid: permit $2180.00",
+        "billOnTheHome": true,
+        "billPaidInPart": {
+          "obligated": 913000,
+          "paid": 145000,
+          "owed": 768000,
+          "reconciled": false
+        },
+        "approveWithPermitFeePartlyPaid": "Fees due before issuance are not paid: permit $2180.00",
+        "billPaid": {
+          "obligated": 913000,
+          "paid": 263000,
+          "owed": 650000,
+          "reconciled": false
+        },
+        "editLinkedBill": "This payable pays a permit fee; its amount, payee and home are fixed",
+        "deleteLinkedBill": "refused",
+        "linkedBillAsLinked": {
+          "cents": 218000,
+          "status": "paid"
+        },
+        "linkAnotherHomesBill": "The payable is on another home; a permit fee is paid on its own home's job cost",
+        "reassessed": [
+          {
+            "status": "void",
+            "cents": 30000,
+            "replaces": false
+          },
+          {
+            "status": "open",
+            "cents": 25000,
+            "replaces": true
+          }
+        ],
+        "final": {
+          "obligated": 938000,
+          "paid": 263000,
+          "owed": 675000,
+          "reconciled": false
+        },
+        "approveOncePreIssuanceFeesPaid": "allowed"
+      }
+    },
+    "starts-require-the-right-permit": {
+      "derivation": "Lot 7 is pinned to The Mangrove elevation A and opened: the permit and plot-plan gates are pending and the permit gate is not waivable. Waiving it and attesting it are refused; the coordinator (start.release) switching the definition off is refused by the system-gate guard and a viewer's patch changes no row. An approved permit from the City of Naples leaves the gate pending (the community's authority is the county). Its revision approved by the county but expired yesterday leaves it pending. The next revision, approved without expiry, passes both gates. The lot's elevation moves to B: the gate reopens; a revision submitted with the new pin and approved passes it. Four applications, the first three superseded. With the selections gate waived (a spec home), the price book run and final approval given, the release completes, re-deriving the permit gate.",
+      "inputs": {},
+      "expected": {
+        "opened": {
+          "permit": "pending",
+          "plotPlan": "pending",
+          "permitWaivable": false
+        },
+        "waive": "The permit gate is never waived. Record the authority's decision on the home's permits: approved, or not required with its letter.",
+        "attest": "Only manual gates can be attested.",
+        "coordinatorSwitchesTheGateOff": "The permit gate reads the approved permit for the lot's plan; it cannot be made manual, conditional or inactive",
+        "viewerSwitchesTheGateOff": "0 rows changed",
+        "otherAuthority": "pending",
+        "expired": "pending",
+        "approved": {
+          "permit": "passed",
+          "plotPlan": "passed",
+          "permitWaivable": false
+        },
+        "afterPinMoves": "pending",
+        "revisionApproved": "passed",
+        "applications": [
+          {
+            "permit_number": "NAP-26-77",
+            "decision": "approved",
+            "superseded": true
+          },
+          {
+            "permit_number": "BLD-26-1007",
+            "decision": "approved",
+            "superseded": true
+          },
+          {
+            "permit_number": "BLD-26-1007-R1",
+            "decision": "approved",
+            "superseded": true
+          },
+          {
+            "permit_number": "BLD-26-1007-R2",
+            "decision": "approved",
+            "superseded": false
+          }
+        ],
+        "released": "released"
+      }
+    }
+  }
+}

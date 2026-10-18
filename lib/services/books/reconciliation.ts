@@ -1,8 +1,10 @@
+import { LEDGER_PROOF_CATEGORY, PROJECTION_RUN_SOURCE_TYPE, ledgerProofFindings, notifiableFindingCount, projectionFindingWasEvaluated } from "@/lib/services/books/reconciliation-rules"
 import "server-only"
 
 import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { chunk } from "@/lib/utils"
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
@@ -53,6 +55,7 @@ const connectionSchema = z.object({
   last_sync_at: z.string().nullable(),
   last_inbound_poll_at: z.string().nullable(),
   status: z.string(),
+  settings: z.unknown().optional(),
 })
 
 async function collectPages<T>(
@@ -101,7 +104,7 @@ async function collectConnectionItems(orgId: string): Promise<ReconciliationFind
   const service = createServiceSupabaseClient()
   const { data: connectionRows, error: connectionError } = await service
     .from("accounting_connections")
-    .select("id, org_id, provider, last_sync_at, last_inbound_poll_at, status")
+    .select("id, org_id, provider, last_sync_at, last_inbound_poll_at, status, settings")
     .eq("org_id", orgId)
     .in("status", [...RECONCILABLE_CONNECTION_STATUSES])
   if (connectionError) throw new Error(`Failed to load accounting connections: ${connectionError.message}`)
@@ -111,6 +114,46 @@ async function collectConnectionItems(orgId: string): Promise<ReconciliationFind
 
   const items: ReconciliationFinding[] = []
   for (const connection of connections) {
+    const settings =
+      connection.settings && typeof connection.settings === "object" && !Array.isArray(connection.settings)
+        ? (connection.settings as Record<string, unknown>)
+        : {}
+    const recovery = settings.qbo_cdc_recovery
+    if (connection.provider === "qbo" && recovery !== undefined && recovery !== null) {
+      const parsed = z
+        .object({
+          run_id: z.string().uuid(),
+          original_boundary: z.string().nullable(),
+          checkpoint: z.string(),
+        first_checkpoint: z.string().optional(),
+        first_changed_since: z.string().optional(),
+          reasons: z.array(z.string()),
+          status: z.enum(["required", "catching_up", "complete"]),
+          mapped_failure_count: z.number().int().nonnegative().optional(),
+          mapped_failures_truncated: z.boolean().optional(),
+          mapped_failures: z
+            .array(
+              z.object({
+                mapping_id: z.string().uuid(),
+                entity_name: z.string(),
+                entity_qbo_id: z.string().max(255),
+                reason: z.literal("malformed_read"),
+              }),
+            )
+            .max(10)
+            .optional(),
+        })
+        .safeParse(recovery)
+      if (!parsed.success || parsed.data.status !== "complete")
+        items.push({
+          category: "connection_cdc_recovery",
+          entityType: "accounting_connection",
+          entityId: connection.id,
+          details: parsed.success
+            ? { provider: connection.provider, ...parsed.data }
+            : { provider: connection.provider, status: "required", reason: "unreadable_recovery_evidence" },
+        })
+    }
     if (connection.status !== "active") {
       items.push({
         category: "connection_unhealthy",
@@ -457,7 +500,11 @@ async function collectLedgerItems(orgId: string, asOf: string): Promise<Reconcil
       localAmountCents: tieOut.ledgerCents,
       externalAmountCents: tieOut.subledgerCents,
       differenceCents: tieOut.differenceCents,
-      details: { label: tieOut.label, as_of: asOf },
+      details: {
+        label: tieOut.label,
+        as_of: asOf,
+        ...(tieOut.companies ? { out_of_balance_companies: tieOut.companies.filter((company) => company.status === "failed").map((company) => company.name) } : {}),
+      },
     })
   }
   return items
@@ -517,11 +564,6 @@ function itemRow(orgId: string, runId: string, finding: ReconciliationFinding, s
 
 const WRITE_CHUNK = 500
 
-function chunk<T>(rows: T[], size: number) {
-  const chunks: T[][] = []
-  for (let index = 0; index < rows.length; index += size) chunks.push(rows.slice(index, index + size))
-  return chunks
-}
 
 /**
  * Apply one sweep's findings to the persisted item set.
@@ -674,9 +716,9 @@ export async function runOrgReconciliation(orgId: string) {
       ...projectResult.items,
     ]
 
-    // The projection repair sweep owns its own categories; this pass cannot
-    // reproduce them and must not close them.
-    const ownsCategory = (category: string) => !isProjectionCategory(category)
+    // The projection repair sweep and the ledger proof own their own categories;
+    // this pass cannot reproduce them and must not close them.
+    const ownsCategory = (category: string) => !isProjectionCategory(category) && category !== LEDGER_PROOF_CATEGORY
     const plan = await applyReconciliationSync({ orgId, runId, findings: items, ownsCategory, existing })
 
     const status = reconciliationRunStatus({
@@ -854,7 +896,8 @@ export async function resolveReconciliationItem(input: {
  * cannot reproduce these — leaves them alone.
  */
 export async function recordProjectionFailures(
-  results: Array<{ orgId: string; failures: Array<{ sourceType: string; sourceId: string; error: string }> }>,
+  results: Array<{ orgId: string; failures: Array<{ sourceType: string; sourceId: string; error: string }>; evaluatedSourceKeys?: string[]; fullScanCompleted?: boolean }>,
+  options: { full?: boolean } = {},
 ) {
   const runDate = new Date().toISOString().slice(0, 10)
   const ownsCategory = (category: string) => isProjectionCategory(category)
@@ -870,13 +913,20 @@ export async function recordProjectionFailures(
         severity: "critical",
         error: failure.error,
         cure:
-          classifyProjectionFailure(failure.error) === "projection_blocked_by_closed_period"
-            ? "The source record changed after its accounting period closed. Post an adjusting entry, or reopen the period, then re-run the projection."
-            : "Re-run the Books projection after correcting the source record.",
+          failure.sourceType === PROJECTION_RUN_SOURCE_TYPE
+            ? "Postings for this company may be behind. The next pass starts with it and clears this once it completes; if this stays open, contact Arc support."
+            : classifyProjectionFailure(failure.error) === "projection_blocked_by_closed_period"
+              ? "The source record changed after its accounting period closed. Post an adjusting entry, or reopen the period, then re-run the projection."
+              : "Re-run the Books projection after correcting the source record.",
         href: "/books/close",
       },
     }))
-    const existing = (await loadUnresolvedItems(result.orgId)).filter((item) => ownsCategory(item.category))
+    const evaluated = new Set([
+      ...(result.evaluatedSourceKeys ?? []),
+      ...result.failures.map(failure => `${failure.sourceType}:${failure.sourceId}`),
+    ])
+    const existing = (await loadUnresolvedItems(result.orgId)).filter((item) => ownsCategory(item.category)
+      && ((options.full === true && result.fullScanCompleted === true) || projectionFindingWasEvaluated(item, evaluated)))
     if (findings.length === 0 && existing.length === 0) continue
 
     // Attaches to the day's run if the spine has already made one, and never
@@ -911,16 +961,17 @@ export async function recordProjectionFailures(
       if (error) throw new Error(`Failed to complete the projection reconciliation run: ${error.message}`)
     }
 
-    if (plan.newFindingCount > 0) {
+    const notifiable = notifiableFindingCount(plan)
+    if (notifiable > 0) {
       await recordEvent({
         orgId: result.orgId,
         eventType: "accounting_reconciliation_drift",
         entityType: "accounting_reconciliation_run",
         entityId: run.runId,
         payload: {
-          message: `${plan.newFindingCount} source record${plan.newFindingCount === 1 ? "" : "s"} cannot be projected into the ledger`,
+          message: `${notifiable} source record${notifiable === 1 ? "" : "s"} cannot be projected into the ledger`,
           discrepancy_count: findings.length,
-          new_discrepancy_count: plan.newFindingCount,
+          new_discrepancy_count: notifiable,
         },
         channel: "notification",
       })
@@ -1051,4 +1102,33 @@ export async function runNightlyAccountingReconciliation() {
     })
   }
   return { attempted: orgIds.length, completed, failures }
+}
+
+/**
+ * What a full ledger proof found, as findings with their cure. The proof owns
+ * `ledger_proof` alone: a passing proof resolves what it no longer reproduces,
+ * which is how a repair clears its finding.
+ */
+export async function recordLedgerProofFindings(orgId: string, differences: Array<Record<string, unknown> & { type: string }>) {
+  const findings = ledgerProofFindings(differences)
+  const ownsCategory = (category: string) => category === LEDGER_PROOF_CATEGORY
+  const existing = (await loadUnresolvedItems(orgId)).filter((item) => ownsCategory(item.category))
+  if (findings.length === 0 && existing.length === 0) return { opened: 0, resolved: 0 }
+  const run = await ensureReconciliationRunForDay(orgId, new Date().toISOString().slice(0, 10))
+  const plan = await applyReconciliationSync({ orgId, runId: run.runId, findings, ownsCategory, existing })
+  if (plan.newFindingCount > 0) {
+    await recordEvent({
+      orgId,
+      eventType: "accounting_reconciliation_drift",
+      entityType: "accounting_reconciliation_run",
+      entityId: run.runId,
+      payload: {
+        message: `${plan.newFindingCount} ledger ${plan.newFindingCount === 1 ? "entry differs" : "entries differ"} from ${plan.newFindingCount === 1 ? "its source" : "their sources"}`,
+        discrepancy_count: findings.length,
+        new_discrepancy_count: plan.newFindingCount,
+      },
+      channel: "notification",
+    })
+  }
+  return { opened: plan.newFindingCount, resolved: plan.resolveIds.length }
 }

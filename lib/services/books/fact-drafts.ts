@@ -1,4 +1,8 @@
 import { booksDigest as booksDigestForDimensions } from "@/lib/services/books/hash";
+import { z } from "zod";
+import { economicLaborBasis, laborBasisSchema } from "./labor-evidence";
+import { settlementDimensions, settlementEvidenceSchema } from "@/lib/services/books/settlement-evidence";
+import { allocateInvoiceRevenue } from "@/lib/services/books/invoice-revenue-rules";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 import {
   postBillPayment,
@@ -44,7 +48,7 @@ const ECONOMIC_KEYS_BY_SOURCE: Record<string, readonly string[]> = {
     "cost_lines",
   ],
   retainage_release: ["amount_cents", "side", "project_id", "company_id"],
-  invoice: ["total_cents", "tax_cents", "retainage_cents", "project_id", "revenue_basis"],
+  invoice: ["total_cents", "tax_cents", "retainage_cents", "project_id", "revenue_basis", "revenue_lines"],
   invoice_payment: ["amount_cents", "gross_cents", "fee_cents", "project_id"],
   customer_deposit_receipt: ["amount_cents", "gross_cents", "fee_cents", "project_id"],
   customer_deposit_application: ["amount_cents", "project_id", "deposit_payment_id"],
@@ -53,7 +57,7 @@ const ECONOMIC_KEYS_BY_SOURCE: Record<string, readonly string[]> = {
   ap_fee_charge: ["amount_cents", "cash_account_code"],
   expense: ["amount_cents", "project_id", "vendor_company_id", "cost_lines", "payment_account_code"],
   payment_reversal: ["amount_cents", "side", "project_id", "cash_account_code"],
-  receivable_adjustment: ["amount_cents", "tax_cents", "adjustment_type", "project_id", "revenue_basis"],
+  receivable_adjustment: ["amount_cents", "tax_cents", "adjustment_type", "project_id", "revenue_basis", "revenue_lines"],
   labor_cost: ["amount_cents", "project_id", "cost_account_code"],
   retirement: ["retired", "retired_source_version"],
 };
@@ -67,6 +71,8 @@ export function hashableFactPayload(
     throw new Error(`No economic fact allowlist exists for ${sourceType}`);
   const economic: Record<string, unknown> = {};
   for (const key of keys) if (key in payload) economic[key] = payload[key];
+  if (sourceType === "labor_cost" && payload.labor_basis) economic.labor_basis = economicLaborBasis(payload.labor_basis);
+  if (["invoice_payment", "bill_payment", "payment_reversal", "customer_deposit_receipt", "customer_deposit_application", "customer_deposit_reversal"].includes(sourceType) && payload.settlement_evidence) economic.settlement_evidence = payload.settlement_evidence;
   if (payload.project_dimensions && typeof payload.project_dimensions === "object") economic.project_dimensions = Object.fromEntries(Object.entries(payload.project_dimensions).map(([projectId, dimensions]) => [projectId, Object.fromEntries(Object.entries(dimensions as Record<string, unknown>).filter(([key]) => !key.endsWith("_name")))]));
   if (payload.dimensions) economic.dimensions = payload.dimensions;
   return economic;
@@ -187,7 +193,7 @@ function costLinesValue(
   value: unknown,
   fallbackCents: number,
   fallbackProjectId?: string,
-) {
+) : { amountCents: number; projectId?: string; accountCode?: string; dimensions?: Record<string, unknown>; description?: string }[] {
   if (!Array.isArray(value) || value.length === 0) {
     return [{ amountCents: fallbackCents, projectId: fallbackProjectId }];
   }
@@ -217,6 +223,12 @@ export type FactDraftInput = {
   projectionVersion: number;
   policyVersion: number;
 };
+
+const revenueLinesSchema = z.array(z.object({
+  account_code: z.string().min(1),
+  amount_cents: z.number().int().safe(),
+  dimensions: z.record(z.unknown()).optional(),
+}));
 
 function baseDraftFromFact(input: FactDraftInput): JournalEntryDraft | null {
   const row = input.payload;
@@ -260,10 +272,10 @@ function baseDraftFromFact(input: FactDraftInput): JournalEntryDraft | null {
     const netCents = centsValue(row.total_cents);
     const retainageCents = centsValue(row.retainage_cents);
     const memo = textValue(row.memo, "Invoice");
-    if (row.revenue_basis === "closing") {
+    if (row.revenue_basis === "closing" || row.revenue_basis === "on_invoice") {
       // Closing-basis sales debit AR for the whole amount with no retainage split, so
       // they post the net — the amount actually receivable.
-      return postClosingInvoice({ ...common, memo, grossCents: netCents, taxCents: centsValue(row.tax_cents) });
+      return postClosingInvoice({ ...common, memo, grossCents: netCents, taxCents: centsValue(row.tax_cents), revenueLines: revenueLinesSchema.optional().parse(row.revenue_lines) });
     }
     // Unlike a vendor bill, an invoice's stored total is already NET of retainage (the
     // hold is a negative invoice line). `postCustomerInvoice` splits gross into
@@ -299,7 +311,8 @@ function baseDraftFromFact(input: FactDraftInput): JournalEntryDraft | null {
       amountCents: centsValue(row.amount_cents),
       taxCents: centsValue(row.tax_cents),
       adjustmentType: row.adjustment_type === "write_off" ? "write_off" : "credit_memo",
-      revenueBasis: row.revenue_basis === "closing" ? "closing" : "percentage_of_completion",
+      revenueBasis: row.revenue_basis === "closing" || row.revenue_basis === "on_invoice" ? row.revenue_basis : "percentage_of_completion",
+      revenueLines: revenueLinesSchema.optional().parse(row.revenue_lines),
     });
   }
 
@@ -351,14 +364,14 @@ function baseDraftFromFact(input: FactDraftInput): JournalEntryDraft | null {
   if (input.sourceType === "expense") {
     const amountCents = centsValue(row.amount_cents);
     const costLines = costLinesValue(row.cost_lines, amountCents, projectId);
-    return projectId || costLines.some((line) => line.projectId)
+    return projectId || costLines.some((line) => line.projectId || line.accountCode)
       ? postExpenseFromCostLines({
           ...common,
           paymentAccountCode: textValue(row.payment_account_code, "") || undefined,
           companyId: optionalId(row.vendor_company_id),
           memo: textValue(row.memo, "Expense"),
           amountCents,
-          costLines,
+          costLines: projectId || costLines.some(line => line.projectId) ? costLines : costLines.map(line => ({ ...line, accountCode: line.accountCode ?? SYSTEM_ACCOUNT_CODES.otherExpense })),
         })
       : postExpense({
           ...common,
@@ -383,6 +396,12 @@ function baseDraftFromFact(input: FactDraftInput): JournalEntryDraft | null {
   }
 
   if (input.sourceType === "labor_cost") {
+    if (row.labor_basis) {
+      const basis = laborBasisSchema.parse(row.labor_basis);
+      if (basis.job_cost_id !== input.sourceId || basis.project_id !== row.project_id || basis.incurred_on !== input.accountingDate || basis.cost_cents !== centsValue(row.amount_cents)) throw new Error("Frozen labor evidence differs from posting source");
+      const dimensions = z.record(z.unknown()).parse(row.dimensions ?? {});
+      if (basis.cost_code_id !== (dimensions.cost_code_id ?? null)) throw new Error("Frozen labor cost code differs from posting source");
+    }
     return postLaborCost({
       ...common,
       memo: textValue(row.memo, "Field labor"),
@@ -400,10 +419,64 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
   if (!draft) return null;
   const byProject = (input.payload.project_dimensions ?? {}) as Record<string, Record<string, unknown>>;
   const sourceDimensions = (input.payload.dimensions ?? {}) as Record<string, unknown>;
-  return { ...draft, lines: draft.lines.map(line => {
-    const dimensions = { ...(line.projectId ? byProject[line.projectId] : {}), ...sourceDimensions, ...line.dimensions };
+  const labor = input.sourceType === "labor_cost" && input.payload.labor_basis ? laborBasisSchema.parse(input.payload.labor_basis) : null;
+  const laborDimensions = labor ? {labor_job_cost_id:labor.job_cost_id,labor_time_entry_id:labor.time_entry_id,labor_worker_id:labor.worker_id,labor_basis_hash:booksDigestForDimensions(labor)} : {};
+  const evidence = input.payload.settlement_evidence ? settlementEvidenceSchema.parse(input.payload.settlement_evidence) : null;
+  let lines = draft.lines;
+  const settlement = evidence?.kind === "direct" ? settlementDimensions(input.sourceType === "payment_reversal" ? String(input.payload.side) : input.sourceType, evidence) : {};
+  if (evidence?.kind === "allocated") {
+    if (!["invoice_payment", "bill_payment"].includes(input.sourceType)) throw new Error("Allocated settlements require an invoice or bill payment source");
+    if (evidence.payment_amount_cents !== input.payload.amount_cents) throw new Error("Settlement allocation evidence does not match the payment amount");
+    if ((input.sourceType === "invoice_payment") !== Boolean(evidence.allocations[0].invoice_id)) throw new Error("Settlement allocation side does not match its accounting source");
+    const cashIndex = input.sourceType === "invoice_payment" ? 0 : lines.length - 1;
+    const cashLine = lines[cashIndex];
+    const cashOffsets = evidence.allocations.map(() => BigInt(0));
+    lines = lines.flatMap((line, lineIndex) => {
+      if (lineIndex === cashIndex) return [];
+      const parts = allocateInvoiceRevenue(line.debitCents || line.creditCents, evidence.allocations.map(row => ({ account_code: line.accountCode, amount_cents: row.amount_cents })));
+      return parts.flatMap((part, index) => {
+        if (!part.amount_cents) return [];
+        const allocation = evidence.allocations[index];
+        cashOffsets[index] += BigInt(line.creditCents ? part.amount_cents : -part.amount_cents);
+        return [{ ...line, projectId: allocation.project_id ?? undefined, debitCents: line.debitCents ? part.amount_cents : 0, creditCents: line.creditCents ? part.amount_cents : 0,
+          dimensions: { ...line.dimensions, payment_id: evidence.payment_id, payment_allocation_id: allocation.allocation_id, ...(allocation.invoice_id ? { invoice_id: allocation.invoice_id } : { bill_id: allocation.bill_id }) } }];
+      });
+    });
+    lines.push(...evidence.allocations.flatMap((allocation, index) => {
+      const offset = cashOffsets[index];
+      if (offset === BigInt(0)) return [];
+      const cents = Number(offset < BigInt(0) ? -offset : offset);
+      if (!Number.isSafeInteger(cents)) throw new Error("Allocated cash movement exceeds safe integer cents");
+      return [{ ...cashLine, projectId: allocation.project_id ?? undefined, debitCents: offset > BigInt(0) ? cents : 0, creditCents: offset < BigInt(0) ? cents : 0,
+        dimensions: { ...cashLine.dimensions, payment_id: evidence.payment_id, payment_allocation_id: allocation.allocation_id, ...(allocation.invoice_id ? { invoice_id: allocation.invoice_id } : { bill_id: allocation.bill_id }) } }];
+    }));
+  }
+  return { ...draft, lines: lines.map(line => {
+    const dimensions = { ...(line.projectId ? byProject[line.projectId] : {}), ...sourceDimensions, ...line.dimensions, ...settlement, ...laborDimensions };
     return Object.keys(dimensions).length ? { ...line, dimensions } : line;
   }) };
+}
+
+/** A live invoice read does not prove its historical income selection. */
+export function preserveLegacyInvoiceIncomePayload(sourceType: string, accountingDate: string, payload: Record<string, unknown>, previous: { accounting_date: string; payload_hash: string; payload: Record<string, unknown> } | null) {
+  if (sourceType !== "invoice" || !previous || previous.accounting_date !== accountingDate || "revenue_lines" in previous.payload || !("revenue_lines" in payload)) return payload;
+  const legacy = { ...payload };
+  delete legacy.revenue_lines;
+  if (!previous.payload.project_dimensions) delete legacy.project_dimensions;
+  if (!previous.payload.dimensions) delete legacy.dimensions;
+  const economic = hashableFactPayload(sourceType, legacy);
+  return [booksDigestForDimensions(economic), booksDigestForDimensions({ accountingDate, payload: economic })].includes(previous.payload_hash) ? previous.payload : payload;
+}
+
+/** Do not manufacture document ownership on an unchanged legacy fact at rollout. */
+export function preserveLegacySettlementPayload(sourceType: string, accountingDate: string, payload: Record<string, unknown>, previous: { accounting_date: string; payload_hash: string; payload: Record<string, unknown> } | null) {
+  if (!previous || previous.accounting_date !== accountingDate || previous.payload.settlement_evidence || !payload.settlement_evidence) return payload;
+  const legacy = { ...payload };
+  delete legacy.settlement_evidence;
+  if (!previous.payload.project_dimensions) delete legacy.project_dimensions;
+  if (!previous.payload.dimensions) delete legacy.dimensions;
+  const economic = hashableFactPayload(sourceType, legacy);
+  return [booksDigestForDimensions(economic), booksDigestForDimensions({ accountingDate, payload: economic })].includes(previous.payload_hash) ? previous.payload : payload;
 }
 
 /** Enrich new economic revisions without recoding an unchanged, closed history at rollout. */
@@ -414,4 +487,17 @@ export function preserveLegacyDimensionPayload(sourceType: string, accountingDat
   if (Array.isArray(legacy.cost_lines)) legacy.cost_lines = sortFactCostLines(legacy.cost_lines.map(line => { const copy = { ...line }; delete copy.dimensions; return copy; }));
   const economic = hashableFactPayload(sourceType, legacy);
   return [booksDigestForDimensions(economic), booksDigestForDimensions({ accountingDate, payload: economic })].includes(previous.payload_hash) ? previous.payload : payload;
+}
+
+/** Do not manufacture reviewed wage ownership for unchanged historical labor. */
+export function preserveLegacyLaborPayload(sourceType: string, accountingDate: string, payload: Record<string,unknown>, previous: {accounting_date:string;payload_hash:string;payload:Record<string,unknown>} | null) {
+  if (sourceType!=="labor_cost" || !previous || previous.accounting_date!==accountingDate) return payload;
+  const legacy={...payload};
+  if (!previous.payload.labor_basis) {
+    delete legacy.labor_basis;
+    if (!previous.payload.dimensions) delete legacy.dimensions;
+    if (!previous.payload.project_dimensions) delete legacy.project_dimensions;
+  }
+  const economic=hashableFactPayload(sourceType,legacy);
+  return [booksDigestForDimensions(economic),booksDigestForDimensions({accountingDate,payload:economic})].includes(previous.payload_hash) ? previous.payload : payload;
 }

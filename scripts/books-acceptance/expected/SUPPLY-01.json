@@ -1,0 +1,393 @@
+{
+  "scenario": "SUPPLY-01",
+  "reviewedFrom": "EP08-08 and EP08-10 (docs/enterprise-production/completion-checklist.json) and the EP08 owner decisions of 2026-10-15: approved purchase orders are locked and change only through a VPO or a return to draft; an issued version is a snapshot with a terms hash the vendor answers in the portal; acknowledgment gates nothing; receipts and shortages are tracked by home and PO line, written only through the service, with over-receipt only with a reason; late lines become shortages and schedule advisories; shortages stay internal. Code: lib/services/{po-acknowledgments,po-issue-notices,portal-purchase-orders,po-receipts}.ts; migrations 20261015130000_po_issue_acknowledgments, 20261015140000_po_receipts_and_shortages. Values are derived from each module's inputs and confirmed by the first run on the acceptance stack.",
+  "subcases": {
+    "approved-purchase-order-cannot-be-edited-in-place": {
+      "derivation": "A superintendent on a field seat holds no commitment.write on the home, so since 20261021200000 and 20261021210000 (the commitment and commitment_lines member write fences, EP14) every data-API write they try is refused by a RESTRICTIVE policy before any trigger runs, PostgREST reporting no row visible to change (an insert is refused outright): the draft line edit (100 to 120), and after approval the line quantity, the header total, scope, a new line and a return to draft. The owner's service edits of the line and header are refused as locked. The order stands at 500000 cents (approval re-totals the order from its lines: 100 units at 5000), no scope, 100 units. A VPO approved against it is revision 2; the owner's return to draft un-issues it.",
+      "expected": {
+        "locked": {
+          "draftEdit": "refused: no row visible to change",
+          "forged": {
+            "quantity": "refused: no row visible to change",
+            "total": "refused: no row visible to change",
+            "scope": "refused: no row visible to change",
+            "addLine": "refused",
+            "back": "refused: no row visible to change"
+          },
+          "serviceLineEdit": "refused: locked",
+          "serviceHeaderEdit": "refused: locked",
+          "unchanged": {
+            "total_cents": 500000,
+            "scope": null,
+            "quantity": 100
+          }
+        },
+        "paths": {
+          "versionsAfterVpo": [
+            "1:approved",
+            "2:vpo_approved"
+          ],
+          "returned": {
+            "status": "draft",
+            "unissued": true
+          }
+        }
+      }
+    },
+    "po-issue-cannot-be-forged-or-erased": {
+      "derivation": "A superintendent on the house team forges through the data API. Inserting an order as approved and moving a draft to approved are refused (issuing is the approval service's act, not a row edit), as is stamping the imported marker on a draft; no forged order exists. Through the service even the owner cannot create an order as complete or move a draft straight to complete: it stays draft and nothing is created. After the owner approves the draft, moving it to complete, stripping the generation provenance from the order or its line, changing a line's needed_by, reordering a line and stamping executed_at are all refused, so the hash is unchanged and the vendor can still answer the version. Returned to draft, the order keeps its issue history, so the member's delete is refused and the one version survives; with a recorded receipt the return to draft is refused for the owner too. A purchasing manager on no team adds a line (4 x $1) and edits the other (100 to 7 at $50) on a draft, so the total follows the lines: 35400 cents; after approval the sheet reads revision 1. An open-WIP imported order approved by the database gets a backfill version, queues no email and reads 'unrequested'. Since 20261021200000_production_member_write_fences (EP14-06, ROLE-01), a superintendent on a field seat holds no commitment.write on the home, so their header writes to commitments (status, total, scope, metadata, executed_at, delete) are refused by the RESTRICTIVE write policy before the lock triggers run: PostgREST reports no row visible to change. Since 20261021210000 the same holds for line writes (commitment_lines): needed_by, sort_order and stripping a line's provenance are refused by the line fence before the lock triggers run.",
+      "expected": {
+        "forged": {
+          "forgedDraft": {
+            "insertAsApproved": "refused",
+            "draftToApproved": "refused: no row visible to change",
+            "markImported": "refused: no row visible to change"
+          },
+          "forgedIssued": {
+            "toComplete": "refused: no row visible to change",
+            "stripOrderSource": "refused: no row visible to change",
+            "stripLineSource": "refused: no row visible to change",
+            "neededBy": "refused: no row visible to change",
+            "sortOrder": "refused: no row visible to change",
+            "executedAt": "refused: no row visible to change"
+          },
+          "forgedOrders": 0,
+          "vendorStillAnswers": "allowed",
+          "serviceComplete": {
+            "update": "refused",
+            "create": "refused",
+            "status": "draft",
+            "created": 0
+          }
+        },
+        "history": {
+          "deleteWithHistory": "refused: no row visible to change",
+          "versionsAfterDelete": 1,
+          "returnWithReceipt": "refused: deliveries"
+        },
+        "desk": {
+          "created": "allowed",
+          "edited": "allowed",
+          "deskTotal": 35400,
+          "issuanceRevision": 1,
+          "importedVersions": [
+            "backfill"
+          ],
+          "importedEmailJobs": 0,
+          "importedState": "unrequested"
+        }
+      }
+    },
+    "vendor-receives-and-answers-an-issued-version": {
+      "derivation": "No version exists before approval; approval writes revision 1 and queues one vendor email job. A stale hash, a dispute with no reason, a dispute with no line facts, and a link without can_acknowledge_purchase_orders are refused. The vendor accepts (queue: accepted), then disputes (one open disputed answer; queue: disputed).",
+      "expected": {
+        "issue": {
+          "versionsBefore": 0,
+          "revisions": [
+            "1:approved"
+          ],
+          "emailJobs": 1,
+          "stale": "refused: changed",
+          "noReason": "refused: reason",
+          "noLines": "refused: lines",
+          "noPermission": "refused: permission"
+        },
+        "answers": {
+          "accepted": "allowed",
+          "afterAccept": "accepted",
+          "disputed": "allowed",
+          "afterDispute": "disputed",
+          "open": [
+            {
+              "response": "disputed",
+              "n": 1
+            }
+          ]
+        }
+      }
+    },
+    "approved-vpo-requests-reacknowledgment": {
+      "derivation": "An accepted order goes to revised when a 20000-cent VPO is approved; the old answer is refused as stale; the vendor's obligation is 500000 + 20000 = 520000; voiding the VPO is revision 3.",
+      "expected": {
+        "revision": {
+          "accepted": "accepted",
+          "revised": "revised",
+          "staleAnswer": "refused: changed",
+          "revisedObligationCents": 520000,
+          "changes": [
+            "Variance order approved: Extra bundle ($200.00)"
+          ],
+          "revisions": [
+            "1:approved",
+            "2:vpo_approved",
+            "3:vpo_voided"
+          ]
+        }
+      }
+    },
+    "acknowledgment-queue-is-scoped-and-capped": {
+      "derivation": "Purchasing sees the pending and the disputed order with a total covering both; a purchasing manager assigned only to another division sees neither; a sales agent can neither read the queue nor write an answer. The table has no write grant, so a data-API write is a permission refusal (no row-visibility distinction). A purchasing manager on no home's team approves, then returns to draft, an order the owner drafted (the order is read by the service, scoped to the org, and the permission check carries the division); a purchasing manager assigned only to another division is refused. A resolver outside the division cannot see the answer at all (row-level division wall), so the service reports it as not found rather than naming the division. Resolving needs po_exception.resolve inside the division; upholding asks the vendor again (pending).",
+      "expected": {
+        "scope": {
+          "purchasing": [
+            "Disputed:disputed",
+            "Pending:pending"
+          ],
+          "purchasingTotalCoversBoth": true,
+          "limitedSeesMine": 0,
+          "salesRead": "refused",
+          "salesWrite": "refused"
+        },
+        "desk": {
+          "divisionLimited": "refused",
+          "deskApproved": "allowed",
+          "deskUnissued": "allowed",
+          "deskState": "draft"
+        },
+        "resolve": {
+          "outsideDivision": "Acknowledgment not found",
+          "salesResolve": "refused: permission",
+          "upheld": "allowed",
+          "afterUpheld": "pending"
+        }
+      }
+    },
+    "race-two-vendor-answers-and-a-revision": {
+      "derivation": "Two real sessions: a VPO approval and a vendor acceptance at revision 1. Either may commit first: the VPO always lands as revision 2, every acceptance is on the version it named, and an acceptance exists only if it committed before the revision (it is then stale) — otherwise the answer is refused as changed.",
+      "expected": {
+        "race": {
+          "revisions": [
+            1,
+            2
+          ],
+          "everyAcceptanceWasOnItsVersion": true,
+          "serialEquivalent": true
+        }
+      }
+    },
+    "partial-receipts-and-shortage-by-home-and-line": {
+      "derivation": "See supply-01-delivery.cjs.",
+      "expected": {
+        "byHomeAndLine": {
+          "studs": {
+            "ordered": 100,
+            "received": 50,
+            "outstanding": 50,
+            "state": "short",
+            "shortage": "vendor_short"
+          },
+          "sheathing": {
+            "ordered": 40,
+            "received": 40,
+            "outstanding": 0,
+            "state": "received",
+            "shortage": null
+          },
+          "secondHome": {
+            "ordered": 80,
+            "received": 0,
+            "outstanding": 80,
+            "state": "expected",
+            "shortage": null
+          },
+          "tracked": {
+            "homeOne": 2,
+            "homeTwo": 1
+          },
+          "receiptsAuditedAndAnnounced": {
+            "receipts": 2,
+            "audits": 2,
+            "events": 2,
+            "shortages": 1
+          }
+        }
+      }
+    },
+    "receipts-are-written-only-through-the-service": {
+      "derivation": "See supply-01-delivery.cjs.",
+      "expected": {
+        "dataApi": {
+          "superintendentInsertsReceipt": "refused",
+          "superintendentInsertsLine": "refused",
+          "superintendentEditsQuantity": "refused",
+          "superintendentVoids": "refused",
+          "superintendentDeletes": "refused",
+          "superintendentOpensShortage": "refused",
+          "purchasingClosesShortage": "refused",
+          "ownerEditsQuantity": "refused",
+          "salesReadsReceipts": "refused"
+        },
+        "unchanged": {
+          "quantity": 10,
+          "status": "recorded",
+          "receipts": 1,
+          "shortage": "open"
+        }
+      }
+    },
+    "receipt-capture-is-idempotent-and-races": {
+      "derivation": "See supply-01-delivery.cjs.",
+      "expected": {
+        "sameKey": {
+          "retry": {
+            "receipts": 1,
+            "secondReplayed": true,
+            "sameTicket": true
+          },
+          "twoSessions": {
+            "receipts": 1,
+            "bothReplied": true,
+            "replayedOne": 1
+          },
+          "receivedAfterKeys": 20,
+          "keyForAnotherOrder": "refused: key belongs to another order"
+        },
+        "lastUnits": {
+          "accepted": 1,
+          "refused": [
+            "refused: over the ordered quantity, needs a reason"
+          ],
+          "received": 95
+        }
+      }
+    },
+    "late-delivery-sweep-opens-one-shortage-and-an-advisory": {
+      "derivation": "See supply-01-delivery.cjs.",
+      "expected": {
+        "sweep": {
+          "shortages": [
+            {
+              "reason": "late",
+              "status": "open"
+            }
+          ],
+          "desk": {
+            "state": "late",
+            "daysLate": 3,
+            "outstanding": 100
+          },
+          "purchasingNotified": 1,
+          "receiverNotified": 0
+        },
+        "advisory": {
+          "advisories": [
+            {
+              "task": true,
+              "daysLate": 3,
+              "outstanding": 100,
+              "state": "late"
+            }
+          ],
+          "scheduleUnchanged": true,
+          "withoutAccess": "none",
+          "afterFullReceipt": {
+            "shortages": [
+              {
+                "reason": "late",
+                "status": "received"
+              }
+            ],
+            "advisories": 0
+          }
+        }
+      }
+    },
+    "shortage-resolution-reaches-purchasing": {
+      "derivation": "See supply-01-delivery.cjs.",
+      "expected": {
+        "refusals": {
+          "superintendent": "refused: needs po_exception.resolve",
+          "otherDivision": "refused: outside the reader's divisions",
+          "pastBackorder": "refused: date has passed",
+          "noReason": "refused: needs a reason"
+        },
+        "backorder": {
+          "state": "partial",
+          "expectedIn": 4,
+          "shortage": "backordered"
+        },
+        "vpo": {
+          "shortage": "vpo",
+          "linked": true,
+          "vpo": "draft",
+          "totalCents": 30000,
+          "onTheOrder": true,
+          "desk": "closed",
+          "second": "refused: already resolved",
+          "reopenedBySweep": 0
+        }
+      }
+    },
+    "deliveries-desk-is-scoped-and-capped": {
+      "derivation": "See supply-01-delivery.cjs.",
+      "expected": {
+        "scope": {
+          "wholeOrg": 2,
+          "divisionB": 0,
+          "divisionBLens": 0,
+          "salesAgent": "refused: needs price_book.read"
+        },
+        "capped": {
+          "oneHomeOnePage": {
+            "rows": 1,
+            "total": 1
+          },
+          "cutAtOne": {
+            "rows": 1,
+            "totalIsAtLeastBothHomes": true,
+            "pageSize": 1
+          }
+        }
+      }
+    },
+    "receipt-void-policy-and-vpo-quantity": {
+      "derivation": "The superintendent receives 10 and purchasing 5 against a line of 100. The superintendent voids their own 10 within 24 hours (allowed); voiding purchasing's 5 is refused (not their ticket), a sales agent has no po_receipt.record, and a ticket entered two days ago is refused to its receiver but voided by purchasing (po_exception.resolve), who may void any. A 3-unit ticket entered two days ago but dated now (the old received_at bypass) is refused to its receiver because the entry time decides, stays recorded, and purchasing then voids it so the quantities below are unchanged. The 5 purchasing received stays recorded. Closing the line short and raising a VPO for 60 more at $5, then having the owner (a second person) approve it: 156 more is refused at 100 ordered (5 in, room for 95) and refused at 160 ordered (5 in, room for 155), and the remaining 155 is then received in full without a reason: ordered 160, received 160, state received.",
+      "expected": {
+        "voidPolicy": {
+          "otherUsersTicket": "refused: not their ticket",
+          "unrelatedRole": "refused: needs po_receipt.record",
+          "ownSameDay": "allowed",
+          "ownLater": "refused: past 24 hours",
+          "purchasingAny": "allowed",
+          "ownEnteredLateDatedNow": "refused: past 24 hours",
+          "stillRecorded": "recorded",
+          "statuses": {
+            "mine": "void",
+            "buyers": "recorded",
+            "second": "void"
+          }
+        },
+        "vpoQuantity": {
+          "overBefore": "refused: over 100 ordered",
+          "overAfter": "refused: over 160 ordered",
+          "remaining": "allowed",
+          "ordered": 160,
+          "received": 160,
+          "state": "received"
+        }
+      }
+    },
+    "decimal-quantity-order-approves-and-issues": {
+      "derivation": "The purchasing manager edits the draft's only line to 12.5 x 4567 cents (57087.5, rounds half up to 57088) with no scheduled value, and adds 1234.56 sf x 187 cents (230862.72, rounds to 230863). The draft totals to the sum of the rounded lines: 57088 + 230863 = 287951 cents, an integer. The owner approves it (a second person, the purchasing manager drafted it), so it issues as revision 1 'approved' with the same total. The vendor's portal list has no stored scheduled value to read and shows each line at its extended price, Studs 57088 and Sheathing 230863, and the order total 287951; the issued snapshot carries total 287951.",
+      "expected": {
+        "decimal": {
+          "draftTotal": 287951,
+          "approved": "allowed",
+          "order": {
+            "status": "approved",
+            "total_cents": 287951
+          },
+          "revisions": [
+            "1:approved"
+          ],
+          "portalLines": {
+            "Studs": 57088,
+            "Sheathing": 230863
+          },
+          "portalTotal": 287951,
+          "snapshotTotal": 287951
+        }
+      }
+    }
+  }
+}

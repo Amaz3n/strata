@@ -35,7 +35,7 @@ import {
 import { generateInvoiceFromDrawAction } from "@/app/(app)/projects/[id]/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { copyText } from "@/lib/clipboard"
-import { newInvoiceHref, type NewInvoiceKind } from "@/lib/financials/invoice-destinations"
+import { resumeInvoiceHref, newInvoiceHref, type NewInvoiceKind } from "@/lib/financials/invoice-destinations"
 import { cn } from "@/lib/utils"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
@@ -77,6 +77,7 @@ import { Building2 } from "@/components/icons"
 import { BillingManageSheets } from "./billing-manage-sheets"
 import { PayApplicationWorkspace } from "@/components/financials/pay-application-workspace"
 import { BillCostsWorkspace } from "./bill-costs-workspace"
+import { selectionAfterBulk, selectionStillVisible } from "@/lib/invoices/bulk-selection"
 import { InvoiceBottomBar, type InvoiceBulkActions } from "./invoice-bottom-bar"
 import { InvoiceComposer, prefetchInvoiceComposer, type InvoiceComposerTarget } from "./invoice-composer"
 import { InvoiceInspector } from "./invoice-inspector"
@@ -133,6 +134,7 @@ export interface BillingBookProps {
   costCodesEnabled?: boolean
   ownerBillingPackages?: OwnerBillingPackageSummary[]
   builderInfo?: { name?: string | null; email?: string | null; address?: string | null }
+  canManageDeposits?: boolean
   loadErrors?: string[]
 }
 
@@ -153,6 +155,7 @@ export function BillingBook({
   ownerBillingPackages = [],
   builderInfo,
   loadErrors = [],
+  canManageDeposits = false,
 }: BillingBookProps) {
   const projectId = scope.kind === "project" ? scope.projectId : undefined
   const router = useRouter()
@@ -224,7 +227,8 @@ export function BillingBook({
 
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [bulkBusy, setBulkBusy] = useState<"send" | "remind" | "void" | "delete" | null>(null)
-  const [bulkConfirm, setBulkConfirm] = useState<"void" | "delete" | null>(null)
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
+  const [bulkConfirm, setBulkConfirm] = useState<"send" | "remind" | "void" | "delete" | null>(null)
   const [rowBusyId, setRowBusyId] = useState<string | null>(null)
   const [plannedBusyKey, setPlannedBusyKey] = useState<string | null>(null)
   const [destructiveBusy, setDestructiveBusy] = useState(false)
@@ -556,7 +560,15 @@ export function BillingBook({
     }
   }
 
-  const selectedInvoices = useMemo(() => allRows.filter((invoice) => selectedIds.includes(invoice.id)), [allRows, selectedIds])
+  // A bulk action only ever touches rows the user can see: collapsing a band or
+  // searching hides rows, and hidden rows leave the selection with them.
+  const selectedInvoices = useMemo(() => orderedInvoices.filter((invoice) => selectedIds.includes(invoice.id)), [orderedInvoices, selectedIds])
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const kept = selectionStillVisible(current, orderedInvoices.map((invoice) => invoice.id))
+      return kept.length === current.length ? current : kept
+    })
+  }, [orderedInvoices])
   const bulk = useMemo<InvoiceBulkActions>(
     () => ({
       sendable: selectedInvoices.filter((invoice) => nextActionFor(invoice).key === "issue").length,
@@ -580,19 +592,26 @@ export function BillingBook({
     if (targets.length === 0) return
     setBulkBusy(key)
     let done = 0
+    let attempted = 0
     const failures: string[] = []
+    const failedIds = new Set<string>()
     for (const invoice of targets) {
+      setBulkProgress({ done: attempted, total: targets.length })
       try {
         await act(invoice)
         done += 1
       } catch {
         failures.push(invoice.invoice_number ?? invoice.id)
+        failedIds.add(invoice.id)
       }
+      attempted += 1
     }
+    setBulkProgress(null)
     setBulkBusy(null)
     if (done > 0) toast.success(`${verb} ${done} invoice${done === 1 ? "" : "s"}`)
     if (failures.length > 0) toast.error(`${failures.length} could not be ${verb.toLowerCase()}`, { description: failures.join(", ") })
-    if (failures.length === 0) setSelectedIds([])
+    // What succeeded leaves the selection; only the rows that failed stay, so a retry cannot repeat finished work.
+    setSelectedIds((current) => selectionAfterBulk(current, failedIds))
     await refreshAll()
   }
 
@@ -632,7 +651,7 @@ export function BillingBook({
     )
 
   function handleExportCsv() {
-    const exportRows = selectedIds.length > 0 ? allRows.filter((row) => selectedIds.includes(row.id)) : allRows
+    const exportRows = selectedInvoices.length > 0 ? selectedInvoices : allRows
     if (exportRows.length === 0) return
     const escape = (value: string | number) => {
       // Neutralize spreadsheet formula injection (=, +, -, @ leads) before CSV quoting.
@@ -888,6 +907,7 @@ export function BillingBook({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-60">
+                {canManageDeposits ? <DropdownMenuItem asChild><Link href="/billing/deposits">Customer deposits</Link></DropdownMenuItem> : null}
                 {projectId && profile.manageSurfaces.length > 0 ? (
                   <>
                     <DropdownMenuLabel className="microlabel">Billing tools</DropdownMenuLabel>
@@ -1139,11 +1159,10 @@ export function BillingBook({
                 onRetry={() => void refreshDetail()}
                 onDuplicate={(invoice) => {
                   const target = invoice.project_id ?? effectiveProjectId
-                  if (!target) return
                   if (projectId) openCompose({ duplicateOf: invoice.id })
                   else router.push(newInvoiceHref(target, { duplicateOf: invoice.id }))
                 }}
-                onEdit={projectId ? (invoice) => openCompose({ draftId: invoice.id }) : undefined}
+                onEdit={(invoice) => projectId ? openCompose({ draftId: invoice.id }) : router.push(resumeInvoiceHref(invoice.project_id, invoice.id))}
                 onRevise={(invoice) => setRevisingInvoice(invoice)}
                 onVoid={(invoice) => setVoidingInvoice(invoice)}
                 onMakeRecurring={(invoice) => setRecurringInvoice(invoice)}
@@ -1166,15 +1185,16 @@ export function BillingBook({
         </aside>
       </div>
 
-      {selectedIds.length > 0 ? (
+      {selectedInvoices.length > 0 ? (
         <InvoiceBottomBar
-          selectedCount={selectedIds.length}
+          selectedCount={selectedInvoices.length}
           totalCents={selectedInvoices.reduce((sum, invoice) => sum + balanceCentsOf(invoice), 0)}
           actions={bulk}
           busy={bulkBusy}
+          progress={bulkProgress}
           onDeselectAll={() => setSelectedIds([])}
-          onSend={() => void handleBulkSend()}
-          onRemind={() => void handleBulkReminders()}
+          onSend={() => setBulkConfirm("send")}
+          onRemind={() => setBulkConfirm("remind")}
           onVoid={() => setBulkConfirm("void")}
           onDelete={() => setBulkConfirm("delete")}
           onExportCsv={handleExportCsv}
@@ -1184,34 +1204,39 @@ export function BillingBook({
       <AlertDialog open={bulkConfirm !== null} onOpenChange={(open) => !open && setBulkConfirm(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{bulkConfirm === "void" ? `Void ${bulk.voidable} invoice${bulk.voidable === 1 ? "" : "s"}?` : `Delete ${bulk.deletable} draft${bulk.deletable === 1 ? "" : "s"}?`}</AlertDialogTitle>
+            <AlertDialogTitle>{bulkConfirmTitle(bulkConfirm, bulk)}</AlertDialogTitle>
             <AlertDialogDescription>
-              {bulkConfirm === "void"
-                ? `This cancels each one and releases ${releaseDescription} so they can be billed again. Records and history stay.`
-                : "Drafts that were never issued are removed outright. Anything already billed is left alone."}
+              {bulkConfirm === "send"
+                ? "Each draft is issued and emailed to its customer. Issued invoices cannot be unsent."
+                : bulkConfirm === "remind"
+                  ? "Each customer with an open balance gets a payment reminder by email."
+                  : bulkConfirm === "void"
+                    ? `This cancels each one and releases ${releaseDescription} so they can be billed again. Records and history stay.`
+                    : "Drafts that were never issued are removed outright. Anything already billed is left alone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={bulkBusy !== null}>Keep them</AlertDialogCancel>
+            <AlertDialogCancel disabled={bulkBusy !== null}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               disabled={bulkBusy !== null}
               className={bulkConfirm === "delete" ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : undefined}
               onClick={(event) => {
                 event.preventDefault()
-                const action = bulkConfirm === "void" ? handleBulkVoid : handleBulkDelete
+                const action = { send: handleBulkSend, remind: handleBulkReminders, void: handleBulkVoid, delete: handleBulkDelete }[bulkConfirm ?? "delete"]
                 setBulkConfirm(null)
                 void action()
               }}
             >
-              {bulkConfirm === "void" ? "Void" : "Delete"}
+              {{ send: "Send", remind: "Send reminders", void: "Void", delete: "Delete" }[bulkConfirm ?? "delete"]}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {projectId && composeTarget ? (
+      {composeTarget ? (
         <InvoiceComposer
-          project={projects[0]}
+          key={`${projectId ?? "general"}:${composeTarget.compose}:${composeTarget.customerId ?? ""}:${composeTarget.duplicateOf ?? ""}:${composeTarget.kind ?? ""}`}
+          project={projectId ? projects.find((project) => project.id === projectId) ?? null : null}
           profile={profile}
           target={composeTarget}
           onClose={(invoiceId) => {
@@ -1296,7 +1321,7 @@ export function BillingBook({
         open={newInvoiceProjectOpen}
         onOpenChange={setNewInvoiceProjectOpen}
         projects={projects}
-        onChoose={(id) => router.push(newInvoiceHref(id))}
+        onChoose={(id) => id ? router.push(newInvoiceHref(id)) : openCompose({})}
       />
       <MoveInvoiceDialog
         invoice={movingInvoice}
@@ -1384,8 +1409,8 @@ export function BillingBook({
     const backup = packageByInvoice.get(invoice.id)
     const primaryShortcut: MenuShortcut | null = (() => {
       if (scope.kind !== "org") return null
-      if (action.key === "resume" && invoice.project_id) {
-        return { label: "Resume", href: newInvoiceHref(invoice.project_id).replace("compose=new", `compose=${invoice.id}`) }
+      if (action.key === "resume") {
+        return { label: "Resume", href: resumeInvoiceHref(invoice.project_id, invoice.id) }
       }
       if (action.key === "issue") return { label: "Send", onSelect: () => void handleIssue(invoice) }
       if (action.key === "remind" || action.key === "resend") {
@@ -1458,7 +1483,7 @@ export function BillingBook({
               <span className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">
                 {projectById.get(invoice.project_id)?.name ?? "Unknown project"}
               </span>
-            ) : null}
+            ) : <span className="mt-0.5 block text-[11px] text-muted-foreground">General billing</span>}
           </TableCell>
         ) : null}
         {showMemo ? (
@@ -1551,14 +1576,19 @@ export function BillingBook({
   }
 }
 
-/** The invoice's own words for what it is: its title, else the first line of its notes. */
+/** Internal memo only; customer-facing payment details are a separate field. */
+function bulkConfirmTitle(kind: "send" | "remind" | "void" | "delete" | null, bulk: InvoiceBulkActions): string {
+  const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
+  switch (kind) {
+    case "send": return `Send ${plural(bulk.sendable, "invoice")}?`
+    case "remind": return `Remind ${plural(bulk.remindable, "customer")}?`
+    case "void": return `Void ${plural(bulk.voidable, "invoice")}?`
+    default: return `Delete ${plural(bulk.deletable, "draft")}?`
+  }
+}
+
 function invoiceMemo(invoice: Invoice): string {
-  const memo = typeof invoice.metadata?.memo === "string" ? invoice.metadata.memo.trim() : ""
-  if (memo) return memo
-  const title = (invoice.title ?? "").trim()
-  if (title && title !== invoice.invoice_number) return title
-  const note = (invoice.notes ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-  return note ?? "—"
+  return typeof invoice.metadata?.memo === "string" ? invoice.metadata.memo.trim() : ""
 }
 
 function isManageSurface(value: string | null): value is BillingManageSurface {
@@ -1831,14 +1861,14 @@ function RowPrimaryAction({
   const action = nextActionFor(invoice)
   const busy = (key: string) => busyKey === `${invoice.id}:${key}`
 
-  if (action.key === "resume" && isEditableInvoice(invoice) && projectId) {
+  if (action.key === "resume" && isEditableInvoice(invoice)) {
     return onResume ? (
       <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onResume}>
         Resume
       </Button>
     ) : (
       <Button variant="outline" size="sm" className="h-8 text-xs" asChild>
-        <Link href={newInvoiceHref(projectId).replace("compose=new", `compose=${invoice.id}`)}>Resume</Link>
+        <Link href={resumeInvoiceHref(projectId, invoice.id)}>Resume</Link>
       </Button>
     )
   }
@@ -1936,11 +1966,11 @@ function RowOverflowMenu({
         <DropdownMenuSeparator />
         {onDuplicate ? (
           <DropdownMenuItem onSelect={onDuplicate}>Duplicate</DropdownMenuItem>
-        ) : projectId ? (
+        ) : (
           <DropdownMenuItem asChild>
             <Link href={newInvoiceHref(projectId, { duplicateOf: invoice.id })}>Duplicate</Link>
           </DropdownMenuItem>
-        ) : null}
+        )}
         {status !== "void" ? <DropdownMenuItem onSelect={onMakeRecurring}>Make recurring…</DropdownMenuItem> : null}
         {canRevise ? <DropdownMenuItem onSelect={onRevise}>Revise and reissue</DropdownMenuItem> : null}
         {editable ? <DropdownMenuItem onSelect={onMove}>Move to project…</DropdownMenuItem> : null}
@@ -1984,7 +2014,7 @@ function ChooseProjectDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   projects: Project[]
-  onChoose: (projectId: string) => void
+  onChoose: (projectId: string | null) => void
 }) {
   const [search, setSearch] = useState("")
   const visible = projects.filter(
@@ -1996,9 +2026,12 @@ function ChooseProjectDialog({
         <DialogHeader>
           <DialogTitle>Which job are you billing?</DialogTitle>
           <DialogDescription>
-            The project decides the billing workflow — a draw schedule, a pay application, or a closing statement.
+            Choose a project for job billing, or use general billing for work outside a project.
           </DialogDescription>
         </DialogHeader>
+        <Button variant="outline" className="h-auto justify-start px-3 py-3" onClick={() => { onOpenChange(false); onChoose(null) }}>
+          No project — general billing
+        </Button>
         <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search projects" className="h-9" />
         <div className="max-h-64 space-y-1 overflow-y-auto border p-1">
           {visible.map((project) => (

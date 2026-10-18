@@ -1,3 +1,5 @@
+import { PayrollCorrectionWorkflowLink } from "@/components/time/payroll-correction-workflow-link"
+import { connection } from "next/server"
 import { Suspense } from "react"
 import Link from "next/link"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -17,9 +19,7 @@ interface Props {
 }
 
 
-export default async function ProjectTimePage({ params }: Props) {
-  const { id } = await params
-
+export default function ProjectTimePage({ params }: Props) {
   return (
     <>
       <PageLayout
@@ -30,10 +30,17 @@ export default async function ProjectTimePage({ params }: Props) {
         ]}
       />
       <Suspense fallback={<ProjectTimeFallback />}>
-        <ProjectTimeData id={id} />
+        <ProjectTimePageRoute params={params} />
       </Suspense>
     </>
   )
+}
+
+async function ProjectTimePageRoute({ params }: Props) {
+  await connection()
+  const { id } = await params
+
+  return <ProjectTimeData id={id} />
 }
 
 function ProjectTimeFallback() {
@@ -60,7 +67,7 @@ async function ProjectTimeData({ id }: { id: string }) {
   const [project, costCodes, data, canManageCrew, teamMembers] = await Promise.all([
     getProjectAction(id),
     listCostCodes().catch(() => []),
-    listProjectTimeEntries(id).catch(() => [] as any[]),
+    listProjectTimeEntries(id),
     canManageCrewPromise,
     teamMembersPromise,
   ])
@@ -75,6 +82,7 @@ async function ProjectTimeData({ id }: { id: string }) {
         { label: "Time" },
       ]}
     >
+      <Suspense fallback={null}><PayrollCorrectionWorkflowLink projectId={project.id} /></Suspense>
       {project.is_public_work ? (
         <div className="mb-4 flex justify-end">
           <Button asChild variant="outline" size="sm">

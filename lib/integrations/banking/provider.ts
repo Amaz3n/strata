@@ -1,5 +1,16 @@
 export type BankFeedProviderKey = "plaid"
 
+export class BankFeedProviderError extends Error {
+  constructor(
+    message: string,
+    readonly errorType: string | null,
+    readonly errorCode: string | null,
+  ) {
+    super(message)
+    this.name = "BankFeedProviderError"
+  }
+}
+
 export type BankFeedAccount = {
   externalAccountId: string
   name: string
@@ -38,10 +49,9 @@ export type TransactionSyncPage = {
 
 export interface BankFeedProvider {
   key: BankFeedProviderKey
-  createLinkToken(input: { clientUserId: string; organizationName: string; webhookUrl: string }): Promise<{ linkToken: string; expiresAt: string }>
+  createLinkToken(input: { clientUserId: string; organizationName: string; webhookUrl: string; accessToken?: string }): Promise<{ linkToken: string; expiresAt: string }>
   exchangePublicToken(publicToken: string): Promise<{ accessToken: string; itemId: string }>
   listAccounts(accessToken: string): Promise<BankFeedAccount[]>
   syncTransactions(accessToken: string, cursor?: string | null): Promise<TransactionSyncPage>
   verifyWebhook(rawBody: string, verificationHeader: string | null): Promise<boolean>
 }
-

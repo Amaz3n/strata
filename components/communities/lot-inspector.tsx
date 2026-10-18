@@ -9,15 +9,21 @@ import {
   attachProjectToLotAction,
   deleteLotAction,
   detachProjectFromLotAction,
+  recordLotDeliveryExceptionAction,
+  revokeLotDeliveryExceptionAction,
   setLotStatusAction,
   updateLotAction,
 } from "@/app/(app)/communities/actions"
+import { LotFitSection } from "@/components/communities/lot-fit"
+import { LotPlanAssignmentDialog } from "@/components/communities/lot-plan-assignment"
+import { LotReasonDialog } from "@/components/communities/lot-reason-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { unwrapAction } from "@/lib/action-result"
-import { LAND_SETTABLE_LOT_STATUSES, LOT_STATUS_META, type LotStatus } from "@/lib/land/lot-lifecycle"
+import type { LotDimensions, Setbacks } from "@/lib/land/lot-dimensions"
+import { LAND_SETTABLE_LOT_STATUSES, LOT_STATUS_META, MIN_DELIVERY_EXCEPTION_REASON_LENGTH, type LotStatus } from "@/lib/land/lot-lifecycle"
 import type { CommunityDetailDTO } from "@/lib/services/communities"
 import type { InventoryLotDTO } from "@/lib/services/community-inventory"
 import { cn } from "@/lib/utils"
@@ -31,7 +37,33 @@ export interface LotMoney {
   projectedMarginPercent: number
 }
 
+/**
+ * What this person may do beyond editing land facts. Each is a distinct
+ * authority the services enforce, so the inspector names the missing one rather
+ * than hiding the control and leaving the lot looking stuck.
+ */
+export interface LotCapabilities {
+  /** lot.write and plan.instantiate */
+  canAssignPlan: boolean
+  /** plan.release */
+  canOverrideOffering: boolean
+  /** lot.write and community.write */
+  canRecordDeliveryException: boolean
+  /** lot.fit_override */
+  canOverrideFit: boolean
+}
+
 const NONE = "none"
+const SETBACKS: Array<{ key: keyof Setbacks; label: string }> = [
+  { key: "frontSetbackFt", label: "Front" },
+  { key: "rearSetbackFt", label: "Rear" },
+  { key: "sideSetbackFt", label: "Side" },
+  { key: "cornerSideSetbackFt", label: "Corner side" },
+]
+
+function feetText(value: number | undefined) {
+  return value != null ? String(value) : ""
+}
 const SWINGS: Array<{ value: InventoryLotDTO["swing"]; label: string }> = [
   { value: "either", label: "Either" },
   { value: "left", label: "Left" },
@@ -82,6 +114,7 @@ export function LotInspector({
   projects,
   projectsTruncated,
   canWrite,
+  capabilities,
   onOpenChange,
 }: {
   lot: InventoryLotDTO | null
@@ -92,6 +125,7 @@ export function LotInspector({
   /** True when more free homes exist than this list shows. Said out loud below. */
   projectsTruncated: boolean
   canWrite: boolean
+  capabilities: LotCapabilities
   onOpenChange: (open: boolean) => void
 }) {
   const router = useRouter()
@@ -102,6 +136,14 @@ export function LotInspector({
   const [costBasis, setCostBasis] = useState("")
   const [width, setWidth] = useState("")
   const [depth, setDepth] = useState("")
+  const [setbacks, setSetbacks] = useState<Record<keyof Setbacks, string>>({
+    frontSetbackFt: "",
+    rearSetbackFt: "",
+    sideSetbackFt: "",
+    cornerSideSetbackFt: "",
+  })
+  const [assigningPlan, setAssigningPlan] = useState(false)
+  const [recordingException, setRecordingException] = useState(false)
 
   useEffect(() => {
     setAttachTo(NONE)
@@ -110,6 +152,12 @@ export function LotInspector({
     setCostBasis(lot?.costBasisCents != null ? (lot.costBasisCents / 100).toFixed(2) : "")
     setWidth(lot?.dimensions.widthFt != null ? String(lot.dimensions.widthFt) : "")
     setDepth(lot?.dimensions.depthFt != null ? String(lot.dimensions.depthFt) : "")
+    setSetbacks({
+      frontSetbackFt: feetText(lot?.dimensions.frontSetbackFt),
+      rearSetbackFt: feetText(lot?.dimensions.rearSetbackFt),
+      sideSetbackFt: feetText(lot?.dimensions.sideSetbackFt),
+      cornerSideSetbackFt: feetText(lot?.dimensions.cornerSideSetbackFt),
+    })
   }, [lot])
 
   function apply(operation: () => Promise<unknown>, success: string, failure: string) {
@@ -124,14 +172,28 @@ export function LotInspector({
     })
   }
 
-  function saveDimensions(next: { widthFt?: number; depthFt?: number }) {
+  /**
+   * Dimensions, setbacks and the handing a lot takes are what a pinned home is
+   * judged against, so saving one re-judges it; a home that stops fitting is
+   * said out loud here and flagged on the lot, never silently unpinned.
+   */
+  function saveFitInput(patch: { dimensions?: LotDimensions; swing?: InventoryLotDTO["swing"] }, success: string, failure: string) {
     if (!lot) return
-    const dimensions = { ...lot.dimensions, ...next }
-    apply(
-      () => updateLotAction(lot.id, community.id, { dimensions }),
-      "Dimensions saved",
-      "Unable to save the dimensions",
-    )
+    startTransition(async () => {
+      try {
+        const saved = unwrapAction(await updateLotAction(lot.id, community.id, patch))
+        if (saved.fitRefusal) toast.warning(`${success} — the pinned home no longer fits`, { description: saved.fitRefusal })
+        else toast.success(success)
+        router.refresh()
+      } catch (error) {
+        toast.error(failure, { description: (error as Error).message })
+      }
+    })
+  }
+
+  function saveDimensions(next: Partial<LotDimensions>) {
+    if (!lot) return
+    saveFitInput({ dimensions: { ...lot.dimensions, ...next } }, "Dimensions saved", "Unable to save the dimensions")
   }
 
   // A lot past `developed` got there through a hold, a release, or a
@@ -143,6 +205,13 @@ export function LotInspector({
   // explicit confirmation, so the button says what it is about to undo.
   const reversingDetach = lot != null && (lot.status === "started" || lot.status === "closed")
   const reversingAttach = lot != null && lot.status === "closed"
+
+  // A plan is pinned to a lot only while nothing else speaks for it: a home owns
+  // its own plan, a buyer's agreement owns the sold lot's, and a settled lot is
+  // history. The service enforces the same list; this just keeps the control honest.
+  const planAssignable =
+    lot != null && !lot.projectId && !lot.buyer && lot.status !== "started" && lot.status !== "closed"
+  const deliveryOpen = lot != null && !lot.projectId && lot.status !== "started" && lot.status !== "closed"
 
   return (
     <Sheet open={Boolean(lot)} onOpenChange={onOpenChange}>
@@ -322,11 +391,8 @@ export function LotInspector({
                         value={lot.swing}
                         disabled={isPending}
                         onValueChange={(value) =>
-                          apply(
-                            () =>
-                              updateLotAction(lot.id, community.id, {
-                                swing: value as InventoryLotDTO["swing"],
-                              }),
+                          saveFitInput(
+                            { swing: value as InventoryLotDTO["swing"] },
                             "Swing updated",
                             "Unable to change the swing",
                           )
@@ -347,7 +413,137 @@ export function LotInspector({
                       (SWINGS.find((entry) => entry.value === lot.swing)?.label ?? "Either")
                     )}
                   </Row>
+                  <Row label="Delivery">
+                    {lot.deliveryRefusal ? (
+                      <span className="text-warning">Not delivered</span>
+                    ) : lot.deliveryException ? (
+                      <span className="text-warning">Exception on record</span>
+                    ) : (
+                      "Delivered"
+                    )}
+                  </Row>
                 </dl>
+                {lot.deliveryException ? (
+                  <div className="mt-1.5 flex items-start justify-between gap-3 text-xs">
+                    <p className="text-muted-foreground">
+                      Exception: {lot.deliveryException.reason}
+                      <span className="block tabular-nums">Approved {lot.deliveryException.approvedAt.slice(0, 10)}</span>
+                    </p>
+                    {capabilities.canRecordDeliveryException ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 shrink-0 rounded-none text-xs"
+                        disabled={isPending}
+                        onClick={() =>
+                          apply(
+                            () => revokeLotDeliveryExceptionAction(lot.id, community.id),
+                            "Delivery exception revoked",
+                            "Unable to revoke the exception",
+                          )
+                        }
+                      >
+                        Revoke
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {lot.deliveryRefusal && deliveryOpen ? (
+                  <div className="mt-2 space-y-2 border border-warning/40 bg-warning/10 px-3 py-2.5">
+                    <p className="text-xs text-warning">{lot.deliveryRefusal}</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 rounded-none text-xs"
+                      disabled={isPending || !capabilities.canRecordDeliveryException}
+                      onClick={() => setRecordingException(true)}
+                    >
+                      Record delivery exception
+                    </Button>
+                    {capabilities.canRecordDeliveryException ? null : (
+                      <p className="text-xs text-muted-foreground">
+                        Recording an exception needs the lot.delivery_override permission.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+              </Section>
+
+              <Section title="Fit">
+                <dl>
+                  {SETBACKS.map((entry) => {
+                    const fallback = community.setbacks[entry.key]
+                    const own = lot.dimensions[entry.key]
+                    return (
+                      <Row key={entry.key} label={`${entry.label} setback`}>
+                        {canWrite ? (
+                          <Input
+                            inputMode="decimal"
+                            aria-label={`${entry.label} setback in feet for lot ${lotLabel(lot)}`}
+                            placeholder={fallback != null ? `${fallback} (community)` : "ft"}
+                            className="ml-auto h-7 w-28 rounded-none text-right text-xs tabular-nums"
+                            disabled={isPending}
+                            value={setbacks[entry.key]}
+                            onChange={(event) => setSetbacks((current) => ({ ...current, [entry.key]: event.target.value }))}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") event.currentTarget.blur()
+                            }}
+                            onBlur={() => {
+                              const raw = setbacks[entry.key].trim()
+                              const next = raw ? Number(raw) : undefined
+                              if (next === own) return
+                              if (next != null && (!Number.isFinite(next) || next < 0)) return
+                              saveDimensions({ [entry.key]: next })
+                            }}
+                          />
+                        ) : own != null ? (
+                          <span className="tabular-nums">{own} ft</span>
+                        ) : fallback != null ? (
+                          <span className="tabular-nums text-muted-foreground">{fallback} ft (community)</span>
+                        ) : (
+                          "—"
+                        )}
+                      </Row>
+                    )
+                  })}
+                  <Row label="Lot shape">
+                    {canWrite ? (
+                      <Select
+                        value={lot.dimensions.irregular ? "irregular" : lot.dimensions.corner ? "corner" : "interior"}
+                        disabled={isPending}
+                        onValueChange={(value) =>
+                          saveDimensions({ corner: value === "corner" ? true : undefined, irregular: value === "irregular" ? true : undefined })
+                        }
+                      >
+                        <SelectTrigger className="h-7 w-36 rounded-none text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="interior">Interior</SelectItem>
+                          <SelectItem value="corner">Corner</SelectItem>
+                          <SelectItem value="irregular">Irregular</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : lot.dimensions.irregular ? (
+                      "Irregular"
+                    ) : lot.dimensions.corner ? (
+                      "Corner"
+                    ) : (
+                      "Interior"
+                    )}
+                  </Row>
+                </dl>
+                <LotFitSection
+                  lot={{
+                    id: lot.id,
+                    label: lotLabel(lot),
+                    projectId: lot.projectId,
+                    refreshKey: JSON.stringify([lot.dimensions, lot.swing, lot.planName, lot.elevationName]),
+                  }}
+                  communityId={community.id}
+                  canWrite={canWrite}
+                  canOverrideFit={capabilities.canOverrideFit}
+                />
               </Section>
 
               <Section title="Price">
@@ -408,14 +604,28 @@ export function LotInspector({
                     )}
                   </Row>
                   <Row label="Plan">
-                    {lot.planName ? (
-                      <>
-                        {lot.planName}
-                        {lot.elevationName ? ` · ${lot.elevationName}` : ""}
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">Not assigned</span>
-                    )}
+                    <span className="flex items-center justify-end gap-2">
+                      {lot.planName ? (
+                        <span>
+                          {lot.planName}
+                          {lot.elevationName ? ` · ${lot.elevationName}` : ""}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">Not assigned</span>
+                      )}
+                      {planAssignable ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 rounded-none px-2 text-xs"
+                          disabled={isPending || !capabilities.canAssignPlan}
+                          title={capabilities.canAssignPlan ? undefined : "Assigning a plan needs lot.write and plan.instantiate"}
+                          onClick={() => setAssigningPlan(true)}
+                        >
+                          {lot.planName ? "Change" : "Assign plan"}
+                        </Button>
+                      ) : null}
+                    </span>
                   </Row>
                 </dl>
               </Section>
@@ -594,6 +804,27 @@ export function LotInspector({
                 </Button>
               ) : null}
             </div>
+            <LotPlanAssignmentDialog
+              lot={lot}
+              communityId={community.id}
+              open={assigningPlan}
+              onOpenChange={setAssigningPlan}
+              canOverrideOffering={capabilities.canOverrideOffering}
+              canOverrideFit={capabilities.canOverrideFit}
+            />
+            <LotReasonDialog
+              open={recordingException}
+              onOpenChange={setRecordingException}
+              title={`Delivery exception · Lot ${lotLabel(lot)}`}
+              description="Lets a house start on a lot land development has not delivered. It is recorded in your name with the reason, and the start gates read it back until it is revoked."
+              minLength={MIN_DELIVERY_EXCEPTION_REASON_LENGTH}
+              submitLabel="Record exception"
+              success="Delivery exception recorded"
+              onSubmit={async (reason) => {
+                unwrapAction(await recordLotDeliveryExceptionAction(lot.id, community.id, { reason }))
+                router.refresh()
+              }}
+            />
           </>
         ) : null}
       </SheetContent>

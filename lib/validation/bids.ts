@@ -49,7 +49,6 @@ export const createBidPackageInputSchema = z
 export const updateBidPackageInputSchema = z.object({
   community_id: z.string().uuid().optional().nullable(),
   house_plan_id: z.string().uuid().optional().nullable(),
-  award_target: z.enum(["commitment", "price_agreement"]).optional(),
   title: z.string().min(1).optional(),
   cost_code_id: z.string().uuid().optional().nullable(),
   budget_line_id: z.string().uuid().optional().nullable(),
@@ -114,32 +113,50 @@ export const awardBidSubmissionInputSchema = z.object({
   bid_submission_id: z.string().uuid(),
   notes: z.string().optional().nullable(),
   accepted_alternate_ids: z.array(z.string().uuid()).default([]),
+  reviewed_scope: z.string().trim().min(1, "Review the subcontract scope"),
+  reviewed_terms: z.string().trim().min(1, "Review the subcontract terms"),
+  readiness_exception: z.string().trim().optional(),
+  bond_verified: z.boolean().default(false),
+  // A price-book award starts when the buyer says; absent means today.
+  effective_from: z.string().date().optional(),
+})
+
+export const priceBookAwardPreviewInputSchema = z.object({
+  bid_submission_id: z.string().uuid(),
+  effective_from: z.string().date(),
+  accepted_alternate_ids: z.array(z.string().uuid()).default([]),
 })
 
 export const rescindBidAwardInputSchema = z.object({
   bid_package_id: z.string().uuid(),
-  reason: z.string().trim().min(1, "A rescind reason is required"),
+  reason: z.string().trim().min(3, "Say why the award is being rescinded"),
 })
+
+/** A bid total and its leveling live in 32-bit columns: $21,474,836.47. A bigger lump sum is split across packages. */
+const MAX_BID_CENTS = 2_147_483_647
+export const bidTotalCents = z.number().int()
+  .max(MAX_BID_CENTS, "A bid amount cannot exceed $21,474,836.47. Split a larger scope across packages.")
+const bidAdjustmentCents = bidTotalCents.min(-MAX_BID_CENTS, "A leveling adjustment cannot exceed $21,474,836.47 either way.")
 
 export const bidSubmissionItemInputSchema = z.object({
   bid_scope_item_id: z.string().uuid().optional().nullable(),
   description: z.string().trim().min(1),
   response: bidSubmissionItemResponseEnum.default("priced"),
-  amount_cents: z.number().int().optional().nullable(),
-  unit_rate_cents: z.number().int().optional().nullable(),
+  amount_cents: bidTotalCents.optional().nullable(),
+  unit_rate_cents: bidTotalCents.optional().nullable(),
   quantity: z.number().optional().nullable(),
   notes: z.string().optional().nullable(),
 })
 
 export const updateBidSubmissionItemLevelingInputSchema = z.object({
   bid_submission_item_id: z.string().uuid(),
-  gc_plug_cents: z.number().int().optional().nullable(),
+  gc_plug_cents: bidAdjustmentCents.optional().nullable(),
   gc_note: z.string().optional().nullable(),
 })
 
 export const bidSubmissionLineItemSchema = z.object({
   description: z.string().trim().min(1, "Line item description is required"),
-  amount_cents: z.number().int(),
+  amount_cents: bidTotalCents,
   notes: z.string().trim().optional().nullable(),
 })
 
@@ -149,7 +166,7 @@ export const manualBidSubmissionInputSchema = z.object({
   company_id: z.string().uuid().optional().nullable(),
   contact_id: z.string().uuid().optional().nullable(),
   invite_email: z.string().email().optional().nullable(),
-  total_cents: z.number().int().min(0),
+  total_cents: bidTotalCents.min(0),
   currency: z.string().trim().min(1).default("usd"),
   valid_until: z.string().optional().nullable(),
   lead_time_days: z.number().int().nonnegative().optional().nullable(),
@@ -160,7 +177,7 @@ export const manualBidSubmissionInputSchema = z.object({
   notes: z.string().optional().nullable(),
   submitted_by_name: z.string().trim().optional().nullable(),
   submitted_by_email: z.string().trim().email().optional().nullable(),
-  leveled_adjustment_cents: z.number().int().default(0),
+  leveled_adjustment_cents: bidAdjustmentCents.default(0),
   leveling_notes: z.string().optional().nullable(),
   line_items: z.array(bidSubmissionLineItemSchema).default([]),
   items: z.array(bidSubmissionItemInputSchema).default([]),
@@ -171,7 +188,7 @@ export const manualBidSubmissionInputSchema = z.object({
 
 export const updateBidSubmissionLevelingInputSchema = z.object({
   bid_submission_id: z.string().uuid(),
-  leveled_adjustment_cents: z.number().int().default(0),
+  leveled_adjustment_cents: bidAdjustmentCents.default(0),
   leveling_notes: z.string().optional().nullable(),
   line_items: z.array(bidSubmissionLineItemSchema).optional(),
 })
@@ -181,4 +198,16 @@ export const answerBidPackageRfiInputSchema = z.object({
   rfi_id: z.string().uuid(),
   body: z.string().trim().min(1, "Answer is required"),
   broadcast_as_addendum: z.boolean().default(true),
+})
+
+export const selectBidForPricingInputSchema = z.object({
+  bid_submission_id: z.string().uuid(),
+  accepted_alternate_ids: z.array(z.string().uuid()).default([]),
+  rationale: z.string().trim().min(1, "Record the pricing decision"),
+  gaps: z.array(z.object({
+    scope_item_id: z.string(), description: z.string().trim().min(1),
+    amount_cents: z.number().int().nonnegative(),
+    disposition: z.enum(["unresolved", "allowance", "self_perform", "other_package", "owner_exclusion"]),
+    owner: z.string().trim().min(1), note: z.string().default(""),
+  })).default([]),
 })

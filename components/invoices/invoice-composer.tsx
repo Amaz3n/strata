@@ -1,18 +1,25 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { setWaiverPacketAction } from "@/app/(app)/invoices/waiver-actions";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+  DocumentEditorLayout,
+  DocumentEditorFields,
+  DocumentPreviewPane,
+  ScaledDocument,
+} from "@/components/document-editor/document-editor-layout";
+import { motion, useReducedMotion } from "framer-motion";
+import {
+  loadWaiverPacketAction,
+  setWaiverPacketAction,
+  sendInvoiceWithWaiverRequestAction,
+} from "@/app/(app)/invoices/waiver-actions";
+import { holdInvoiceForPhysicalWaiverAction } from "@/app/(app)/invoices/physical-waiver-actions";
+import { Checkbox } from "@/components/ui/checkbox";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { createPortal } from "react-dom";
 import {
+  ArrowRight,
   CalendarClock,
   Check,
   ChevronDown,
@@ -27,11 +34,15 @@ import {
 
 import type { Invoice, Project } from "@/lib/types";
 import type { InvoiceInput } from "@/lib/validation/invoices";
-import { getReceivablesPosturePolicy } from "@/lib/receivables/policy";
+import {
+  getReceivablesPosturePolicy,
+  getGeneralReceivablesPolicy,
+} from "@/lib/receivables/policy";
 import type { BillingProfile } from "@/lib/financials/billing-profile";
 import type { NewInvoiceKind } from "@/lib/financials/invoice-destinations";
 import {
   createInvoiceAction,
+  generateInvoicePdfAction,
   deleteInvoiceAction,
   issueInvoiceAction,
   loadInvoiceComposerBootstrapAction,
@@ -59,14 +70,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+
 import {
   isInvoiceRecipientValid,
   parseInvoiceRecipients,
@@ -110,8 +114,20 @@ export interface InvoiceComposerTarget {
   kind?: NewInvoiceKind | null;
 }
 
-const PacketWaiver = dynamic(
-  () => import("./invoice-packet-waiver").then((m) => m.InvoicePacketWaiver),
+import { waiverInvoiceRevision } from "@/lib/invoices/waiver-composer-state";
+import { readWaiverWorkflow } from "@/lib/lien-waivers/invoice-waiver";
+const PdfDocumentPreview = dynamic(
+  () =>
+    import("./waiver-pdf-preview").then((module) => module.PdfDocumentPreview),
+  { ssr: false },
+);
+import type {
+  WaiverDeliveryReview,
+  InvoiceWaiverStepHandle,
+} from "./invoice-waiver-step";
+
+const WaiverStep = dynamic(
+  () => import("./invoice-waiver-step").then((m) => m.InvoiceWaiverStep),
   {
     ssr: false,
     loading: () => (
@@ -130,14 +146,14 @@ type BootstrapKey = string;
 const bootstrapCache = new Map<BootstrapKey, Promise<Bootstrap>>();
 
 function bootstrapKey(
-  projectId: string,
+  projectId: string | undefined,
   target: Pick<InvoiceComposerTarget, "compose" | "duplicateOf">,
 ) {
   return `${projectId}:${target.compose}:${target.duplicateOf ?? ""}`;
 }
 
 function loadBootstrap(
-  projectId: string,
+  projectId: string | undefined,
   target: Pick<InvoiceComposerTarget, "compose" | "duplicateOf">,
 ) {
   const key = bootstrapKey(projectId, target);
@@ -163,12 +179,12 @@ function loadBootstrap(
 }
 
 /** Warm the composer's data while the pointer rests on the button that opens it. */
-export function prefetchInvoiceComposer(projectId: string) {
+export function prefetchInvoiceComposer(projectId?: string) {
   void loadBootstrap(projectId, { compose: "new" }).catch(() => null);
 }
 
 interface InvoiceComposerProps {
-  project: Project;
+  project: Project | null;
   profile: BillingProfile;
   target: InvoiceComposerTarget;
   onClose: (invoiceId?: string | null) => void;
@@ -182,7 +198,20 @@ export function InvoiceComposer({
   onClose,
   onIssued,
 }: InvoiceComposerProps) {
-  const policy = getReceivablesPosturePolicy(profile.posture);
+  const policy = project
+    ? getReceivablesPosturePolicy(profile.posture)
+    : getGeneralReceivablesPolicy();
+  const reducedMotion = useReducedMotion();
+  const [sendFeedback, setSendFeedback] = useState<{
+    invoice?: Invoice;
+    awaitingSignature: boolean;
+  } | null>(null);
+  const finishSendFeedback = () => {
+    if (!sendFeedback?.invoice) return;
+    if (sendFeedback.awaitingSignature) onClose(sendFeedback.invoice.id);
+    else onIssued(sendFeedback.invoice);
+  };
+
   const [portalReady, setPortalReady] = useState(false);
   useEffect(() => setPortalReady(true), []);
   const editorRef = useRef<InvoiceEditorHandle>(null);
@@ -197,10 +226,20 @@ export function InvoiceComposer({
   } | null>(null);
   const [autosave, setAutosave] = useState<AutosaveState>("idle");
   const [snapshot, setSnapshot] = useState<InvoiceEditorSnapshot | null>(null);
+  const invoicePreview = snapshot?.preview;
+  const waiverSource = useMemo(
+    () =>
+      invoicePreview && project
+        ? { projectName: project.name, preview: invoicePreview }
+        : null,
+    [project, invoicePreview],
+  );
   const [draftId, setDraftId] = useState<string | null>(
     isNew ? null : target.compose,
   );
-  const [packetView, setPacketView] = useState<"invoice" | "waiver">("invoice");
+  const [packetView, setPacketView] = useState<"invoice" | "waiver" | "review">(
+    "invoice",
+  );
   const [includeWaiver, setIncludeWaiver] = useState(false);
   const [packetBusy, setPacketBusy] = useState(false);
   useEffect(() => {
@@ -209,43 +248,181 @@ export function InvoiceComposer({
         Boolean(bootstrap.draft.metadata?.waiver_packet?.enabled),
       );
   }, [bootstrap?.draft]);
-  async function openWaiver() {
-    if (packetBusy) return;
+  const waiverRef = useRef<InvoiceWaiverStepHandle>(null);
+  const [waiverData, setWaiverData] = useState<
+    | Extract<
+        Awaited<ReturnType<typeof loadWaiverPacketAction>>,
+        { success: true }
+      >["data"]
+    | null
+  >(null);
+  const [waiverBaseRevision, setWaiverBaseRevision] = useState("");
+  const [waiverLoadError, setWaiverLoadError] = useState<string | null>(null);
+  const [waiverReady, setWaiverReady] = useState(false);
+  const [deliveryReview, setDeliveryReview] =
+    useState<WaiverDeliveryReview | null>(null);
+  const separateSignature =
+    includeWaiver && Boolean(deliveryReview && !deliveryReview.isSelf);
+  const canReview = !includeWaiver || Boolean(deliveryReview?.ready);
+  const openReview = useCallback(() => {
+    setPacketView("review");
+    setMobilePreview(false);
+  }, []);
+  const [reviewDocument, setReviewDocument] = useState<"invoice" | "waiver">(
+    "invoice",
+  );
+  const [reviewPdf, setReviewPdf] = useState<{
+    revision: string;
+    url: string;
+  } | null>(null);
+  const [reviewPdfError, setReviewPdfError] = useState("");
+  const [reviewPdfRetry, setReviewPdfRetry] = useState(0);
+  const reviewRevision = JSON.stringify(snapshot?.preview ?? null);
+  const reviewPdfCache = useRef<{ revision: string; url: string } | null>(null);
+  const reviewPdfRequest = useRef<{
+    revision: string;
+    promise: Promise<{ revision: string; url: string }>;
+  } | null>(null);
+  useEffect(() => {
+    if (separateSignature) setSendMode("now");
+  }, [separateSignature]);
+  useEffect(() => {
+    if (packetView === "review")
+      document.getElementById("invoice-review-heading")?.focus();
+  }, [packetView]);
+  useEffect(() => {
+    if (packetView !== "review" || !snapshot?.complete) return;
+    if (reviewPdfCache.current?.revision === reviewRevision) {
+      setReviewPdf(reviewPdfCache.current);
+      return;
+    }
+    let cancelled = false;
+    setReviewPdfError("");
+    if (reviewPdfRequest.current?.revision !== reviewRevision) {
+      const promise = (async () => {
+        const id = await editorRef.current?.saveDraft();
+        if (!id) throw new Error("Complete the invoice to preview its PDF");
+        const pdf = unwrapAction(
+          await generateInvoicePdfAction(id, { persistToArc: false }),
+        );
+        if (!pdf.pdfBase64)
+          throw new Error("Could not generate the invoice preview");
+        const result = {
+          revision: reviewRevision,
+          url: `data:application/pdf;base64,${pdf.pdfBase64}`,
+        };
+        reviewPdfCache.current = result;
+        return result;
+      })();
+      reviewPdfRequest.current = { revision: reviewRevision, promise };
+    }
+    void reviewPdfRequest.current.promise
+      .then((result) => {
+        if (!cancelled) setReviewPdf(result);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setReviewPdfError(error.message);
+          reviewPdfRequest.current = null;
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [packetView, snapshot?.complete, reviewRevision, reviewPdfRetry]);
+
+  const [waiverWorking, setWaiverWorking] = useState(false);
+  const [waiverActionTarget, setWaiverActionTarget] =
+    useState<HTMLDivElement | null>(null);
+  const packetGuard = useRef(false);
+  async function toggleWaiver(enabled: boolean) {
+    if (packetGuard.current) return;
+    // Selection is local until a draft exists; it never changes steps.
+    if (!draftIdRef.current) {
+      setIncludeWaiver(enabled);
+      return;
+    }
+    const previous = includeWaiver;
+    setIncludeWaiver(enabled);
+    packetGuard.current = true;
     setPacketBusy(true);
+    try {
+      unwrapAction(await setWaiverPacketAction(draftIdRef.current, enabled));
+      setIncludeWaiver(enabled);
+    } catch (error) {
+      setIncludeWaiver(previous);
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not update waiver selection",
+      );
+    } finally {
+      packetGuard.current = false;
+      setPacketBusy(false);
+    }
+  }
+  const loadWaiverStep = useCallback(async () => {
+    if (packetGuard.current || waiverData) return;
+    packetGuard.current = true;
+    setPacketBusy(true);
+    setWaiverLoadError(null);
+    const revision = waiverSource ? waiverInvoiceRevision(waiverSource) : "";
+    void import("./invoice-waiver-step");
     try {
       const id = await editorRef.current?.saveDraft();
       if (!id) throw new Error("Complete the invoice details first");
-      if (!includeWaiver) unwrapAction(await setWaiverPacketAction(id, true));
-      setIncludeWaiver(true);
-      setPacketView("waiver");
+      unwrapAction(await setWaiverPacketAction(id, true));
+      setWaiverBaseRevision(revision);
+      setWaiverData(unwrapAction(await loadWaiverPacketAction(id)));
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not open waiver",
+      setWaiverLoadError(
+        error instanceof Error
+          ? error.message
+          : "Could not load waiver details",
       );
     } finally {
+      packetGuard.current = false;
       setPacketBusy(false);
     }
+  }, [waiverData, waiverSource]);
+  // Warm the step once while the preparer is still editing the invoice.
+  // Re-entry never saves, fetches, validates, or remounts either editor.
+  useEffect(() => {
+    if (
+      includeWaiver &&
+      snapshot?.complete &&
+      !waiverData &&
+      !waiverLoadError &&
+      !packetBusy
+    )
+      void loadWaiverStep();
+  }, [
+    includeWaiver,
+    snapshot?.complete,
+    waiverData,
+    waiverLoadError,
+    packetBusy,
+    loadWaiverStep,
+  ]);
+  function openWaiver() {
+    setMobilePreview(false);
+    setPacketView("waiver");
   }
-  async function removeWaiver() {
-    if (packetBusy || !draftIdRef.current) return;
-    setPacketBusy(true);
-    try {
-      unwrapAction(await setWaiverPacketAction(draftIdRef.current, false));
-      setIncludeWaiver(false);
-      setPacketView("invoice");
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not update packet",
+  function backToInvoice() {
+    setPacketView("invoice");
+    setMobilePreview(false);
+  }
+  const persistInvoiceForWaiver = useCallback(async () => {
+    const id = await editorRef.current?.saveDraft();
+    if (!id)
+      throw new Error(
+        "Complete the invoice details before preparing the waiver",
       );
-    } finally {
-      setPacketBusy(false);
-    }
-  }
+  }, []);
   const [mobilePreview, setMobilePreview] = useState(false);
   const [numberError, setNumberError] = useState<string | null>(null);
   const [numberWarning, setNumberWarning] = useState<string | null>(null);
   const [numberLoading, setNumberLoading] = useState(false);
-  const [sendOpen, setSendOpen] = useState(false);
   const [recipients, setRecipients] = useState("");
   const [recipientsTouched, setRecipientsTouched] = useState(false);
   const [recipientDraft, setRecipientDraft] = useState("");
@@ -256,6 +433,7 @@ export function InvoiceComposer({
     | "approve"
     | "pdf"
     | "close"
+    | "save"
     | "discard"
     | null
   >(null);
@@ -265,15 +443,9 @@ export function InvoiceComposer({
   useEffect(() => {
     if (sendMode === "later" && !sendAt) setSendAt(defaultSendAt());
   }, [sendMode, sendAt]);
-  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
-  useEffect(() => {
-    if (autosave === "saved") setLastSavedAt(new Date());
-  }, [autosave]);
-
   const busyRef = useRef(false);
-  const fieldToFocusRef = useRef<string | null>(null);
   const recoveryKey = bootstrap
-    ? `arc:invoice:v1:${bootstrap.recoveryScope}:${project.id}:${target.compose}:${target.duplicateOf ?? ""}:${target.sourceChangeOrderId ?? ""}:${target.kind ?? ""}`
+    ? `arc:invoice:v1:${bootstrap.recoveryScope}:${project?.id}:${target.compose}:${target.duplicateOf ?? ""}:${target.sourceChangeOrderId ?? ""}:${target.kind ?? ""}:${target.customerId ?? ""}`
     : undefined;
   const clearRecovery = () => {
     if (recoveryKey) {
@@ -292,11 +464,11 @@ export function InvoiceComposer({
 
   useEffect(() => {
     let cancelled = false;
-    loadBootstrap(project.id, target)
+    loadBootstrap(project?.id, target)
       .then(async (data) => {
         let loaded = data;
         if (isNew) {
-          const key = `arc:invoice:v1:${data.recoveryScope}:${project.id}:${target.compose}:${target.duplicateOf ?? ""}:${target.sourceChangeOrderId ?? ""}:${target.kind ?? ""}`;
+          const key = `arc:invoice:v1:${data.recoveryScope}:${project?.id}:${target.compose}:${target.duplicateOf ?? ""}:${target.sourceChangeOrderId ?? ""}:${target.kind ?? ""}:${target.customerId ?? ""}`;
           let recoveredId: string | undefined;
           try {
             recoveredId = JSON.parse(
@@ -309,7 +481,7 @@ export function InvoiceComposer({
             // Fetch the current server revision before replaying local edits.
             loaded = unwrapAction(
               await loadInvoiceComposerBootstrapAction({
-                projectId: project.id,
+                projectId: project?.id,
                 draftId: recoveredId,
               }),
             );
@@ -337,7 +509,7 @@ export function InvoiceComposer({
       });
     if (isNew) {
       setNumberLoading(true);
-      reserveInvoiceNumberAction(project.id)
+      reserveInvoiceNumberAction(project?.id)
         .then((result) => {
           const reserved = unwrapAction(result);
           if (cancelled || draftIdRef.current) {
@@ -371,7 +543,7 @@ export function InvoiceComposer({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id, target.compose, target.duplicateOf]);
+  }, [project?.id, target.compose, target.duplicateOf]);
 
   // The recipients field follows the customer until the person edits it.
   useEffect(() => {
@@ -405,10 +577,20 @@ export function InvoiceComposer({
   // Escape closes (the draft is already saved); ⌘S saves and closes; ⌘Enter opens Send.
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.repeat || busy !== null) return;
+      if (
+        Boolean(sendFeedback) ||
+        event.defaultPrevented ||
+        event.repeat ||
+        busy !== null ||
+        packetBusy ||
+        waiverWorking
+      )
+        return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
-        void handleSaveAndClose();
+        void (packetView === "invoice"
+          ? handleSaveAndClose()
+          : handleSaveDraft());
         return;
       }
       if (
@@ -418,9 +600,13 @@ export function InvoiceComposer({
         event.key === "Enter"
       ) {
         event.preventDefault();
-        if (snapshot) {
+        if (includeWaiver && packetView === "invoice") {
+          void openWaiver();
+          return;
+        }
+        if (snapshot && canReview) {
           setSendMode("now");
-          setSendOpen(true);
+          openReview();
         }
         return;
       }
@@ -440,13 +626,21 @@ export function InvoiceComposer({
 
   const handleCreateDraft = useCallback(
     async (input: InvoiceInput): Promise<Invoice> => {
-      const created = unwrapAction(await createInvoiceAction(input));
+      const created = unwrapAction(
+        await createInvoiceAction({
+          ...input,
+          metadata: {
+            ...input.metadata,
+            ...(includeWaiver ? { waiver_packet: { enabled: true } } : {}),
+          },
+        }),
+      );
       setDraftId(created.id);
       draftIdRef.current = created.id;
       reservationIdRef.current = null;
       return created;
     },
-    [],
+    [includeWaiver],
   );
 
   const handleAutosave = useCallback(
@@ -475,7 +669,7 @@ export function InvoiceComposer({
     setNumberError(null);
     try {
       const reserved = unwrapAction(
-        await reserveInvoiceNumberAction(project.id),
+        await reserveInvoiceNumberAction(project?.id),
       );
       reservationIdRef.current = reserved.reservationId;
       setReservation(reserved);
@@ -533,8 +727,8 @@ export function InvoiceComposer({
       document.getElementById(field)?.focus();
       return;
     }
-    fieldToFocusRef.current = field;
-    setSendOpen(false);
+    requestAnimationFrame(() => editorRef.current?.focusField(field));
+    setPacketView("invoice");
     setMobilePreview(false);
   };
 
@@ -542,7 +736,7 @@ export function InvoiceComposer({
     key: NonNullable<typeof busy>,
     fn: () => Promise<void>,
   ) {
-    if (busyRef.current) return;
+    if (busyRef.current || packetGuard.current || waiverWorking) return;
     busyRef.current = true;
     setBusy(key);
     try {
@@ -553,11 +747,31 @@ export function InvoiceComposer({
     }
   }
 
+  const handleSaveDraft = () =>
+    withBusy("save", async () => {
+      try {
+        if (includeWaiver) await waiverRef.current?.saveDraft();
+        const id = await editorRef.current?.saveDraft();
+        if (id) {
+          invalidateInvoiceDetail(id);
+          toast.success("Draft saved");
+        }
+      } catch (error) {
+        toast.error("Could not save the draft", {
+          description:
+            error instanceof Error ? error.message : "Please try again.",
+        });
+      }
+    });
+
   const handleSaveAndClose = () =>
     withBusy("close", async () => {
       try {
         if (snapshot?.complete) {
+          if (includeWaiver) await waiverRef.current?.saveDraft();
           const id = await editorRef.current?.saveDraft();
+          if (id && includeWaiver)
+            unwrapAction(await setWaiverPacketAction(id, true));
           await editorRef.current?.discard();
           clearRecovery();
           if (id) invalidateInvoiceDetail(id);
@@ -581,7 +795,11 @@ export function InvoiceComposer({
    * before you opened it. An untouched new invoice just closes.
    */
   const requestClose = () => {
-    if (busyRef.current) return;
+    if (sendFeedback) {
+      finishSendFeedback();
+      return;
+    }
+    if (busyRef.current || packetBusy || waiverWorking) return;
     const touched = Boolean(draftIdRef.current) || Boolean(snapshot?.dirty);
     if (isNew && touched) {
       setLeavePrompt(true);
@@ -616,21 +834,46 @@ export function InvoiceComposer({
   const handleSend = () =>
     withBusy("send", async () => {
       try {
+        setSendFeedback({ awaitingSignature: separateSignature });
         const id = await editorRef.current?.persist();
         if (!id) throw new Error("Complete the invoice before sending it");
         const issued = unwrapAction(
-          await issueInvoiceAction(id, parsedRecipients),
+          separateSignature && deliveryReview?.waiver && deliveryReview.signer
+            ? deliveryReview.physical
+              ? await holdInvoiceForPhysicalWaiverAction(
+                  id,
+                  deliveryReview.waiver.id,
+                  parsedRecipients,
+                )
+              : await sendInvoiceWithWaiverRequestAction(
+                  id,
+                  deliveryReview.waiver.id,
+                  deliveryReview.signer.id,
+                  parsedRecipients,
+                )
+            : await issueInvoiceAction(id, parsedRecipients),
         );
-        toast.success(
-          includeWaiver ? "Invoice and waiver sent" : "Invoice sent",
-          { description: `Sent to ${parsedRecipients.join(", ")}` },
-        );
+        if (
+          separateSignature &&
+          deliveryReview?.physical &&
+          deliveryReview.waiver
+        ) {
+          const link = document.createElement("a");
+          link.href = `/api/invoices/${id}/waivers/${deliveryReview.waiver.id}?download=1`;
+          link.download = "lien-waiver.pdf";
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+        }
         await editorRef.current?.discard();
         clearRecovery();
-        setSendOpen(false);
         invalidateInvoiceDetail(issued.id);
-        onIssued(issued);
+        setSendFeedback({
+          invoice: issued,
+          awaitingSignature: separateSignature,
+        });
       } catch (error) {
+        setSendFeedback(null);
         toast.error("Could not send the invoice", {
           description:
             error instanceof Error ? error.message : "Please try again.",
@@ -655,7 +898,6 @@ export function InvoiceComposer({
         });
         await editorRef.current?.discard();
         clearRecovery();
-        setSendOpen(false);
         invalidateInvoiceDetail(id);
         onClose(id);
       } catch (error) {
@@ -666,28 +908,32 @@ export function InvoiceComposer({
       }
     });
 
-  const autosaveLabel =
-    snapshot?.dirty && !snapshot.complete
-      ? snapshot.recoverySaved
-        ? "Unfinished edits kept in this tab"
-        : "Unsaved edits — keep this tab open"
-      : snapshot?.dirty && autosave !== "saving" && autosave !== "error"
-        ? "Changes waiting to save…"
-        : autosave === "saving"
-          ? "Saving…"
-          : autosave === "saved"
-            ? "Saved"
-            : autosave === "error"
-              ? "Could not save — your changes are still here"
-              : draftId
-                ? "Every change saves itself"
-                : "Saves itself once there's an item";
-
   const editorReady = Boolean(bootstrap);
   const initialInvoice = bootstrap?.draft ?? null;
   const title = initialInvoice
     ? `Invoice ${initialInvoice.invoice_number}`
     : "New invoice";
+
+  const reviewDocumentTabs = (
+    <div className="flex items-center gap-1" aria-label="Review documents">
+      <Button
+        variant={reviewDocument === "invoice" ? "secondary" : "ghost"}
+        size="sm"
+        onClick={() => setReviewDocument("invoice")}
+      >
+        Invoice
+      </Button>
+      {includeWaiver && deliveryReview?.waiver && (
+        <Button
+          variant={reviewDocument === "waiver" ? "secondary" : "ghost"}
+          size="sm"
+          onClick={() => setReviewDocument("waiver")}
+        >
+          Waiver
+        </Button>
+      )}
+    </div>
+  );
 
   if (!portalReady) return null;
   return createPortal(
@@ -698,7 +944,10 @@ export function InvoiceComposer({
       aria-modal="true"
       aria-label={title}
     >
-      <header className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b px-3 py-2 sm:px-4">
+      <header
+        inert={Boolean(sendFeedback)}
+        className="grid min-h-14 shrink-0 grid-cols-[auto_1fr] items-center lg:grid-cols-[1fr_auto_1fr] gap-x-3 gap-y-2 border-b px-3 py-2 sm:px-4"
+      >
         <div className="flex min-w-0 items-center gap-2">
           <Button
             variant="ghost"
@@ -709,79 +958,164 @@ export function InvoiceComposer({
           >
             <X className="h-4 w-4" />
           </Button>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold leading-tight">
-              {title}
-            </h1>
-            <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-              <span className="truncate">{project.name}</span>
-              <span aria-hidden className="text-muted-foreground/50">
-                ·
-              </span>
-              <SaveIndicator
-                state={autosave}
-                lastSavedAt={lastSavedAt}
-                hasDraft={Boolean(draftId)}
-                label={autosaveLabel}
-              />
-            </p>
-          </div>
+          <h1 className="sr-only">{title}</h1>
         </div>
-        <div className="flex w-full items-center gap-2 sm:w-auto">
+        <nav
+          aria-label="Invoice preparation"
+          className="col-span-2 row-start-2 flex items-center justify-center gap-2 text-xs lg:col-span-1 lg:col-start-2 lg:row-start-1"
+        >
+          {(
+            ["invoice", ...(includeWaiver ? ["waiver"] : []), "review"] as const
+          ).map((step, index) => (
+            <button
+              key={step}
+              type="button"
+              aria-current={packetView === step ? "step" : undefined}
+              disabled={busy !== null || (step === "review" && !canReview)}
+              onClick={() =>
+                step === "invoice"
+                  ? backToInvoice()
+                  : step === "waiver"
+                    ? openWaiver()
+                    : openReview()
+              }
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 transition-colors disabled:opacity-40",
+                packetView === step
+                  ? "font-medium text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <span
+                className={cn(
+                  "flex size-5 items-center justify-center border text-[10px] transition-colors",
+                  packetView === step &&
+                    "border-foreground bg-foreground text-background",
+                )}
+              >
+                {index + 1}
+              </span>
+              {step === "invoice"
+                ? "Invoice"
+                : step === "waiver"
+                  ? "Waiver"
+                  : "Review"}
+            </button>
+          ))}
+        </nav>
+        <div className="col-start-2 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-1 sm:gap-2 lg:col-start-3">
           <Button
             size="sm"
             variant="outline"
             className="h-8 lg:hidden"
+            aria-label={mobilePreview ? "Edit details" : "Preview document"}
             onClick={() => setMobilePreview((value) => !value)}
           >
-            <Eye className="mr-1.5 size-4" />
-            {mobilePreview ? "Edit" : "Preview"}
+            <Eye className="size-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">
+              {mobilePreview ? "Edit" : "Preview"}
+            </span>
           </Button>
-          <div className="flex items-stretch">
+          {packetView === "invoice" ? (
+            <div className="flex items-center">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 rounded-r-none border-r-0"
+                disabled={
+                  busy !== null ||
+                  waiverWorking ||
+                  packetBusy ||
+                  autosave === "saving"
+                }
+                onClick={() => void handleSaveAndClose()}
+              >
+                Save and close
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-8 rounded-l-none"
+                    aria-label="More save options"
+                    disabled={busy !== null || waiverWorking}
+                  >
+                    <ChevronDown className="size-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    disabled={!snapshot?.complete || packetBusy}
+                    onSelect={() =>
+                      void withBusy("pdf", async () => {
+                        if (includeWaiver) await waiverRef.current?.saveDraft();
+                        await editorRef.current?.saveDraft();
+                        await editorRef.current?.downloadPdf();
+                      })
+                    }
+                  >
+                    <Download className="mr-2 size-4" />
+                    Save and download
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          ) : (
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
-              className="h-8 rounded-r-none"
-              disabled={busy !== null || autosave === "saving"}
-              onClick={() => void handleSaveAndClose()}
-              title="⌘S"
+              className="h-8"
+              disabled={busy !== null || waiverWorking}
+              onClick={() => void handleSaveDraft()}
             >
-              {busy === "close" ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : null}
-              <span className="sm:hidden">Save</span>
-              <span className="hidden sm:inline">Save and close</span>
+              Save draft
             </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 rounded-l-none border-l-0 px-2"
-                  disabled={busy !== null}
-                  aria-label="More ways to save"
-                >
-                  <ChevronDown className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem
-                  disabled={!snapshot?.complete}
-                  onSelect={() =>
-                    void withBusy(
-                      "pdf",
-                      () =>
-                        editorRef.current?.downloadPdf() ?? Promise.resolve(),
-                    )
-                  }
-                >
-                  <Download className="mr-2 h-4 w-4" />
-                  Save and download PDF
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          {approvalRequired && !approved ? (
+          )}
+          {packetView === "review" ? (
+            <Button
+              size="sm"
+              className="h-8"
+              disabled={
+                busy !== null ||
+                waiverWorking ||
+                !snapshot?.complete ||
+                problems.length > 0 ||
+                !canReview ||
+                reviewPdf?.revision !== reviewRevision
+              }
+              onClick={() =>
+                void (sendMode === "later" && !separateSignature
+                  ? handleSchedule()
+                  : handleSend())
+              }
+            >
+              {busy === "send" || busy === "schedule" ? (
+                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+              ) : (
+                <Send className="mr-1.5 size-3.5" />
+              )}
+              {busy === "send" || busy === "schedule"
+                ? "Sending…"
+                : sendMode === "later" && !separateSignature
+                  ? "Schedule"
+                  : separateSignature
+                    ? "Save · awaiting signed waiver"
+                    : "Send"}
+            </Button>
+          ) : includeWaiver && packetView === "invoice" ? (
+            <Button
+              size="sm"
+              className="h-8 transition-transform motion-safe:active:scale-[0.98]"
+              disabled={busy !== null}
+              onClick={() => void openWaiver()}
+            >
+              Next
+              <ArrowRight className="ml-1.5 size-3.5" />
+            </Button>
+          ) : includeWaiver && packetView === "waiver" && !waiverReady ? (
+            <div ref={setWaiverActionTarget} className="flex items-center" />
+          ) : approvalRequired && !approved ? (
             approvalStatus === "pending" ? (
               <Button
                 size="sm"
@@ -815,106 +1149,71 @@ export function InvoiceComposer({
               </Button>
             )
           ) : (
-            <Dialog
-              open={sendOpen}
-              onOpenChange={(open) => {
-                if (!busyRef.current) setSendOpen(open);
-              }}
+            <Button
+              size="sm"
+              className="h-8"
+              disabled={busy !== null || !snapshot || !canReview}
+              onClick={openReview}
             >
-              <div className="flex items-stretch">
-                <DialogTrigger asChild>
-                  <Button
-                    size="sm"
-                    className="h-8 rounded-r-none"
-                    disabled={busy !== null || !snapshot}
-                    onClick={() => setSendMode("now")}
-                  >
-                    <Send className="mr-1.5 h-3.5 w-3.5" />
-                    <span className="sm:hidden">Send</span>
-                    <span className="hidden sm:inline">
-                      {policy.sendActionLabel}
-                    </span>
-                  </Button>
-                </DialogTrigger>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      size="sm"
-                      className="h-8 rounded-l-none border-l border-primary-foreground/20 px-2"
-                      disabled={busy !== null || !snapshot}
-                      aria-label="More ways to send"
+              Review
+              <ArrowRight className="ml-1.5 size-3.5" />
+            </Button>
+          )}
+        </div>
+      </header>
+
+      <div
+        inert={Boolean(sendFeedback)}
+        className="relative min-h-0 flex-1 overflow-hidden"
+      >
+        {snapshot && (
+          <div
+            className={cn(
+              "absolute inset-0 flex min-h-0 flex-col lg:flex-row transition-opacity duration-200 motion-reduce:transition-none",
+              packetView === "review"
+                ? "z-10 opacity-100"
+                : "pointer-events-none z-0 opacity-0",
+            )}
+            aria-hidden={packetView !== "review"}
+            inert={packetView !== "review" || busy !== null}
+          >
+            <div
+              className={cn(
+                "min-h-0 flex-1 overflow-y-auto",
+                mobilePreview && "hidden lg:block",
+              )}
+            >
+              <div className="mx-auto max-w-xl space-y-8 px-6 py-10 sm:px-8 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150">
+                <div className="space-y-6">
+                  <div className="space-y-1.5">
+                    <h2
+                      tabIndex={-1}
+                      className="text-xl font-semibold tracking-tight outline-none"
+                      id="invoice-review-heading"
                     >
-                      <ChevronDown className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    <DropdownMenuItem
-                      onSelect={() => {
-                        setSendMode("later");
-                        setSendOpen(true);
-                      }}
-                    >
-                      <CalendarClock className="mr-2 h-4 w-4" />
-                      Schedule send…
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-              <DialogContent
-                onCloseAutoFocus={(event) => {
-                  const field = fieldToFocusRef.current;
-                  if (field) {
-                    event.preventDefault();
-                    fieldToFocusRef.current = null;
-                    editorRef.current?.focusField(field);
-                  }
-                }}
-                className="max-h-[90dvh] overflow-y-auto rounded-none p-0 sm:max-w-[560px]"
-                showCloseButton={busy === null}
-                onEscapeKeyDown={(event) => {
-                  if (busy !== null) event.preventDefault();
-                }}
-                onInteractOutside={(event) => {
-                  if (busy !== null) event.preventDefault();
-                }}
-              >
-                <DialogHeader className="border-b bg-muted/30 px-6 pb-5 pt-6 text-left">
-                  <DialogTitle className="text-xl">Review & send</DialogTitle>
-                  <DialogDescription>
-                    {snapshot?.preview.data.invoiceNumber
-                      ? `Invoice ${snapshot.preview.data.invoiceNumber} · `
-                      : ""}
-                    {project.name}
-                  </DialogDescription>
-                  <p className="pt-3 text-3xl font-semibold tracking-tight tabular-nums text-foreground">
-                    {formatMoneyFromCents(snapshot?.totalCents ?? 0)}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Due{" "}
-                    {snapshot?.dueDate
-                      ? formatDateOnly(snapshot.dueDate, { withYear: true })
-                      : "—"}
-                  </p>
-                </DialogHeader>
-                <div className="space-y-5 px-6 pb-6">
-                  <div className="flex gap-1 border bg-muted p-1 text-sm">
-                    {(["now", "later"] as const).map((mode) => (
-                      <button
-                        key={mode}
-                        type="button"
-                        onClick={() => setSendMode(mode)}
-                        className={cn(
-                          "h-9 flex-1 rounded-md font-medium transition-all motion-reduce:transition-none",
-                          sendMode === mode
-                            ? "bg-background text-foreground shadow-sm"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {mode === "now" ? "Send now" : "Schedule"}
-                      </button>
-                    ))}
+                      Ready to send
+                    </h2>
+                    <p className="text-sm text-muted-foreground">
+                      {project?.name ?? "General billing"} · Invoice{" "}
+                      {snapshot?.preview.data.invoiceNumber}
+                    </p>
                   </div>
-                  {sendMode === "later" ? (
+                  <div className="flex items-end justify-between gap-6 border-b pb-6">
+                    <p className="text-4xl font-medium tracking-tight tabular-nums">
+                      {formatMoneyFromCents(snapshot?.totalCents ?? 0)}
+                    </p>
+                    <div className="text-right text-xs leading-relaxed text-muted-foreground">
+                      Due
+                      <p className="mt-1 text-sm text-foreground">
+                        {snapshot?.dueDate
+                          ? formatDateOnly(snapshot.dueDate, { withYear: true })
+                          : "—"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-6">
+                  {sendMode === "later" && !separateSignature ? (
                     <div className="space-y-1.5 animate-in fade-in duration-150 motion-reduce:animate-none">
                       <label
                         htmlFor="composer-send-at"
@@ -936,13 +1235,16 @@ export function InvoiceComposer({
                       </p>
                     </div>
                   ) : null}
-                  <div className="space-y-1.5">
+                  <div className="space-y-3">
                     <label
                       htmlFor="composer-recipients"
                       className="text-xs font-medium text-muted-foreground"
                     >
-                      Send to
+                      To customer
                     </label>
+                    <p className="text-sm font-medium">
+                      {snapshot?.preview.data.billToLines[0]}
+                    </p>
                     {savedRecipients.length > 0 ? (
                       <ul className="flex flex-wrap gap-1.5">
                         {savedRecipients.map((recipient) => (
@@ -1024,22 +1326,7 @@ export function InvoiceComposer({
                     />
                   </div>
 
-                  <dl className="space-y-1 border-t pt-3 text-xs">
-                    <div className="flex justify-between gap-4">
-                      <dt className="text-muted-foreground">Invoice for</dt>
-                      <dd className="max-w-[70%] text-right">
-                        {snapshot?.preview.data.billToLines[0] ||
-                          "Billing details not added"}
-                      </dd>
-                    </div>
-                  </dl>
-                  {problems.length === 0 ? (
-                    <p className="flex items-start gap-2 text-xs text-success">
-                      <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      {formatMoneyFromCents(snapshot?.totalCents ?? 0)} is ready
-                      to send.
-                    </p>
-                  ) : (
+                  {problems.length > 0 && (
                     <ul className="space-y-1">
                       {problems.map((problem) => (
                         <li
@@ -1058,254 +1345,371 @@ export function InvoiceComposer({
                       ))}
                     </ul>
                   )}
-                  {includeWaiver && <p className="text-xs text-muted-foreground">One email with the invoice and your signed waiver. The client can review both and pay from the same link.</p>}
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-10 flex-1 rounded-lg"
-                      onClick={() => setSendOpen(false)}
-                      disabled={busy !== null}
-                    >
-                      Back to editing
-                    </Button>
-                    {sendMode === "later" ? (
-                      <Button
-                        size="sm"
-                        className="h-10 flex-1 rounded-lg"
-                        onClick={() => void handleSchedule()}
-                        disabled={
-                          busy !== null ||
-                          !snapshot?.complete ||
-                          problems.length > 0 ||
-                          !sendAt
-                        }
-                      >
-                        {busy === "schedule" ? (
-                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <CalendarClock className="mr-1.5 h-3.5 w-3.5" />
-                        )}
-                        Schedule
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        className="h-10 flex-1 rounded-lg"
-                        onClick={() => void handleSend()}
-                        disabled={
-                          busy !== null ||
-                          !snapshot?.complete ||
-                          problems.length > 0
-                        }
-                      >
-                        {busy === "send" ? (
-                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Send className="mr-1.5 h-3.5 w-3.5" />
-                        )}
-                        {busy === "send"
-                          ? "Sending…"
-                          : `Send ${includeWaiver ? "invoice & waiver" : "invoice"}${parsedRecipients.length > 1 ? ` to ${parsedRecipients.length} recipients` : ""}`}
-                      </Button>
-                    )}
-                  </div>
+                  <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Check className="size-3.5" />
+                    {includeWaiver && !separateSignature
+                      ? "Invoice and signed waiver"
+                      : "Invoice"}
+                  </p>
+                  {separateSignature && deliveryReview?.signer && (
+                    <section className="space-y-3 border-t pt-6">
+                      <h3 className="text-xs font-medium text-muted-foreground">
+                        Physical signing
+                      </h3>
+                      <div>
+                        <p className="text-sm font-medium">
+                          {deliveryReview.signer.name}
+                        </p>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {deliveryReview.signer.email}
+                        </p>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Download and print the waiver. After signing and
+                        notarization, reopen this invoice, upload the executed
+                        PDF, and confirm to send the complete packet.
+                      </p>
+                    </section>
+                  )}
+                  {!separateSignature && (
+                    <div className="flex items-center justify-between border-t pt-5 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-2">
+                        <CalendarClock className="size-3.5" />
+                        Delivery
+                      </span>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 gap-2"
+                          >
+                            {sendMode === "later" ? "Scheduled" : "Send now"}
+                            <ChevronDown className="size-3" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onSelect={() => setSendMode("now")}>
+                            Send now
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() => setSendMode("later")}
+                          >
+                            Schedule for later
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  )}
+                  {!canReview && (
+                    <p role="alert" className="text-sm text-warning">
+                      The waiver changed. Return to the waiver step before
+                      sending.
+                    </p>
+                  )}
                 </div>
-              </DialogContent>
-            </Dialog>
-          )}
-        </div>
-      </header>
-
-      <AlertDialog
-        open={leavePrompt}
-        onOpenChange={(open) => !busy && setLeavePrompt(open)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {snapshot?.complete
-                ? "Keep this invoice as a draft?"
-                : "Keep your unfinished invoice?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {snapshot?.complete
-                ? "Save it to Arc and finish it later. Discard removes the draft."
-                : snapshot?.recoverySaved
-                  ? "Your incomplete edits are kept in this browser tab. Return here to finish them; they are not yet saved to Arc."
-                  : "These edits have not been saved. Keep editing to avoid losing your work."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy !== null}>
-              Keep editing
-            </AlertDialogCancel>
-            <Button
-              variant="outline"
-              disabled={busy !== null}
-              onClick={() => void handleDiscard()}
-              className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-            >
-              {busy === "discard" ? "Discarding…" : "Discard"}
-            </Button>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault();
-                setLeavePrompt(false);
-                if (snapshot?.complete) void handleSaveAndClose();
-                else if (snapshot?.recoverySaved) onClose(draftIdRef.current);
-              }}
-              disabled={
-                busy !== null ||
-                (!snapshot?.complete && !snapshot?.recoverySaved)
-              }
-            >
-              {snapshot?.complete
-                ? "Save as draft"
-                : "Keep in this tab & close"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <div className="flex shrink-0 items-center justify-between border-b px-5 py-2">
-        <div className="flex gap-1" aria-label="Packet documents">
-          <Button
-            size="sm"
-            variant={packetView === "invoice" ? "secondary" : "ghost"}
-            onClick={() => setPacketView("invoice")}
-          >
-            Invoice
-          </Button>
-          {includeWaiver && (
-            <Button
-              size="sm"
-              variant={packetView === "waiver" ? "secondary" : "ghost"}
-              disabled={packetBusy}
-              onClick={() => void openWaiver()}
-            >
-              Waiver
-            </Button>
-          )}
-        </div>
-        <label className="flex items-center gap-2 text-xs">
-          <Checkbox
-            checked={includeWaiver}
-            disabled={packetBusy || !snapshot?.complete || busy !== null}
-            onCheckedChange={(value) =>
-              void (value ? openWaiver() : removeWaiver())
-            }
-          />
-          {packetBusy ? "Preparing packet…" : "Include waiver"}
-        </label>
-      </div>
-      {includeWaiver && draftId && (
-        <div
-          className={cn(
-            "flex min-h-0 flex-1",
-            packetView !== "waiver" && "hidden",
-          )}
-        >
-          <PacketWaiver
-            invoiceId={draftId}
-            onClose={() => setPacketView("invoice")}
-          />
-        </div>
-      )}
-
-      <div
-        className={cn(
-          "flex min-h-0 flex-1 flex-col lg:flex-row",
-          packetView === "waiver" && "hidden",
-        )}
-      >
-        {/* Form */}
-        <div
-          inert={busy !== null}
-          className={cn(
-            "min-h-0 flex-1 overflow-y-auto",
-            mobilePreview && "hidden lg:block",
-          )}
-        >
-          {(numberError || numberWarning) && (
-            <div
-              className="mx-4 mt-4 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm"
-              role="status"
-            >
-              {numberError || numberWarning}
-              {numberError && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="ml-3"
-                  disabled={numberLoading}
-                  onClick={() => void retryNumber()}
-                >
-                  {numberLoading ? "Retrying…" : "Retry number"}
-                </Button>
-              )}
+              </div>
             </div>
-          )}
-          {bootstrapError ? (
-            <div className="mx-auto max-w-md px-6 py-16 text-center">
-              <p className="text-sm font-medium">
-                The composer could not open.
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {bootstrapError}
-              </p>
+            <aside
+              className={cn(
+                "min-h-0 flex-1 flex-col bg-muted/40 lg:flex lg:w-[46%] lg:max-w-[880px] lg:flex-none lg:border-l",
+                mobilePreview ? "flex" : "hidden",
+              )}
+            >
+              <div
+                className={cn(
+                  "min-h-0 flex-1 flex-col",
+                  reviewDocument === "invoice" || !includeWaiver
+                    ? "flex"
+                    : "hidden",
+                )}
+              >
+                {reviewPdf?.revision === reviewRevision ? (
+                  <PdfDocumentPreview
+                    url={reviewPdf.url}
+                    toolbar={reviewDocumentTabs}
+                  />
+                ) : (
+                  <>
+                    <div className="flex h-14 shrink-0 items-center border-b px-4">
+                      {reviewDocumentTabs}
+                    </div>
+                    <div
+                      className="m-auto space-y-3 p-6 text-center text-sm text-muted-foreground"
+                      role={reviewPdfError ? "alert" : "status"}
+                    >
+                      {reviewPdfError || "Preparing invoice PDF…"}
+                      {reviewPdfError && (
+                        <Button
+                          variant="outline"
+                          onClick={() =>
+                            setReviewPdfRetry((value) => value + 1)
+                          }
+                        >
+                          Try again
+                        </Button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+              {includeWaiver && deliveryReview?.waiver && (
+                <div
+                  className={cn(
+                    "min-h-0 flex-1 flex-col",
+                    reviewDocument === "waiver" ? "flex" : "hidden",
+                  )}
+                >
+                  <PdfDocumentPreview
+                    toolbar={reviewDocumentTabs}
+                    url={`/api/invoices/${draftId}/waivers/${deliveryReview.waiver.id}?version=${readWaiverWorkflow(deliveryReview.waiver)?.file_id ?? "prepared"}`}
+                  />
+                </div>
+              )}
+            </aside>
+          </div>
+        )}
+
+        <AlertDialog
+          open={leavePrompt}
+          onOpenChange={(open) => !busy && setLeavePrompt(open)}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {snapshot?.complete
+                  ? "Keep this invoice as a draft?"
+                  : "Keep your unfinished invoice?"}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {snapshot?.complete
+                  ? "Save it to Arc and finish it later. Discard removes the draft."
+                  : snapshot?.recoverySaved
+                    ? "Your incomplete edits are kept in this browser tab. Return here to finish them; they are not yet saved to Arc."
+                    : "These edits have not been saved. Keep editing to avoid losing your work."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={busy !== null}>
+                Keep editing
+              </AlertDialogCancel>
+              <Button
+                variant="outline"
+                disabled={busy !== null}
+                onClick={() => void handleDiscard()}
+                className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              >
+                {busy === "discard" ? "Discarding…" : "Discard"}
+              </Button>
+              <AlertDialogAction
+                onClick={(event) => {
+                  event.preventDefault();
+                  setLeavePrompt(false);
+                  if (snapshot?.complete) void handleSaveAndClose();
+                  else if (snapshot?.recoverySaved) onClose(draftIdRef.current);
+                }}
+                disabled={
+                  busy !== null ||
+                  (!snapshot?.complete && !snapshot?.recoverySaved)
+                }
+              >
+                {snapshot?.complete
+                  ? "Save as draft"
+                  : "Keep in this tab & close"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {waiverData && waiverSource && (
+          <div
+            className={cn(
+              "absolute inset-0 flex min-h-0 transition-opacity duration-200 motion-reduce:transition-none",
+              includeWaiver && packetView === "waiver"
+                ? "z-10 opacity-100"
+                : "pointer-events-none z-0 opacity-0",
+            )}
+          >
+            <WaiverStep
+              ref={waiverRef}
+              invoice={waiverData.invoice}
+              draft={waiverData.waivers.find(
+                (w) =>
+                  w.id ===
+                  waiverData.invoice.metadata?.waiver_packet?.waiver_id,
+              )}
+              readinessError={waiverData.readinessError}
+              initialRevision={waiverBaseRevision}
+              source={waiverSource}
+              active={includeWaiver && packetView === "waiver"}
+              persistInvoice={persistInvoiceForWaiver}
+              mobilePreview={mobilePreview}
+              actionTarget={packetView === "waiver" ? waiverActionTarget : null}
+              onReadyChange={setWaiverReady}
+              onBusyChange={setWaiverWorking}
+              onDeliveryChange={setDeliveryReview}
+              onReview={openReview}
+            />
+          </div>
+        )}
+        {packetView === "waiver" && !waiverData && (
+          <div
+            className="absolute inset-0 z-10 flex min-h-0 flex-col items-center justify-center gap-3 bg-background"
+            role={waiverLoadError ? "alert" : "status"}
+          >
+            <p className="text-sm text-muted-foreground">
+              {waiverLoadError ||
+                (snapshot?.complete
+                  ? "Loading waiver details…"
+                  : "Add your invoice details to start the waiver.")}
+            </p>
+            {waiverLoadError && (
               <Button
                 variant="outline"
                 size="sm"
-                className="mt-4"
-                onClick={() => onClose(null)}
+                onClick={() => void loadWaiverStep()}
               >
-                Back to billing
+                Try again
               </Button>
-            </div>
-          ) : editorReady ? (
-            <InvoiceDocumentEditor
-              ref={editorRef}
-              recoveryKey={recoveryKey}
-              onRecoveredDraft={(id) => {
-                setDraftId(id);
-                draftIdRef.current = id;
-              }}
-              initialInvoice={initialInvoice}
-              projectId={project.id}
-              projects={[project]}
-              builderInfo={bootstrap?.branding ?? undefined}
-              contacts={bootstrap?.contacts ?? []}
-              costCodes={bootstrap?.costCodes ?? []}
-              context={bootstrap ? bootstrap.context : undefined}
-              initialCustomerId={target.customerId ?? undefined}
-              initialKind={target.kind ?? undefined}
-              enableApprovedCostsSource={profile.costDriven}
-              duplicateFrom={bootstrap?.duplicate ?? null}
-              initialSourceChangeOrderId={
-                target.sourceChangeOrderId ?? undefined
-              }
-              reservation={reservation}
-              autosaveState={autosave}
-              onCreateDraft={handleCreateDraft}
-              onAutosave={handleAutosave}
-              onAutosaveStateChange={setAutosave}
-              onSnapshotChange={setSnapshot}
-            />
-          ) : (
-            <FormSkeleton />
-          )}
-        </div>
+            )}
+            {!snapshot?.complete && (
+              <Button variant="outline" size="sm" onClick={backToInvoice}>
+                Edit invoice
+              </Button>
+            )}
+          </div>
+        )}
 
-        {/* Live document */}
-        <aside
+        <DocumentEditorLayout
+          inert={packetView !== "invoice" || busy !== null}
+          aria-hidden={packetView !== "invoice"}
           className={cn(
-            "min-h-0 flex-1 flex-col bg-muted/40 lg:flex lg:w-[46%] lg:max-w-[880px] lg:flex-none lg:shrink-0 lg:border-l",
-            mobilePreview ? "flex" : "hidden",
+            "absolute inset-0 flex min-h-0 flex-col lg:flex-row transition-opacity duration-200 motion-reduce:transition-none",
+            packetView !== "invoice"
+              ? "pointer-events-none z-0 opacity-0"
+              : "z-10 opacity-100",
           )}
         >
-          <div className="min-h-0 flex-1 overflow-y-auto p-6">
+          {/* Form */}
+          <DocumentEditorFields
+            inert={busy !== null}
+            className={cn(
+              "min-h-0 flex-1 overflow-y-auto",
+              mobilePreview && "hidden lg:block",
+            )}
+          >
+            {(numberError || numberWarning) && (
+              <div
+                className="mx-4 mt-4 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm"
+                role="status"
+              >
+                {numberError || numberWarning}
+                {numberError && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="ml-3"
+                    disabled={numberLoading}
+                    onClick={() => void retryNumber()}
+                  >
+                    {numberLoading ? "Retrying…" : "Retry number"}
+                  </Button>
+                )}
+              </div>
+            )}
+            {bootstrapError ? (
+              <div className="mx-auto max-w-md px-6 py-16 text-center">
+                <p className="text-sm font-medium">
+                  The composer could not open.
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {bootstrapError}
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-4"
+                  onClick={() => onClose(null)}
+                >
+                  Back to billing
+                </Button>
+              </div>
+            ) : editorReady ? (
+              <InvoiceDocumentEditor
+                ref={editorRef}
+                recoveryKey={recoveryKey}
+                onRecoveredDraft={(id) => {
+                  setDraftId(id);
+                  draftIdRef.current = id;
+                }}
+                initialInvoice={initialInvoice}
+                projectId={project?.id}
+                projects={project ? [project] : []}
+                builderInfo={bootstrap?.branding ?? undefined}
+                contacts={bootstrap?.contacts ?? []}
+                costCodes={bootstrap?.costCodes ?? []}
+                context={bootstrap ? bootstrap.context : undefined}
+                initialCustomerId={
+                  target.customerId ??
+                  bootstrap?.defaultCustomerId ??
+                  project?.client_id ??
+                  undefined
+                }
+                initialKind={target.kind ?? undefined}
+                enableApprovedCostsSource={profile.costDriven}
+                duplicateFrom={bootstrap?.duplicate ?? null}
+                initialSourceChangeOrderId={
+                  target.sourceChangeOrderId ?? undefined
+                }
+                reservation={reservation}
+                autosaveState={autosave}
+                onCreateDraft={handleCreateDraft}
+                onAutosave={handleAutosave}
+                onAutosaveStateChange={setAutosave}
+                onSnapshotChange={setSnapshot}
+                waiverControl={
+                  project ? (
+                    <section className="space-y-3" aria-label="Lien waiver">
+                      <h2 className="text-base font-semibold tracking-tight">
+                        Lien waiver
+                      </h2>
+                      <div className="space-y-3 rounded-lg border p-4">
+                        <label className="flex items-start gap-3">
+                          <Checkbox
+                            className="mt-0.5"
+                            checked={includeWaiver}
+                            disabled={packetBusy || busy !== null}
+                            onCheckedChange={(value) =>
+                              void toggleWaiver(value === true)
+                            }
+                          />
+                          <span className="space-y-1">
+                            <span className="block text-sm font-medium">
+                              Include waiver
+                            </span>
+                            <span className="block text-xs text-muted-foreground">
+                              Add a waiver step before sending this invoice.
+                            </span>
+                          </span>
+                        </label>
+                      </div>
+                    </section>
+                  ) : undefined
+                }
+              />
+            ) : (
+              <FormSkeleton />
+            )}
+          </DocumentEditorFields>
+
+          {/* Live document */}
+          <DocumentPreviewPane
+            className={cn(
+              "min-h-0 flex-1 flex-col bg-muted/40 lg:flex lg:w-[46%] lg:max-w-[880px] lg:flex-none lg:shrink-0 lg:border-l",
+              mobilePreview ? "flex" : "hidden",
+            )}
+          >
             {snapshot ? (
               <div className="animate-in fade-in duration-300 motion-reduce:animate-none">
                 <DocumentPreview preview={snapshot.preview} />
@@ -1313,9 +1717,102 @@ export function InvoiceComposer({
             ) : (
               <Skeleton className="mx-auto aspect-[1/1.294] w-full max-w-[720px]" />
             )}
-          </div>
-        </aside>
+          </DocumentPreviewPane>
+        </DocumentEditorLayout>
       </div>
+      {sendFeedback && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 p-6 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="invoice-send-result"
+        >
+          <motion.div
+            initial={{
+              opacity: 0,
+              y: reducedMotion ? 0 : 10,
+              scale: reducedMotion ? 1 : 0.97,
+            }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ duration: reducedMotion ? 0 : 0.2 }}
+            className="w-full max-w-sm border bg-background p-8 text-center shadow-lg"
+          >
+            {sendFeedback.invoice ? (
+              <motion.svg
+                className="mx-auto mb-5 size-14 text-success"
+                viewBox="0 0 48 48"
+                fill="none"
+                aria-hidden="true"
+              >
+                <circle
+                  cx="24"
+                  cy="24"
+                  r="22"
+                  fill="currentColor"
+                  opacity="0.1"
+                />
+                <motion.path
+                  d="m14 24 7 7 14-15"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  initial={{ pathLength: reducedMotion ? 1 : 0 }}
+                  animate={{ pathLength: 1 }}
+                  transition={{ duration: reducedMotion ? 0 : 0.35 }}
+                />
+              </motion.svg>
+            ) : (
+              <Loader2 className="mx-auto mb-5 size-10 animate-spin text-muted-foreground" />
+            )}
+            <h2
+              id="invoice-send-result"
+              className="text-xl font-semibold tracking-tight"
+            >
+              {sendFeedback.invoice
+                ? sendFeedback.awaitingSignature
+                  ? "Awaiting signed waiver"
+                  : ["sent", "delivered"].includes(
+                        sendFeedback.invoice.delivery_status ?? "",
+                      )
+                    ? "Invoice sent"
+                    : "Invoice on its way"
+                : sendFeedback.awaitingSignature
+                  ? "Saving pending delivery"
+                  : "Sending invoice"}
+            </h2>
+            <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+              {sendFeedback.invoice
+                ? sendFeedback.awaitingSignature
+                  ? "Your printable waiver download has started. After physical signing and notarization, reopen this invoice and upload the executed PDF to send the packet."
+                  : `${["sent", "delivered"].includes(sendFeedback.invoice.delivery_status ?? "") ? "Sent" : "Queued for delivery"} to ${parsedRecipients.join(", ")}.`
+                : "You can stay here while Arc confirms your request."}
+            </p>
+            {sendFeedback.invoice &&
+              sendFeedback.awaitingSignature &&
+              deliveryReview?.physical &&
+              deliveryReview.waiver && (
+                <Button asChild variant="outline" className="mt-5 w-full">
+                  <a
+                    href={`/api/invoices/${sendFeedback.invoice.id}/waivers/${deliveryReview.waiver.id}?download=1`}
+                    download="lien-waiver.pdf"
+                  >
+                    Download printable waiver
+                  </a>
+                </Button>
+              )}
+            {sendFeedback.invoice && (
+              <Button
+                autoFocus
+                className="mt-6 w-full"
+                onClick={finishSendFeedback}
+              >
+                Done
+              </Button>
+            )}
+          </motion.div>
+        </div>
+      )}
     </div>,
     document.body,
   );
@@ -1331,41 +1828,15 @@ function DocumentPreview({
 }: {
   preview: InvoiceEditorSnapshot["preview"];
 }) {
-  const PAGE_WIDTH = 816;
-  const PAGE_HEIGHT = 1056;
-  const frameRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(0.8);
-
-  useLayoutEffect(() => {
-    const element = frameRef.current;
-    if (!element) return;
-    const update = () =>
-      setScale(Math.min(1, Math.max(0.3, element.clientWidth / PAGE_WIDTH)));
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-
   return (
-    <div ref={frameRef} className="mx-auto w-full max-w-[816px]">
-      <div
-        className="relative shadow-md"
-        style={{ width: PAGE_WIDTH * scale, height: PAGE_HEIGHT * scale }}
-      >
-        <div
-          className="absolute left-0 top-0 origin-top-left"
-          style={{ transform: `scale(${scale})` }}
-        >
-          <ArcInvoiceDocument
-            data={preview.data}
-            lines={preview.lines}
-            width={PAGE_WIDTH}
-            height={PAGE_HEIGHT}
-          />
-        </div>
-      </div>
-    </div>
+    <ScaledDocument>
+      <ArcInvoiceDocument
+        data={preview.data}
+        lines={preview.lines}
+        width={816}
+        height={1056}
+      />
+    </ScaledDocument>
   );
 }
 
@@ -1376,60 +1847,6 @@ function defaultSendAt() {
   date.setHours(9, 0, 0, 0);
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-const SAVED_TIME = new Intl.DateTimeFormat("en-US", {
-  hour: "numeric",
-  minute: "2-digit",
-});
-
-/**
- * Where the draft stands: spinning while it saves, a check and the time once it
- * has, red words if it could not. The label never blinks between states; it
- * crossfades so the eye is not pulled to the header on every keystroke.
- */
-function SaveIndicator({
-  state,
-  lastSavedAt,
-  hasDraft,
-  label,
-}: {
-  state: AutosaveState;
-  lastSavedAt: Date | null;
-  hasDraft: boolean;
-  label: string;
-}) {
-  const text =
-    state === "saving"
-      ? "Saving…"
-      : state === "error"
-        ? label
-        : lastSavedAt
-          ? `Saved ${SAVED_TIME.format(lastSavedAt)}`
-          : hasDraft
-            ? "Saved"
-            : label;
-  return (
-    <span
-      aria-live="polite"
-      key={text}
-      className={cn(
-        "hidden items-center gap-1.5 text-[11px] transition-colors sm:flex animate-in fade-in duration-200 motion-reduce:animate-none",
-        state === "error"
-          ? "font-medium text-destructive"
-          : "text-muted-foreground",
-      )}
-    >
-      {state === "saving" ? (
-        <Loader2 className="h-3 w-3 animate-spin" />
-      ) : state === "error" ? (
-        <CircleAlert className="h-3 w-3" />
-      ) : lastSavedAt || hasDraft ? (
-        <Check className="h-3 w-3 text-success" />
-      ) : null}
-      {text}
-    </span>
-  );
 }
 
 function FormSkeleton() {

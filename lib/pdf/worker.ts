@@ -1,5 +1,3 @@
-import { pdfjs } from "react-pdf"
-
 import { PDF_WORKER_SRC } from "./worker-src"
 
 /**
@@ -13,11 +11,14 @@ import { PDF_WORKER_SRC } from "./worker-src"
  * to a fake worker that fails the same way — an error that names neither the
  * proxy nor the URL, which is why this lives in one place now rather than five.
  *
- * `pdfjs` is taken from react-pdf, not from `pdfjs-dist` directly: pnpm resolves
- * a second copy of pdfjs-dist, and configuring the wrong copy's
- * GlobalWorkerOptions leaves the one actually rendering with an empty workerSrc.
+ * Callers pass the `pdfjs` they took from react-pdf, not from `pdfjs-dist`
+ * directly: pnpm resolves a second copy of pdfjs-dist, and configuring the wrong
+ * copy's GlobalWorkerOptions leaves the one actually rendering with an empty
+ * workerSrc. Taking it as an argument also keeps this module free of pdf.js, so
+ * importing it never evaluates pdf.js during server rendering (where its
+ * module-level `new DOMMatrix()` throws).
  */
-export function configurePdfWorker(): void {
+export function configurePdfWorker(pdfjs: { GlobalWorkerOptions: { workerSrc: string } }): void {
   if (pdfjs.GlobalWorkerOptions.workerSrc === PDF_WORKER_SRC) return
   pdfjs.GlobalWorkerOptions.workerSrc = PDF_WORKER_SRC
 }

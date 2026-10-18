@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useState, useTransition, type FormEvent } from "react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
@@ -35,7 +36,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
-import { unwrapAction } from "@/lib/action-result"
+import { unwrapAction, type ActionResult } from "@/lib/action-result"
+import { Textarea } from "@/components/ui/textarea"
+import { PLATFORM_ACCESS_DEFAULT_MINUTES, PLATFORM_ACCESS_DURATIONS } from "@/lib/validation/platform-access"
 import { PRODUCT_TIER_LABELS, type ProductTier } from "@/lib/product-tier"
 
 interface CustomerHealth {
@@ -98,7 +101,7 @@ interface CustomersClientProps {
   onExtendTrial: (formData: FormData) => Promise<void>
   onUpdateCustomer: (formData: FormData) => Promise<void>
   onUpdateSubscription: (formData: FormData) => Promise<void>
-  onEnterContext: (formData: FormData) => Promise<void>
+  onEnterContext: (formData: FormData) => Promise<ActionResult<unknown>>
   onSetStatus: (formData: FormData) => Promise<void>
 }
 
@@ -119,7 +122,9 @@ export function CustomersClient({
   onEnterContext,
   onSetStatus,
 }: CustomersClientProps) {
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
+  const router = useRouter()
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null)
+  const selectedCustomer = customers.find((customer) => customer.id === selectedCustomerId) ?? null
   const [sheetOpen, setSheetOpen] = useState(false)
   const [billingCustomer, setBillingCustomer] = useState<Customer | null>(null)
   const [billingStatus, setBillingStatus] = useState("active")
@@ -128,6 +133,10 @@ export function CustomersClient({
   const [activationMethod, setActivationMethod] = useState<"checkout" | "invoice">("checkout")
   const [activationResult, setActivationResult] = useState<{ checkoutUrl?: string | null; message?: string } | null>(null)
   const [activatingBilling, startActivatingBilling] = useTransition()
+
+  const [enterCustomer, setEnterCustomer] = useState<Customer | null>(null)
+  const [enterError, setEnterError] = useState<string | null>(null)
+  const [entering, startEntering] = useTransition()
 
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null)
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("")
@@ -145,7 +154,7 @@ export function CustomersClient({
           toast.success("Organization deleted", { description: result.message })
           setCustomerToDelete(null)
           setDeleteConfirmationText("")
-          window.location.reload()
+          router.refresh()
         }
       } catch (error: any) {
         console.error(error)
@@ -154,8 +163,24 @@ export function CustomersClient({
     })
   }
 
+  const openEnterContext = (customer: Customer) => {
+    setEnterCustomer(customer)
+    setEnterError(null)
+  }
+
+  // A successful entry redirects from the server; only a refusal comes back.
+  const handleEnterContextSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const formData = new FormData(event.currentTarget)
+    setEnterError(null)
+    startEntering(async () => {
+      const result = await onEnterContext(formData)
+      if (!result.success) setEnterError(result.error)
+    })
+  }
+
   const handleViewCustomer = (customer: Customer) => {
-    setSelectedCustomer(customer)
+    setSelectedCustomerId(customer.id)
     setSheetOpen(true)
   }
 
@@ -206,7 +231,7 @@ export function CustomersClient({
           description: "Local billing state was updated for this organization.",
         })
         setBillingCustomer(null)
-        window.location.reload()
+        router.refresh()
       } catch (error: any) {
         console.error(error)
         toast.error("Failed to update subscription", {
@@ -361,13 +386,9 @@ export function CustomersClient({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-52">
-                        <form action={onEnterContext}>
-                          <input type="hidden" name="orgId" value={customer.id} />
-                          <input type="hidden" name="reason" value="Platform operator switched org context from customers page." />
-                          <DropdownMenuItem asChild>
-                            <button type="submit" className="w-full text-left">Enter Context</button>
-                          </DropdownMenuItem>
-                        </form>
+                        <DropdownMenuItem onClick={() => openEnterContext(customer)}>
+                          Enter Context
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => openBillingEditor(customer)}>
                           <CreditCard className="mr-2 h-4 w-4" />
                           Edit Billing
@@ -485,6 +506,7 @@ export function CustomersClient({
       )}
 
       <CustomerSheet
+        key={selectedCustomerId ?? "none"}
         customer={selectedCustomer}
         open={sheetOpen}
         onOpenChange={setSheetOpen}
@@ -595,6 +617,59 @@ export function CustomersClient({
                 </Button>
                 <Button type="submit" disabled={savingBilling}>
                   {savingBilling ? "Saving..." : "Save Billing"}
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(enterCustomer)} onOpenChange={(open) => !open && setEnterCustomer(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Enter {enterCustomer?.name}</DialogTitle>
+            <DialogDescription>
+              Support access is logged and shown to the organization&apos;s administrators. It ends when the time
+              runs out or when you exit.
+            </DialogDescription>
+          </DialogHeader>
+          {enterCustomer ? (
+            <form onSubmit={handleEnterContextSubmit} className="space-y-5">
+              <input type="hidden" name="orgId" value={enterCustomer.id} />
+              <div className="space-y-2">
+                <Label htmlFor="enter-reason">Reason</Label>
+                <Textarea
+                  id="enter-reason"
+                  name="reason"
+                  rows={3}
+                  minLength={10}
+                  maxLength={500}
+                  placeholder="Ticket #1234: invoice totals do not match the budget"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="enter-duration">Duration</Label>
+                <Select name="durationMinutes" defaultValue={String(PLATFORM_ACCESS_DEFAULT_MINUTES)}>
+                  <SelectTrigger id="enter-duration">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PLATFORM_ACCESS_DURATIONS.map((minutes) => (
+                      <SelectItem key={minutes} value={String(minutes)}>
+                        {minutes < 60 ? `${minutes} minutes` : `${minutes / 60} ${minutes === 60 ? "hour" : "hours"}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {enterError ? <p className="text-sm text-destructive">{enterError}</p> : null}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setEnterCustomer(null)} disabled={entering}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={entering}>
+                  {entering ? "Entering..." : "Enter organization"}
                 </Button>
               </DialogFooter>
             </form>

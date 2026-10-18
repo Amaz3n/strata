@@ -1,0 +1,26 @@
+1..25
+ok 1 - members cannot bypass the import authorization boundary
+ok 2 - anonymous callers cannot write imported lines
+ok 3 - two books own independent claims for overlapping remote IDs
+ok 4 - overlapping provider IDs create distinct local invoices for distinct books
+ok 5 - each committed invoice already has its neutral mapping
+ok 6 - realm identity is part of deduplication
+ok 7 - retry after parent commit resumes the original document
+ok 8 - a failed row insert cannot leave a mapping
+ok 9 - failed insert leaves no neutral identity
+ok 10 - failure on the second child rolls back the whole line set
+ok 11 - partial child insertion leaves no orphaned lines
+ok 12 - retry creates the complete line set
+ok 13 - replaying a completed line set returns its stable IDs
+ok 14 - child retries cannot duplicate invoice lines
+ok 15 - fan-out allocations have distinct stable source-line identities
+ok 16 - a split retry adopts the existing allocation
+ok 17 - a stale owner cannot persist imported financial facts
+ok 18 - row organization must match the authorized claim
+ok 19 - an incomplete import cannot appear synced or be pushed outbound
+ok 20 - Invoice 42 claim cannot create Payment 42
+ok 21 - equal line counts cannot certify edited document content
+ok 22 - legacy lines without stable order cannot attach external items by arbitrary UUID order
+ok 23 - a mapped invoice UUID cannot authorize expense-line writes
+ok 24 - adopting an existing document cannot rehome its connection
+ok 25 - adopting an existing invoice cannot duplicate a remote document identity

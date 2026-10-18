@@ -1,5 +1,9 @@
 "use client"
 
+import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
+import { buildTradeNavGroups } from "./trade-nav-items"
+import { buildBooksNavItems } from "./books-nav-items"
+
 import Link from "next/link"
 import { visibleSettingsSections as getVisibleSettingsSections } from "@/lib/settings/sections"
 
@@ -25,7 +29,6 @@ import {
   Layers,
   MapPin,
   Receipt,
-  Ruler,
   Shield,
   ShieldCheck,
   SlidersHorizontal,
@@ -55,6 +58,7 @@ import type { ProjectNavigationItem, User } from "@/lib/types"
 import type { ProductTier } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
 import { useNavigationBadges } from "./navigation-badge-context"
+import { useShellProject } from "./page-title-context"
 import {
   buildProjectNavGroups,
   getProjectIdFromPath,
@@ -68,12 +72,16 @@ interface AppSidebarProps {
   user?: User | null
   /** Loaded by the layout's cached chrome context, not fetched after hydration. */
   projects: ProjectNavigationItem[]
+  /** The list stopped at its cap; the switcher says so. */
+  projectsTruncated: boolean
   canAccessPlatform?: boolean
   permissions?: string[]
   productTier?: ProductTier
+  businessProfile?: BusinessProfile
   showProductionNavigation?: boolean
   showPurchasingNavigation?: boolean
   showPipelineNavigation?: boolean
+  showSafetyNavigation?: boolean
   booksEnabled?: boolean
 }
 
@@ -117,6 +125,7 @@ function buildWorkspaceGroups(
   showProductionNavigation = false,
   showPurchasingNavigation = false,
   showPipelineNavigation = true,
+  showSafetyNavigation = false,
 ): SidebarNavGroup[] {
   const orgTerms = terminology(productTier)
 
@@ -177,20 +186,20 @@ function buildWorkspaceGroups(
       isActive: pathname.startsWith("/payables"),
       requiredAny: ["bill.read", "payment.read"],
     },
-    ...(productTier === "production" ? [] : [{
+    ...(showPipelineNavigation ? [{
       title: "Bids",
       url: "/bids",
       icon: Gavel,
       isActive: pathname.startsWith("/bids"),
       requiredAny: ["bid.read", "bid.write"],
-    }]),
-    ...(productTier === "production" ? [] : [{
+    }] : []),
+    {
       title: "Schedule",
       url: "/schedule",
       icon: CalendarDays,
       isActive: pathname.startsWith("/schedule"),
       requiredAny: ["schedule.read"],
-    }]),
+    },
     {
       title: "Documents",
       url: "/documents",
@@ -215,13 +224,14 @@ function buildWorkspaceGroups(
     {
       title: "Books",
       url: "/books",
+      items: buildBooksNavItems(pathname),
       icon: FileSpreadsheet,
       isActive: pathname.startsWith("/books"),
       requiredAny: ["books.read"],
     },
   ]
 
-  if (productTier === "commercial") {
+  if (showSafetyNavigation) {
     officeItems.push({
       title: "Safety",
       url: "/safety",
@@ -326,12 +336,15 @@ function buildWorkspaceGroups(
 export function AppSidebar({
   user,
   projects,
+  projectsTruncated,
   canAccessPlatform,
   permissions = [],
   productTier = "residential",
+  businessProfile = BUILDER_PROFILE,
   showProductionNavigation = false,
   showPurchasingNavigation = false,
   showPipelineNavigation = true,
+  showSafetyNavigation = false,
   booksEnabled = false,
 }: AppSidebarProps) {
   const {
@@ -350,12 +363,9 @@ export function AppSidebar({
   const isProject = Boolean(projectId)
   const section = getProjectSection(pathname)
   const permissionSet = useMemo(() => new Set(permissions), [permissions])
-  const currentProject = useMemo(
-    () => projects.find((project) => project.id === projectId),
-    [projects, projectId],
-  )
+  const currentProject = useShellProject(projects, projectId)
 
-  const activeSettingsTab = searchParams.get("tab") ?? "profile"
+  const activeSettingsTab = pathname.startsWith("/settings/accounting") ? "accounting" : searchParams.get("tab") ?? "profile"
   const settingsReturnTo = searchParams.get("returnTo") || "/"
   const settingsItemHref = (item: SidebarNavItem) => {
     const tab = new URLSearchParams(item.url.split("?")[1] ?? "").get("tab")
@@ -374,19 +384,24 @@ export function AppSidebar({
           reviewBadgeCount: projectReviewBadgeCounts[projectId],
           correspondenceBadgeCount: projectCorrespondenceBadgeCounts[projectId],
           orgTier: productTier,
+          businessProfile,
         }),
         permissionSet,
       )
     }
     const groups = filterGroups(
-      buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation),
+      businessProfile.kind === "trade" ? [
+        ...buildTradeNavGroups(pathname),
+        ...(booksEnabled ? [{ label: "Accounting", items: [{ title: "Books", url: "/books", icon: FileSpreadsheet, items: buildBooksNavItems(pathname), requiredAny: ["books.read"] }] }] : []),
+        ...(canAccessPlatform ? [{ label: "Platform", items: [{ title: "Platform", url: "/platform", icon: Shield }] }] : []),
+      ] : buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, showSafetyNavigation),
       permissionSet,
     )
     return groups.map((group) => ({
       ...group,
       items: group.items.filter((item) => item.title !== "Books" || booksEnabled),
     })).filter((group) => group.items.length > 0)
-  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, booksEnabled])
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, businessProfile, permissionSet, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, showSafetyNavigation, booksEnabled])
 
   const navMain = navGroups.map((group) => ({
     ...group,
@@ -395,12 +410,12 @@ export function AppSidebar({
       isActive: !item.disabled && (item.isActive || pathname === item.url),
     })),
   }))
-  const visibleSettingsSections = getVisibleSettingsSections(permissions, productTier)
+  const visibleSettingsSections = getVisibleSettingsSections(permissions)
 
   const orgData = {
     name: "Arc Construction",
     logo: HardHat,
-    plan: "Pro",
+    plan: businessProfile.kind === "trade" ? "Arc Trade" : "Pro",
   }
 
   const headerKey = isSettings ? "settings" : isProject ? "project" : "workspace"
@@ -436,14 +451,14 @@ export function AppSidebar({
               <div className="flex w-full items-stretch border border-sidebar-border/70 group-data-[collapsible=icon]:border-transparent">
                 <OptimisticLink
                   href="/projects"
-                  aria-label="All projects"
-                  title="All projects"
+                  aria-label={businessProfile.kind === "trade" ? "All jobs" : "All projects"}
+                  title={businessProfile.kind === "trade" ? "All jobs" : "All projects"}
                   className="flex h-10 w-9 shrink-0 items-center justify-center border-r border-sidebar-border/70 text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground group-data-[collapsible=icon]:hidden"
                 >
                   <ArrowLeft className="size-4" />
                 </OptimisticLink>
                 <div className="min-w-0 flex-1">
-                  <SidebarProjectSwitcher projectId={projectId ?? undefined} projects={projects} />
+                  <SidebarProjectSwitcher projectId={projectId ?? undefined} projects={projects} truncated={projectsTruncated} />
                 </div>
               </div>
             ) : (

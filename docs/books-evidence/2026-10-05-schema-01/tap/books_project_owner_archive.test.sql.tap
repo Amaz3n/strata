@@ -1,0 +1,7 @@
+1..6
+ok 1 - project owner archive capture stays private
+ok 2 - legacy population capture stays private
+ok 3 - archive capture preserves invoker authority
+ok 4 - snapshot capture includes authoritative project owners
+ok 5 - legacy review distinguishes retained and current population contracts
+ok 6 - old immutable proposals retain contract one

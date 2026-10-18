@@ -1,0 +1,90 @@
+{
+  "recorded_at": "2026-10-05T04:03:19.053483+00:00",
+  "environment": "Codex in-app browser, localhost 127.0.0.1:58444, disposable PGlite actual scoped SQL",
+  "component": "Actual NativeInvoiceAccounting React component and native-invoice-recovery-client adapter",
+  "transport": "Explicit fixture replacements for Next.js actions; no Next authentication/RLS or full application visual acceptance",
+  "source_artifacts": [
+    {
+      "path": "lib/services/books/native-invoice-workspace.ts",
+      "sha256": "1f6a9a842baa7c8b6efa3a6770724aca9068e7a3fdbcb802ba4daa48506dbaac"
+    },
+    {
+      "path": "components/books/native-invoice-accounting.tsx",
+      "sha256": "a63c61bf65ecda20fbad4a8f98f65684488b71a6001dc66f1472769206f5708d"
+    },
+    {
+      "path": "components/invoices/invoice-inspector.tsx",
+      "sha256": "558c6309e2594726f8ea5563cf3d849866c3bf2be1fa5fac694a5bdb74c95b84"
+    },
+    {
+      "path": "app/(app)/books/actions.ts",
+      "sha256": "1f4d24217db9f9b02531c48c913f612e1a7e4abc13ebc1b913e100b5257ffdb3"
+    },
+    {
+      "path": "scripts/serve-books-native-invoice-recovery-fixture.cjs",
+      "sha256": "feabfbf71b1b01ac83aa358330b43ea082f6d78c0dc1cd73575d85ae171cc06d"
+    },
+    {
+      "path": "tests/books-native-invoice-workspace.test.js",
+      "sha256": "1d4431432e5afba77458e5c1efcb8b0fa695793762bc598d7ed2caea2de30aa3"
+    },
+    {
+      "path": "tests/books-native-invoice-render.test.js",
+      "sha256": "4faea586dbdc2a7e8943d99cbb892301924f22ec2de7d61a9bf4a9d79ca92e77"
+    }
+  ],
+  "bundle": {
+    "path": "/tmp/books-native-invoice-workbench-browser/app.js",
+    "sha256": "20e6358405e0d2e67c46653feed74400349f37e69e372927d71ed716af5a80d7"
+  },
+  "observations": [
+    {
+      "phase": "review",
+      "account_codes": [
+        "1100",
+        "1110",
+        "2350",
+        "2250"
+      ],
+      "debits_cents": [
+        10000,
+        2000,
+        0,
+        0
+      ],
+      "credits_cents": [
+        0,
+        0,
+        11000,
+        1000
+      ],
+      "posting_button_disabled_until_explanation": true
+    },
+    {
+      "phase": "lost response after actual SQL commit",
+      "journalId": "af3d3cc9-2619-4122-bcab-cd79bc5bd9d3",
+      "pendingRequestId": "d3d637a7-b4c3-4c28-8f76-20fb9ef10d53",
+      "saved_request_controls_visible": true
+    },
+    {
+      "phase": "reload",
+      "journalId": "af3d3cc9-2619-4122-bcab-cd79bc5bd9d3",
+      "pendingRequestId": "d3d637a7-b4c3-4c28-8f76-20fb9ef10d53"
+    },
+    {
+      "phase": "recover original posting",
+      "journalId": "af3d3cc9-2619-4122-bcab-cd79bc5bd9d3",
+      "saved_request_controls_visible": false,
+      "postingCount": 1,
+      "cancellationCount": 0,
+      "nativeLedgerActivated": false
+    }
+  ],
+  "screenshot": {
+    "path": "/Users/agustinzenuto/.codex/visualizations/2026/10/03/01a0ff13-c07c-7fd2-8488-200bfc787322/books-invoice-workbench-verified.jpg",
+    "sha256": "5b41915405037a9921cd1f831463e5e237ad6720c1b0d8c6df13c7d83856981f"
+  },
+  "tab_closed": true,
+  "fixture_process_exit_code": 0,
+  "production_database_modified": false
+}

@@ -43,11 +43,15 @@ type GlAccount = {
 export function OpeningBalancesWizard({
   accounts,
   asOf,
+  companies,
 }: {
   accounts: GlAccount[];
   asOf: string;
+  /** The organization's companies; each brings its own opening position. */
+  companies: Array<{ id: string; name: string; is_primary: boolean }>;
 }) {
   const [cutoverDate, setCutoverDate] = useState(asOf);
+  const [companyId, setCompanyId] = useState(companies.find((company) => company.is_primary)?.id ?? "");
   const [sourceFilename, setSourceFilename] = useState("");
   const [pasted, setPasted] = useState("");
   const [rows, setRows] = useState<ParsedTrialBalanceRow[] | null>(null);
@@ -91,6 +95,7 @@ export function OpeningBalancesWizard({
     startTransition(async () => {
       const result = await importOpeningBalancesAction({
         cutoverDate,
+        legalEntityId: companies.length > 1 ? companyId || null : null,
         sourceFilename: sourceFilename.trim() || null,
         // The paste itself is the provenance — what the batch digest attests to.
         sourceContent: pasted,
@@ -154,6 +159,27 @@ export function OpeningBalancesWizard({
             placeholder="QuickBooks trial balance 2026-06-30.csv"
           />
         </label>
+        {companies.length > 1 ? (
+          <label className="space-y-1">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Company
+            </span>
+            <select
+              className="w-full border bg-background p-2 text-sm"
+              value={companyId}
+              onChange={(event) => setCompanyId(event.target.value)}
+            >
+              {companies.map((company) => (
+                <option key={company.id} value={company.id}>
+                  {company.name}
+                </option>
+              ))}
+            </select>
+            <span className="block text-xs text-muted-foreground">
+              Each company brings its own trial balance as its own batch.
+            </span>
+          </label>
+        ) : null}
       </div>
 
       <div className="border-b px-5 py-4">
@@ -189,8 +215,8 @@ export function OpeningBalancesWizard({
 
       <details className="border-b px-5 py-4">
         <summary className="cursor-pointer text-sm font-medium">Import detailed open items and registers</summary>
-        <p className="my-3 text-xs leading-5 text-muted-foreground">Use one line per unpaid invoice, unpaid vendor bill, held retainage, unapplied deposit, loan or asset. Bank and card lines must identify their mapped native account. Import residual balances as of cutover, with the original document dates. Both reviewers approve the complete detail before posting.</p>
-        <p className="mb-3 text-xs text-muted-foreground">Upload a JSON array of opening lines. Each line includes accountCode, description, debitCents, creditCents, subledgerType and details. Receivables need details.customer_id (or projectId); payables need projectId and companyId. Details may include document_number, document_date, due_date and existing_entity_id. Asset cost lines require asset_number, useful_life_months and register account IDs; accumulated depreciation uses the same asset_number. Retained receivables require details.contract_id.</p>
+        <p className="my-3 text-xs leading-5 text-muted-foreground">Use one line per unpaid invoice, unpaid vendor bill, held retainage, unapplied deposit, loan, asset, owned lot or spec home. Bank and card lines must identify their mapped native account. Import residual balances as of cutover, with the original document dates. Both reviewers approve the complete detail before posting.</p>
+        <p className="mb-3 text-xs text-muted-foreground">Upload a JSON array of opening lines. Each line includes accountCode, description, debitCents, creditCents, subledgerType and details. Receivables need details.customer_id (or projectId); payables need projectId and companyId. Details may include document_number, document_date, due_date and existing_entity_id. Asset cost lines require asset_number, useful_life_months and register account IDs; accumulated depreciation uses the same asset_number. Retained receivables require details.contract_id. Owned land (1120, subledgerType land) names details.lot_id; a spec home (1160, or 1170 with details.completed_on) is subledgerType home_inventory on its projectId, after the home adopts its inventory policy. Bank and card lines need details.existing_entity_id (the bank account); put the statement balance on one line and each check or deposit the bank had not cleared at cutover on its own line with details.bank_opening_role &quot;outstanding_item&quot;, reference and document_date.</p>
         <Input type="file" accept=".json,application/json" aria-label="Detailed opening balance file" onChange={async (event) => {
           const file = event.target.files?.[0];
           if (!file) return;
@@ -201,7 +227,7 @@ export function OpeningBalancesWizard({
         <Button variant="outline" disabled={pending || !operationalJson.trim()} onClick={() => startTransition(async () => {
           try {
             const lines: OpeningBalanceLineInput[] = JSON.parse(operationalJson);
-            const result = await importOpeningBalancesAction({ cutoverDate, sourceFilename: sourceFilename || null, sourceContent: operationalJson, lines });
+            const result = await importOpeningBalancesAction({ cutoverDate, legalEntityId: companies.length > 1 ? companyId || null : null, sourceFilename: sourceFilename || null, sourceContent: operationalJson, lines });
             if (!result.success) { toast.error(result.error); return; }
             toast.success("Detailed batch validated for owner and accountant review"); setOperationalJson("");
           } catch { toast.error("The file must contain a valid JSON array of opening lines"); }

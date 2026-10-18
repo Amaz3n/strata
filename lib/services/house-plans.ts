@@ -1,3 +1,4 @@
+import { readAllRows, type RangeReader, type RangeResult } from "@/lib/land/paging"
 import type { CostType } from "@/lib/cost-types"
 import {
   diffPlanTakeoffs,
@@ -17,6 +18,7 @@ import { authorize, getDivisionAccessForUser } from "@/lib/services/authorizatio
 import { getBudgetTemplate } from "@/lib/services/budget-templates"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { reevaluatePinnedLotFits } from "@/lib/services/lot-fit"
 import { requirePermission } from "@/lib/services/permissions"
 import {
   availabilityInputSchema,
@@ -41,6 +43,8 @@ export type HousePlanElevationDto = {
   is_active: boolean
   cover_file_id: string | null
   sort_order: number
+  /** Moves when the elevation's definition changes (code, name, swing, sqft delta, active); see product_definition_revisions. */
+  revision: number
 }
 
 export type TakeoffLineDto = PlanTakeoffPricingLine & {
@@ -89,6 +93,9 @@ export type HousePlanDto = {
   baths: number | null
   stories: number | null
   garage_bays: number | null
+  footprint_width_ft: number | null
+  footprint_depth_ft: number | null
+  drawn_swing: "left" | "right" | null
   description: string | null
   cover_file_id: string | null
   elevation_count: number
@@ -136,6 +143,9 @@ type PlanRow = {
   baths: number | null
   stories: number | null
   garage_bays: number | null
+  footprint_width_ft: number | string | null
+  footprint_depth_ft: number | string | null
+  drawn_swing: "left" | "right" | null
   description: string | null
   cover_file_id: string | null
   created_at: string | null
@@ -174,8 +184,50 @@ type TakeoffRow = {
   cost_code?: { code: string; name: string } | Array<{ code: string; name: string }> | null
 }
 
-const planSelect = "id, code, name, series, status, division_id, heated_sqft, total_sqft, beds, baths, stories, garage_bays, description, cover_file_id, created_at, updated_at"
+const planSelect = "id, code, name, series, status, division_id, heated_sqft, total_sqft, beds, baths, stories, garage_bays, footprint_width_ft, footprint_depth_ft, drawn_swing, description, cover_file_id, created_at, updated_at"
 const versionSelect = "id, house_plan_id, version_number, status, label, notes, budget_template_id, schedule_template_id, drawing_source_file_id, bundle_snapshot, released_at, released_by"
+
+/**
+ * Plan aggregates (lot counts per community, build actuals) are sums over every
+ * row, so a prefix is a wrong number, not a smaller one. Read all of it or refuse.
+ */
+const PLAN_AGGREGATE_ROW_CAP = 50_000
+
+/** An `in (...)` list longer than this overflows the request URL. */
+const IN_LIST_CHUNK = 100
+
+async function readPlanRows<Row>(read: RangeReader<Row>, label: string): Promise<Row[]> {
+  const { rows, truncated } = await readAllRows(read, { cap: PLAN_AGGREGATE_ROW_CAP, label })
+  if (truncated) throw new Error(`${label}: more than ${PLAN_AGGREGATE_ROW_CAP} rows`)
+  return rows
+}
+
+/** Every row for a long id list: chunked so the URL stays short, paged so no chunk is cut at max_rows. */
+async function readPlanRowsFor<Row>(
+  ids: readonly string[],
+  read: (chunk: string[], from: number, to: number) => PromiseLike<RangeResult<Row>>,
+  label: string,
+): Promise<Row[]> {
+  const chunks = Array.from({ length: Math.ceil(ids.length / IN_LIST_CHUNK) }, (_, index) => ids.slice(index * IN_LIST_CHUNK, (index + 1) * IN_LIST_CHUNK))
+  const results = await Promise.all(chunks.map((chunk) => readPlanRows((from, to) => read(chunk, from, to), label)))
+  return results.flat()
+}
+
+/** Every lot in these communities that carries a cost basis; the median per community is the lot cost a plan is priced against. */
+async function readLotBasis(context: Awaited<ReturnType<typeof requireOrgContext>>, communityIds: readonly string[]) {
+  return readPlanRowsFor(
+    communityIds,
+    (chunk, from, to) => context.supabase
+      .from("lots")
+      .select("id, community_id, cost_basis_cents")
+      .eq("org_id", context.orgId)
+      .in("community_id", chunk)
+      .gt("cost_basis_cents", 0)
+      .order("id")
+      .range(from, to),
+    "Failed to load lot basis",
+  )
+}
 
 function one<T>(value: T | T[] | null | undefined): T | null {
   return Array.isArray(value) ? value[0] ?? null : value ?? null
@@ -200,21 +252,13 @@ function mapTakeoff(row: TakeoffRow): TakeoffLineDto {
 
 async function loadPlanAggregates(context: Awaited<ReturnType<typeof requireOrgContext>>, planIds: string[]) {
   if (planIds.length === 0) return { elevations: [], versions: [], lots: [], availability: [] }
-  const [elevationsResult, versionsResult, lotsResult, availabilityResult] = await Promise.all([
-    context.supabase.from("house_plan_elevations").select("id, house_plan_id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order").eq("org_id", context.orgId).in("house_plan_id", planIds).order("sort_order"),
-    context.supabase.from("house_plan_versions").select(versionSelect).eq("org_id", context.orgId).in("house_plan_id", planIds).order("version_number", { ascending: false }),
-    context.supabase.from("lots").select("house_plan_id, house_plan_version_id, status").eq("org_id", context.orgId).in("house_plan_id", planIds),
-    context.supabase.from("community_plan_availability").select("house_plan_id, community_id, base_price_cents").eq("org_id", context.orgId).in("house_plan_id", planIds).eq("is_available", true),
+  const [elevations, versions, lots, availability] = await Promise.all([
+    readPlanRowsFor(planIds, (chunk, from, to) => context.supabase.from("house_plan_elevations").select("id, house_plan_id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order, revision").eq("org_id", context.orgId).in("house_plan_id", chunk).order("sort_order").order("id").range(from, to), "Failed to load plan elevations"),
+    readPlanRowsFor(planIds, (chunk, from, to) => context.supabase.from("house_plan_versions").select(versionSelect).eq("org_id", context.orgId).in("house_plan_id", chunk).order("version_number", { ascending: false }).order("id").range(from, to), "Failed to load plan versions"),
+    readPlanRowsFor(planIds, (chunk, from, to) => context.supabase.from("lots").select("id, house_plan_id, house_plan_version_id, status").eq("org_id", context.orgId).in("house_plan_id", chunk).order("id").range(from, to), "Failed to load plan lots"),
+    readPlanRowsFor(planIds, (chunk, from, to) => context.supabase.from("community_plan_availability").select("id, house_plan_id, community_id, base_price_cents").eq("org_id", context.orgId).in("house_plan_id", chunk).eq("is_available", true).order("id").range(from, to), "Failed to load plan availability"),
   ])
-  for (const result of [elevationsResult, versionsResult, lotsResult, availabilityResult]) {
-    if (result.error) throw new Error(`Failed to load plan aggregates: ${result.error.message}`)
-  }
-  return {
-    elevations: elevationsResult.data ?? [],
-    versions: (versionsResult.data ?? []) as VersionRow[],
-    lots: lotsResult.data ?? [],
-    availability: availabilityResult.data ?? [],
-  }
+  return { elevations, versions: versions as VersionRow[], lots, availability }
 }
 
 function mapPlan(row: PlanRow, aggregates: Awaited<ReturnType<typeof loadPlanAggregates>>): HousePlanDto {
@@ -232,6 +276,8 @@ function mapPlan(row: PlanRow, aggregates: Awaited<ReturnType<typeof loadPlanAgg
     baths: row.baths == null ? null : Number(row.baths),
     stories: row.stories == null ? null : Number(row.stories),
     garage_bays: row.garage_bays == null ? null : Number(row.garage_bays),
+    footprint_width_ft: row.footprint_width_ft == null ? null : Number(row.footprint_width_ft),
+    footprint_depth_ft: row.footprint_depth_ft == null ? null : Number(row.footprint_depth_ft),
     elevation_count: elevations.length,
     current_released_version: versions.find((version) => version.status === "released")?.version_number ?? null,
     active_lot_count: activeLots.length,
@@ -242,10 +288,10 @@ function mapPlan(row: PlanRow, aggregates: Awaited<ReturnType<typeof loadPlanAgg
   }
 }
 
-export async function listHousePlans(
+async function loadHousePlanCollection(
   filters: { status?: HousePlanDto["status"]; divisionId?: string; communityId?: string } = {},
   orgId?: string,
-): Promise<HousePlanDto[]> {
+) {
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.read", context)
   const divisionAccess = await getDivisionAccessForUser({
@@ -257,14 +303,14 @@ export async function listHousePlans(
     divisionAccess.assignedOnly &&
     !divisionAccess.divisionIds.includes(filters.divisionId)
   ) {
-    return []
+    return { plans: [] as HousePlanDto[], aggregates: await loadPlanAggregates(context, []) }
   }
   const scopedDivisionIds = filters.divisionId
     ? [filters.divisionId]
     : divisionAccess.assignedOnly
       ? divisionAccess.divisionIds
       : null
-  let query = context.supabase.from("house_plans").select(planSelect).eq("org_id", context.orgId).order("code").limit(100)
+  let query = context.supabase.from("house_plans").select(planSelect).eq("org_id", context.orgId).order("code").order("id")
   if (filters.status) query = query.eq("status", filters.status)
   if (scopedDivisionIds) {
     query = scopedDivisionIds.length > 0
@@ -272,34 +318,41 @@ export async function listHousePlans(
       : query.is("division_id", null)
   }
   if (filters.communityId) {
-    const { data, error } = await context.supabase.from("community_plan_availability").select("house_plan_id").eq("org_id", context.orgId).eq("community_id", filters.communityId).eq("is_available", true)
-    if (error) throw new Error(`Failed to filter community plans: ${error.message}`)
-    const ids = Array.from(new Set((data ?? []).map((row) => row.house_plan_id)))
-    if (ids.length === 0) return []
+    const communityId = filters.communityId
+    const rows = await readPlanRows((from, to) => context.supabase.from("community_plan_availability").select("id, house_plan_id").eq("org_id", context.orgId).eq("community_id", communityId).eq("is_available", true).order("id").range(from, to), "Failed to filter community plans")
+    const ids = Array.from(new Set(rows.map((row) => row.house_plan_id)))
+    if (ids.length === 0) return { plans: [] as HousePlanDto[], aggregates: await loadPlanAggregates(context, []) }
     query = query.in("id", ids)
   }
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to list house plans: ${error.message}`)
-  const rows = (data ?? []) as PlanRow[]
-  const aggregates = await loadPlanAggregates(context, rows.map((row) => row.id))
-  return rows.map((row) => mapPlan(row, aggregates))
+  const result = await readAllRows<PlanRow>(
+    (from, to) => query.range(from, to),
+    { cap: 10_000, pageSize: 500, label: "Failed to list house plans" },
+  )
+  if (result.truncated) throw new Error("Too many plans. Select a division or community to narrow the library.")
+  const aggregates = await loadPlanAggregates(context, result.rows.map((row) => row.id))
+  return { plans: result.rows.map((row) => mapPlan(row, aggregates)), aggregates }
+}
+
+export async function listHousePlans(
+  filters: { status?: HousePlanDto["status"]; divisionId?: string; communityId?: string } = {},
+  orgId?: string,
+): Promise<HousePlanDto[]> {
+  return (await loadHousePlanCollection(filters, orgId)).plans
 }
 
 async function loadVersionDetails(context: Awaited<ReturnType<typeof requireOrgContext>>, versions: VersionRow[]): Promise<HousePlanVersionDto[]> {
   if (versions.length === 0) return []
   const ids = versions.map((version) => version.id)
-  const [linksResult, takeoffResult, lotsResult] = await Promise.all([
-    context.supabase.from("house_plan_version_template_links").select("house_plan_version_id, kind, template_id").eq("org_id", context.orgId).in("house_plan_version_id", ids).order("sort_order"),
-    context.supabase.from("house_plan_takeoff_lines").select("id, house_plan_version_id, elevation_id, cost_code_id, cost_type, description, quantity, uom, unit_cost_cents, sort_order, metadata, cost_code:cost_codes(code,name)").eq("org_id", context.orgId).in("house_plan_version_id", ids).order("sort_order"),
-    context.supabase.from("lots").select("house_plan_version_id").eq("org_id", context.orgId).in("house_plan_version_id", ids),
+  const [linkRows, takeoffRows, lotRows] = await Promise.all([
+    readPlanRowsFor(ids, (chunk, from, to) => context.supabase.from("house_plan_version_template_links").select("id, house_plan_version_id, kind, template_id").eq("org_id", context.orgId).in("house_plan_version_id", chunk).order("sort_order").order("id").range(from, to), "Failed to load plan version links"),
+    readPlanRowsFor(ids, (chunk, from, to) => context.supabase.from("house_plan_takeoff_lines").select("id, house_plan_version_id, elevation_id, cost_code_id, cost_type, description, quantity, uom, unit_cost_cents, sort_order, metadata, cost_code:cost_codes(code,name)").eq("org_id", context.orgId).in("house_plan_version_id", chunk).order("sort_order").order("id").range(from, to), "Failed to load plan takeoff lines"),
+    readPlanRowsFor(ids, (chunk, from, to) => context.supabase.from("lots").select("id, house_plan_version_id").eq("org_id", context.orgId).in("house_plan_version_id", chunk).order("id").range(from, to), "Failed to load plan version lots"),
   ])
-  for (const result of [linksResult, takeoffResult, lotsResult]) {
-    if (result.error) throw new Error(`Failed to load plan version details: ${result.error.message}`)
-  }
-  const links = (linksResult.data ?? []) as LinkRow[]
-  const takeoffs = (takeoffResult.data ?? []).map((row) => mapTakeoff(row as TakeoffRow))
+  const links = linkRows as LinkRow[]
+  const takeoffVersionById = new Map(takeoffRows.map((row) => [row.id, row.house_plan_version_id]))
+  const takeoffs = takeoffRows.map((row) => mapTakeoff(row as TakeoffRow))
   return versions.map((version) => {
-    const versionLines = takeoffs.filter((line) => (takeoffResult.data ?? []).find((row) => row.id === line.id)?.house_plan_version_id === version.id)
+    const versionLines = takeoffs.filter((line) => takeoffVersionById.get(line.id) === version.id)
     const versionLinks = links.filter((link) => link.house_plan_version_id === version.id)
     return {
       id: version.id,
@@ -318,7 +371,7 @@ async function loadVersionDetails(context: Awaited<ReturnType<typeof requireOrgC
       released_by: version.released_by,
       takeoff_line_count: versionLines.length,
       takeoff_total_cents_manual: versionLines.reduce((sum, line) => sum + resolveTakeoffLineAmount(line.quantity, line.unit_cost_cents ?? 0), 0),
-      pinned_lot_count: (lotsResult.data ?? []).filter((lot) => lot.house_plan_version_id === version.id).length,
+      pinned_lot_count: lotRows.filter((lot) => lot.house_plan_version_id === version.id).length,
       takeoff_lines: versionLines,
     }
   })
@@ -354,6 +407,7 @@ export async function getHousePlan(id: string, orgId?: string): Promise<HousePla
       is_active: item.is_active,
       cover_file_id: item.cover_file_id,
       sort_order: Number(item.sort_order),
+      revision: Number(item.revision),
     })),
     versions,
   }
@@ -372,6 +426,9 @@ function planPayload(input: Partial<HousePlanInput>) {
   if (input.baths !== undefined) patch.baths = input.baths ?? null
   if (input.stories !== undefined) patch.stories = input.stories ?? null
   if (input.garageBays !== undefined) patch.garage_bays = input.garageBays ?? null
+  if (input.footprintWidthFt !== undefined) patch.footprint_width_ft = input.footprintWidthFt ?? null
+  if (input.footprintDepthFt !== undefined) patch.footprint_depth_ft = input.footprintDepthFt ?? null
+  if (input.drawnSwing !== undefined) patch.drawn_swing = input.drawnSwing ?? null
   if (input.description !== undefined) patch.description = input.description ?? null
   if (input.coverFileId !== undefined) patch.cover_file_id = input.coverFileId ?? null
   if (input.metadata !== undefined) patch.metadata = input.metadata
@@ -398,7 +455,30 @@ export async function createHousePlan(input: HousePlanInput, orgId?: string): Pr
   return getHousePlan(data.id, context.orgId)
 }
 
-export async function updateHousePlan(id: string, input: Partial<HousePlanInput>, orgId?: string): Promise<HousePlanDto> {
+/** A plan or elevation edit re-judges this many pinned lots at most; past it the edit refuses rather than leave some unjudged. */
+const PINNED_LOT_RECHECK_CAP = 5_000
+
+/**
+ * Re-judge every lot pinned to a plan (or to one of its elevations) after its
+ * footprint, drawn garage or an elevation's handing changed — the same re-check
+ * a lot edit runs. A home that no longer fits stays pinned and is recorded
+ * (`lot.fit_violated`); the count is returned so the editor can say so.
+ */
+async function recheckPinnedLots(context: Awaited<ReturnType<typeof requireOrgContext>>, pinned: { planId: string } | { elevationId: string }) {
+  const { rows, truncated } = await readAllRows<{ id: string }>((from, to) => {
+    const query = context.supabase.from("lots").select("id").eq("org_id", context.orgId)
+    const scoped = "planId" in pinned ? query.eq("house_plan_id", pinned.planId) : query.eq("house_plan_elevation_id", pinned.elevationId)
+    return scoped.order("id").range(from, to)
+  }, { cap: PINNED_LOT_RECHECK_CAP, label: "Failed to load lots pinned to this plan" })
+  if (truncated) throw new Error(`More than ${PINNED_LOT_RECHECK_CAP.toLocaleString()} lots carry this plan; their fit could not be re-checked`)
+  if (rows.length === 0) return 0
+  const refused = await reevaluatePinnedLotFits(context, rows.map((row) => row.id))
+  return refused.size
+}
+
+const FIT_FIELDS = ["footprint_width_ft", "footprint_depth_ft", "drawn_swing"] as const
+
+export async function updateHousePlan(id: string, input: Partial<HousePlanInput>, orgId?: string): Promise<HousePlanDto & { lotsNoLongerFitting: number }> {
   const parsed = housePlanUpdateSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.write", context)
@@ -409,14 +489,20 @@ export async function updateHousePlan(id: string, input: Partial<HousePlanInput>
   const { data, error } = await context.supabase.from("house_plans").update(planPayload(parsed)).eq("org_id", context.orgId).eq("id", id).select(planSelect).single()
   if (error || !data) throw new Error(`Failed to update house plan: ${error?.message ?? "not found"}`)
   await logPlan(context, { eventType: "house_plan.updated", entityType: "house_plan", entityId: id, action: "update", before: { ...before }, after: data })
-  return getHousePlan(id, context.orgId)
+  const fitChanged = FIT_FIELDS.some((field) => (before[field] == null ? null : String(before[field])) !== (data[field] == null ? null : String(data[field])))
+  const [plan, lotsNoLongerFitting] = await Promise.all([
+    getHousePlan(id, context.orgId),
+    fitChanged ? recheckPinnedLots(context, { planId: id }) : Promise.resolve(0),
+  ])
+  return { ...plan, lotsNoLongerFitting }
 }
 
-export async function upsertElevation(planId: string, input: ElevationInput, orgId?: string): Promise<HousePlanElevationDto> {
+export async function upsertElevation(planId: string, input: ElevationInput, orgId?: string): Promise<HousePlanElevationDto & { lotsNoLongerFitting: number }> {
   const parsed = elevationInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.write", context)
-  await getHousePlan(planId, context.orgId)
+  const plan = await getHousePlan(planId, context.orgId)
+  const before = parsed.id ? plan.elevations?.find((elevation) => elevation.id === parsed.id) : undefined
   const payload = {
     org_id: context.orgId,
     house_plan_id: planId,
@@ -432,10 +518,14 @@ export async function upsertElevation(planId: string, input: ElevationInput, org
   const query = parsed.id
     ? context.supabase.from("house_plan_elevations").update(payload).eq("org_id", context.orgId).eq("house_plan_id", planId).eq("id", parsed.id)
     : context.supabase.from("house_plan_elevations").insert(payload)
-  const { data, error } = await query.select("id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order").single()
+  const { data, error } = await query.select("id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order, revision").single()
   if (error || !data) throw new Error(`Failed to save elevation: ${error?.message ?? "unknown error"}`)
-  await logPlan(context, { eventType: "house_plan.updated", entityType: "house_plan", entityId: planId, action: "update", after: { elevation_id: data.id, code: data.code } })
-  return { ...data, heated_sqft_delta: Number(data.heated_sqft_delta), sort_order: Number(data.sort_order) }
+  await logPlan(context, { eventType: "house_plan.updated", entityType: "house_plan", entityId: planId, action: "update", after: { elevation_id: data.id, code: data.code, revision: data.revision } })
+  // Whether an elevation can be flipped decides which lots it fits.
+  const lotsNoLongerFitting = before && before.swing_applicable !== data.swing_applicable
+    ? await recheckPinnedLots(context, { elevationId: data.id })
+    : 0
+  return { ...data, heated_sqft_delta: Number(data.heated_sqft_delta), sort_order: Number(data.sort_order), revision: Number(data.revision), lotsNoLongerFitting }
 }
 
 export async function listPlanVersions(planId: string, orgId?: string): Promise<HousePlanVersionDto[]> {
@@ -584,7 +674,16 @@ async function captureBundleSnapshot(version: HousePlanVersionDto, context: Awai
   }
 }
 
-export async function releasePlanVersion(versionId: string, orgId?: string): Promise<HousePlanVersionDto> {
+export type PlanVersionReleaseDto = {
+  version: HousePlanVersionDto
+  /**
+   * Homes still pinned to earlier editions. They stay there — a release never
+   * moves a home — until a plan change review decides which adopt this one.
+   */
+  homes_on_earlier_versions: number
+}
+
+export async function releasePlanVersion(versionId: string, orgId?: string): Promise<PlanVersionReleaseDto> {
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.release", context)
   const writable = await getVersionForWrite(versionId, context)
@@ -611,18 +710,25 @@ export async function releasePlanVersion(versionId: string, orgId?: string): Pro
     await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "house_plan_version.superseded", entityType: "house_plan_version", entityId: currentReleased.id, payload: { house_plan_id: writable.house_plan_id } })
   }
   await logPlan(context, { eventType: "house_plan_version.released", entityType: "house_plan_version", entityId: versionId, action: "update", before: writable, after: { ...writable, status: "released", bundle_snapshot: snapshot, released_at: releasedAt, released_by: context.userId }, payload: { house_plan_id: writable.house_plan_id, version_number: writable.version_number } })
-  return (await listPlanVersions(writable.house_plan_id, context.orgId)).find((item) => item.id === versionId) ?? (() => { throw new Error("Released plan version not found") })()
+  const released = (await listPlanVersions(writable.house_plan_id, context.orgId)).find((item) => item.id === versionId)
+  if (!released) throw new Error("Released plan version not found")
+  return {
+    version: released,
+    homes_on_earlier_versions: versions
+      .filter((item) => item.id !== versionId && item.status !== "draft")
+      .reduce((sum, item) => sum + item.pinned_lot_count, 0),
+  }
 }
 
 export async function listCommunityAvailability(filters: { communityId?: string; housePlanId?: string }, orgId?: string): Promise<CommunityPlanAvailabilityDto[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.read", context)
-  let query = context.supabase.from("community_plan_availability").select("id, community_id, house_plan_id, elevation_id, is_available, base_price_cents, effective_start, effective_end").eq("org_id", context.orgId).order("effective_start", { ascending: false, nullsFirst: false }).limit(1000)
+  let query = context.supabase.from("community_plan_availability").select("id, community_id, house_plan_id, elevation_id, is_available, base_price_cents, effective_start, effective_end").eq("org_id", context.orgId)
   if (filters.communityId) query = query.eq("community_id", filters.communityId)
   if (filters.housePlanId) query = query.eq("house_plan_id", filters.housePlanId)
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to list community plan availability: ${error.message}`)
-  return (data ?? []).map((row) => ({ ...row, base_price_cents: Number(row.base_price_cents) }))
+  const ordered = query.order("effective_start", { ascending: false, nullsFirst: false }).order("id")
+  const data = await readPlanRows((from, to) => ordered.range(from, to), "Failed to list community plan availability")
+  return data.map((row) => ({ ...row, base_price_cents: Number(row.base_price_cents) }))
 }
 
 export type PlanLotUsageDto = {
@@ -643,15 +749,15 @@ export type PlanLotUsageDto = {
 export async function listPlanLots(planId: string, orgId?: string): Promise<PlanLotUsageDto[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.read", context)
-  const { data, error } = await context.supabase
+  const ordered = context.supabase
     .from("lots")
     .select("id, lot_number, block, address, status, swing, community_id, house_plan_version_id, house_plan_elevation_id, project_id, community:communities(name), project:projects(name)")
     .eq("org_id", context.orgId)
     .eq("house_plan_id", planId)
     .order("lot_number")
-    .limit(500)
-  if (error) throw new Error(`Failed to list plan lots: ${error.message}`)
-  return (data ?? []).map((row) => {
+    .order("id")
+  const data = await readPlanRows((from, to) => ordered.range(from, to), "Failed to list plan lots")
+  return data.map((row) => {
     const community = one(row.community as { name: string } | Array<{ name: string }> | null)
     const project = one(row.project as { name: string } | Array<{ name: string }> | null)
     return {
@@ -816,17 +922,9 @@ export async function getPlanPricing(planId: string, orgId?: string): Promise<Pl
   }
 
   const communityIds = Array.from(communityDivisions.keys())
-  const basisResult = communityIds.length
-    ? await context.supabase
-        .from("lots")
-        .select("community_id, cost_basis_cents")
-        .eq("org_id", context.orgId)
-        .in("community_id", communityIds)
-        .gt("cost_basis_cents", 0)
-    : { data: [], error: null }
-  if (basisResult.error) throw new Error(`Failed to load lot basis: ${basisResult.error.message}`)
+  const basisRows = await readLotBasis(context, communityIds)
   const basisSamples = new Map<string, number[]>()
-  for (const row of basisResult.data ?? []) {
+  for (const row of basisRows) {
     const list = basisSamples.get(row.community_id) ?? []
     list.push(Number(row.cost_basis_cents))
     basisSamples.set(row.community_id, list)
@@ -939,33 +1037,38 @@ export type PlanBuildPerformanceDto = {
 export async function getPlanBuildPerformance(planId: string, orgId?: string): Promise<PlanBuildPerformanceDto[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.read", context)
-  const { data: lotRows, error: lotError } = await context.supabase
+  const orderedLots = context.supabase
     .from("lots")
-    .select("project_id, house_plan_version_id")
+    .select("id, project_id, house_plan_version_id")
     .eq("org_id", context.orgId)
     .eq("house_plan_id", planId)
     .eq("status", "closed")
     .not("project_id", "is", null)
-    .limit(500)
-  if (lotError) throw new Error(`Failed to load closed lots for plan: ${lotError.message}`)
+    .order("id")
+  const lotRows = await readPlanRows((from, to) => orderedLots.range(from, to), "Failed to load closed lots for plan")
 
-  const closed = (lotRows ?? []).filter(
-    (row): row is { project_id: string; house_plan_version_id: string } =>
+  const closed = lotRows.filter(
+    (row): row is { id: string; project_id: string; house_plan_version_id: string } =>
       Boolean(row.project_id) && Boolean(row.house_plan_version_id),
   )
   if (closed.length === 0) return []
 
-  const [versions, actualsResult] = await Promise.all([
+  const closedProjectIds = Array.from(new Set(closed.map((row) => row.project_id)))
+  const [versions, actuals] = await Promise.all([
     listPlanVersions(planId, context.orgId),
-    context.supabase
-      .from("job_cost_entries")
-      .select("project_id, cost_code_id, cost_cents, cost_code:cost_codes(code, name)")
-      .eq("org_id", context.orgId)
-      .eq("status", "posted")
-      .in("project_id", Array.from(new Set(closed.map((row) => row.project_id))))
-      .limit(20000),
+    readPlanRowsFor(
+      closedProjectIds,
+      (chunk, from, to) => context.supabase
+        .from("job_cost_entries")
+        .select("id, project_id, cost_code_id, cost_cents, cost_code:cost_codes(code, name)")
+        .eq("org_id", context.orgId)
+        .eq("status", "posted")
+        .in("project_id", chunk)
+        .order("id")
+        .range(from, to),
+      "Failed to load plan actuals",
+    ),
   ])
-  if (actualsResult.error) throw new Error(`Failed to load plan actuals: ${actualsResult.error.message}`)
 
   const versionByProject = new Map(closed.map((row) => [row.project_id, row.house_plan_version_id]))
   const houseCounts = new Map<string, number>()
@@ -974,7 +1077,7 @@ export async function getPlanBuildPerformance(planId: string, orgId?: string): P
   }
 
   const actualsByVersion = new Map<string, Map<string, { label: string; cents: number }>>()
-  for (const row of actualsResult.data ?? []) {
+  for (const row of actuals) {
     const versionId = row.project_id ? versionByProject.get(row.project_id) : undefined
     if (!versionId || !row.cost_code_id) continue
     const byCode = actualsByVersion.get(versionId) ?? new Map()
@@ -1110,26 +1213,24 @@ export async function getPlanLadder(
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.read", context)
   const asOf = new Date().toISOString().slice(0, 10)
-  const plans = await listHousePlans(filters, context.orgId)
+  const { plans, aggregates } = await loadHousePlanCollection(filters, context.orgId)
   if (plans.length === 0) return { as_of: asOf, pricing_available: false, rungs: [] }
 
-  const planIds = plans.map((plan) => plan.id)
-  const [aggregates, priceBookDecision] = await Promise.all([
-    loadPlanAggregates(context, planIds),
-    authorize({ permission: "price_book.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase }),
-  ])
+  const priceBookDecision = await authorize({ permission: "price_book.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase })
 
   const liveVersions = aggregates.versions.filter((version) => version.status !== "superseded")
   const versionIds = liveVersions.map((version) => version.id)
-  const takeoffResult = versionIds.length
-    ? await context.supabase
-        .from("house_plan_takeoff_lines")
-        .select("id, house_plan_version_id, elevation_id, cost_code_id, cost_type, description, quantity, uom, unit_cost_cents, sort_order, metadata")
-        .eq("org_id", context.orgId)
-        .in("house_plan_version_id", versionIds)
-    : { data: [], error: null }
-  if (takeoffResult.error) throw new Error(`Failed to load plan ladder takeoff: ${takeoffResult.error.message}`)
-  const takeoffRows = (takeoffResult.data ?? []) as TakeoffRow[]
+  const takeoffRows = (await readPlanRowsFor(
+    versionIds,
+    (chunk, from, to) => context.supabase
+      .from("house_plan_takeoff_lines")
+      .select("id, house_plan_version_id, elevation_id, cost_code_id, cost_type, description, quantity, uom, unit_cost_cents, sort_order, metadata")
+      .eq("org_id", context.orgId)
+      .in("house_plan_version_id", chunk)
+      .order("id")
+      .range(from, to),
+    "Failed to load plan ladder takeoff",
+  )) as TakeoffRow[]
 
   const costCodeIds = Array.from(new Set(takeoffRows.map((row) => row.cost_code_id)))
   const [agreementsResult, defaultsResult] = await Promise.all([
@@ -1149,17 +1250,9 @@ export async function getPlanLadder(
   )
 
   const communityIds = Array.from(new Set(aggregates.availability.map((row) => row.community_id)))
-  const basisResult = communityIds.length
-    ? await context.supabase
-        .from("lots")
-        .select("community_id, cost_basis_cents")
-        .eq("org_id", context.orgId)
-        .in("community_id", communityIds)
-        .gt("cost_basis_cents", 0)
-    : { data: [], error: null }
-  if (basisResult.error) throw new Error(`Failed to load lot basis: ${basisResult.error.message}`)
+  const basisRows = await readLotBasis(context, communityIds)
   const basisByCommunity = new Map<string, number[]>()
-  for (const row of basisResult.data ?? []) {
+  for (const row of basisRows) {
     const list = basisByCommunity.get(row.community_id) ?? []
     list.push(Number(row.cost_basis_cents))
     basisByCommunity.set(row.community_id, list)

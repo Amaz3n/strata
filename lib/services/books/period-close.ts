@@ -1,8 +1,12 @@
+import { wipSourcesCurrent } from "@/lib/services/books/wip-source-evidence";
+import { loadPocPositionsAsOf } from "@/lib/services/poc";
+import { wipScopeKey, wipSnapshotEvidence, wipReviewMatches } from "@/lib/services/books/wip-period-rules";
 import "server-only";
 
 import { z } from "zod";
 import { clearingReviewSchema, loadClearingPosition } from "@/lib/services/books/clearing-support";
 import { clearingSupportMatches } from "@/lib/services/books/clearing-support-rules";
+import { requireLedgerTieOut, retainageCloseChecks, tieOutCloseCheck } from "@/lib/services/books/close-control-rules";
 
 import {
   BILLED_INVOICE_STATUSES,
@@ -11,6 +15,7 @@ import {
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { recordAudit } from "@/lib/services/audit";
+import { getBooksModuleSettings } from "@/lib/services/books/module";
 import { booksDigest } from "@/lib/services/books/hash";
 import {
   buildBalanceSheet,
@@ -18,12 +23,18 @@ import {
   buildGeneralLedger,
   buildProfitAndLoss,
   buildTrialBalance,
+  consolidated,
+  forLegalEntity,
+  loadConsolidationEliminations,
+  loadLedgerBalances,
+  loadPostedLedger,
 } from "@/lib/services/books/statements";
 import { fiscalYearRangeEndingOn } from "@/lib/services/books/fiscal-calendar";
 import { postBooksJournalEntry } from "@/lib/services/books/ledger";
 import { postYearEndClose } from "@/lib/services/books/posting-rules";
 import { resolveProjectionVersion } from "@/lib/services/books/projector";
-import { loadProjectRevenueBases } from "@/lib/services/books/revenue-basis";
+import { loadWipScopesForPeriod } from "@/lib/services/books/wip-project-scope";
+import { loadUnreviewedRevenuePolicies } from "@/lib/services/books/revenue-policies";
 import { recognizeRevenueForPeriod } from "@/lib/services/books/revenue-recognition";
 import { runLedgerTieOuts } from "@/lib/services/books/verifier";
 import { TIE_OUT_ITEM_CATEGORIES } from "@/lib/services/books/reconciliation-rules";
@@ -197,6 +208,9 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
   if (periodError)
     throw new Error(`Failed to load accounting period: ${periodError.message}`);
   const period = periodSchema.parse(periodData);
+  const { settings } = await getBooksModuleSettings({ orgId: context.orgId });
+  if (!settings) throw new Error("Books settings are required to run close checks");
+  const requiresExternalSync = settings.external_sync_posture !== "disconnected";
 
   const [
     drafts,
@@ -207,6 +221,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     latestReconciliationRun,
     pocProjectBases,
     pocSnapshots,
+    unreviewedPolicies,
     openBills,
     taxVendors,
     taxIdentities,
@@ -289,20 +304,11 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    loadProjectRevenueBases(context.orgId),
-    collectPages(
-      (from, to) =>
-        service
-          .from("poc_snapshots")
-          .select("project_id, as_of")
-          .eq("org_id", context.orgId)
-          .lte("as_of", period.period_end)
-          .order("created_at", { ascending: true })
-          .order("id", { ascending: true })
-          .range(from, to),
-      "POC snapshots",
-    ),
-    // Bills are loaded for the coding check only; AR/AP balances come from the tie-outs.
+    loadWipScopesForPeriod(context.orgId, period.period_end),
+    loadPocPositionsAsOf({ orgId: context.orgId, asOf: period.period_end }),
+    loadUnreviewedRevenuePolicies(context.orgId, period.period_end),
+    // Bills are loaded for the coding check only, and only the uncoded ones:
+    // AR/AP balances come from the tie-outs.
     collectPages(
       (from, to) =>
         service
@@ -311,6 +317,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
           .eq("org_id", context.orgId)
           .lte("bill_date", period.period_end)
           .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
+          .or("accounting_coding.is.null,accounting_coding.eq.{}")
           .order("created_at", { ascending: true })
           .order("id", { ascending: true })
           .range(from, to),
@@ -337,7 +344,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     // Approved work that never reached the external system. Closing a period
     // while the mirror is behind means the two ledgers disagree about a period
     // nobody can reopen without an audit trail.
-    service
+    requiresExternalSync ? service
       .from("accounting_sync_records")
       .select("id, entity_type, entity_id, status")
       .eq("org_id", context.orgId)
@@ -348,7 +355,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
         "needs_review",
         "conflict",
       ])
-      .limit(SYNC_BACKLOG_SCAN_LIMIT),
+      .limit(SYNC_BACKLOG_SCAN_LIMIT) : Promise.resolve({ data: [], error: null }),
     // Payments the compliance gate is holding. These are real obligations that
     // belong to this period even though no cash moved.
     service
@@ -410,16 +417,12 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
   // Every control check reads the tie-outs rather than recomputing them. The AR and AP
   // numbers used to be derived a second time here, against hardcoded "1100"/"2000"
   // literals, so the close and the verifier could disagree about the same balance.
-  const tieOut = (code: string) =>
-    tieOuts.find((row) => row.code === code) ?? {
-      status: "passed" as const,
-      ledgerCents: 0,
-      subledgerCents: 0,
-      differenceCents: 0,
-    };
+  const tieOut = (code: Parameters<typeof requireLedgerTieOut>[1]) =>
+    requireLedgerTieOut(tieOuts, code);
   const jobCostTieOut = tieOut("job_cost_control");
   const arTieOut = tieOut("ar_control");
   const apTieOut = tieOut("ap_control");
+  const cashTieOut = tieOut("cash_control");
   const customerDepositsTieOut = tieOut("customer_deposits_control");
   const debtRegisterTieOut = tieOut("debt_register_control");
   const fixedAssetsTieOut = tieOut("fixed_assets_control");
@@ -455,22 +458,13 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     const end = latestBankReconciliation.get(account.id);
     return !end || end < period.period_end;
   });
-  const latestPoc = new Map<string, string>();
-  for (const row of pocSnapshots) {
-    const current = latestPoc.get(row.project_id);
-    if (!current || row.as_of > current)
-      latestPoc.set(row.project_id, row.as_of);
-  }
+  const latestPoc = pocSnapshots;
   // Only percentage-of-completion projects have a POC position. A production
   // spec home sold under a purchase agreement earns revenue at closing, so
   // requiring a snapshot for it would block the period forever.
-  const pocProjects = pocProjectBases.filter(
-    (project) =>
-      project.basis === "percentage_of_completion" &&
-      (project.status === "active" || project.status === "on_hold"),
-  );
+  const pocProjects = pocProjectBases;
   const missingPoc = pocProjects.filter(
-    (project) => latestPoc.get(project.projectId) !== period.period_end,
+    (scope) => latestPoc.get(wipScopeKey(scope))?.asOf !== period.period_end,
   );
   const unmatched = bankTransactions.filter((transaction) => {
     const matches = Array.isArray(transaction.bank_transaction_matches)
@@ -480,12 +474,17 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       (match: { status?: string }) => match.status === "confirmed",
     );
   });
-  const [clearingPosition, clearingItem] = await Promise.all([
+  const [clearingPosition, clearingItem, wipItem] = await Promise.all([
     loadClearingPosition(context.orgId, period.period_end),
     service.from("books_close_items").select("support_review").eq("org_id", context.orgId).eq("period_id", period.id).eq("code", "clearing_accounts").maybeSingle(),
+    service.from("books_close_items").select("support_review").eq("org_id", context.orgId).eq("period_id", period.id).eq("code", "poc_snapshots").maybeSingle(),
   ]);
   if (clearingItem.error) throw new Error(`Failed to load clearing support: ${clearingItem.error.message}`);
   const clearingBalances = clearingPosition.balances;
+  if (wipItem.error) throw new Error(`Failed to load WIP review: ${wipItem.error.message}`);
+  const currentWipEvidence = wipSnapshotEvidence(pocSnapshots, pocProjects);
+  const wipSourcesUnchanged = await wipSourcesCurrent(service, context.orgId, currentWipEvidence.map(row => row.snapshotId));
+  const wipReviewed = pocProjects.length === 0 || (wipSourcesUnchanged && wipReviewMatches(wipItem.data?.support_review, currentWipEvidence));
   const clearingReview = clearingReviewSchema.safeParse(clearingItem.data?.support_review);
   const clearingSupported = clearingReview.success && clearingReview.data.ledgerDigest === clearingPosition.ledgerDigest &&
     clearingSupportMatches(clearingBalances, clearingReview.data.items, period.period_end);
@@ -526,6 +525,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
   );
 
   const checks: CloseCheck[] = [
+    ...retainageCloseChecks(tieOuts),
     {
       code: "journal_drafts",
       label: "All journals posted",
@@ -601,55 +601,37 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     },
     {
       code: "poc_snapshots",
-      label: "WIP and POC captured through period end",
+      label: "WIP and POC reviewed through period end",
       category: "construction",
       blocking: true,
-      status: missingPoc.length ? "failed" : "passed",
-      issueCount: missingPoc.length,
+      status: missingPoc.length || !wipReviewed ? "failed" : "passed",
+      issueCount: missingPoc.length || (wipReviewed ? 0 : 1),
       href: "/reports/wip-over-under",
-      evidence: { project_ids: missingPoc.map((row) => row.projectId) },
+      evidence: { project_ids: [...new Set(missingPoc.map((row) => row.projectId))], missing_scopes: missingPoc.map(({ projectId, contractId }) => ({ projectId, contractId })), snapshots: currentWipEvidence, reviewed: wipReviewed, sources_current: wipSourcesUnchanged },
     },
     {
-      code: "job_cost_control",
-      label: "GL job cost ties to the job-cost subledger",
-      category: "controls",
-      blocking: true,
-      status: jobCostTieOut.status,
-      issueCount: jobCostTieOut.status === "failed" ? 1 : 0,
-      evidence: {
-        ledger_cents: jobCostTieOut.ledgerCents,
-        subledger_cents: jobCostTieOut.subledgerCents,
-        difference_cents: jobCostTieOut.differenceCents,
-      },
+      code: "revenue_policies",
+      label: "Revenue policies reviewed",
+      category: "construction",
+      blocking: false,
+      status: unreviewedPolicies.length ? "warning" : "passed",
+      issueCount: unreviewedPolicies.length,
+      href: "/books/revenue-policies",
+      evidence: { unreviewed: unreviewedPolicies },
     },
-    {
-      code: "ar_control",
-      label: "Accounts receivable ties to the AR subledger",
-      category: "controls",
-      blocking: true,
-      status: arTieOut.status,
-      issueCount: arTieOut.status === "failed" ? 1 : 0,
-      evidence: {
-        ledger_cents: arTieOut.ledgerCents,
-        subledger_cents: arTieOut.subledgerCents,
-        difference_cents: arTieOut.differenceCents,
-      },
-    },
-    {
-      code: "ap_control",
-      label: "Accounts payable ties to the AP subledger",
-      category: "controls",
-      blocking: true,
-      status: apTieOut.status,
-      issueCount: apTieOut.status === "failed" ? 1 : 0,
-      evidence: {
-        ledger_cents: apTieOut.ledgerCents,
-        subledger_cents: apTieOut.subledgerCents,
-        difference_cents: apTieOut.differenceCents,
-      },
-    },
+    // Each of these is also held to every company when the org keeps books for
+    // more than one: a company out of balance blocks the close by name even when
+    // the org total nets to zero.
+    tieOutCloseCheck(jobCostTieOut),
+    tieOutCloseCheck(arTieOut),
+    tieOutCloseCheck(apTieOut),
+    tieOutCloseCheck(cashTieOut, { href: "/books/entities", applicable: cashTieOut.companies !== undefined }),
+    ...(["land_inventory_control", "completed_homes_control", "warranty_reserve_control", "impairment_control", "intercompany_control"] as const).map((code) =>
+      tieOutCloseCheck(tieOut(code), { href: code === "warranty_reserve_control" ? "/warranty/accounting" : code === "intercompany_control" ? "/books/entities" : "/books/close" }),
+    ),
     {
       code: "customer_deposits_control",
+      href: "/billing/deposits",
       label: "Customer-deposit liability ties to unapplied deposits",
       category: "controls",
       blocking: true,
@@ -685,7 +667,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
         blocking: true,
         status: item.tieOut.status,
         issueCount: item.tieOut.status === "failed" ? 1 : 0,
-        href: "/books",
+        href: "/books/assets",
         evidence: {
           ledger_cents: item.tieOut.ledgerCents,
           subledger_cents: item.tieOut.subledgerCents,
@@ -700,7 +682,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       blocking: true,
       status: clearingBalances.length && !clearingSupported ? "failed" : "passed",
       issueCount: clearingSupported ? 0 : clearingBalances.length,
-      href: "/books/chart",
+      href: "/settings/accounting/chart-of-accounts",
       evidence: { balances: clearingBalances, ledger_digest: clearingPosition.ledgerDigest, supported: clearingSupported, review: clearingReview.success ? clearingReview.data : null },
     },
     {
@@ -710,7 +692,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       blocking: true,
       status: missingDepreciation.length ? "failed" : "passed",
       issueCount: missingDepreciation.length,
-      href: "/books",
+      href: "/books/assets",
       evidence: { asset_ids: missingDepreciation.map((asset) => asset.id) },
     },
     {
@@ -726,7 +708,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
           : "passed",
       issueCount:
         (unassignedTaxInvoices.count ?? 0) + (unassignedUseTaxBills.count ?? 0),
-      href: "/books/accountant",
+      href: "/settings/accounting/taxes",
       evidence: {
         invoice_count: unassignedTaxInvoices.count ?? 0,
         bill_count: unassignedUseTaxBills.count ?? 0,
@@ -736,17 +718,19 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       code: "coding_exceptions",
       label: "Approved bills are coded",
       category: "ledger",
-      blocking: true,
+      // Provider coding only feeds external sync; Arc's own postings come from
+      // the cost lines, so a disconnected ledger must not be held by it.
+      blocking: requiresExternalSync,
       status: uncodedBills.length ? "failed" : "passed",
       issueCount: uncodedBills.length,
       href: "/payables?tab=approval",
-      evidence: { bill_ids: uncodedBills.map((row) => row.id) },
+      evidence: { applicable: requiresExternalSync, bill_ids: uncodedBills.map((row) => row.id) },
     },
     {
       code: "sync_backlog",
       label: "Approved records pushed to the external system",
       category: "integrations",
-      blocking: true,
+      blocking: requiresExternalSync,
       status: closeScanStatus({
         issueCount: unpushed.length,
         scanCapped: unpushed.length >= SYNC_BACKLOG_SCAN_LIMIT,
@@ -755,6 +739,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       issueCount: unpushed.length,
       href: "/settings/integrations",
       evidence: {
+        applicable: requiresExternalSync,
         entity_ids: unpushed.slice(0, 100).map((row) => row.entity_id),
         scan_capped: unpushed.length >= SYNC_BACKLOG_SCAN_LIMIT,
       },
@@ -801,7 +786,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       blocking: false,
       status: taxExceptions.length ? "warning" : "passed",
       issueCount: taxExceptions.length,
-      href: "/books/accountant",
+      href: "/settings/accounting/taxes",
       evidence: { company_ids: taxExceptions.map((row) => row.id) },
     },
   ];
@@ -829,10 +814,11 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     blockingFailures: checks.filter(
       (check) => check.blocking && check.status === "failed",
     ),
-    // The projects this checklist proved a period-end position for. Revenue
-    // recognition runs over the same set, and the caller compares the two rather
-    // than letting a project quietly recognize against a substituted position.
-    pocProjectIds: pocProjects.map((project) => project.projectId),
+    // The projects (and contracts) this checklist proved a period-end position
+    // for. Revenue recognition runs over the same set, and the caller compares the
+    // two rather than letting a scope quietly recognize against a substituted position.
+    pocScopes: pocProjects.map(({ projectId, contractId }) => ({ projectId, contractId })),
+    pocSnapshotEvidence: wipSnapshotEvidence(pocSnapshots, pocProjects),
   };
 }
 
@@ -844,6 +830,7 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
     {
       p_org_id: context.orgId,
       p_period_id: periodId,
+      p_actor_id: context.userId,
     },
   );
   if (beginError)
@@ -862,6 +849,13 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       );
     }
     const { period } = checklist;
+    // Recheck eligibility after the period freeze, before any close-owned journals.
+    for (const snapshot of checklist.pocSnapshotEvidence) {
+      const { error } = await service.rpc("books_assert_loss_wip_supported", {
+        p_org_id: context.orgId, p_snapshot_id: snapshot.snapshotId,
+      });
+      if (error) throw new Error(`Close blocked: ${error.message}`);
+    }
     // Revenue is earned before the books are closed on it: recognize percentage-of
     // -completion revenue through period end so the statements snapshotted below
     // show earned revenue rather than billings alone. `period_end` is passed
@@ -869,25 +863,44 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
     const recognition = await recognizeRevenueForPeriod(
       context.orgId,
       period.period_end,
+      checklist.pocScopes,
+      checklist.pocSnapshotEvidence,
     );
     // The checklist has just proved a period-end position exists for every project in
-    // `pocProjectIds`. If recognition could not find one anyway, the two disagree, and
+    // `pocScopes`. If recognition could not find one anyway, the two disagree, and
     // recognizing against whatever position it did find would silently substitute a
     // number nobody checked.
     const withoutPosition = recognition.results.filter(
       (row) =>
         !row.posted &&
         row.skippedReason !== "no_delta" &&
-        checklist.pocProjectIds.includes(row.projectId),
+        checklist.pocScopes.some((scope) => wipScopeKey(scope) === wipScopeKey(row)),
     );
     if (withoutPosition.length > 0) {
       throw new Error(
         `Close blocked: no percentage-of-completion position as of ${period.period_end} for ${withoutPosition.length} project${withoutPosition.length === 1 ? "" : "s"} (${withoutPosition.map((row) => row.projectId).join(", ")})`,
       );
     }
+    const lossVersions = await resolveBooksVersions(context.orgId);
+    for (const snapshot of checklist.pocSnapshotEvidence) {
+      const { error: lossError } = await service.rpc("post_books_expected_loss_atomic", {
+        p_org_id: context.orgId, p_period_id: period.id, p_snapshot_id: snapshot.snapshotId,
+        p_actor_id: context.userId, p_policy_version: lossVersions.policyVersion,
+        p_projection_version: lossVersions.projectionVersion,
+      });
+      if (lossError) throw new Error(`Failed to post expected contract loss: ${lossError.message}`);
+    }
     if (period.fiscal_period === 12 || period.fiscal_period === 13) {
       await closeFiscalYearToRetainedEarnings(period.id, context.orgId);
     }
+    // The saved statements are the organization's consolidated statements: what
+    // its companies owe each other is eliminated (docs/books-entities.md). The
+    // general ledger keeps every line.
+    const [balances, posted, eliminations] = await Promise.all([
+      loadLedgerBalances(context.orgId, period.period_end),
+      loadPostedLedger(context.orgId, period.period_end),
+      loadConsolidationEliminations(context.orgId),
+    ]);
     const [
       trialBalance,
       profitLoss,
@@ -898,17 +911,18 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       apAging,
       wip,
     ] = await Promise.all([
-      buildTrialBalance(context.orgId, period.period_end),
-      buildProfitAndLoss(context.orgId, period.period_start, period.period_end),
-      buildBalanceSheet(context.orgId, period.period_end),
+      buildTrialBalance(context.orgId, period.period_end, consolidated(balances, eliminations)),
+      buildProfitAndLoss(context.orgId, period.period_start, period.period_end, consolidated(posted, eliminations)),
+      buildBalanceSheet(context.orgId, period.period_end, consolidated(balances, eliminations)),
       buildCashFlowStatement(
         context.orgId,
         period.period_start,
         period.period_end,
+        consolidated(posted, eliminations),
       ),
       buildGeneralLedger(context.orgId, period.period_start, period.period_end),
-      getArAgingReport({ asOf: period.period_end, orgId: context.orgId }),
-      getApAgingReport({ asOf: period.period_end, orgId: context.orgId }),
+      getArAgingReport({ asOf: period.period_end, orgId: context.orgId, includeExcludedProjects: true }),
+      getApAgingReport({ asOf: period.period_end, orgId: context.orgId, includeExcludedProjects: true }),
       getOrgWipOverUnderReport({
         asOf: period.period_end,
         orgId: context.orgId,
@@ -928,25 +942,64 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       { statement: "ap_aging" as const, ...apAging },
       { statement: "wip" as const, ...wip },
     ];
+    // With more than one company, each company's statements are saved too, so a
+    // closed month reads as it was closed for every company as well as the group.
+    const { data: companyRows, error: companyError } = await service
+      .from("books_legal_entities")
+      .select("id")
+      .eq("org_id", context.orgId)
+      .eq("status", "active")
+      .order("id");
+    if (companyError)
+      throw new Error(`Failed to load companies: ${companyError.message}`);
+    const companies = (companyRows ?? []).map((row) => String(row.id));
+    const companyStatements =
+      companies.length > 1
+        ? (
+            await Promise.all(
+              companies.map(async (legalEntityId) => {
+                const [companyAr, companyAp] = await Promise.all([
+                  getArAgingReport({ asOf: period.period_end, orgId: context.orgId, includeExcludedProjects: true, legalEntityId }),
+                  getApAgingReport({ asOf: period.period_end, orgId: context.orgId, includeExcludedProjects: true, legalEntityId }),
+                ]);
+                const statements = [
+                  await buildTrialBalance(context.orgId, period.period_end, forLegalEntity(balances, legalEntityId)),
+                  await buildProfitAndLoss(context.orgId, period.period_start, period.period_end, forLegalEntity(posted, legalEntityId)),
+                  await buildBalanceSheet(context.orgId, period.period_end, forLegalEntity(balances, legalEntityId)),
+                  await buildCashFlowStatement(context.orgId, period.period_start, period.period_end, forLegalEntity(posted, legalEntityId)),
+                  { statement: "ar_aging" as const, ...companyAr },
+                  { statement: "ap_aging" as const, ...companyAp },
+                ];
+                return statements.map((statement) => ({ legalEntityId, statement: { ...statement, legalEntityId } }));
+              }),
+            )
+          ).flat()
+        : [];
+    const savedStatements = [
+      ...officialStatements.map((statement) => ({ legalEntityId: null as string | null, statement })),
+      ...companyStatements,
+    ];
     const digest = booksDigest({
       period,
       checklist: checklist.checks,
       statements: officialStatements,
+      ...(companyStatements.length ? { companyStatements: companyStatements.map((row) => row.statement) } : {}),
     });
     const { error: snapshotError } = await service
       .from("financial_statement_snapshots")
       .upsert(
-        officialStatements.map((statement) => ({
+        savedStatements.map(({ legalEntityId, statement }) => ({
           org_id: context.orgId,
           period_id: period.id,
           statement_type: statement.statement,
           basis: "accrual",
+          legal_entity_id: legalEntityId,
           content: statement,
           content_hash: booksDigest(statement),
           generated_by: context.userId,
         })),
         {
-          onConflict: "period_id,statement_type,basis,content_hash",
+          onConflict: "period_id,statement_type,basis,legal_entity_id,content_hash",
           ignoreDuplicates: true,
         },
       );
@@ -954,11 +1007,36 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       throw new Error(
         `Failed to snapshot financial statements: ${snapshotError.message}`,
       );
+    // Identical statements dedupe onto an earlier close's rows, so read back the
+    // ids by hash rather than trusting the insert's returned set.
+    const { data: snapshotRows, error: snapshotReadError } = await service
+      .from("financial_statement_snapshots")
+      .select("id")
+      .eq("org_id", context.orgId)
+      .eq("period_id", period.id)
+      .eq("basis", "accrual")
+      .in(
+        "content_hash",
+        savedStatements.map(({ statement }) => booksDigest(statement)),
+      );
+    if (snapshotReadError)
+      throw new Error(
+        `Failed to read saved financial statements: ${snapshotReadError.message}`,
+      );
+    const snapshotIds = z
+      .array(z.object({ id: z.string().uuid() }))
+      .length(savedStatements.length)
+      .parse(snapshotRows)
+      .map((row) => row.id);
     const { error: closeError } = await service
       .from("accounting_periods")
       .update({
         status: "closed",
         close_digest: digest,
+        close_snapshot_ids: snapshotIds,
+        close_started_at: null,
+        close_started_by: null,
+        close_prior_status: null,
         closed_by: context.userId,
         closed_at: new Date().toISOString(),
       })
@@ -979,6 +1057,7 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
         payload: {
           period_end: period.period_end,
           digest,
+          snapshot_ids: snapshotIds,
           revenue_recognized_cents: recognition.postedCents,
           revenue_recognized_projects: recognition.recognized,
         },
@@ -1090,12 +1169,30 @@ export async function reopenAccountingPeriod(input: {
   const service = createServiceSupabaseClient();
   const { data: before, error: loadError } = await service
     .from("accounting_periods")
-    .select("status, close_digest")
+    .select("status, close_digest, period_end")
     .eq("org_id", context.orgId)
     .eq("id", input.periodId)
     .single();
   if (loadError || before?.status !== "closed")
     throw new Error("Only a closed accounting period can be reopened");
+  // Periods reopen newest first. A later close snapshotted balances that include
+  // this period, and the fiscal year end transferred its earnings to retained
+  // earnings — a correction reclosed underneath either would leave them stale.
+  const { data: later, error: laterError } = await service
+    .from("accounting_periods")
+    .select("period_end")
+    .eq("org_id", context.orgId)
+    .eq("status", "closed")
+    .gt("period_start", before.period_end)
+    .order("period_start", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (laterError)
+    throw new Error(`Failed to check later periods: ${laterError.message}`);
+  if (later)
+    throw new Error(
+      `Reopen the period ending ${later.period_end} first: later closed periods report balances that include this one`,
+    );
   const { error } = await service
     .from("accounting_periods")
     .update({
@@ -1109,6 +1206,10 @@ export async function reopenAccountingPeriod(input: {
     .eq("status", "closed");
   if (error)
     throw new Error(`Failed to reopen accounting period: ${error.message}`);
+  // Sources the closed period had blocked retry on the next projection run.
+  const { error: retryError } = await service.rpc("books_touch_blocked_sources", { p_org_id: context.orgId });
+  if (retryError)
+    throw new Error(`Period reopened, but blocked sources could not be queued for retry: ${retryError.message}`);
   await recordEvent({
     orgId: context.orgId,
     actorId: context.userId,

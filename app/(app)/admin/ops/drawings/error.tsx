@@ -1,14 +1,15 @@
 "use client"
 
-import { Button } from "@/components/ui/button"
+import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function DrawingsDeadLetterError({ reset }: { error: Error; reset: () => void }) {
+export default function DrawingsDeadLetterError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
-    <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-6 text-center">
-      <p className="text-sm font-medium">Drawings pipeline dead letters could not be loaded.</p>
-      <Button variant="outline" size="sm" onClick={reset}>
-        Try again
-      </Button>
-    </div>
+    <DeskErrorState
+      error={error}
+      retry={retry}
+      subject="Drawings pipeline dead letters"
+      backHref="/admin/ops"
+      backLabel="Back to ops health"
+    />
   )
 }

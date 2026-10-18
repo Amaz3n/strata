@@ -1,3 +1,5 @@
+import { evaluateReport } from "@/lib/services/report-workspace"
+import { getReportRun } from "@/lib/services/report-runs"
 import { NextRequest, NextResponse } from "next/server"
 
 import { renderReportPdf } from "@/lib/pdfs/report"
@@ -41,7 +43,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: "Project not found." }, { status: 404 })
     }
 
-    if (!canRunReport(resolution, definition)) {
+    if (!search.get("run") && !canRunReport(resolution, definition)) {
       return NextResponse.json({ error: "You do not have access to this report." }, { status: 403 })
     }
 
@@ -50,15 +52,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       rawParams[key] = value
     })
     const reportParams = parseReportParams(definition, rawParams)
-    const context = { ...resolution.context, params: reportParams }
-    const result = await definition.run(context)
+    const snapshot = search.get("run") ? await getReportRun(search.get("run")!) : null
+    if (search.get("run") && (!snapshot || snapshot.slug !== slug || snapshot.projectId !== (projectId ?? null))) return NextResponse.json({ error: "Snapshot not found." }, { status: 404 })
+    const evaluated = snapshot ? null : await evaluateReport(definition, { ...resolution.context, params: reportParams })
+    const context = evaluated?.context ?? { ...resolution.context, params: snapshot!.params }
+    const result = snapshot?.snapshot ?? evaluated!.result
+    const reportTitle = snapshot?.title ?? reportParams._name ?? definition.title
 
     // Every file that leaves the building is snapshotted. A failure to record
     // must not swallow the export — the user still gets their file.
-    await recordReportRun({ slug: definition.slug, context, title: definition.title, result, format }).catch(() => null)
+    if (!snapshot) await recordReportRun({ slug: definition.slug, context, title: reportTitle, result, format })
 
     if (format === "json") {
-      return NextResponse.json({ slug: definition.slug, title: definition.title, params: reportParams, result })
+      return NextResponse.json({ slug: definition.slug, title: reportTitle, params: context.params, result })
     }
 
     // Same provenance rule as the viewer: name only the lens the report honours,
@@ -78,8 +84,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (format === "pdf") {
       const billing = await getOrgBilling().catch(() => null)
       const pdf = await renderReportPdf({
-        title: definition.title,
-        provenance,
+        title: reportTitle,
+        provenance: [provenance, result.provenance?.source, result.provenance?.status, result.provenance?.scope].filter(Boolean).join(" · "),
         result,
         branding: {
           org_name: (billing?.org?.name as string | undefined) ?? null,

@@ -1,0 +1,348 @@
+arc_private.can_write_deal(p_org_id uuid, p_prospect_id uuid)|18c10b8070
+arc_private.guard_deal_mutation()|70ef0aca60
+public.accept_takeoff_area_snapshot(p_org_id uuid, p_version_id uuid, p_condition_id uuid, p_snapshot jsonb, p_rows jsonb)|7094d665c3
+public.accounting_adopt_import_identity(p_org_id uuid, p_connection_id uuid, p_claim_token uuid, p_entity_type text, p_entity_id uuid, p_external_id text)|e74b48d02c
+public.accounting_claim_import(p_org_id uuid, p_connection_id uuid, p_external_entity_type text, p_external_id text, p_lease interval)|6d1b596e9d
+public.accounting_claim_sync_create(p_org_id uuid, p_connection_id uuid, p_entity_type text, p_entity_id uuid, p_stale_after interval)|086bd5df86
+public.accounting_d2_disposition_matches(p_org uuid, p_connection uuid, p_type text, p_id text, p_current jsonb)|b2dd1d16e6
+public.accounting_d2_fill_missing_coding(p_coding jsonb, p_legacy jsonb, p_has_company boolean)|a9e13c7c2e
+public.accounting_d2_parity_snapshot()|c31088e781
+public.accounting_d2_schema_fingerprint()|af3f32eb9b
+public.accounting_d2_source_disposition_matches(p_type text, p_id text, p_current jsonb)|605a985b86
+public.accounting_d2_sql_legacy_dependencies()|f4619f953e
+public.accounting_finish_import(p_connection_id uuid, p_external_entity_type text, p_external_id text, p_claim_token uuid, p_status text, p_error_message text)|220d9565e3
+public.accounting_persist_import_children(p_org_id uuid, p_claim_token uuid, p_table text, p_rows jsonb)|0904d509f0
+public.accounting_persist_import_row(p_org_id uuid, p_connection_id uuid, p_claim_token uuid, p_table text, p_entity_type text, p_external_type text, p_external_id text, p_line_id text, p_values jsonb)|a308faa939
+public.acquire_books_land(p_org_id uuid, p_date date, p_allocations jsonb, p_cash_account_id uuid, p_cash_cents bigint, p_debt_instrument_id uuid, p_debt_cents bigint, p_reference text, p_evidence_url text, p_actor_id uuid)|5b58f13e98
+public.activate_matured_funding_change_atomic(p_org_id uuid, p_change_request_id uuid, p_now timestamp with time zone)|50f6ae6caf
+public.ai_search_analytics_aggregate(p_org_id uuid, p_entity_type text, p_group_by text, p_statuses text[], p_text_query text, p_project_id uuid, p_since timestamp with time zone, p_limit integer)|20bf86096f
+public.allocate_books_development_cost(p_org_id uuid, p_project_id uuid, p_date date, p_allocations jsonb, p_reference text, p_evidence_url text, p_actor_id uuid)|08d6f6df7c
+public.append_accounting_batch_line_atomic(p_org_id uuid, p_connection_id uuid, p_format text, p_project_id uuid, p_entity_type text, p_entity_id uuid, p_direction text, p_amount_cents bigint, p_currency text, p_posted_at timestamp with time zone, p_memo text, p_payload jsonb)|2ca8eb5f08
+public.append_spec_revision(p_org_id uuid, p_project_id uuid, p_division text, p_section_number text, p_title text, p_source_upload_id uuid, p_file_id uuid, p_page_start integer, p_page_end integer, p_extracted_text text, p_issued_date date, p_created_by uuid)|5cd7ec2a30
+public.apply_customer_deposit_atomic(p_org_id uuid, p_deposit_payment_id uuid, p_target_invoice_id uuid, p_amount_cents integer, p_actor_id uuid, p_received_at timestamp with time zone)|c77b3899bf
+public.apply_invoice_late_fee_atomic(p_org_id uuid, p_invoice_id uuid, p_rule_id uuid, p_amount_cents integer, p_days_overdue integer)|268562ebfc
+public.apply_invoice_payment_atomic(p_org_id uuid, p_invoice_id uuid, p_amount_cents integer, p_currency text, p_method text, p_provider text, p_provider_payment_id text, p_status text, p_reference text, p_fee_cents integer, p_gross_cents integer, p_net_cents integer, p_idempotency_key text, p_metadata jsonb)|d64bfc2550
+public.apply_invoice_payment_with_details_atomic(p_org_id uuid, p_invoice_id uuid, p_amount_cents integer, p_currency text, p_method text, p_provider text, p_provider_payment_id text, p_status text, p_reference text, p_fee_cents integer, p_gross_cents integer, p_net_cents integer, p_idempotency_key text, p_metadata jsonb, p_received_at timestamp with time zone, p_provider_charge_id text, p_connected_account_id text, p_processor_fee_cents integer, p_platform_fee_cents integer, p_application_fee_cents integer, p_provider_balance_transaction_id text, p_provider_transfer_id text)|ea7704909c
+public.apply_multi_invoice_payment_atomic(p_org_id uuid, p_received_at timestamp with time zone, p_method text, p_reference text, p_provider text, p_idempotency_key text, p_allocations jsonb, p_party_type text, p_party_id uuid, p_metadata jsonb, p_created_by uuid)|2c6d65ac8c
+public.apply_vendor_credit_atomic(p_org_id uuid, p_credit_bill_id uuid, p_bill_id uuid, p_actor_id uuid, p_amount_cents bigint, p_idempotency_key text, p_release_evidence jsonb)|403abc5b4b
+public.approve_books_opening_batch(p_org_id uuid, p_batch_id uuid, p_role text, p_actor_id uuid)|ed80cb920d
+public.approve_books_warranty_cost(p_org_id uuid, p_visit_id uuid, p_date date, p_sources jsonb, p_evidence_url text, p_actor_id uuid)|c5c046d1d2
+public.approve_po_completion(p_org_id uuid, p_completion_id uuid, p_actor_id uuid)|795d98b27a
+public.approve_vendor_bills_atomic(p_org_id uuid, p_actor_id uuid, p_items jsonb)|85247a67fd
+public.approve_vendor_bills_with_outcomes(p_org_id uuid, p_actor_id uuid, p_items jsonb, p_mode text)|8482fcceb9
+public.arc_benchmark_days_bucket(p_days integer)|8a62e16e9e
+public.arc_benchmark_normalize_trade(p_trade text)|dac37e6a10
+public.arc_benchmark_value_bucket(p_value integer)|194665f4fc
+public.archive_floorplan_model_revision()|92dcef7d0a
+public.assert_accounting_d2_ready()|8c2078c32d
+public.assert_claim_withdrawal_closes_access()|00874eb884
+public.assert_payable_ready_for_approval()|cf20442061
+public.assert_vendor_relationship_claim_live()|434e9d5cec
+public.assign_change_order_number()|83cfc2a2a4
+public.assign_executed_change_order_number()|4eeadc8de3
+public.begin_bid_scope_revision(p_org_id uuid, p_package_id uuid, p_reason text)|eedb6d40db
+public.begin_books_period_close(p_org_id uuid, p_period_id uuid, p_actor_id uuid)|25a7845dd9
+public.books_assert_journal_balanced()|d6f9aad682
+public.books_guard_closed_period()|4f07ec9f2d
+public.books_guard_journal_proposal()|3f6bec150c
+public.books_guard_period_posting()|48f87a9ce3
+public.books_guard_posted_journal()|b26610a490
+public.books_opening_manifest(p_org_id uuid, p_batch_id uuid)|df83e1d367
+public.books_refresh_bank_account_reconciliation_watermark()|2a7a62c6f4
+public.books_reject_mutation()|bd2417c1da
+public.books_touch_blocked_sources(p_org_id uuid)|9735050154
+public.books_touch_dependents_from_invoice()|efaf377228
+public.books_touch_expense_from_line()|37abae5db4
+public.books_touch_invoice_from_retainage()|636460f602
+public.books_touch_project_sources(p_org_id uuid, p_project_id uuid)|79736e615e
+public.books_touch_project_sources_from_contract()|f3e565e2fd
+public.books_touch_project_sources_from_project()|88eb2fd993
+public.books_touch_project_sources_from_settings()|d12c5ae3d7
+public.books_touch_reversals_from_payment()|99b0293f6c
+public.books_touch_source_from_job_cost()|05bef1e228
+public.books_touch_sources_from_funding()|f6486f7c22
+public.books_touch_sources_from_gl_account()|6ed55ed30b
+public.books_touch_vendor_bill_from_line()|e6760b491e
+public.books_validate_account_mapping_scope()|6b895ffb65
+public.books_validate_child_org()|92693dc450
+public.books_validate_journal_line_scope()|e086043419
+public.books_validate_period_range()|2a0c547153
+public.budget_line_lock_guard()|0ac9141f40
+public.budget_lock_guard()|0b47fe4d86
+public.bump_prime_sov_revision()|c5a292aaed
+public.can_manage_members(check_org_id uuid)|ff61f8391b
+public.cancel_books_period_close(p_org_id uuid, p_period_id uuid, p_prior_status text)|a7a6255d6b
+public.cancel_invoice_payment_reservation(p_reservation_id uuid, p_reason text)|d8d60905bc
+public.cancel_payment_run_atomic(p_org_id uuid, p_run_id uuid, p_actor_id uuid, p_reason text, p_step_up_verified_at timestamp with time zone, p_step_up_max_age interval)|dd8fc8daff
+public.capitalize_books_inventory_interest(p_org_id uuid, p_project_id uuid, p_source_line_id uuid, p_date date, p_amount_cents bigint, p_reference text, p_evidence_url text, p_actor_id uuid)|fa02ada3ee
+public.capture_accounting_d2_acceptance(p_deployed_sha text, p_checker_version text, p_reconciliation_complete boolean)|9f602b0f27
+public.categorize_books_bank_transaction_atomic(p_org_id uuid, p_transaction_id uuid, p_account_id uuid, p_project_id uuid, p_cost_code_id uuid, p_memo text, p_actor_id uuid)|55658cdfc5
+public.certify_pay_application_atomic(p_org_id uuid, p_pay_application_id uuid, p_actor_id uuid, p_certification jsonb, p_recipients text[], p_revision integer)|a645e19518
+public.claim_accounting_delivery(p_org_id uuid, p_connection_id uuid, p_entity_type text, p_entity_id uuid)|28adb6b290
+public.claim_bank_transaction_ai_suggestions(p_org_id uuid, p_transaction_ids uuid[], p_claim_token uuid, p_limit integer)|3e8d537b42
+public.claim_jobs(job_types text[], limit_value integer)|c232fd76e1
+public.claim_matured_vendor_transfers(p_limit integer)|b00cb34ff7
+public.claim_payment_run_execution_atomic(p_org_id uuid, p_run_id uuid, p_claimed_at timestamp with time zone)|38b8e0c0ee
+public.close_books_bank_reconciliation_atomic(p_org_id uuid, p_reconciliation_id uuid, p_actor_id uuid)|e8acac1b33
+public.close_budget_transfer(p_transfer_id uuid, p_actor_id uuid, p_status text, p_reason text)|55d6aaee01
+public.commit_invoice_payment_intent(p_reservation_id uuid, p_provider_intent_id text, p_status text, p_client_secret text, p_connected_account_id text, p_charge_type text, p_metadata jsonb)|85f94969b1
+public.compare_exchange_drawing_metadata(p_org_id uuid, p_version_id uuid, p_expected jsonb, p_next jsonb)|5532fd47f2
+public.complete_books_cutover(p_org_id uuid, p_run_id uuid, p_actor_id uuid)|39270e4898
+public.complete_post_transfer_return_recovery_atomic(p_org_id uuid, p_disbursement_id uuid, p_reason text, p_returned_at timestamp with time zone)|8adc57444b
+public.confirm_books_bank_match_atomic(p_org_id uuid, p_transaction_id uuid, p_line_id uuid, p_amount_cents bigint, p_match_type text, p_confidence numeric, p_actor_id uuid)|752faf642d
+public.control_tower_rollup(p_org_id uuid, p_project_ids uuid[], p_today date, p_window_days integer)|84cafac18f
+public.convert_executed_prospect_handoff(p_org_id uuid, p_prospect_id uuid, p_estimate_id uuid, p_actor_id uuid, p_expected_updated_at timestamp with time zone, p_project jsonb, p_commercial jsonb, p_lines jsonb)|ec5ba18722
+public.create_bid_submission_version(p_org_id uuid, p_bid_invite_id uuid, p_payload jsonb, p_items jsonb, p_source text, p_entered_by uuid)|44d611bb37
+public.create_bid_submission_version_unchecked(p_org_id uuid, p_bid_invite_id uuid, p_payload jsonb, p_items jsonb, p_source text, p_entered_by uuid)|9dd40abbbf
+public.create_books_deposit_batch_atomic(p_org_id uuid, p_transaction_id uuid, p_payment_ids uuid[], p_reference text, p_actor_id uuid, p_fee_cents bigint)|ad8c1b6f05
+public.create_daily_log_submission(p_org_id uuid, p_project_id uuid, p_actor_id uuid, p_submission_id uuid, p_input jsonb, p_mentioned_user_ids uuid[])|6ab2bd5755
+public.create_funding_source_change_atomic(p_org_id uuid, p_requested_by uuid, p_provider text, p_provider_customer_id text, p_provider_payment_method_id text, p_provider_mandate_id text, p_bank_name text, p_account_holder_type text, p_account_type text, p_last4 text, p_fingerprint text, p_mandate_status text, p_verification_status text, p_provider_reference text, p_apply_after timestamp with time zone)|358f5ab412
+public.create_invoice_atomic(p_org_id uuid, p_invoice jsonb, p_lines jsonb)|b1e10b0a59
+public.create_invoice_from_billable_costs_atomic(p_org_id uuid, p_project_id uuid, p_actor_id uuid, p_invoice_number text, p_token text, p_title text, p_issue_date date, p_due_date date, p_from_date date, p_to_date date, p_group_by text, p_cost_ids uuid[], p_preview jsonb, p_idempotency_key text, p_reservation_id uuid, p_status text, p_client_visible boolean, p_notes text, p_sent_to_emails text[], p_metadata jsonb)|80749b363b
+public.create_payment_run_atomic(p_org_id uuid, p_requested_by uuid, p_funding_source_id uuid, p_currency text, p_approval_mode text, p_required_approvals smallint, p_vendor_amount_cents bigint, p_processor_fee_cents bigint, p_platform_fee_cents bigint, p_total_debit_cents bigint, p_control_snapshot jsonb, p_idempotency_key text, p_items jsonb)|9bb865e93b
+public.create_payment_run_with_outcomes(p_org_id uuid, p_requested_by uuid, p_funding_source_id uuid, p_currency text, p_approval_mode text, p_required_approvals smallint, p_vendor_amount_cents bigint, p_processor_fee_cents bigint, p_platform_fee_cents bigint, p_total_debit_cents bigint, p_control_snapshot jsonb, p_idempotency_key text, p_items jsonb, p_mode text)|1d370bb272
+public.create_receivable_adjustment_atomic(p_org_id uuid, p_invoice_id uuid, p_adjustment_type text, p_amount_cents integer, p_tax_cents integer, p_effective_date date, p_reason text, p_actor_id uuid, p_idempotency_key text, p_metadata jsonb)|7617377d2f
+public.dashboard_budget_rollup(p_org_id uuid, p_project_ids uuid[])|964a4426c8
+public.dashboard_invoice_rollup(p_org_id uuid, p_excluded_project_ids uuid[])|8817ab205d
+public.decide_invoice_approval(p_org_id uuid, p_invoice_id uuid, p_actor_id uuid, p_decision text, p_note text)|b561c0913f
+public.decide_payment_control_change_atomic(p_org_id uuid, p_change_request_id uuid, p_actor_user_id uuid, p_decision text, p_reason text, p_step_up_verified_at timestamp with time zone)|b7e87412b8
+public.decide_payment_run_atomic(p_org_id uuid, p_run_id uuid, p_approver_id uuid, p_decision text, p_reason text, p_content_hash text, p_step_up_verified_at timestamp with time zone, p_step_up_max_age interval)|4ec41dd62c
+public.derive_invoice_status(p_current_status text, p_total_cents integer, p_paid_cents bigint, p_due_date date, p_client_visible boolean, p_sent_at timestamp with time zone)|74c878e23c
+public.detach_takeoff_condition_lines(p_org_id uuid, p_condition_id uuid)|bcd29d141f
+public.detect_directory_merge_candidates(p_org_id uuid)|321ad5f950
+public.directory_normalize_name(value text)|ea567c9074
+public.directory_role_is_live(p_status text, p_until timestamp with time zone)|57d34dc2a5
+public.discard_payment_run_draft_atomic(p_org_id uuid, p_run_id uuid, p_preparer_id uuid)|3613f121b9
+public.drawing_register_snapshot(p_set_id uuid, p_revision_id uuid)|24f7173825
+public.enable_books_project_inventory(p_org_id uuid, p_project_id uuid, p_effective_on date, p_evidence_url text, p_actor_id uuid)|785950ca92
+public.enforce_disbursement_integrity()|4b54b9a896
+public.enforce_invoice_number_uniqueness()|ed17e568fa
+public.enforce_payment_control_approval_separation()|6ee24ec5f5
+public.enforce_payment_ledger_entry_integrity()|434d653325
+public.enforce_payment_payee_integrity()|0260239a86
+public.enforce_payment_run_approval_separation()|dcf65c4451
+public.enforce_payment_run_item_integrity()|2bcfca2da6
+public.enforce_platform_membership_role_scope()|0afafe44f7
+public.enforce_vendor_claim_integrity()|ae22d02218
+public.enforce_vendor_payment_relationship_integrity()|c67d6ad609
+public.enqueue_accounting_sync_atomic(p_org_id uuid, p_connection_id uuid, p_provider text, p_entity_type text, p_entity_id uuid, p_status text, p_status_reason text, p_error_message text, p_job_type text, p_payload jsonb, p_dedupe_key text)|455113e251
+public.generate_books_recurring_occurrence(p_org_id uuid, p_template_id uuid, p_as_of date)|511bb9a3de
+public.generate_project_correspondence_slug(project_name text)|92f8306e2c
+public.get_community_lot_status_counts(check_org_id uuid)|09765dda26
+public.get_file_counts_by_category(p_org_id uuid, p_project_id uuid)|826753c87e
+public.get_next_version_number(p_file_id uuid)|4ab95bb70a
+public.get_org_member_mfa_status(p_org_id uuid, p_user_ids uuid[])|cf68f7106b
+public.get_project_directory_page(p_org_id uuid, p_user_id uuid, p_all_projects boolean, p_division_ids uuid[], p_community_id uuid, p_division_id uuid, p_exclude_reporting boolean, p_search text, p_status text, p_sort text, p_direction text, p_cursor jsonb, p_limit integer)|84aa8aab81
+public.get_project_directory_schedule_summaries(p_org_id uuid, p_project_ids uuid[])|86336b919f
+public.get_sales_backlog_report(p_org_id uuid, p_division_id uuid)|1d9da7cc41
+public.get_sales_deals(p_org_id uuid, p_division_id uuid, p_community_id uuid, p_include_closed boolean, p_limit integer, p_deal_id text)|e0ecc7edda
+public.get_user_sessions()|25c6a1d8e4
+public.get_variance_analysis(p_org_id uuid, p_start_date date, p_end_date date)|2c7e17448f
+public.guard_accounting_effective_route_change()|288c53301c
+public.guard_accounting_project_reassignment()|c3d58dba6b
+public.guard_bid_award_readiness()|e490613855
+public.guard_books_allocated_warranty_cost()|21cc8f0396
+public.guard_books_bank_mapping()|c956587558
+public.guard_books_bank_statement_state()|a5afb17911
+public.guard_books_inventory_cost_stage()|abc00b5966
+public.guard_books_inventory_policy()|3c7593dfa3
+public.guard_books_land_ownership()|b24e9baa01
+public.guard_books_opening_approval_identity()|54f89c9e8f
+public.guard_books_opening_batch()|3ae02684a5
+public.guard_books_opening_lines()|2b1e04e4f8
+public.guard_books_opening_source()|f7042726ec
+public.guard_books_reconciled_activity()|163e632e52
+public.guard_books_warranty_approval()|ff2bcfb72f
+public.guard_books_warranty_policy()|e3a0b70072
+public.guard_issued_bid_description()|a475c7015f
+public.guard_issued_bid_scope()|c5bac288e0
+public.guard_payment_run_approvable()|2cf28179ff
+public.has_org_permission(check_org_id uuid, check_permission text)|4e6cac409f
+public.increment_auth_rate_limit(action_input text, identifier_input text, window_start_input timestamp with time zone)|f4232566fa
+public.increment_drawing_revision_progress(p_revision_id uuid)|99451dab3b
+public.invalidate_precon_budget_review()|9d8994fe9f
+public.invalidate_precon_scope_review()|04f0cf61e1
+public.invoice_paid_cents(p_org_id uuid, p_invoice_id uuid)|0f8732da15
+public.invoice_pending_payment_cents(p_org_id uuid, p_invoice_id uuid)|0d8f408667
+public.is_org_admin_member(check_org_id uuid)|59eadfe41e
+public.is_org_member(check_org_id uuid)|686d609b1b
+public.is_project_member(check_project_id uuid)|eb47dbc0e6
+public.issue_estimate_review_link(p_org_id uuid, p_estimate_id uuid, p_token_hash text, p_expected_updated_at timestamp with time zone, p_revoke_existing boolean)|0a8c8ff38a
+public.latest_payment_risk_reviews(p_org_id uuid, p_run_ids uuid[])|37149bd87a
+public.launch_books_greenfield_atomic(p_org_id uuid, p_actor_id uuid, p_launched_on date, p_opening_position text, p_attestation text)|d9bbf37905
+public.learn_books_bank_rule_vendor()|2428b42701
+public.list_office_document_children(p_org_id uuid, p_parent_path text)|cc452d3689
+public.list_payment_submission_recovery_candidates(p_limit integer)|6f4aa5f0b7
+public.list_project_child_folders(p_org_id uuid, p_project_id uuid, p_parent_path text)|7a4799e228
+public.list_project_document_folders(p_org_id uuid, p_project_id uuid)|c6533472e3
+public.lock_takeoff_measurement_scope()|d957cf4e50
+public.match_search_documents_fuzzy(p_org_id uuid, p_query text, p_limit integer, p_entity_types text[], p_threshold real)|6f912597ec
+public.match_search_embeddings(p_org_id uuid, p_query_embedding text, p_limit integer, p_entity_types text[])|0a5b9d2ba7
+public.merge_org_settings(p_org_id uuid, p_patch jsonb, p_delete_keys text[])|319397fb4b
+public.mutate_books_banking_atomic(p_org_id uuid, p_transaction_id uuid, p_actor_id uuid, p_action text, p_version integer, p_coding jsonb, p_matches jsonb)|33dcc82953
+public.mutate_office_document_folder(p_org_id uuid, p_path text, p_new_path text)|b8b55232e8
+public.next_budget_transfer_number(p_project_id uuid)|1d982b7a72
+public.next_certified_payroll_number(p_project_id uuid)|eceba1e7be
+public.next_change_event_number(p_project_id uuid)|c0aac7779b
+public.next_incident_number(p_project_id uuid)|86ebaeb805
+public.next_inspection_number(p_project_id uuid)|0691009dad
+public.next_meeting_number(p_project_id uuid, p_series text)|524cc2ddb1
+public.next_observation_number(p_project_id uuid)|91eef7ea37
+public.next_rfi_number(p_project_id uuid)|9bbecbc43d
+public.next_submittal_number(p_project_id uuid)|c29a73f1df
+public.next_transmittal_number(p_project_id uuid)|0eab4d6928
+public.next_warranty_backcharge_number(p_org_id uuid)|426c71492e
+public.next_warranty_request_number(p_project_id uuid)|cc378d218c
+public.normalize_vendor_invoice_number(p_value text)|35c087d05f
+public.normalize_vendor_name(p_value text)|a884b6d2a0
+public.office_document_counts(p_org_id uuid)|208bdcc356
+public.open_payment_operations_incident(p_org_id uuid, p_finding_code text, p_detail text)|c37fad837d
+public.payment_run_eligible_approver_count(p_run_id uuid)|6d99821525
+public.persist_accounting_delivery(p_token uuid, p_provider text, p_external_id text, p_external_version text, p_status text, p_reason text, p_message text, p_attempt_id uuid, p_fingerprint text)|f22033aa31
+public.photo_timeline_for_portal(p_project_id uuid, p_org_id uuid)|ac583220e0
+public.platform_events_by_org(p_org_ids uuid[], p_since timestamp with time zone)|4d11512cfd
+public.platform_monthly_signups(p_months integer)|d76ddc45d0
+public.platform_storage_by_org(p_org_ids uuid[])|003560a9c9
+public.platform_upload_bytes_since(p_since timestamp with time zone)|27ccc10762
+public.post_books_clearing_settlement(p_org_id uuid, p_clearing_code text, p_cash_account_id uuid, p_date date, p_gross_cents bigint, p_withheld_cents bigint, p_reference text, p_evidence_url text, p_actor_id uuid)|1299ed425a
+public.post_books_journal_entry(p_org_id uuid, p_entry jsonb, p_lines jsonb)|2745377c95
+public.post_books_opening_batch(p_org_id uuid, p_batch_id uuid, p_actor_id uuid)|b72746382c
+public.post_books_registered_subledger_event_atomic(p_org_id uuid, p_register text, p_parent_id uuid, p_event jsonb, p_entry jsonb, p_lines jsonb)|36f03576ca
+public.post_books_warranty_reserve(p_org_id uuid, p_project_id uuid, p_date date, p_initial boolean, p_actor_id uuid)|31f9d7190e
+public.post_budget_transfer(p_transfer_id uuid, p_actor_id uuid)|0230fadaf9
+public.post_pay_application(p_org_id uuid, p_pay_application_id uuid, p_invoice_id uuid, p_summary jsonb)|3f22b8d5f2
+public.post_payment_ledger_transaction_atomic(p_org_id uuid, p_disbursement_id uuid, p_provider_event_id uuid, p_source_type text, p_source_id uuid, p_transaction_type text, p_currency text, p_idempotency_key text, p_reverses_transaction_id uuid, p_description text, p_effective_at timestamp with time zone, p_entries jsonb)|31ef87b071
+public.precon_baseline_signature(p_org_id uuid, p_project_id uuid)|054402af2c
+public.preserve_prospect_scope()|31ae327d98
+public.prevent_active_payment_run_payable_mutation()|623a294fbb
+public.prevent_concurrent_vendor_bill_duplicate()|00d7d30a59
+public.prevent_payment_append_only_mutation()|b4ec811005
+public.prevent_payment_launch_attestation_mutation()|3e40e894be
+public.preview_books_bank_reconciliation(p_org_id uuid, p_reconciliation_id uuid)|d7d20aa883
+public.production_home_stat_rollup(p_org_id uuid, p_project_ids uuid[], p_community_ids uuid[], p_week_start date, p_month_start date, p_month_end date)|4272edb2e6
+public.project_books_fact_and_journal_atomic(p_org_id uuid, p_expected_fact_id uuid, p_fact jsonb, p_entry jsonb, p_lines jsonb, p_reversal_date date, p_reversal_reason text)|100eab9985
+public.publish_drawing_revision(p_org_id uuid, p_revision_id uuid, p_user_id uuid, p_label text, p_issuance_type text, p_issued_date date, p_issued_by text, p_received_from text, p_notes text, p_decisions jsonb, p_sheet_edits jsonb)|ec002b7d29
+public.purge_expired_external_sessions(retain_days integer)|d6e80348c5
+public.queue_task_mentions()|0cc724645c
+public.reap_stale_outbox_jobs(p_lease_seconds integer, p_max_attempts integer, p_job_types text[])|3b0480d079
+public.rebase_pay_application_drafts(p_org_id uuid, p_contract_id uuid)|01a085b7db
+public.recalc_invoice_balance_atomic(p_org_id uuid, p_invoice_id uuid)|d0fcef32d9
+public.reconcile_accounting_exhausted_jobs()|e789a7b34c
+public.reconcile_accounting_invoice_opening_payment(p_org_id uuid, p_invoice_id uuid)|7c31d8b9af
+public.reconcile_books_warranty_recovery(p_org_id uuid, p_request_id uuid, p_date date)|385af6d5ba
+public.reconcile_pay_application_invoice_status()|a412680469
+public.record_ap_payment_atomic(p_org_id uuid, p_disbursement_id uuid, p_provider_payment_id text, p_provider_charge_id text, p_provider_transfer_id text, p_provider_payout_id text, p_provider_balance_transaction_id text, p_paid_at timestamp with time zone)|d18b90e918
+public.record_ap_payment_reversal_atomic(p_org_id uuid, p_disbursement_id uuid, p_amount_cents bigint, p_reversal_type text, p_provider_reversal_id text, p_reason text, p_metadata jsonb)|aeca7dd4f2
+public.record_automated_payment_risk_review(p_org_id uuid, p_run_id uuid, p_content_hash text, p_signal_set_hash text, p_decision text, p_signals jsonb, p_risk_score numeric, p_evaluated_at timestamp with time zone)|2a69b129bd
+public.record_bid_submission_benchmark(p_bid_submission_id uuid, p_min_sample_size integer, p_min_orgs integer)|62b9595682
+public.record_bid_submission_benchmarks(p_bid_submission_ids uuid[], p_min_sample_size integer, p_min_orgs integer)|572f02fd05
+public.record_document_signature_atomic(p_org_id uuid, p_signing_request_id uuid, p_document_id uuid, p_revision integer, p_signer_name text, p_signer_email text, p_signer_ip text, p_user_agent text, p_consent_text text, p_values jsonb, p_audit_data jsonb, p_signed_at timestamp with time zone)|1865cf0968
+public.record_manual_ap_payment_atomic(p_org_id uuid, p_bill_id uuid, p_actor_id uuid, p_amount_cents bigint, p_currency text, p_method text, p_reference text, p_check_number text, p_received_at timestamp with time zone, p_release_evidence jsonb, p_idempotency_key text)|cf2f4044a0
+public.record_manual_ap_payment_with_books_atomic(p_org_id uuid, p_bill_id uuid, p_actor_id uuid, p_amount_cents bigint, p_currency text, p_method text, p_reference text, p_check_number text, p_received_at timestamp with time zone, p_release_evidence jsonb, p_idempotency_key text, p_books_account_id uuid)|8d66cebae8
+public.record_payment_provider_event_attempt(p_provider_event_id uuid, p_outcome text, p_processing_error text, p_started_at timestamp with time zone, p_completed_at timestamp with time zone)|51b0db55c8
+public.record_payment_reversal_atomic(p_org_id uuid, p_payment_id uuid, p_amount_cents integer, p_reversal_type text, p_provider_reversal_id text, p_reason text, p_metadata jsonb)|e2a2354c0b
+public.record_portal_access(token_id_input uuid)|727ff78845
+public.refresh_directory_intelligence(p_org_id uuid)|fb980602b6
+public.refresh_drawing_sheets_list()|e352115535
+public.refresh_vendor_scorecards(p_org_id uuid, p_period_start date, p_period_end date)|4ba31f9190
+public.refresh_vendor_tax_readiness(p_org_id uuid, p_tax_year integer)|ac7d779fdc
+public.release_accounting_delivery(p_token uuid)|cd5e26e371
+public.release_bank_transaction_ai_suggestion_claim(p_org_id uuid, p_claim_token uuid, p_error text, p_without_penalty boolean)|27ef10bfb2
+public.release_failed_payment_run_item_atomic(p_org_id uuid, p_disbursement_id uuid, p_reason text, p_effective_at timestamp with time zone)|6e5b67558a
+public.release_house_plan_version(p_org_id uuid, p_version_id uuid, p_actor_id uuid, p_bundle_snapshot jsonb, p_released_at timestamp with time zone)|d2c85bcc41
+public.release_prime_sov_retainage(p_org_id uuid, p_contract_id uuid, p_amount_cents integer)|5bcca2b1cd
+public.release_project_retainage_atomic(p_org_id uuid, p_project_id uuid, p_actor_id uuid, p_amount_cents integer, p_invoice_number text, p_reservation_id uuid, p_title text, p_notes text, p_issue_date date, p_due_date date)|6c55d13310
+public.release_retainage_atomic(p_org_id uuid, p_bill_id uuid, p_actor_id uuid, p_amount_cents bigint, p_require_final_waiver boolean, p_requested_at timestamp with time zone)|2dd0b78955
+public.rename_nested_folder_paths(p_org_id uuid, p_project_id uuid, p_old_path text, p_new_path text)|d2b65c8ac8
+public.rename_project_file_folder_paths(p_org_id uuid, p_project_id uuid, p_old_path text, p_new_path text, p_actor_id uuid)|2be40440d7
+public.rename_project_location(p_org_id uuid, p_project_id uuid, p_location_id uuid, p_name text)|9197abb848
+public.reopen_books_bank_reconciliation(p_org_id uuid, p_reconciliation_id uuid, p_reason text, p_actor_id uuid)|393fb26973
+public.repaint_condition_markups(p_org_id uuid, p_condition_id uuid, p_color text)|7796c88485
+public.replace_books_overhead_budget_atomic(p_org_id uuid, p_budget_id uuid, p_name text, p_fiscal_year integer, p_status text, p_notes text, p_lines jsonb, p_actor_id uuid)|ba7cfd64ca
+public.replace_company_tax_identity_atomic(p_org_id uuid, p_company_id uuid, p_tin text, p_actor_id uuid)|30eb1576f6
+public.replace_invoice_lines_atomic(p_org_id uuid, p_invoice_id uuid, p_invoice_update jsonb, p_lines jsonb)|78e1486a91
+public.replace_payment_fee_policy_atomic(p_org_id uuid, p_pass_through_processor_fees boolean, p_processor_fee_bps integer, p_processor_fee_fixed_cents bigint, p_processor_fee_cap_cents bigint, p_ap_platform_fee_flat_cents bigint, p_ap_platform_fee_bps integer, p_actor_id uuid)|723afd2294
+public.reprice_vendor_price_agreement(p_org_id uuid, p_agreement_id uuid, p_effective_from date, p_unit_cost_cents bigint, p_lump_sum_cents bigint, p_notes text, p_actor_id uuid)|274fd5e47c
+public.request_invoice_approval(p_org_id uuid, p_invoice_id uuid, p_actor_id uuid, p_note text)|f7938efbc4
+public.rescind_bid_award(p_org_id uuid, p_bid_award_id uuid, p_actor_id uuid, p_reason text)|576900f856
+public.reserve_invoice_payment(p_org_id uuid, p_invoice_id uuid, p_principal_cents integer, p_charge_cents integer, p_currency text, p_method text, p_idempotency_key text, p_expires_at timestamp with time zone, p_metadata jsonb)|585a27d0b0
+public.resolve_payment_operations_incident(p_org_id uuid, p_finding_code text)|6414848861
+public.resolve_payment_reversal_atomic(p_org_id uuid, p_provider_reversal_id text, p_outcome text, p_reason text, p_metadata jsonb)|93f3fe6a02
+public.restore_retainage_for_void_release_invoice()|885ec4546e
+public.retire_obsolete_bid_pricing()|03926ea7f8
+public.retire_org_payment_fee_policy_atomic(p_org_id uuid, p_actor_id uuid)|03092c8002
+public.retry_failed_accounting_jobs(p_org_id uuid, p_job_types text[])|e68a14b1a2
+public.return_pay_application_atomic(p_org_id uuid, p_pay_application_id uuid, p_actor_id uuid, p_return jsonb, p_revision integer)|25a3d565d8
+public.reverse_books_bank_job_cost()|f173414899
+public.reverse_books_journal_entry(p_org_id uuid, p_original_entry_id uuid, p_entry jsonb, p_lines jsonb)|4bf1744afa
+public.reverse_books_opening_batch(p_org_id uuid, p_batch_id uuid, p_date date, p_reason text, p_actor_id uuid)|e26736cd06
+public.reverse_books_warranty_cost(p_org_id uuid, p_visit_id uuid, p_date date, p_reason text, p_actor_id uuid)|475026745f
+public.reverse_manual_ap_payment_atomic(p_org_id uuid, p_payment_id uuid, p_actor_id uuid, p_amount_cents bigint, p_reason text, p_idempotency_key text)|fba1c554ef
+public.review_books_journal_proposal_atomic(p_org_id uuid, p_proposal_id uuid, p_reviewer_id uuid, p_decision text, p_note text)|40f9be312e
+public.revise_bid_for_addendum()|2e96382629
+public.revise_invoice_atomic(p_org_id uuid, p_invoice_id uuid, p_actor_id uuid, p_invoice_number text, p_reservation_id uuid)|2256b32a8d
+public.revise_precon_pricing_scope(p_org_id uuid, p_prospect_id uuid, p_package_id uuid, p_user_id uuid, p_expected_version integer, p_signature text, p_reason text)|eea73611be
+public.revoke_user_session(p_session_id uuid)|e8c0ef0993
+public.rollback_books_cutover(p_org_id uuid, p_run_id uuid, p_actor_id uuid, p_reason text)|6156eda319
+public.run_bid_award_conversion(p_org_id uuid, p_bid_submission_id uuid, p_awarded_by uuid, p_notes text, p_accepted_alternate_ids uuid[])|096033251c
+public.run_bid_award_price_agreements(p_org_id uuid, p_bid_submission_id uuid, p_awarded_by uuid, p_notes text, p_accepted_alternate_ids uuid[])|8a0333aae3
+public.run_po_generation_commit(p_org_id uuid, p_run_id uuid, p_payload jsonb)|4e50979bc8
+public.run_proposal_acceptance_conversion(p_org_id uuid, p_proposal_id uuid, p_project_id uuid, p_signature_data jsonb, p_executed_file_id uuid)|a3bf5030e5
+public.run_reviewed_bid_award(p_org_id uuid, p_bid_submission_id uuid, p_awarded_by uuid, p_notes text, p_accepted_alternate_ids uuid[], p_reviewed_scope text, p_reviewed_terms text, p_readiness_exception text)|d3251e19c0
+public.save_bid_pricing_decision(p_org_id uuid, p_submission_id uuid, p_user_id uuid, p_data jsonb)|21bab7e2f9
+public.save_estimate_draft(p_org_id uuid, p_estimate_id uuid, p_expected_updated_at timestamp with time zone, p_document jsonb, p_items jsonb)|abcf15c064
+public.save_organization_settings(p_org_id uuid, p_actor_id uuid, p_section text, p_org_patch jsonb, p_settings_patch jsonb)|44496dd745
+public.save_pay_application_lines_atomic(p_org_id uuid, p_pay_application_id uuid, p_updates jsonb, p_expected_updated_at timestamp with time zone, p_allow_overbilling boolean)|6d46607c6e
+public.save_prime_sov_lines(p_org_id uuid, p_project_id uuid, p_contract_id uuid, p_expected_revision bigint, p_lines jsonb)|47c920ae15
+public.seal_accounting_batch(p_org_id uuid, p_batch_id uuid, p_actor_id uuid, p_max_lines integer)|a6e5bcaa41
+public.search_drawing_sheets(p_org_id uuid, p_project_id uuid, p_query text, p_limit integer)|d8b220ad16
+public.seed_compliance_document_types()|5aad85b899
+public.seed_org_directory_relationship_types(p_org_id uuid)|db98587672
+public.set_books_warranty_estimate(p_org_id uuid, p_project_id uuid, p_date date, p_amount_cents bigint, p_evidence_url text, p_actor_id uuid)|7ccbc55ba1
+public.set_estimate_version_group()|670dd97aca
+public.set_project_file_folder_permissions_updated_at()|61c36c82d8
+public.shares_org_with_current_user(target_user_id uuid)|70114d9a04
+public.stamp_bid_scope_revision()|1e7baf33e3
+public.start_prospect_project(p_org_id uuid, p_prospect_id uuid, p_actor_id uuid, p_expected_project_id uuid, p_property_type project_property_type, p_expected_agreement_id uuid)|2dd6cb23f8
+public.store_company_tax_identity_atomic(p_org_id uuid, p_company_id uuid, p_tin text, p_actor_id uuid)|c647f2cc13
+public.submit_payment_run_atomic(p_org_id uuid, p_run_id uuid, p_requester_id uuid, p_content_hash text, p_requested_at timestamp with time zone, p_scheduled_for date)|f13e178d40
+public.submit_vendor_bills_for_approval(p_org_id uuid, p_actor_id uuid, p_bill_ids uuid[])|487c38b8a8
+public.sync_invoice_tax_jurisdiction()|1ee09b72a3
+public.sync_payment_operations_incidents(p_finding_code text, p_active_org_ids uuid[], p_detail text)|4d1ee05f9c
+public.sync_prospect_scope()|7813a838e7
+public.sync_qbo_invoice_opening_payment()|1285421281
+public.sync_retainage_release_invoice_status()|5e4db2542a
+public.tg_directory_relationship_type_tier_label()|de972f15a4
+public.tg_documents_sync_source_entity_from_metadata()|38293e3aef
+public.tg_files_ensure_photo_record()|607c0641bc
+public.tg_generic_vendor_role_applies_to_both()|e15d3d99a7
+public.tg_house_plan_version_children_immutable()|e7414ac1ba
+public.tg_house_plan_version_immutable()|6ba5befd72
+public.tg_party_roles_check_applies_to()|8670dc0653
+public.tg_po_completion_no_line_overlap()|f1cab18eca
+public.tg_project_correspondence_slug()|01c46698ab
+public.tg_seed_org_directory_relationship_types()|36c4f5d3d4
+public.tg_set_updated_at()|0cf2c9ed94
+public.tg_vendor_price_agreement_history()|5a00b8ce7e
+public.transfer_books_land_to_start(p_org_id uuid, p_lot_id uuid, p_date date, p_actor_id uuid)|9ede669d76
+public.transition_books_project_inventory(p_org_id uuid, p_project_id uuid, p_transition text, p_date date, p_evidence_url text, p_actor_id uuid)|120375af74
+public.transition_precon_handoff(p_org_id uuid, p_project_id uuid, p_actor_id uuid, p_action text, p_review jsonb)|ce8305c250
+public.update_conversation_last_message_at()|b6409d6466
+public.update_drawing_markups_updated_at()|0b435ab037
+public.update_drawing_pins_updated_at()|03ba00c7b6
+public.update_drawing_sets_updated_at()|71be939c44
+public.update_drawing_sheets_updated_at()|75e331aab4
+public.update_invoice_atomic(p_org_id uuid, p_invoice_id uuid, p_invoice jsonb, p_lines jsonb, p_expected_updated_at timestamp with time zone)|bcfac89cb4
+public.update_qbo_cdc_cursor(p_connection_id uuid, p_cursor timestamp with time zone)|69850b0069
+public.validate_accounting_counterparty_link()|d2013f7e4a
+public.validate_accounting_entity_map_scope()|704f94f48e
+public.validate_accounting_invoice_line_link()|f3b991cca0
+public.validate_books_asset_capacity()|00ece73d5f
+public.validate_books_bank_match()|04b00f1363
+public.validate_books_funding_account()|3893e159b5
+public.void_approved_change_order_atomic(p_org_id uuid, p_change_order_id uuid, p_actor_id uuid, p_reason text)|8cd2346736
+public.void_invoice_atomic(p_org_id uuid, p_invoice_id uuid, p_actor_id uuid)|619a843c55
+public.void_pay_application(p_org_id uuid, p_pay_application_id uuid)|e9529a0542
+public.void_receivable_adjustment_atomic(p_org_id uuid, p_adjustment_id uuid, p_actor_id uuid)|0b0c3b3ece
+public.warranty_cost_summary(p_org_id uuid, p_community_id uuid)|454b54c7f4
+public.warranty_defect_analysis_scoped(p_org_id uuid, p_group_by text, p_project_ids uuid[], p_from timestamp with time zone, p_to timestamp with time zone)|d7cbefd3dc

@@ -1,0 +1,246 @@
+{
+  "scenario": "YEAR-01",
+  "reviewedFrom": "Standard accrual year-end practice: every income-statement account (income, cost of sales, expense \u2014 custom accounts included) is closed to retained earnings at the fiscal year end; balance-sheet accounts, owner contributions and owner distributions are never closed. Net income = income \u2212 cost of sales \u2212 expense for the fiscal year; RE(end) = RE(open) + net income. A reopened year recloses only the residual change. Statements for a closed year still report its earnings (closing entries are excluded from the P&L). Pending licensed-CPA review (B16.3). Amounts are integer cents. Cash-side accounts are a non-control escrow asset (1060) so the year end is isolated from bank reconciliation, which BANK-01 covers.",
+  "subcases": {
+    "noncalendar-year-closes-to-retained-earnings": {
+      "inputs": {
+        "fiscalYearStartMonth": 4,
+        "fiscalYear": {
+          "start": "2025-04-01",
+          "end": "2026-03-31"
+        },
+        "opening": {
+          "cash": 1500000,
+          "ownerContributions": 500000,
+          "retainedEarnings": 1000000
+        },
+        "customAccounts": [
+          {
+            "code": "1060",
+            "name": "Funds held in escrow",
+            "accountType": "asset",
+            "subtype": "other_asset"
+          },
+          {
+            "code": "4310",
+            "name": "Consulting income",
+            "accountType": "income",
+            "subtype": "other_revenue"
+          },
+          {
+            "code": "6810",
+            "name": "Estimating software",
+            "accountType": "expense",
+            "subtype": "software"
+          }
+        ],
+        "journals": [
+          {
+            "date": "2025-06-15",
+            "debit": "1060",
+            "credit": "4310",
+            "cents": 800000
+          },
+          {
+            "date": "2025-09-10",
+            "debit": "6810",
+            "credit": "1060",
+            "cents": 120000
+          },
+          {
+            "date": "2025-12-05",
+            "debit": "5040",
+            "credit": "1060",
+            "cents": 300000
+          },
+          {
+            "date": "2026-02-20",
+            "debit": "3020",
+            "credit": "1060",
+            "cents": 100000
+          }
+        ]
+      },
+      "derivation": "Net income = 800,000 \u2212 120,000 \u2212 300,000 = 380,000; RE 1,000,000 + 380,000 = 1,380,000. Distributions (3020) stay on the balance sheet. Closing periods 1\u201311 posts no year-end entry; closing period 12 posts exactly one.",
+      "expectedYearEndEntriesBeforeFinalPeriod": 0,
+      "expectedYearEndEntries": 1,
+      "expectedYearEndLines": {
+        "4310": 800000,
+        "5040": -300000,
+        "6810": -120000,
+        "3100": -380000
+      },
+      "expectedFiscalYearNetIncomeCents": 380000,
+      "expectedNetDebitCentsByAccount": {
+        "1060": 1780000,
+        "3010": -500000,
+        "3020": 100000,
+        "3100": -1380000
+      },
+      "expectedBalanceSheetDifferenceCents": 0
+    },
+    "late-adjustment-reopen-reclose-and-next-year": {
+      "inputs": {
+        "fiscalYearStartMonth": 4,
+        "opening": {
+          "cash": 1500000,
+          "ownerContributions": 500000,
+          "retainedEarnings": 1000000
+        },
+        "journals": [
+          {
+            "date": "2026-03-05",
+            "debit": "1060",
+            "credit": "4310",
+            "cents": 600000
+          },
+          {
+            "date": "2026-03-12",
+            "debit": "6810",
+            "credit": "1060",
+            "cents": 150000
+          }
+        ],
+        "lateAdjustment": {
+          "date": "2026-03-31",
+          "debit": "6810",
+          "credit": "1060",
+          "cents": 40000
+        },
+        "nextYear": {
+          "date": "2026-04-15",
+          "debit": "1060",
+          "credit": "4310",
+          "cents": 200000
+        }
+      },
+      "derivation": "First close: NI 450,000 \u2192 RE 1,450,000. The late 40,000 expense reopens the year; reclose posts only the 40,000 residual (Dr 3100 / Cr 6810) \u2192 RE 1,410,000. A reopen/reclose with no change posts nothing. April belongs to fiscal 2026: its 200,000 is current earnings and closing April (fiscal period 1) posts no year-end entry.",
+      "expectedRecloseDeltaLines": {
+        "3100": 40000,
+        "6810": -40000
+      },
+      "expectedYearEndEntries": 2,
+      "expectedFiscal2025NetIncomeCents": 410000,
+      "expectedFiscal2026NetIncomeCents": 200000,
+      "expectedNetDebitCentsByAccount": {
+        "1060": 2110000,
+        "3010": -500000,
+        "3100": -1410000,
+        "4310": -200000
+      },
+      "expectedBalanceSheet": {
+        "currentEarningsCents": 200000,
+        "differenceCents": 0
+      }
+    },
+    "break-even-year": {
+      "inputs": {
+        "fiscalYearStartMonth": 4,
+        "opening": {
+          "cash": 1500000,
+          "ownerContributions": 500000,
+          "retainedEarnings": 1000000
+        },
+        "journals": [
+          {
+            "date": "2026-03-05",
+            "debit": "1060",
+            "credit": "4310",
+            "cents": 100000
+          },
+          {
+            "date": "2026-03-12",
+            "debit": "6810",
+            "credit": "1060",
+            "cents": 100000
+          }
+        ]
+      },
+      "derivation": "Zero net income: the year-end entry still clears income and expense, with no retained-earnings line; RE is unchanged.",
+      "expectedYearEndEntries": 1,
+      "expectedYearEndLines": {
+        "4310": 100000,
+        "6810": -100000
+      },
+      "expectedNetDebitCentsByAccount": {
+        "1060": 1500000,
+        "3010": -500000,
+        "3100": -1000000
+      }
+    },
+    "no-activity-year": {
+      "inputs": {
+        "fiscalYearStartMonth": 4,
+        "opening": {
+          "cash": 1500000,
+          "ownerContributions": 500000,
+          "retainedEarnings": 1000000
+        }
+      },
+      "derivation": "Nothing to close: no year-end entry, RE unchanged.",
+      "expectedYearEndEntries": 0,
+      "expectedNetDebitCentsByAccount": {
+        "1060": 1500000,
+        "3010": -500000,
+        "3100": -1000000
+      }
+    },
+    "late-adjustment-in-earlier-closed-period": {
+      "inputs": {
+        "fiscalYearStartMonth": 4,
+        "opening": {
+          "cash": 1500000,
+          "ownerContributions": 500000,
+          "retainedEarnings": 1000000
+        },
+        "journals": [
+          {
+            "date": "2026-02-10",
+            "debit": "1060",
+            "credit": "4310",
+            "cents": 500000
+          }
+        ],
+        "lateAdjustment": {
+          "date": "2026-02-27",
+          "debit": "6810",
+          "credit": "1060",
+          "cents": 70000
+        }
+      },
+      "derivation": "Fiscal 2025 is closed (Feb = period 11, Mar = period 12). A correction to February must flow through the year-end transfer, so periods reopen newest first: reopening February while March is closed is refused; the accountant reopens March, then February, records the missed 70,000 expense and recloses both. The closed year then holds no income-statement balance and RE = opening + (500,000 \u2212 70,000).",
+      "expectedClosedYearIncomeStatementCents": 0,
+      "expectedNetDebitCentsByAccount": {
+        "1060": 1930000,
+        "3010": -500000,
+        "3100": -1430000
+      },
+      "expectedOutOfOrderReopenRefused": true
+    },
+    "same-intent-retry": {
+      "inputs": {
+        "fiscalYearStartMonth": 4,
+        "opening": {
+          "cash": 1500000,
+          "ownerContributions": 500000,
+          "retainedEarnings": 1000000
+        },
+        "journals": [
+          {
+            "date": "2026-03-05",
+            "debit": "1060",
+            "credit": "4310",
+            "cents": 300000
+          }
+        ]
+      },
+      "derivation": "The year-end transfer requested twice at once, and the final period closed twice at once, produce one year-end entry: RE = 10,000 + 3,000.",
+      "expectedYearEndEntries": 1,
+      "expectedNetDebitCentsByAccount": {
+        "1060": 1800000,
+        "3010": -500000,
+        "3100": -1300000
+      }
+    }
+  }
+}

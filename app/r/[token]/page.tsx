@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
@@ -12,6 +13,7 @@ interface Props {
 
 
 export default async function ReviewerPortalPage({ params }: Props) {
+  await connection()
   const { token } = await params
   const { access, data } = await loadReviewerPortalPage(token)
 

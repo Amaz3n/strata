@@ -1,7 +1,8 @@
 "use server"
 
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
-import { createWarrantyRequestFromPortal, signOffWarrantyVisitFromPortal } from "@/lib/services/warranty"
+import { actionError, type ActionResult } from "@/lib/action-result"
+import { confirmWarrantyVisitByBuyer, createWarrantyRequestFromPortal, requestWarrantyVisitRescheduleByBuyer, signOffWarrantyVisitFromPortal, type WarrantyServiceVisitDTO } from "@/lib/services/warranty"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { uploadPortalFile } from "@/lib/services/portal-uploads"
 import { warrantyRequestInputSchema } from "@/lib/validation/warranty"
@@ -62,4 +63,22 @@ export async function signOffWarrantyVisitPortalAction(token: string, formData: 
   const name = String(formData.get("name") || "").trim()
   if (!visitId || !name) throw new Error("Visit and sign-off name are required")
   return signOffWarrantyVisitFromPortal({ orgId: access.org_id, projectId: access.project_id, visitId, name })
+}
+
+/** The homeowner confirms the appointment from the link in the email. */
+export async function confirmWarrantyVisitPortalAction(token: string, visitId: string): Promise<ActionResult<WarrantyServiceVisitDTO>> {
+  try {
+    const access = await assertPortalActionAccess(token, { portalType: "client", requireProject: true, permission: "can_view_warranty" })
+    const visit = await confirmWarrantyVisitByBuyer({ orgId: access.org_id, projectId: access.project_id, contactId: access.contact_id ?? null, visitId })
+    return { success: true, data: visit }
+  } catch (error) { return actionError(error) }
+}
+
+/** The homeowner can't make it; the office sees the ask and moves the visit. */
+export async function requestWarrantyVisitRescheduleAction(token: string, visitId: string, note: string): Promise<ActionResult<WarrantyServiceVisitDTO>> {
+  try {
+    const access = await assertPortalActionAccess(token, { portalType: "client", requireProject: true, permission: "can_view_warranty" })
+    const visit = await requestWarrantyVisitRescheduleByBuyer({ orgId: access.org_id, projectId: access.project_id, contactId: access.contact_id ?? null, visitId, note })
+    return { success: true, data: visit }
+  } catch (error) { return actionError(error) }
 }

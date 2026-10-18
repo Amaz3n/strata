@@ -6,7 +6,10 @@ import { LOT_STATUSES, type LotStatus } from "@/lib/land/lot-lifecycle"
 import { readAllRows } from "@/lib/land/paging"
 import { buildRunway, runwayVerdict, type RunwayPoint, type RunwayVerdict } from "@/lib/land/runway"
 import { compareSupplyUrgency, dryDateFrom, lotShortfallByYear, type YearShortfall } from "@/lib/land/supply"
+import { takedownCash, type LandDepositStatus } from "@/lib/land/takedown-cash"
 import { listCommunities, type CommunityListItemDTO } from "@/lib/services/communities"
+import { countEntitlementBlockersByCommunity } from "@/lib/services/land-entitlements"
+import { specCompletionDate, specInventoryAge } from "@/lib/sales/spec-inventory"
 import { requireOrgContext } from "@/lib/services/context"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { getProductionPortfolioReport } from "@/lib/services/production-reporting"
@@ -34,11 +37,13 @@ const PROJECT_FILTER_BATCH = 400
  * runaway rather than a real portfolio.
  */
 const HOMED_LOT_SCAN_CAP = 20_000
+/** The same kind of ceiling for each fact read (reservations, starts, closings, takedowns). */
+const FACT_SCAN_CAP = 20_000
 
 export type PaceState = "ahead" | "on" | "behind" | "unknown"
 
 export interface CommunityUrgency {
-  kind: "holds_expiring" | "starts_blocked" | "cutoffs_due" | "specs_aging"
+  kind: "holds_expiring" | "starts_blocked" | "cutoffs_due" | "specs_aging" | "entitlements_blocked"
   label: string
   count: number
   href: string
@@ -52,7 +57,9 @@ export interface CommunityTakedown {
   /** Fractional months from today — the x position of the step on the runway. */
   monthOffset: number
   lotCount: number
+  /** Cash due at closing: the price less the deposits credited against it (`takedownCash`). */
   cashCents: number
+  /** Deposits on the contract's schedule that are credited against this takedown. */
   depositCents: number
 }
 
@@ -178,7 +185,12 @@ export async function getCommunityPortfolio(
 
   // Margin is an executive fact; a land manager without report.read still gets a
   // full lane, just without the money column.
-  const canReadMargin = await hasPermission("report.read", context)
+  const canReadMargin = await hasPermission("financials.margin.read", context)
+  // Unmet entitlements and conditions, read alongside the facts below. Its
+  // failure surfaces at the await; the no-op catch only keeps it from being
+  // reported as unhandled if a read below fails first.
+  const entitlementPressurePromise = countEntitlementBlockersByCommunity(context.supabase, context.orgId, ids)
+  entitlementPressurePromise.catch(() => undefined)
 
   const [
     liveReservations,
@@ -191,72 +203,107 @@ export async function getCommunityPortfolio(
     lots,
     marginReport,
   ] = await Promise.all([
-    context.supabase
-      .from("lot_reservations")
-      .select("community_id, lot_id, status, expires_at")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .in("status", LIVE_RESERVATION_STATUSES)
-      .limit(2_000),
-    context.supabase
-      .from("lot_reservations")
-      .select("community_id, converted_at")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .gte("converted_at", rateSince.toISOString())
-      .limit(2_000),
-    context.supabase
-      .from("lot_reservations")
-      .select("community_id, released_at, converted_at")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .eq("status", "released")
-      .not("converted_at", "is", null)
-      .gte("released_at", rateSince.toISOString())
-      .limit(2_000),
-    context.supabase
-      .from("start_packages")
-      .select("community_id")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .eq("status", "released")
-      .gte("actual_start_date", isoDay(rateSince))
-      .limit(2_000),
-    context.supabase
-      .from("closings")
-      .select("community_id, status, scheduled_date")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .neq("status", "cancelled")
-      .gte("scheduled_date", isoDay(today))
-      .lte("scheduled_date", isoDay(horizonEnd))
-      .limit(2_000),
-    context.supabase
-      .from("lot_takedowns")
-      .select("id, community_id, name, scheduled_date, lot_count, price_per_lot_cents, deposit_cents")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .eq("status", "scheduled")
-      .gte("scheduled_date", isoDay(today))
-      .lte("scheduled_date", isoDay(horizonEnd))
-      .order("scheduled_date", { ascending: true })
-      .limit(500),
-    context.supabase
-      .from("start_packages")
-      .select("community_id, status")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .eq("status", "attention")
-      .limit(1_000),
+    readAllRows<{ community_id: string; lot_id: string; status: string; expires_at: string | null }>(
+      (from, to) =>
+        context.supabase
+          .from("lot_reservations")
+          .select("community_id, lot_id, status, expires_at")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .in("status", LIVE_RESERVATION_STATUSES)
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string }>(
+      (from, to) =>
+        context.supabase
+          .from("lot_reservations")
+          .select("community_id, converted_at")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .gte("converted_at", rateSince.toISOString())
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string }>(
+      (from, to) =>
+        context.supabase
+          .from("lot_reservations")
+          .select("community_id, released_at, converted_at")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .eq("status", "released")
+          .not("converted_at", "is", null)
+          .gte("released_at", rateSince.toISOString())
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string }>(
+      (from, to) =>
+        context.supabase
+          .from("start_packages")
+          .select("community_id")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .eq("status", "released")
+          .gte("actual_start_date", isoDay(rateSince))
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string; scheduled_date: string | null }>(
+      (from, to) =>
+        context.supabase
+          .from("closings")
+          .select("community_id, status, scheduled_date")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .neq("status", "cancelled")
+          .gte("scheduled_date", isoDay(today))
+          .lte("scheduled_date", isoDay(horizonEnd))
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ id: string; community_id: string; name: string; scheduled_date: string | null; lot_count: number | null; price_per_lot_cents: number | null }>(
+      (from, to) =>
+        context.supabase
+          .from("lot_takedowns")
+          .select("id, community_id, name, scheduled_date, lot_count, price_per_lot_cents")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .eq("status", "scheduled")
+          // An overdue takedown is still owed: it lands at month 0, as the cash plan carries it.
+          .lte("scheduled_date", isoDay(horizonEnd))
+          .order("scheduled_date", { ascending: true })
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
+    readAllRows<{ community_id: string }>(
+      (from, to) =>
+        context.supabase
+          .from("start_packages")
+          .select("community_id, status")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .eq("status", "attention")
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
     // Only lots that carry a live home, read to exhaustion. Lot *counts* come
     // from the status aggregate on each community, so this read exists purely to
     // find the houses behind the aging and cutoff alerts — and a flat 5,000-row
     // cap across every community under-reported both on the biggest ones.
-    readAllRows<{ id: string; community_id: string; status: LotStatus; project_id: string | null; project: { start_date?: string | null } | Array<{ start_date?: string | null }> | null }>(
+    readAllRows<{ id: string; community_id: string; status: LotStatus; project_id: string | null; project: { status?: string | null; completed_on?: string | null } | Array<{ status?: string | null; completed_on?: string | null }> | null }>(
       (from, to) =>
         context.supabase
           .from("lots")
-          .select("id, community_id, status, project_id, project:projects(start_date)")
+          .select("id, community_id, status, project_id, project:projects(status, completed_on)")
           .eq("org_id", context.orgId)
           .in("community_id", ids)
           .not("project_id", "is", null)
@@ -269,20 +316,9 @@ export async function getCommunityPortfolio(
       ? getProductionPortfolioReport({ divisionId }, context.orgId).catch(() => null)
       : Promise.resolve(null),
   ])
+  const entitlementPressure = await entitlementPressurePromise
 
-  for (const result of [
-    liveReservations,
-    convertedReservations,
-    cancelledReservations,
-    releasedStarts,
-    closings,
-    takedowns,
-    blockedStarts,
-  ]) {
-    if (result.error) throw new Error(`Failed to load community portfolio: ${result.error.message}`)
-  }
-
-  const reservedLotIds = new Set((liveReservations.data ?? []).map((row) => row.lot_id as string))
+  const reservedLotIds = new Set(liveReservations.rows.map((row) => row.lot_id as string))
   const startedProjectIds = new Set(
     lots.rows
       .filter((row) => row.project_id && row.status === "started" && !reservedLotIds.has(row.id))
@@ -299,24 +335,50 @@ export async function getCommunityPortfolio(
   // Chunked rather than truncated: a silently dropped tail would under-report
   // cutoffs on exactly the largest communities.
   const projectIds = [...projectCommunity.keys()]
-  const cutoffBatches = await Promise.all(
+  const startedProjectList = [...startedProjectIds]
+  const [cutoffBatches, completionBatches] = await Promise.all([
+    Promise.all(
     Array.from({ length: Math.ceil(projectIds.length / PROJECT_FILTER_BATCH) }, (_, index) =>
-      context.supabase
-        .from("project_selections")
-        .select("project_id, due_date, status")
-        .eq("org_id", context.orgId)
-        .in("project_id", projectIds.slice(index * PROJECT_FILTER_BATCH, (index + 1) * PROJECT_FILTER_BATCH))
-        .not("due_date", "is", null)
-        .lte("due_date", isoDay(cutoffWarning))
-        .not("status", "in", "(confirmed,ordered,received)")
-        .limit(2_000),
+      readAllRows<{ project_id: string }>(
+        (from, to) =>
+          context.supabase
+            .from("project_selections")
+            .select("project_id, due_date, status")
+            .eq("org_id", context.orgId)
+            .in("project_id", projectIds.slice(index * PROJECT_FILTER_BATCH, (index + 1) * PROJECT_FILTER_BATCH))
+            .not("due_date", "is", null)
+            .lte("due_date", isoDay(cutoffWarning))
+            .not("status", "in", "(confirmed,ordered,received)")
+            .order("id")
+            .range(from, to),
+        { cap: FACT_SCAN_CAP, label: "Failed to load selection cutoffs" },
+      ),
+    )
     ),
+    // The recorded completion date is the only clock a spec ages on: Books' date,
+    // else the one sales recorded on the home (specCompletionDate), exactly as the
+    // sales inventory ages it.
+    Promise.all(
+      Array.from({ length: Math.ceil(startedProjectList.length / PROJECT_FILTER_BATCH) }, (_, index) =>
+        readAllRows<{ project_id: string; books_inventory_completed_on: string | null }>(
+          (from, to) =>
+            context.supabase
+              .from("project_financial_settings")
+              .select("project_id, books_inventory_completed_on")
+              .eq("org_id", context.orgId)
+              .in("project_id", startedProjectList.slice(index * PROJECT_FILTER_BATCH, (index + 1) * PROJECT_FILTER_BATCH))
+              .not("books_inventory_completed_on", "is", null)
+              .order("project_id")
+              .range(from, to),
+          { cap: FACT_SCAN_CAP, label: "Failed to load spec completion dates" },
+        ),
+      ),
+    ),
+  ])
+  const cutoffRows = cutoffBatches.flatMap((batch) => batch.rows)
+  const completedOnByProject = new Map(
+    completionBatches.flatMap((batch) => batch.rows).map((row) => [row.project_id, row.books_inventory_completed_on] as const),
   )
-  const cutoffRows: Array<{ project_id: string }> = []
-  for (const batch of cutoffBatches) {
-    if (batch.error) throw new Error(`Failed to load selection cutoffs: ${batch.error.message}`)
-    for (const row of batch.data ?? []) cutoffRows.push({ project_id: row.project_id as string })
-  }
 
   const months = Array.from({ length: RUNWAY_HORIZON_MONTHS }, (_, index) => {
     const month = new Date(today.getFullYear(), today.getMonth() + index, 1)
@@ -334,12 +396,12 @@ export async function getCommunityPortfolio(
     return map
   }
 
-  const convertedByCommunity = countBy(convertedReservations.data ?? [], (row) => row.community_id as string)
-  const cancelledByCommunity = countBy(cancelledReservations.data ?? [], (row) => row.community_id as string)
-  const startsByCommunity = countBy(releasedStarts.data ?? [], (row) => row.community_id as string)
-  const blockedByCommunity = countBy(blockedStarts.data ?? [], (row) => row.community_id as string)
+  const convertedByCommunity = countBy(convertedReservations.rows, (row) => row.community_id as string)
+  const cancelledByCommunity = countBy(cancelledReservations.rows, (row) => row.community_id as string)
+  const startsByCommunity = countBy(releasedStarts.rows, (row) => row.community_id as string)
+  const blockedByCommunity = countBy(blockedStarts.rows, (row) => row.community_id as string)
   const expiringByCommunity = countBy(
-    (liveReservations.data ?? []).filter(
+    liveReservations.rows.filter(
       (row) => row.status === "hold" && row.expires_at && new Date(row.expires_at as string) <= holdWarning,
     ),
     (row) => row.community_id as string,
@@ -347,7 +409,7 @@ export async function getCommunityPortfolio(
   const cutoffsByCommunity = countBy(cutoffRows, (row) => projectCommunity.get(row.project_id))
 
   const closingsByCommunityMonth = new Map<string, number>()
-  for (const row of closings.data ?? []) {
+  for (const row of closings.rows) {
     if (!row.scheduled_date) continue
     const key = `${row.community_id as string}:${monthKey(row.scheduled_date as string)}`
     closingsByCommunityMonth.set(key, (closingsByCommunityMonth.get(key) ?? 0) + 1)
@@ -357,28 +419,49 @@ export async function getCommunityPortfolio(
   for (const row of lots.rows) {
     if (!row.project_id || !startedProjectIds.has(row.project_id)) continue
     const relation = row.project
-    const startDate = (Array.isArray(relation) ? relation[0]?.start_date : relation?.start_date) ?? null
-    if (!startDate) continue
-    const agingDays = Math.floor((today.getTime() - Date.parse(startDate)) / MS_PER_DAY)
-    if (agingDays < SPEC_AGING_ALERT_DAYS) continue
+    const project = Array.isArray(relation) ? relation[0] : relation
+    const completedOn = specCompletionDate(completedOnByProject.get(row.project_id), project?.completed_on)
+    const { completedAt, agingDays } = specInventoryAge(project, completedOn, today.getTime())
+    if (!completedAt || agingDays < SPEC_AGING_ALERT_DAYS) continue
     agingByCommunity.set(row.community_id, (agingByCommunity.get(row.community_id) ?? 0) + 1)
   }
 
+  // The deposits credited against these takedowns, so the board nets them out
+  // exactly as the org cash forecast does.
+  const credits = takedowns.rows.length
+    ? await readAllRows<{ takedown_id: string; due_on: string; amount_cents: number; status: LandDepositStatus }>(
+      (from, to) =>
+        context.supabase
+          .from("land_contract_deposits")
+          .select("takedown_id, due_on, amount_cents, status")
+          .eq("org_id", context.orgId)
+          .in("takedown_id", takedowns.rows.map((row) => row.id))
+          .order("id")
+          .range(from, to),
+      { cap: FACT_SCAN_CAP, label: "Failed to load community portfolio" },
+    )
+    : { rows: [], truncated: false }
+  const deposits = credits.rows.map((row) => ({ takedownId: row.takedown_id, dueOn: row.due_on, amountCents: Number(row.amount_cents), status: row.status }))
+
   const takedownsByCommunity = new Map<string, CommunityTakedown[]>()
-  for (const row of takedowns.data ?? []) {
+  for (const row of takedowns.rows) {
     const scheduledDate = row.scheduled_date as string | null
     if (!scheduledDate) continue
     const communityId = row.community_id as string
     const lotCount = Number(row.lot_count ?? 0)
     const list = takedownsByCommunity.get(communityId) ?? []
+    const cash = takedownCash(
+      { id: row.id, scheduledDate, lotCount, pricePerLotCents: row.price_per_lot_cents == null ? null : Number(row.price_per_lot_cents), status: "scheduled" },
+      deposits,
+    )
     list.push({
       id: row.id as string,
       name: row.name as string,
       scheduledDate,
       monthOffset: Math.max(0, (Date.parse(scheduledDate) - today.getTime()) / MS_PER_DAY / DAYS_PER_MONTH),
       lotCount,
-      cashCents: lotCount * Number(row.price_per_lot_cents ?? 0),
-      depositCents: Number(row.deposit_cents ?? 0),
+      cashCents: cash.netCents,
+      depositCents: cash.creditedDepositCents,
     })
     takedownsByCommunity.set(communityId, list)
   }
@@ -447,6 +530,19 @@ export async function getCommunityPortfolio(
         tone: "warning",
       })
     }
+    // Entitlements hold delivery and starts: overdue is critical, merely unmet a warning.
+    const entitlements = entitlementPressure.get(community.id)
+    if (entitlements) {
+      urgencies.push({
+        kind: "entitlements_blocked",
+        label: entitlements.overdue > 0
+          ? `${entitlements.overdue} entitlement item${entitlements.overdue === 1 ? "" : "s"} overdue`
+          : `${entitlements.open} entitlement item${entitlements.open === 1 ? "" : "s"} open`,
+        count: entitlements.overdue > 0 ? entitlements.overdue : entitlements.open,
+        href: `/communities/${community.id}/land#entitlements`,
+        tone: entitlements.overdue > 0 ? "critical" : "warning",
+      })
+    }
 
     return {
       id: community.id,
@@ -490,7 +586,13 @@ export async function getCommunityPortfolio(
   return {
     horizonMonths: RUNWAY_HORIZON_MONTHS,
     lanes,
-    truncated: lots.truncated,
+    truncated:
+      lots.truncated ||
+      cutoffBatches.some((batch) => batch.truncated) ||
+      completionBatches.some((batch) => batch.truncated) ||
+      [liveReservations, convertedReservations, cancelledReservations, releasedStarts, closings, takedowns, credits, blockedStarts].some(
+        (fact) => fact.truncated,
+      ),
     totals: {
       communities: lanes.length,
       totalLots: lanes.reduce((sum, lane) => sum + lane.totalLots, 0),

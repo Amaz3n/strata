@@ -4,7 +4,10 @@ import "./gantt.css"
 
 import { useRef, useState, useCallback, useMemo, useEffect } from "react"
 import { format, differenceInDays, startOfDay, isSameDay, isWeekend as checkIsWeekend, addDays as dateAddDays } from "date-fns"
-import { calculateScheduleImpacts, calculateCriticalPath } from "@/lib/utils/schedule-calc"
+import { toast } from "sonner"
+import { calculateCriticalPath } from "@/lib/utils/schedule-calc"
+import { RescheduleReviewDialog, type RescheduleApproval } from "./reschedule-review"
+import type { ScheduleReschedulePreview } from "@/lib/services/schedule"
 import { cn } from "@/lib/utils"
 import type { ScheduleDependency, ScheduleItem } from "@/lib/types"
 import {
@@ -22,22 +25,22 @@ import {
   toDateString,
 } from "./types"
 
-// Matching raw hex for status-based group coloring
-const STATUS_HEX: Record<string, string> = {
-  planned: "#94a3b8",
-  in_progress: "#3b82f6",
-  at_risk: "#f59e0b",
-  blocked: "#ef4444",
-  completed: "#10b981",
-  cancelled: "#9ca3af",
+// Status-based group coloring, as design tokens so it follows the theme
+const STATUS_GROUP_COLORS: Record<string, string> = {
+  planned: "var(--muted-foreground)",
+  in_progress: "var(--chart-1)",
+  at_risk: "var(--warning)",
+  blocked: "var(--destructive)",
+  completed: "var(--success)",
+  cancelled: "var(--muted-foreground)",
 }
 
 // Group dot color depends on the groupBy mode so colors stay meaningful
 function getGroupColor(groupKey: string, groupBy: GroupByOption): string {
-  if (groupBy === "phase") return PHASE_COLORS[groupKey] || "#64748b"
-  if (groupBy === "status") return STATUS_HEX[groupKey] || "#64748b"
+  if (groupBy === "phase") return PHASE_COLORS[groupKey] || "var(--muted-foreground)"
+  if (groupBy === "status") return STATUS_GROUP_COLORS[groupKey] || "var(--muted-foreground)"
   // trade / assignee / none — keep neutral, no arbitrary color mapping
-  return "#94a3b8"
+  return "var(--muted-foreground)"
 }
 import { useSchedule } from "./schedule-context"
 import { Badge } from "@/components/ui/badge"
@@ -168,7 +171,7 @@ function SortableTaskRow({ item, isSelected, showCriticalPath, computedCriticalP
               ? "opacity-70"
               : "opacity-0",
         )}
-        style={{ backgroundColor: isSelected ? "var(--primary)" : "#f97316" }}
+        style={{ backgroundColor: isSelected ? "var(--primary)" : "var(--warning)" }}
       />
 
       {/* Drag handle — reveals on hover, flush-left */}
@@ -209,7 +212,7 @@ function SortableTaskRow({ item, isSelected, showCriticalPath, computedCriticalP
         {/* Flag items with no start date: they render a sidebar row but no timeline bar, so they'd otherwise silently "disappear" from the chart. */}
         {!item.start_date && (
           <span
-            className="flex-shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-600 dark:text-amber-400"
+            className="flex-shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-warning"
             title="This item has no start date, so it won't appear on the timeline. Click to add dates."
           >
             No dates
@@ -354,6 +357,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
     setSelectedItem,
     onItemUpdate,
     onItemsBulkUpdate,
+    onPreviewReschedule,
     onDependencyUpdate,
     onDependencyDelete,
     scrollToTodayTrigger,
@@ -380,6 +384,12 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
   const autoScrollDepsRef = useRef({ rangeStart: new Date(), rangeEnd: new Date(), columnWidth: 40 })
   const [dragState, setDragState] = useState<DragState | null>(null)
   const [pendingDateUpdates, setPendingDateUpdates] = useState<Record<string, { requestId: number; startDate: Date; endDate: Date }>>({})
+  const [review, setReview] = useState<{
+    requestId: number
+    move: { id: string; start_date: string; end_date: string }
+    preview: ScheduleReschedulePreview | null
+  } | null>(null)
+  const [applyingReview, setApplyingReview] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["all", "Unassigned"]))
   const [scrollLeft, setScrollLeft] = useState(0)
   const [dateSelection, setDateSelection] = useState<DateSelection | null>(null)
@@ -519,50 +529,74 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
     }
   }, [getEffectiveDates, rangeStart, columnWidth])
 
+  const clearPendingDates = useCallback((ids: string[], requestId: number) => {
+    setPendingDateUpdates((prev) => {
+      const next = { ...prev }
+      for (const id of ids) {
+        if (next[id]?.requestId === requestId) delete next[id]
+      }
+      return next
+    })
+  }, [])
+
   const commitDraggedDates = useCallback((itemId: string, startDate: Date, endDate: Date) => {
     const requestId = ++pendingUpdateCounterRef.current
     setPendingDateUpdates((prev) => ({ ...prev, [itemId]: { requestId, startDate, endDate } }))
 
-    const payload = {
-      id: itemId,
-      start_date: toDateString(startDate),
-      end_date: toDateString(endDate),
+    const move = { id: itemId, start_date: toDateString(startDate), end_date: toDateString(endDate) }
+
+    // The server plans the move: it knows every predecessor of every successor
+    // and the promised closes. The bar shows that plan until it is applied or
+    // cancelled; nothing is written before the review is accepted.
+    if (onPreviewReschedule) {
+      setReview({ requestId, move, preview: null })
+      void onPreviewReschedule([move]).then(
+        (preview) => {
+          setPendingDateUpdates((prev) => {
+            const next = { ...prev }
+            for (const change of preview.changes) {
+              next[change.id] = { requestId, startDate: parseDate(change.newStart) || startDate, endDate: parseDate(change.newEnd) || endDate }
+            }
+            return next
+          })
+          setReview({ requestId, move, preview })
+        },
+        (error: unknown) => {
+          clearPendingDates([itemId], requestId)
+          setReview(null)
+          toast.error("Unable to move this task", { description: error instanceof Error ? error.message : undefined })
+        },
+      )
+      return
     }
 
-    const impacts = calculateScheduleImpacts(items, dependencies, payload)
-    
-    // Also update UI optimistically for impacted items
-    setPendingDateUpdates((prev) => {
-      const next = { ...prev }
-      impacts.forEach(impact => {
-        if (impact.start_date && impact.end_date) {
-          next[impact.id] = { 
-            requestId, 
-            startDate: parseDate(impact.start_date) || new Date(), 
-            endDate: parseDate(impact.end_date) || new Date() 
-          }
-        }
-      })
-      return next
-    })
+    void onItemUpdate(itemId, { start_date: move.start_date, end_date: move.end_date })
+      .catch((error: unknown) => toast.error("Unable to move this task", { description: error instanceof Error ? error.message : undefined }))
+      .finally(() => clearPendingDates([itemId], requestId))
+  }, [onItemUpdate, onPreviewReschedule, clearPendingDates])
 
-    const persist = onItemsBulkUpdate
-      ? onItemsBulkUpdate(impacts)
-      : onItemUpdate(itemId, { start_date: payload.start_date, end_date: payload.end_date }).then((item) => [item])
+  const cancelReview = useCallback(() => {
+    if (!review) return
+    clearPendingDates([review.move.id, ...(review.preview?.changes.map((change) => change.id) ?? [])], review.requestId)
+    setReview(null)
+  }, [review, clearPendingDates])
 
-    void persist.finally(() => {
-      setPendingDateUpdates((prev) => {
-        const next = { ...prev }
-        impacts.forEach(impact => {
-          const pending = next[impact.id]
-          if (pending && pending.requestId === requestId) {
-            delete next[impact.id]
-          }
-        })
-        return next
+  const applyReview = useCallback((approval: RescheduleApproval) => {
+    if (!review) return
+    const { move, requestId, preview } = review
+    const ids = [move.id, ...(preview?.changes.map((change) => change.id) ?? [])]
+    setApplyingReview(true)
+    void onItemsBulkUpdate([move], approval)
+      .then(() => setReview(null))
+      .catch((error: unknown) => {
+        toast.error("The schedule was not changed", { description: error instanceof Error ? error.message : undefined })
+        setReview(null)
       })
-    })
-  }, [items, dependencies, onItemUpdate, onItemsBulkUpdate])
+      .finally(() => {
+        setApplyingReview(false)
+        clearPendingDates(ids, requestId)
+      })
+  }, [review, onItemsBulkUpdate, clearPendingDates])
 
   const deriveDragDates = useCallback((state: DragState, clientX: number) => {
     // Include any horizontal scrolling since the drag began, so the bar keeps
@@ -1152,6 +1186,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
             style={{ width: sidebarWidth, minWidth: sidebarWidth }}
           >
             <DndContext
+              id="gantt-chart"
               sensors={sensors}
               collisionDetection={closestCenter}
               onDragEnd={handleDragEnd}
@@ -1362,7 +1397,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                     >
                       <polygon
                         points="0 0, 8 3, 0 6"
-                        className="fill-orange-500/70"
+                        className="fill-warning/70"
                       />
                     </marker>
                   </defs>
@@ -1426,7 +1461,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                         strokeLinejoin="round"
                         className={cn(
                           line.isCritical
-                            ? "gantt-dep-critical stroke-[1.75] stroke-orange-500/80"
+                            ? "gantt-dep-critical stroke-[1.75] stroke-warning/80"
                             : "stroke-[1.25] stroke-muted-foreground/30"
                         )}
                         markerEnd={line.isCritical ? "url(#arrowhead-critical)" : "url(#arrowhead)"}
@@ -1492,7 +1527,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                   const isMilestone = item.item_type === "milestone"
                   const isSelected = selectedItem?.id === item.id
                   const isDragging = dragState?.itemId === item.id
-                  const barColor = (item.color && (item.color.startsWith("#") || item.color.startsWith("rgb") || item.color.startsWith("hsl"))) ? item.color : PHASE_COLORS[item.phase || ""] || "#3b82f6"
+                  const barColor = (item.color && (item.color.startsWith("#") || item.color.startsWith("rgb") || item.color.startsWith("hsl"))) ? item.color : PHASE_COLORS[item.phase || ""] || "var(--chart-1)"
                   const progress = item.progress || 0
                   
                   const top = rowIndex * GANTT_ROW_HEIGHT + GANTT_BAR_PADDING
@@ -1626,6 +1661,16 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
           </div>
         </div>
       </div>
+      <RescheduleReviewDialog
+        open={review !== null}
+        title="Review schedule changes"
+        description="Dates are worked out on the server from the dependencies. Nothing changes until you apply."
+        preview={review?.preview ?? null}
+        applying={applyingReview}
+        applyLabel="Apply changes"
+        onCancel={cancelReview}
+        onApply={applyReview}
+      />
     </TooltipProvider>
   )
 }

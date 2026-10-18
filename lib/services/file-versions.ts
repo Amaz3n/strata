@@ -1,14 +1,15 @@
+import { assertDocumentUploadObject } from "@/lib/services/document-upload-object"
+import { randomUUID } from "node:crypto"
 import { requireOrgContext } from "@/lib/services/context"
-import { requirePermission } from "@/lib/services/permissions"
+import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
-  buildFilesPublicUrl,
+  createFilesDownloadUrl,
   deleteFilesObjects,
   ensureOrgScopedPath,
   uploadFilesObject,
 } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
-import { recordEvent } from "@/lib/services/events"
 
 export interface FileVersion {
   id: string
@@ -30,87 +31,49 @@ export interface FileVersion {
 }
 
 export async function createInitialVersion(
-  input: {
-    fileId: string
-    storagePath: string
-    fileName: string
-    mimeType?: string
-    sizeBytes?: number
-    checksum?: string
-  },
-  orgId?: string
+  input: { fileId: string; storagePath: string; fileName: string; mimeType?: string; sizeBytes?: number; checksum?: string },
+  orgId?: string,
 ): Promise<FileVersion | null> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
+  const { orgId: resolvedOrgId, userId } = await authorizeVersionFile(input.fileId, "docs.upload", orgId)
+  return commitVersion(resolvedOrgId, input.fileId, userId, input, true)
+}
 
-  const { data: existing } = await supabase
-    .from("doc_versions")
-    .select("id")
-    .eq("org_id", resolvedOrgId)
-    .eq("file_id", input.fileId)
-    .limit(1)
-    .maybeSingle()
+interface VersionCommitInput {
+  storagePath: string; fileName: string; mimeType?: string; sizeBytes?: number;
+  checksum?: string; label?: string; notes?: string
+}
 
-  if (existing?.id) {
-    return null
-  }
+async function authorizeVersionFile(fileId: string, permission: string, orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  const { data: file, error } = await context.supabase.from("files").select("id, project_id, current_version_id")
+    .eq("org_id", context.orgId).eq("id", fileId).single()
+  if (error || !file) throw new Error("File not found")
+  if (file.project_id) await requireProjectPermission(context.userId, file.project_id, permission)
+  else await requirePermission(permission, context)
+  return { ...context, file }
+}
 
-  const { data: version, error } = await supabase
-    .from("doc_versions")
-    .insert({
-      org_id: resolvedOrgId,
-      file_id: input.fileId,
-      version_number: 1,
-      storage_path: input.storagePath,
-      file_name: input.fileName,
-      mime_type: input.mimeType,
-      size_bytes: input.sizeBytes,
-      checksum: input.checksum,
-      created_by: userId,
-    })
-    .select(`
-      id, org_id, file_id, version_number, label, notes,
-      storage_path, file_name, mime_type, size_bytes, checksum,
-      created_by, created_at,
-      app_users!doc_versions_created_by_fkey(full_name, avatar_url)
-    `)
-    .single()
-
-  if (error || !version) {
-    throw new Error(`Failed to create initial version: ${error?.message}`)
-  }
-
-  const { error: updateError } = await supabase
-    .from("files")
-    .update({ current_version_id: version.id })
-    .eq("id", input.fileId)
-
-  if (updateError) {
-    console.error("Failed to update current version:", updateError.message)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "doc_version",
-    entityId: version.id as string,
-    after: version,
+async function commitVersion(orgId: string, fileId: string, actorId: string | null | undefined, input: VersionCommitInput, initial = false): Promise<FileVersion | null> {
+  const { data, error } = await createServiceSupabaseClient().rpc("commit_document_version", {
+    p_org_id: orgId, p_file_id: fileId, p_actor_id: actorId ?? null, p_initial: initial,
+    p_version: { storage_path: input.storagePath, file_name: input.fileName, mime_type: input.mimeType,
+      size_bytes: input.sizeBytes, checksum: input.checksum, label: input.label, notes: input.notes },
   })
+  if (error) throw new Error(`Failed to commit version: ${error.message}`)
+  if (!data) return null
+  return mapVersion(data, data.is_current ? data.id : undefined)
+}
 
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "file_version_created",
-    entityType: "file",
-    entityId: input.fileId,
-    payload: {
-      version_number: 1,
-      file_name: input.fileName,
-      label: "Initial version",
-    },
-  })
-
-  return mapVersion(version, version.id)
+export async function finalizeDirectFileVersion(input: VersionCommitInput & { fileId: string }, orgId?: string): Promise<FileVersion> {
+  const { orgId: resolvedOrgId, userId, file } = await authorizeVersionFile(input.fileId, "docs.upload", orgId)
+  const path = ensureOrgScopedPath(resolvedOrgId, input.storagePath)
+  const prefix = `${resolvedOrgId}/${file.project_id ?? "general"}/documents/uploads/`
+  if (!path.startsWith(prefix)) throw new Error("Invalid version upload path")
+  await assertDocumentUploadObject({ orgId: resolvedOrgId, userId, projectId: file.project_id, storagePath: path,
+    fileName: input.fileName, mimeType: input.mimeType, sizeBytes: input.sizeBytes, requireReservation: true })
+  const version = await commitVersion(resolvedOrgId, input.fileId, userId, { ...input, storagePath: path })
+  if (!version) throw new Error("Version was not committed")
+  return version
 }
 
 function mapVersion(row: any, currentVersionId?: string): FileVersion {
@@ -138,16 +101,7 @@ function mapVersion(row: any, currentVersionId?: string): FileVersion {
  * List all versions for a file
  */
 export async function listVersions(fileId: string, orgId?: string): Promise<FileVersion[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
-
-  // Get the file to know which version is current
-  const { data: file } = await supabase
-    .from("files")
-    .select("current_version_id")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", fileId)
-    .single()
+  const { supabase, orgId: resolvedOrgId, file } = await authorizeVersionFile(fileId, "docs.read", orgId)
 
   const { data, error } = await supabase
     .from("doc_versions")
@@ -171,349 +125,35 @@ export async function listVersions(fileId: string, orgId?: string): Promise<File
 /**
  * Create a new version of a file (upload new blob, update file to point to it)
  */
-export async function createVersion(
-  fileId: string,
-  file: File,
-  options: {
-    label?: string
-    notes?: string
-  } = {},
-  orgId?: string
-): Promise<FileVersion> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
-
-  // Get the existing file record
-  const { data: existingFile, error: fileError } = await supabase
-    .from("files")
-    .select("id, org_id, project_id, file_name, storage_path")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", fileId)
-    .single()
-
-  if (fileError || !existingFile) {
-    throw new Error("File not found")
-  }
-
-  // Get the next version number
-  const { data: maxVersion } = await supabase
-    .from("doc_versions")
-    .select("version_number")
-    .eq("file_id", fileId)
-    .order("version_number", { ascending: false })
-    .limit(1)
-    .single()
-
-  const nextVersionNumber = (maxVersion?.version_number ?? 0) + 1
-
-  // Generate storage path for the new version
-  const timestamp = Date.now()
-  const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
-  const basePath = existingFile.storage_path.substring(
-    0,
-    existingFile.storage_path.lastIndexOf("/")
-  )
-  const newStoragePath = `${basePath}/versions/${nextVersionNumber}/${timestamp}_${safeName}`
-
-  const bytes = Buffer.from(await file.arrayBuffer())
-  await uploadFilesObject({
-    supabase,
-    orgId: resolvedOrgId,
-    path: newStoragePath,
-    bytes,
-    contentType: file.type,
-    upsert: false,
-  })
-
-  // Create the version record
-  const { data: version, error: versionError } = await supabase
-    .from("doc_versions")
-    .insert({
-      org_id: resolvedOrgId,
-      file_id: fileId,
-      version_number: nextVersionNumber,
-      label: options.label,
-      notes: options.notes,
-      storage_path: newStoragePath,
-      file_name: file.name,
-      mime_type: file.type,
-      size_bytes: file.size,
-      created_by: userId,
-    })
-    .select(`
-      id, org_id, file_id, version_number, label, notes,
-      storage_path, file_name, mime_type, size_bytes, checksum,
-      created_by, created_at,
-      app_users!doc_versions_created_by_fkey(full_name, avatar_url)
-    `)
-    .single()
-
-  if (versionError || !version) {
-    // Clean up uploaded file
-    await deleteFilesObjects({
-      supabase,
-      orgId: resolvedOrgId,
-      paths: [newStoragePath],
-    })
-    throw new Error(`Failed to create version record: ${versionError?.message}`)
-  }
-
-  // Update the file record to point to the new version
-  const { error: updateError } = await supabase
-    .from("files")
-    .update({
-      storage_path: newStoragePath,
-      file_name: file.name,
-      mime_type: file.type,
-      size_bytes: file.size,
-      current_version_id: version.id,
-    })
-    .eq("id", fileId)
-
-  if (updateError) {
-    console.error("Failed to update file record:", updateError.message)
-    // Continue anyway, the version is created
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "doc_version",
-    entityId: version.id as string,
-    after: version,
-  })
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "file_version_created",
-    entityType: "file",
-    entityId: fileId,
-    payload: {
-      version_number: nextVersionNumber,
-      file_name: file.name,
-      label: options.label,
-    },
-  })
-
-  return mapVersion(version, version.id)
+export async function createVersion(fileId: string, file: File, options: { label?: string; notes?: string } = {}, orgId?: string): Promise<FileVersion> {
+  const { orgId: resolvedOrgId, userId } = await authorizeVersionFile(fileId, "docs.upload", orgId)
+  return createVersionFromBytes({ orgId: resolvedOrgId, fileId, bytes: Buffer.from(await file.arrayBuffer()),
+    fileName: file.name, mimeType: file.type || "application/octet-stream", createdBy: userId, ...options })
 }
 
-/**
- * System-generated new version of a file (e.g. the review-stamped copy of a
- * submittal document). Service-role: runs from portal/workflow flows with no
- * user session; callers own authorization. The prior blob survives as an
- * earlier version — nothing is overwritten.
- */
-export async function createVersionFromBytes({
-  orgId,
-  fileId,
-  bytes,
-  fileName,
-  mimeType,
-  label,
-  notes,
-  createdBy,
-}: {
-  orgId: string
-  fileId: string
-  bytes: Buffer
-  fileName: string
-  mimeType: string
-  label?: string
-  notes?: string
-  createdBy?: string | null
+/** Authorized workflow callers supply the organization and actor. */
+export async function createVersionFromBytes(input: {
+  orgId: string; fileId: string; bytes: Buffer; fileName: string; mimeType: string;
+  label?: string; notes?: string; createdBy?: string | null
 }): Promise<FileVersion> {
   const supabase = createServiceSupabaseClient()
-
-  const { data: existingFile, error: fileError } = await supabase
-    .from("files")
-    .select("id, org_id, project_id, file_name, storage_path")
-    .eq("org_id", orgId)
-    .eq("id", fileId)
-    .single()
-
-  if (fileError || !existingFile) {
-    throw new Error("File not found")
-  }
-
-  // Version 1 preserves the original blob if the file has no versions yet.
-  const { data: versions } = await supabase
-    .from("doc_versions")
-    .select("id, version_number")
-    .eq("org_id", orgId)
-    .eq("file_id", fileId)
-    .order("version_number", { ascending: false })
-    .limit(1)
-
-  if (!versions || versions.length === 0) {
-    await supabase.from("doc_versions").insert({
-      org_id: orgId,
-      file_id: fileId,
-      version_number: 1,
-      storage_path: existingFile.storage_path,
-      file_name: existingFile.file_name,
-      created_by: createdBy ?? null,
-    })
-  }
-
-  const nextVersionNumber = (versions?.[0]?.version_number ?? 1) + 1
-  const timestamp = Date.now()
-  const safeName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_")
-  const basePath = existingFile.storage_path.substring(0, existingFile.storage_path.lastIndexOf("/"))
-  const newStoragePath = `${basePath}/versions/${nextVersionNumber}/${timestamp}_${safeName}`
-
-  await uploadFilesObject({
-    supabase,
-    orgId,
-    path: newStoragePath,
-    bytes,
-    contentType: mimeType,
-    upsert: false,
+  const path = `${input.orgId}/versions/${input.fileId}/${randomUUID()}`
+  await uploadFilesObject({ supabase, orgId: input.orgId, path, bytes: input.bytes, contentType: input.mimeType, upsert: false })
+  // Preserve bytes on an ambiguous RPC reply; never remove a committed version.
+  const version = await commitVersion(input.orgId, input.fileId, input.createdBy, {
+    storagePath: path, fileName: input.fileName, mimeType: input.mimeType,
+    sizeBytes: input.bytes.length, label: input.label, notes: input.notes,
   })
-
-  const { data: version, error: versionError } = await supabase
-    .from("doc_versions")
-    .insert({
-      org_id: orgId,
-      file_id: fileId,
-      version_number: nextVersionNumber,
-      label,
-      notes,
-      storage_path: newStoragePath,
-      file_name: fileName,
-      mime_type: mimeType,
-      size_bytes: bytes.length,
-      created_by: createdBy ?? null,
-    })
-    .select(
-      "id, org_id, file_id, version_number, label, notes, storage_path, file_name, mime_type, size_bytes, checksum, created_by, created_at",
-    )
-    .single()
-
-  if (versionError || !version) {
-    await deleteFilesObjects({ supabase, orgId, paths: [newStoragePath] })
-    throw new Error(`Failed to create version record: ${versionError?.message}`)
-  }
-
-  const { error: updateError } = await supabase
-    .from("files")
-    .update({
-      storage_path: newStoragePath,
-      file_name: fileName,
-      mime_type: mimeType,
-      size_bytes: bytes.length,
-      current_version_id: version.id,
-    })
-    .eq("id", fileId)
-    .eq("org_id", orgId)
-
-  if (updateError) {
-    console.error("Failed to update file record:", updateError.message)
-  }
-
-  await recordAudit({
-    orgId,
-    actorId: createdBy ?? undefined,
-    action: "insert",
-    entityType: "doc_version",
-    entityId: version.id as string,
-    after: version,
-  })
-
-  await recordEvent({
-    orgId,
-    eventType: "file_version_created",
-    entityType: "file",
-    entityId: fileId,
-    payload: {
-      version_number: nextVersionNumber,
-      file_name: fileName,
-      label,
-    },
-  })
-
-  return mapVersion(version, version.id)
+  if (!version) throw new Error("Version was not committed")
+  return version
 }
 
-/**
- * Make a specific version the current version (rollback)
- */
-export async function makeVersionCurrent(
-  fileId: string,
-  versionId: string,
-  orgId?: string
-): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
-
-  // Get the version
-  const { data: version, error: versionError } = await supabase
-    .from("doc_versions")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", versionId)
-    .eq("file_id", fileId)
-    .single()
-
-  if (versionError || !version) {
-    throw new Error("Version not found")
-  }
-
-  // Get the existing file for audit
-  const { data: existingFile, error: fileError } = await supabase
-    .from("files")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", fileId)
-    .single()
-
-  if (fileError || !existingFile) {
-    throw new Error("File not found")
-  }
-
-  // Update the file record to point to this version
-  const updateData: Record<string, any> = {
-    current_version_id: versionId,
-  }
-
-  // Also update file properties if the version has them
-  if (version.storage_path) updateData.storage_path = version.storage_path
-  if (version.file_name) updateData.file_name = version.file_name
-  if (version.mime_type) updateData.mime_type = version.mime_type
-  if (version.size_bytes) updateData.size_bytes = version.size_bytes
-
-  const { data: updatedFile, error: updateError } = await supabase
-    .from("files")
-    .update(updateData)
-    .eq("id", fileId)
-    .select("*")
-    .single()
-
-  if (updateError) {
-    throw new Error(`Failed to update file: ${updateError.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "update",
-    entityType: "file",
-    entityId: fileId,
-    before: existingFile,
-    after: updatedFile,
+export async function makeVersionCurrent(fileId: string, versionId: string, orgId?: string): Promise<void> {
+  const { orgId: resolvedOrgId, userId } = await authorizeVersionFile(fileId, "docs.upload", orgId)
+  const { error } = await createServiceSupabaseClient().rpc("promote_document_version", {
+    p_org_id: resolvedOrgId, p_file_id: fileId, p_version_id: versionId, p_actor_id: userId,
   })
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "file_version_restored",
-    entityType: "file",
-    entityId: fileId,
-    payload: {
-      version_id: versionId,
-      version_number: version.version_number,
-    },
-  })
+  if (error) throw new Error(`Failed to restore version: ${error.message}`)
 }
 
 /**
@@ -538,13 +178,16 @@ export async function updateVersion(
     throw new Error("Version not found")
   }
 
-  const updateData: Record<string, any> = {}
+  const { file } = await authorizeVersionFile(existing.file_id, "docs.upload", resolvedOrgId)
+  const updateData: { label?: string; notes?: string } = {}
   if (updates.label !== undefined) updateData.label = updates.label
   if (updates.notes !== undefined) updateData.notes = updates.notes
 
   const { data, error } = await supabase
     .from("doc_versions")
     .update(updateData)
+    .eq("org_id", resolvedOrgId)
+    .eq("file_id", existing.file_id)
     .eq("id", versionId)
     .select(`
       id, org_id, file_id, version_number, label, notes,
@@ -568,13 +211,6 @@ export async function updateVersion(
     after: data,
   })
 
-  // Get current version id for mapping
-  const { data: file } = await supabase
-    .from("files")
-    .select("current_version_id")
-    .eq("id", data.file_id)
-    .single()
-
   return mapVersion(data, file?.current_version_id)
 }
 
@@ -582,56 +218,31 @@ export async function updateVersion(
  * Delete a specific version (cannot delete current version)
  */
 export async function deleteVersion(versionId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.delete", { supabase, orgId: resolvedOrgId, userId })
-
-  const { data: version, error: fetchError } = await supabase
-    .from("doc_versions")
-    .select("*, files!inner(current_version_id)")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", versionId)
-    .single()
-
-  if (fetchError || !version) {
-    throw new Error("Version not found")
-  }
-
-  // Check if this is the current version
-  if ((version.files as any)?.current_version_id === versionId) {
-    throw new Error("Cannot delete the current version. Make another version current first.")
-  }
-
-  // Delete from storage if there's a storage path
-  if (version.storage_path) {
-    try {
-      await deleteFilesObjects({
-        supabase,
-        orgId: resolvedOrgId,
-        paths: [version.storage_path],
-      })
-    } catch (error) {
-      console.error("Failed to delete version from storage:", error)
-    }
-  }
-
-  // Delete the version record
-  const { error } = await supabase
-    .from("doc_versions")
-    .delete()
-    .eq("id", versionId)
-
-  if (error) {
-    throw new Error(`Failed to delete version: ${error.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "doc_version",
-    entityId: versionId,
-    before: version,
+  const context = await requireOrgContext(orgId)
+  const { data: existing, error: lookupError } = await context.supabase.from("doc_versions")
+    .select("file_id").eq("org_id", context.orgId).eq("id", versionId).maybeSingle()
+  if (lookupError) throw new Error(`Failed to find version: ${lookupError.message}`)
+  if (!existing) return
+  await authorizeVersionFile(existing.file_id, "docs.delete", context.orgId)
+  const { data, error } = await createServiceSupabaseClient().rpc("delete_document_version", {
+    p_org_id: context.orgId, p_version_id: versionId,
   })
+  if (error) throw new Error(`Failed to delete version: ${error.message}`)
+  if (data) await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "delete", entityType: "doc_version", entityId: versionId, before: data })
+}
+
+/** Outbox retries storage cleanup only after metadata deletion commits. */
+export async function processFileBlobCleanup(orgId: string, payload: { storagePath?: unknown }): Promise<void> {
+  if (typeof payload.storagePath !== "string") throw new Error("Missing storage path")
+  const path = ensureOrgScopedPath(orgId, payload.storagePath)
+  const supabase = createServiceSupabaseClient()
+  const references = await Promise.all(["files", "doc_versions"].map(table => supabase.from(table)
+    .select("id").eq("org_id", orgId).eq("storage_path", path).limit(1)))
+  for (const result of references) {
+    if (result.error) throw new Error(`Failed to check blob references: ${result.error.message}`)
+    if (result.data?.length) return
+  }
+  await deleteFilesObjects({ supabase, orgId, paths: [path] })
 }
 
 /**
@@ -639,7 +250,7 @@ export async function deleteVersion(versionId: string, orgId?: string): Promise<
  */
 export async function getVersionSignedUrl(
   versionId: string,
-  _expiresIn: number = 3600,
+  expiresIn: number = 3600,
   orgId?: string
 ): Promise<string> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -647,7 +258,7 @@ export async function getVersionSignedUrl(
 
   const { data: version, error } = await supabase
     .from("doc_versions")
-    .select("storage_path")
+    .select("file_id, storage_path, file_name")
     .eq("org_id", resolvedOrgId)
     .eq("id", versionId)
     .single()
@@ -656,20 +267,17 @@ export async function getVersionSignedUrl(
     throw new Error("Version not found or has no storage path")
   }
 
+  await authorizeVersionFile(version.file_id, "docs.download", resolvedOrgId)
   const orgScopedPath = ensureOrgScopedPath(resolvedOrgId, version.storage_path)
-  const publicUrl = buildFilesPublicUrl(orgScopedPath)
-  if (!publicUrl) {
-    throw new Error("Failed to generate download URL")
-  }
-  return publicUrl
+  return (await createFilesDownloadUrl({ supabase, orgId: resolvedOrgId, path: orgScopedPath,
+    fileName: version.file_name ?? undefined, expiresIn, disposition: "attachment" })).downloadUrl
 }
 
 /**
  * Check if a file has any versions
  */
 export async function hasVersions(fileId: string, orgId?: string): Promise<boolean> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
+  const { supabase, orgId: resolvedOrgId } = await authorizeVersionFile(fileId, "docs.read", orgId)
 
   const { count, error } = await supabase
     .from("doc_versions")

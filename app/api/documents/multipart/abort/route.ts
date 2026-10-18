@@ -1,45 +1,9 @@
-import { NextResponse } from "next/server"
-
-import { projectIdFromDocumentStoragePath } from "@/lib/files/content-policy"
-import { requireOrgContext } from "@/lib/services/context"
-import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { abortFilesMultipartUpload, ensureOrgScopedPath } from "@/lib/storage/files-storage"
+import { abortDocumentTransfer, documentTransferError } from "@/lib/services/document-upload-transfers"
 
 export async function POST(request: Request) {
   try {
-    const { orgId, userId, supabase } = await requireOrgContext()
-    const body = await request.json()
-    const storagePath = typeof body?.storagePath === "string" ? body.storagePath : null
-    const uploadId = typeof body?.uploadId === "string" ? body.uploadId : null
-
-    if (!storagePath || !uploadId) {
-      return NextResponse.json({ error: "Missing required fields." }, { status: 400 })
-    }
-
-    const normalizedStoragePath = ensureOrgScopedPath(orgId, storagePath)
-    const projectId = projectIdFromDocumentStoragePath(orgId, normalizedStoragePath)
-    if (!projectId) {
-      return NextResponse.json({ error: "Invalid upload path." }, { status: 400 })
-    }
-    try {
-      if (projectId === "general") await requirePermission("docs.upload", { supabase, orgId, userId })
-      else await requireProjectPermission(userId, projectId, "docs.upload")
-    } catch {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
-    }
-
-    const service = createServiceSupabaseClient()
-    await abortFilesMultipartUpload({
-      supabase: service,
-      orgId,
-      path: normalizedStoragePath,
-      uploadId,
-    })
-
-    return NextResponse.json({ ok: true })
+    return Response.json(await abortDocumentTransfer(await request.json()))
   } catch (error) {
-    console.error("[documents multipart abort] failed:", error)
-    return NextResponse.json({ error: "Failed to abort multipart upload." }, { status: 500 })
+    return documentTransferError(error)
   }
 }

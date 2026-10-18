@@ -4,6 +4,16 @@
 > `docs/plans/arc-pay-readiness-gameplan.md` once the repair has run and
 > `pnpm db:ledger:check` passes against production.
 
+**2026-10-08: use `pnpm db:pending`.** It lists, from a read-only ledger (live
+through `list_migration_ledger()` once this repair installs it, or
+`--ledger <export>` until then), every repository migration production has not
+applied, counting the object-verified map below as applied. On 2026-10-08 it
+lists 189. Four files section A lists as not applied have since been applied:
+`warranty_completion_coverage`, `remove_dead_vendor_identity_lockout_columns`,
+`project_optional_vendor_bills` and `payment_money_widening_and_fk_indexes`. The
+other six of section A and four late-September files remain genuinely pending
+(object checks in `docs/books-evidence/2026-10-08-deploy-inventory/`).
+
 **Re-measured 2026-09-05**, read-only, against production. The 2026-09-01 figures
 below were re-derived from scratch rather than trusted, because Phases E, F and G
 were applied in between.

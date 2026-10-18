@@ -1,7 +1,7 @@
 // Browser-private account data; runtime-prefetched by the bounded tab strip.
 export const instant = true;
 
-import { notFound, redirect } from "next/navigation";
+import { notFound, redirect, unstable_rethrow } from "next/navigation";
 import { Suspense } from "react";
 import { z } from "zod";
 
@@ -90,8 +90,14 @@ async function CompanyCommitmentsContent({
       flag: parseFlag(query.flag),
       page: Number(query.page) || 1,
     }),
-    account.canEdit ? listProjects().catch(() => []) : Promise.resolve([]),
-    account.canEdit ? listCostCodes().catch(() => []) : Promise.resolve([]),
+    account.canEdit ? listProjects().catch((error) => {
+      unstable_rethrow(error);
+      return [];
+    }) : Promise.resolve([]),
+    account.canEdit ? listCostCodes().catch((error) => {
+      unstable_rethrow(error);
+      return [];
+    }) : Promise.resolve([]),
   ]);
 
   return (

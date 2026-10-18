@@ -1,3 +1,8 @@
+import { finalizeDocumentSigning } from "@/lib/services/esign-execution"
+import { deliverSigningInvitation, deliverAutomaticSigningReminder } from "@/lib/services/signature-delivery"
+import { processFileBlobCleanup } from "@/lib/services/file-versions"
+import { processDocumentExport, processDocumentExportCleanup } from "@/lib/services/document-exports"
+import { processDocumentTransferCleanup } from "@/lib/services/document-upload-transfers"
 import { finishPayApplicationCertification } from "@/lib/services/pay-applications"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -23,13 +28,18 @@ import { markCommitmentExecutedFromEnvelope } from "@/lib/services/commitments"
 import { executeEstimateFromEnvelopeExecution } from "@/lib/services/estimate-portal"
 import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
 import { executePurchaseAgreementFromEnvelopeExecution } from "@/lib/services/community-sales"
-import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
+import { executeSelectionApprovalFromEnvelope, notifySelectionApprovalOutcome, SELECTION_APPROVAL_OUTCOME_JOB_TYPE } from "@/lib/services/selection-approvals"
+import { DESIGN_STUDIO_NOTICE_JOB_TYPE, sendDesignStudioAppointmentNotice } from "@/lib/services/design-studio-appointment-notices"
 import { recomputeProjectSelectionCutoffs } from "@/lib/services/selection-cutoffs"
+import { processScheduleRescheduleNotice } from "@/lib/services/schedule"
+import { processPoIssueNotice } from "@/lib/services/po-issue-notices"
+import { processSelectionChangeApplied, SELECTION_CHANGE_APPLIED_JOB_TYPE } from "@/lib/services/selection-change-orders"
 import { enrollProjectWarrantyCoverageFromSystem } from "@/lib/services/warranty"
 import { reanchorRevisionMeasurements } from "@/lib/services/takeoff-reanchor"
 import { isEmailNotificationTypeEnabled } from "@/lib/services/notifications"
 import { deliverNotificationEmail } from "@/lib/services/notification-email-delivery"
-import { isApnsConfigured, sendApnsNotification } from "@/lib/services/apns"
+import { deliverNotificationPush } from "@/lib/services/notification-push-delivery"
+import { notificationDeliveryContext } from "@/lib/services/notification-delivery-authorization"
 import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
 import {
   deleteTilesObjects,
@@ -47,10 +57,15 @@ import { classifyProjectEmail, processInboundProjectEmail } from "@/lib/services
 import { extractCoiFacts } from "@/lib/services/ap-document-verification"
 import { sendVendorBillWaiverChase } from "@/lib/services/payment-holds"
 import { FLOORPLAN_INTERPRET_JOB, runFloorplanInterpretation } from "@/lib/services/floorplan-models"
-import { propagateApprovalToLedger } from "@/lib/services/cost-plus"
-import { enqueueVendorBillSync, recordPayableAccountingEnqueueResult } from "@/lib/services/accounting-sync"
+import { runVendorBillApprovalProjection } from "@/lib/services/vendor-bills"
+import { BOOKS_EXPORT_JOB_TYPE, runBooksExportJob } from "@/lib/services/books/exports"
 import { INVOICE_ISSUANCE_JOB_TYPE, SCHEDULED_INVOICE_SEND_JOB_TYPE, runInvoiceIssuance, runScheduledInvoiceSend } from "@/lib/services/invoices"
 import { floorplanTargetSchema } from "@/lib/validation/floorplan"
+import { AUDIT_RETRY_JOB_TYPE, writeDeferredAudit } from "@/lib/services/audit"
+import { LEAD_INTAKE_JOB_TYPE, runLeadIntakeJob } from "@/lib/services/lead-intake"
+import { SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE, settleCommissionUnwindBooks } from "@/lib/services/sales-commissions"
+import { OPEN_WIP_COMMIT_JOB_TYPE, reapStaleOpenWipCommits, resumeOpenWipCommit } from "@/lib/services/imports"
+import { withCorrelation } from "@/lib/observability/correlation"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
 // Use @napi-rs/canvas's DOMMatrix, DOMPoint, DOMRect, ImageData, Path2D for PDF.js
@@ -129,15 +144,25 @@ const OUTBOX_JOB_TYPES = [
   "deliver_push",
   "send_daily_log_mention_email",
   "send_esign_executed_email",
+  "send_esign_invitation",
+  "send_esign_reminder",
+  "finalize_document_signing",
   "send_bid_email",
   "process_esign_execution_side_effects",
   "refresh_drawing_sheets_list",
   "index_file",
   "generate_file_preview",
+  "delete_file_blob",
+  "export_documents",
+  "cleanup_document_export",
+  "cleanup_document_transfer",
   "reindex_search",
   "remove_search_index",
   "process_inbound_bill_email",
   "selection_cutoff_recompute",
+  "schedule_reschedule_notify",
+  "po_issue_notice",
+  SELECTION_CHANGE_APPLIED_JOB_TYPE,
   "warranty_enroll_coverage",
   "reanchor_takeoff_markups",
   "process_quick_capture",
@@ -148,9 +173,16 @@ const OUTBOX_JOB_TYPES = [
   "chase_vendor_bill_waiver",
   "extract_coi_facts",
   "project_vendor_bill_approval",
+  BOOKS_EXPORT_JOB_TYPE,
   INVOICE_ISSUANCE_JOB_TYPE,
   SCHEDULED_INVOICE_SEND_JOB_TYPE,
   FLOORPLAN_INTERPRET_JOB,
+  AUDIT_RETRY_JOB_TYPE,
+  LEAD_INTAKE_JOB_TYPE,
+  SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE,
+  DESIGN_STUDIO_NOTICE_JOB_TYPE,
+  SELECTION_APPROVAL_OUTCOME_JOB_TYPE,
+  OPEN_WIP_COMMIT_JOB_TYPE,
 ]
 
 // Create a VISIBLE test image for the tiled viewer
@@ -496,6 +528,11 @@ async function processOutboxQueue(request: NextRequest) {
     return NextResponse.json({ error: reapError.message }, { status: 500 })
   }
   const reapRow = (Array.isArray(reaped) ? reaped[0] : reaped) as { requeued?: number; exhausted?: number } | null
+  // An Open-WIP cutover whose claim lapsed (its process died mid-file) gets its resume job queued here.
+  // A failure is reported, never allowed to stop the rest of the queue.
+  const cutovers = await reapStaleOpenWipCommits().catch((cause: unknown) => ({
+    error: cause instanceof Error ? cause.message : "Failed to reap interrupted Open-WIP commits",
+  }))
 
   // Claim atomically. The previous select-then-update spanned two statements, so
   // two overlapping invocations — a manual trigger racing the cron, or a retry
@@ -514,7 +551,7 @@ async function processOutboxQueue(request: NextRequest) {
 
   if (!jobs.length) {
     const drained = await runDrawingsPipeline({ deadlineMs: Date.now() + 120_000 })
-    return NextResponse.json({ processed: 0, requeued: reapRow?.requeued ?? 0, exhausted: reapRow?.exhausted ?? 0, drawings: drained })
+    return NextResponse.json({ processed: 0, requeued: reapRow?.requeued ?? 0, exhausted: reapRow?.exhausted ?? 0, cutovers, drawings: drained })
   }
 
   let processed = 0
@@ -523,106 +560,144 @@ async function processOutboxQueue(request: NextRequest) {
 
   for (const job of jobs as any[]) {
     try {
-      if (job.job_type === "finish_pay_application_certification") {
-        await finishPayApplicationCertification(job.org_id, job.payload)
-      } else if (job.job_type === "deliver_notification") {
-        await deliverNotificationJob(supabase, job)
-      } else if (job.job_type === "deliver_push") {
-        await deliverPushJob(supabase, job)
-      } else if (job.job_type === "send_daily_log_mention_email") {
-        await sendDailyLogMentionEmailJob(supabase, job)
-      } else if (job.job_type === "send_esign_executed_email") {
-        await sendESignExecutedEmailJob(supabase, job)
-      } else if (job.job_type === "send_bid_email") {
-        await sendBidEmailJob(supabase, job)
-      } else if (job.job_type === "process_esign_execution_side_effects") {
-        await processESignExecutionSideEffectsJob(supabase, job)
-      } else if (job.job_type === "refresh_drawing_sheets_list") {
-        await refreshDrawingSheetsListJob(supabase)
-      } else if (job.job_type === "index_file") {
-        await indexFileJob(supabase, job)
-      } else if (job.job_type === "generate_file_preview") {
-        await generateFilePreviewJob(supabase, job)
-      } else if (job.job_type === "reindex_search") {
-        await reindexSearchJob(supabase, job)
-      } else if (job.job_type === "remove_search_index") {
-        await removeSearchIndexJob(supabase, job)
-      } else if (job.job_type === "process_inbound_bill_email") {
-        await processInboundBillEmailJob(job)
-      } else if (job.job_type === "selection_cutoff_recompute") {
-        const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
-        if (!projectId) throw new Error("Selection cutoff recompute is missing project_id")
-        await recomputeProjectSelectionCutoffs(projectId, job.org_id)
-      } else if (job.job_type === "warranty_enroll_coverage") {
-        const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
-        const effectiveDate = typeof job.payload?.effective_date === "string" ? job.payload.effective_date : null
-        if (!projectId || !effectiveDate) throw new Error("Warranty enrollment is missing project_id or effective_date")
-        const source = job.payload?.source === "completion" ? "completion" : "closing"
-        await enrollProjectWarrantyCoverageFromSystem({ orgId: job.org_id, projectId, effectiveDate, source })
-      } else if (job.job_type === "reanchor_takeoff_markups") {
-        const revisionId = typeof job.payload?.revision_id === "string" ? job.payload.revision_id : null
-        if (!revisionId) throw new Error("Reanchor job is missing revision_id")
-        await reanchorRevisionMeasurements(revisionId, job.org_id, supabase)
-      } else if (job.job_type === "process_payable_intake") {
-        const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
-        if (!billId) throw new Error("Invoice intake is missing bill_id")
-        await processPayableIntake(billId, job.org_id)
-      } else if (job.job_type === "process_quick_capture") {
-        const draftId = typeof job.payload?.draft_id === "string" ? job.payload.draft_id : null
-        if (!draftId) throw new Error("Quick-capture job is missing draft_id")
-        await processQuickCaptureDraft(draftId, job.org_id)
-      } else if (job.job_type === "caption_photo") {
-        const photoId = typeof job.payload?.photo_id === "string" ? job.payload.photo_id : null
-        if (!photoId) throw new Error("Photo-caption job is missing photo_id")
-        await processPhotoCaption(photoId, job.org_id)
-      } else if (job.job_type === "process_inbound_project_email") {
-        const emailId = typeof job.payload?.email_id === "string" ? job.payload.email_id : null
-        const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
-        if (!emailId || !projectId) throw new Error("Project-email ingest job is missing email_id or project_id")
-        await processInboundProjectEmail({
-          orgId: job.org_id,
-          projectId,
-          emailId,
-          receivedAt: typeof job.payload?.received_at === "string" ? job.payload.received_at : null,
-        })
-      } else if (job.job_type === "classify_project_email") {
-        const projectEmailId = typeof job.payload?.project_email_id === "string" ? job.payload.project_email_id : null
-        if (!projectEmailId) throw new Error("Project-email classification job is missing project_email_id")
-        await classifyProjectEmail({ orgId: job.org_id, projectEmailId, body: typeof job.payload?.body === "string" ? job.payload.body : undefined })
-      } else if (job.job_type === "chase_vendor_bill_waiver") {
-        const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
-        if (!billId) throw new Error("Waiver chase is missing bill_id")
-        await sendVendorBillWaiverChase(job.org_id, billId, {
-          kind: job.payload?.waiver_kind === "unconditional" ? "unconditional" : "signature",
-          attempt: typeof job.payload?.attempt === "number" ? job.payload.attempt : 1,
-        })
-      } else if (job.job_type === "extract_coi_facts") {
-        const fileId = typeof job.payload?.file_id === "string" ? job.payload.file_id : null
-        if (!fileId) throw new Error("Certificate-of-insurance extraction is missing file_id")
-        // Returns its outcome as data — an unreadable certificate completes the
-        // job and leaves the payment hold on the stored expiry.
-        await extractCoiFacts(fileId, job.org_id)
-      } else if (job.job_type === INVOICE_ISSUANCE_JOB_TYPE) {
-        await runInvoiceIssuance(job.org_id, job.payload ?? {})
-      } else if (job.job_type === SCHEDULED_INVOICE_SEND_JOB_TYPE) {
-        await runScheduledInvoiceSend(job.org_id, job.payload ?? {})
-      } else if (job.job_type === "project_vendor_bill_approval") {
-        const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
-        if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
-        await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: job.org_id })
-        const syncResult = await enqueueVendorBillSync(billId, job.org_id)
-        await recordPayableAccountingEnqueueResult({
-          orgId: job.org_id,
-          billId,
-          entityType: "vendor_bill",
-          entityId: billId,
-          result: syncResult,
-        })
-      } else if (job.job_type === FLOORPLAN_INTERPRET_JOB) {
-        const target = floorplanTargetSchema.safeParse(job.payload?.target)
-        if (!target.success) throw new Error("Floorplan interpretation has no valid target")
-        await runFloorplanInterpretation({ orgId: job.org_id, target: target.data })
-      } else {
+      // Every row a job writes (audit, events, authorization decisions) carries
+      // the job as its correlation id, so one job's effects can be read together.
+      const known = await withCorrelation(`outbox:${job.id}`, async () => {
+        if (job.job_type === "finish_pay_application_certification") {
+          await finishPayApplicationCertification(job.org_id, job.payload)
+        } else if (job.job_type === "deliver_notification") {
+          await deliverNotificationJob(supabase, job)
+        } else if (job.job_type === "deliver_push") {
+          await deliverNotificationPush(supabase, job)
+        } else if (job.job_type === "send_daily_log_mention_email") {
+          await sendDailyLogMentionEmailJob(supabase, job)
+        } else if (job.job_type === "finalize_document_signing") {
+          await finalizeDocumentSigning(job.org_id, job.payload.signing_request_id)
+        } else if (job.job_type === "send_esign_invitation") {
+          await deliverSigningInvitation({ orgId: job.org_id, requestId: job.payload.signing_request_id })
+        } else if (job.job_type === "send_esign_reminder") {
+          await deliverAutomaticSigningReminder({ orgId: job.org_id, requestId: job.payload.signing_request_id, deliveryKey: job.payload.delivery_key })
+        } else if (job.job_type === "send_esign_executed_email") {
+          await sendESignExecutedEmailJob(supabase, job)
+        } else if (job.job_type === "send_bid_email") {
+          await sendBidEmailJob(supabase, job)
+        } else if (job.job_type === "process_esign_execution_side_effects") {
+          await processESignExecutionSideEffectsJob(supabase, job)
+        } else if (job.job_type === "refresh_drawing_sheets_list") {
+          await refreshDrawingSheetsListJob(supabase)
+        } else if (job.job_type === "index_file") {
+          await indexFileJob(supabase, job)
+        } else if (job.job_type === "delete_file_blob") {
+          await processFileBlobCleanup(job.org_id, job.payload ?? {})
+        } else if (job.job_type === "export_documents") {
+          await processDocumentExport(job.org_id, job.payload ?? {}, (job.retry_count ?? 0) + 1 >= MAX_RETRIES)
+        } else if (job.job_type === "cleanup_document_export") {
+          await processDocumentExportCleanup(job.org_id, job.payload ?? {})
+        } else if (job.job_type === "cleanup_document_transfer") {
+          await processDocumentTransferCleanup(job.org_id, job.payload ?? {})
+        } else if (job.job_type === "generate_file_preview") {
+          await generateFilePreviewJob(supabase, job)
+        } else if (job.job_type === "reindex_search") {
+          await reindexSearchJob(supabase, job)
+        } else if (job.job_type === "remove_search_index") {
+          await removeSearchIndexJob(supabase, job)
+        } else if (job.job_type === "process_inbound_bill_email") {
+          await processInboundBillEmailJob(job)
+        } else if (job.job_type === "selection_cutoff_recompute") {
+          const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
+          if (!projectId) throw new Error("Selection cutoff recompute is missing project_id")
+          await recomputeProjectSelectionCutoffs(projectId, job.org_id)
+        } else if (job.job_type === "schedule_reschedule_notify") {
+          await processScheduleRescheduleNotice(job.org_id, job.payload)
+        } else if (job.job_type === "po_issue_notice") {
+          await processPoIssueNotice(job.id, job.org_id, job.payload)
+        } else if (job.job_type === SELECTION_CHANGE_APPLIED_JOB_TYPE) {
+          await processSelectionChangeApplied(job.org_id, job.payload)
+        } else if (job.job_type === "warranty_enroll_coverage") {
+          const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
+          const effectiveDate = typeof job.payload?.effective_date === "string" ? job.payload.effective_date : null
+          if (!projectId || !effectiveDate) throw new Error("Warranty enrollment is missing project_id or effective_date")
+          const source = job.payload?.source === "completion" ? "completion" : "closing"
+          await enrollProjectWarrantyCoverageFromSystem({ orgId: job.org_id, projectId, effectiveDate, source })
+        } else if (job.job_type === "reanchor_takeoff_markups") {
+          const revisionId = typeof job.payload?.revision_id === "string" ? job.payload.revision_id : null
+          if (!revisionId) throw new Error("Reanchor job is missing revision_id")
+          await reanchorRevisionMeasurements(revisionId, job.org_id, supabase)
+        } else if (job.job_type === "process_payable_intake") {
+          const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
+          if (!billId) throw new Error("Invoice intake is missing bill_id")
+          await processPayableIntake(billId, job.org_id)
+        } else if (job.job_type === "process_quick_capture") {
+          const draftId = typeof job.payload?.draft_id === "string" ? job.payload.draft_id : null
+          if (!draftId) throw new Error("Quick-capture job is missing draft_id")
+          await processQuickCaptureDraft(draftId, job.org_id)
+        } else if (job.job_type === "caption_photo") {
+          const photoId = typeof job.payload?.photo_id === "string" ? job.payload.photo_id : null
+          if (!photoId) throw new Error("Photo-caption job is missing photo_id")
+          await processPhotoCaption(photoId, job.org_id)
+        } else if (job.job_type === "process_inbound_project_email") {
+          const emailId = typeof job.payload?.email_id === "string" ? job.payload.email_id : null
+          const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
+          if (!emailId || !projectId) throw new Error("Project-email ingest job is missing email_id or project_id")
+          await processInboundProjectEmail({
+            orgId: job.org_id,
+            projectId,
+            emailId,
+            receivedAt: typeof job.payload?.received_at === "string" ? job.payload.received_at : null,
+          })
+        } else if (job.job_type === "classify_project_email") {
+          const projectEmailId = typeof job.payload?.project_email_id === "string" ? job.payload.project_email_id : null
+          if (!projectEmailId) throw new Error("Project-email classification job is missing project_email_id")
+          await classifyProjectEmail({ orgId: job.org_id, projectEmailId, body: typeof job.payload?.body === "string" ? job.payload.body : undefined })
+        } else if (job.job_type === "chase_vendor_bill_waiver") {
+          const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
+          if (!billId) throw new Error("Waiver chase is missing bill_id")
+          await sendVendorBillWaiverChase(job.org_id, billId, {
+            kind: job.payload?.waiver_kind === "unconditional" ? "unconditional" : "signature",
+            attempt: typeof job.payload?.attempt === "number" ? job.payload.attempt : 1,
+          })
+        } else if (job.job_type === "extract_coi_facts") {
+          const fileId = typeof job.payload?.file_id === "string" ? job.payload.file_id : null
+          if (!fileId) throw new Error("Certificate-of-insurance extraction is missing file_id")
+          // Returns its outcome as data — an unreadable certificate completes the
+          // job and leaves the payment hold on the stored expiry.
+          await extractCoiFacts(fileId, job.org_id)
+        } else if (job.job_type === INVOICE_ISSUANCE_JOB_TYPE) {
+          await runInvoiceIssuance(job.org_id, job.payload ?? {})
+        } else if (job.job_type === SCHEDULED_INVOICE_SEND_JOB_TYPE) {
+          await runScheduledInvoiceSend(job.org_id, job.payload ?? {})
+        } else if (job.job_type === "project_vendor_bill_approval") {
+          const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
+          if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
+          await runVendorBillApprovalProjection(job.org_id, billId)
+        } else if (job.job_type === BOOKS_EXPORT_JOB_TYPE) {
+          const exportId = typeof job.payload?.export_id === "string" ? job.payload.export_id : null
+          if (!exportId) throw new Error("Books export job is missing export_id")
+          await runBooksExportJob(job.org_id, exportId)
+        } else if (job.job_type === FLOORPLAN_INTERPRET_JOB) {
+          const target = floorplanTargetSchema.safeParse(job.payload?.target)
+          if (!target.success) throw new Error("Floorplan interpretation has no valid target")
+          await runFloorplanInterpretation({ orgId: job.org_id, target: target.data, generationId: typeof job.payload?.generationId === "string" ? job.payload.generationId : undefined })
+        } else if (job.job_type === AUDIT_RETRY_JOB_TYPE) {
+          await writeDeferredAudit(job.org_id, job.payload)
+        } else if (job.job_type === LEAD_INTAKE_JOB_TYPE) {
+          await runLeadIntakeJob(job.org_id, job.payload ?? {})
+        } else if (job.job_type === SALES_COMMISSION_UNWIND_BOOKS_JOB_TYPE) {
+          const closingId = typeof job.payload?.closing_id === "string" ? job.payload.closing_id : null
+          if (!closingId) throw new Error("Commission unwind settlement is missing closing_id")
+          await settleCommissionUnwindBooks({ orgId: job.org_id, closingId })
+        } else if (job.job_type === DESIGN_STUDIO_NOTICE_JOB_TYPE) {
+          await sendDesignStudioAppointmentNotice(job.org_id, job.payload)
+        } else if (job.job_type === SELECTION_APPROVAL_OUTCOME_JOB_TYPE) {
+          await notifySelectionApprovalOutcome(job.org_id, job.payload)
+        } else if (job.job_type === OPEN_WIP_COMMIT_JOB_TYPE) {
+          await resumeOpenWipCommit(job.org_id, job.payload ?? {})
+        } else {
+          return false
+        }
+        return true
+      })
+      if (!known) {
         await supabase
           .from("outbox")
           .update({ status: "failed", last_error: "Unknown job type" })
@@ -700,61 +775,14 @@ async function processOutboxQueue(request: NextRequest) {
   const incomplete = failed > 0 || drawings.failed > 0
   return NextResponse.json(
     isDev
-      ? { ok: !incomplete, processed, failed, failures, ...reap, drawings }
-      : { ok: !incomplete, processed, failed, ...reap, drawings },
+      ? { ok: !incomplete, processed, failed, failures, ...reap, cutovers, drawings }
+      : { ok: !incomplete, processed, failed, ...reap, cutovers, drawings },
     { status: incomplete ? 207 : 200 },
   )
 }
 
 export const GET = withCronRun("process-outbox", handleGet)
 export const POST = withCronRun("process-outbox", processOutboxQueue)
-
-async function deliverPushJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
-  if (!isApnsConfigured()) return // env-gated: nothing to do until APNs is configured
-
-  const payload = job.payload ?? {}
-  const notificationId =
-    (typeof payload.notificationId === "string" ? payload.notificationId : null) ??
-    (typeof payload.notification_id === "string" ? payload.notification_id : null)
-  if (!notificationId) throw new Error("Missing notificationId")
-
-  const { data: notification, error: notifError } = await supabase
-    .from("notifications")
-    .select("id, org_id, user_id, notification_type, payload")
-    .eq("id", notificationId)
-    .maybeSingle()
-  if (notifError || !notification) throw new Error(`Notification not found (${notifError?.message ?? "unknown error"})`)
-
-  const { data: tokens } = await supabase
-    .from("device_tokens")
-    .select("id, token")
-    .eq("user_id", notification.user_id)
-  if (!tokens?.length) return
-
-  const nPayload = (notification.payload ?? {}) as any
-  const title = typeof nPayload.title === "string" ? nPayload.title : "Arc"
-  const body = typeof nPayload.message === "string" ? nPayload.message : ""
-
-  const staleTokenIds: string[] = []
-  for (const row of tokens as Array<{ id: string; token: string }>) {
-    const result = await sendApnsNotification({
-      deviceToken: row.token,
-      title,
-      body,
-      data: {
-        notification_id: notification.id,
-        type: notification.notification_type,
-        project_id: typeof nPayload.project_id === "string" ? nPayload.project_id : undefined,
-      },
-    })
-    if (result.unregistered) staleTokenIds.push(row.id)
-  }
-
-  // Prune tokens Apple reports as no longer valid so the table stays clean.
-  if (staleTokenIds.length) {
-    await supabase.from("device_tokens").delete().in("id", staleTokenIds)
-  }
-}
 
 async function deliverNotificationJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
   const payload = job.payload ?? {}
@@ -766,7 +794,7 @@ async function deliverNotificationJob(supabase: ReturnType<typeof createServiceS
     throw new Error("Missing notificationId")
   }
 
-  await deliverNotificationEmail(notificationId, supabase)
+  await deliverNotificationEmail(notificationId, job.org_id, supabase, notificationDeliveryContext(job))
 }
 
 async function sendDailyLogMentionEmailJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
@@ -888,8 +916,9 @@ async function sendESignExecutedEmailJob(supabase: ReturnType<typeof createServi
     }),
   )
 
-  await sendEmail({
+  const delivered = await sendEmail({
     to: [recipientEmail],
+    idempotencyKey: `esign-copy-${file.id}-${recipientEmail.toLowerCase()}`,
     subject: `Document executed: ${documentTitle}`,
     html,
     from: getOrgSenderEmail(org?.slug, org?.name),
@@ -901,6 +930,7 @@ async function sendESignExecutedEmailJob(supabase: ReturnType<typeof createServi
       },
     ],
   })
+  if (!delivered) throw new Error("Executed copy delivery failed; retry required")
 }
 
 async function sendBidEmailJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
@@ -1115,7 +1145,13 @@ async function processESignExecutionSideEffectsJob(supabase: ReturnType<typeof c
       ? document.source_entity_id
       : (document.metadata?.estimate_id as string | undefined)
   if (estimateId) {
-    await executeEstimateFromEnvelopeExecution({
+    const { data: nativeSignatures, error: nativeError } = await supabase.from("document_signatures")
+      .select("signing_request_id,audit_data").eq("org_id",orgId).eq("document_id",documentId).eq("audit_data->>source","estimate_native_builder_signing").limit(1)
+    if(nativeError) throw new Error(nativeError.message)
+    if(nativeSignatures?.[0]) {
+      const { finalizeEstimateBuilderSignature } = await import("@/lib/services/estimate-portal")
+      await finalizeEstimateBuilderSignature({orgId,requestId:nativeSignatures[0].signing_request_id})
+    } else await executeEstimateFromEnvelopeExecution({
       orgId,
       estimateId,
       documentId,
@@ -1178,16 +1214,13 @@ async function processESignExecutionSideEffectsJob(supabase: ReturnType<typeof c
     })
   }
 
-  const selectionId =
-    document.source_entity_type === "selection"
-      ? document.source_entity_id
-      : (document.metadata?.selection_id as string | undefined)
-  if (selectionId) {
-    await confirmSelectionFromEnvelopeExecution({
+  // A buyer's selection approval binds the terms its envelope carried.
+  if (document.source_entity_type === "selection_approval" && document.source_entity_id) {
+    if (!envelopeId) throw new Error("Missing selection approval signing envelope")
+    await executeSelectionApprovalFromEnvelope({
       orgId,
-      selectionId,
+      approvalId: document.source_entity_id,
       envelopeId,
-      documentId,
       executedFileId,
       signerName,
       signerEmail,
@@ -1325,11 +1358,14 @@ async function indexFileJob(supabase: ReturnType<typeof createServiceSupabaseCli
     .from("files")
     .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata, checksum")
     .eq("id", fileId)
+    .eq("org_id", job.org_id)
     .maybeSingle()
 
   if (error || !file) {
     throw new Error(`File not found (${error?.message ?? "unknown error"})`)
   }
+
+  if (payload.storagePath && payload.storagePath !== file.storage_path) return
 
   const bytes = await downloadFilesObject({
     supabase,
@@ -1352,31 +1388,27 @@ async function indexFileJob(supabase: ReturnType<typeof createServiceSupabaseCli
     extractionError = String(error?.message ?? error).slice(0, 500)
     console.warn("[index_file] Failed to extract file text", { fileId: file.id, error: extractionError })
   }
-  const metadata = file.metadata && typeof file.metadata === "object" ? file.metadata as Record<string, any> : {}
-
-  const { error: updateError } = await supabase
-    .from("files")
-    .update({
-      checksum: file.checksum ?? checksum,
-      metadata: {
-        ...metadata,
-        search: {
-          ...(metadata.search ?? {}),
-          extracted_text: extractedText,
-          extracted_at: new Date().toISOString(),
-          extraction_status: extractionStatus,
-          extraction_source: extractedText ? "embedded_text" : "none",
-          character_count: extractedText.length,
-          extraction_error: extractionError ?? null,
-        },
-      },
-    })
-    .eq("id", file.id)
+  const { data: applied, error: updateError } = await supabase.rpc("patch_document_artifact", {
+    p_org_id: job.org_id,
+    p_file_id: file.id,
+    p_storage_path: file.storage_path,
+    p_kind: "search",
+    p_checksum: checksum,
+    p_value: {
+      extracted_text: extractedText,
+      extracted_at: new Date().toISOString(),
+      extraction_status: extractionStatus,
+      extraction_source: extractedText ? "embedded_text" : "none",
+      character_count: extractedText.length,
+      extraction_error: extractionError ?? null,
+    },
+  })
 
   if (updateError) {
     throw new Error(`Failed to update file search metadata: ${updateError.message}`)
   }
 
+  if (!applied) return
   await reindexEntity({ orgId: file.org_id, entityType: "file", entityId: file.id }, supabase)
 }
 
@@ -1391,26 +1423,16 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
     .from("files")
     .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata, category")
     .eq("id", fileId)
+    .eq("org_id", job.org_id)
     .maybeSingle()
 
   if (error || !file) {
     throw new Error(`File not found (${error?.message ?? "unknown error"})`)
   }
 
-  const metadata = file.metadata && typeof file.metadata === "object" ? file.metadata as any : {}
-  await supabase
-    .from("files")
-    .update({
-      metadata: {
-        ...metadata,
-        preview: {
-          ...(metadata.preview ?? {}),
-          status: "processing",
-          started_at: new Date().toISOString(),
-        },
-      },
-    })
-    .eq("id", file.id)
+  if (payload.storagePath && payload.storagePath !== file.storage_path) return
+  await updateFilePreviewMetadata(supabase, file, { status: "processing", started_at: new Date().toISOString() })
+
 
   try {
     const mimeType = file.mime_type ?? "application/octet-stream"
@@ -1449,7 +1471,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
         contentType: "text/html; charset=utf-8",
         cacheControl: "private, max-age=86400",
       })
-      await updateFilePreviewMetadata(supabase, file.id, metadata, {
+      await updateFilePreviewMetadata(supabase, file, {
         status: "ready",
         kind: "html",
         html_path: htmlPath,
@@ -1493,7 +1515,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
         (entry) => entry.width === primary.width && entry.content_type === primary.contentType,
       )?.path
 
-      await updateFilePreviewMetadata(supabase, file.id, metadata, {
+      await updateFilePreviewMetadata(supabase, file, {
         status: "ready",
         thumbnail_path: primaryPath,
         width: previewSet.width,
@@ -1529,7 +1551,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
         : null
 
     if (!preview) {
-      await updateFilePreviewMetadata(supabase, file.id, metadata, {
+      await updateFilePreviewMetadata(supabase, file, {
         status: "skipped",
         reason: "unsupported_type",
         mime_type: mimeType,
@@ -1548,7 +1570,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
       cacheControl: "private, max-age=86400",
     })
 
-    await updateFilePreviewMetadata(supabase, file.id, metadata, {
+    await updateFilePreviewMetadata(supabase, file, {
       status: "ready",
       thumbnail_path: thumbnailPath,
       width: preview.width,
@@ -1557,7 +1579,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
       generated_at: new Date().toISOString(),
     })
   } catch (error: any) {
-    await updateFilePreviewMetadata(supabase, file.id, metadata, {
+    await updateFilePreviewMetadata(supabase, file, {
       status: "failed",
       error: String(error?.message ?? error).slice(0, 500),
       failed_at: new Date().toISOString(),
@@ -1568,23 +1590,14 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
 
 async function updateFilePreviewMetadata(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
-  fileId: string,
-  existingMetadata: Record<string, any>,
-  preview: Record<string, any>
+  file: { id: string; org_id: string; storage_path: string },
+  preview: Record<string, unknown>,
 ) {
-  const { error } = await supabase
-    .from("files")
-    .update({
-      metadata: {
-        ...existingMetadata,
-        preview,
-      },
-    })
-    .eq("id", fileId)
-
-  if (error) {
-    throw new Error(`Failed to update preview metadata: ${error.message}`)
-  }
+  const { error } = await supabase.rpc("patch_document_artifact", {
+    p_org_id: file.org_id, p_file_id: file.id, p_storage_path: file.storage_path,
+    p_kind: "preview", p_value: preview,
+  })
+  if (error) throw new Error(`Failed to update preview metadata: ${error.message}`)
 }
 
 /** Ladder rungs, in CSS pixels: grid thumb, detail view, full-bleed. */

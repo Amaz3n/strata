@@ -1,4 +1,5 @@
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { connection } from "next/server"
+import { BidsSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { listOrgBidPackages } from "@/lib/services/bids"
@@ -8,6 +9,7 @@ import { BidsDeskClient } from "./bids-desk-client"
 
 
 async function BidsDeskPageContent() {
+  await connection()
   const rows = await listOrgBidPackages()
   // Stage is derived (past-due packages are "leveling" even if never closed) —
   // compute it once on the server so the client can band + filter on it.
@@ -30,7 +32,7 @@ async function BidsDeskPageContent() {
 
 export default function BidsDeskPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="Bids" fullBleed><BidsSkeleton /></PageLayout>}>
       <BidsDeskPageContent />
     </Suspense>
   )

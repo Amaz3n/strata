@@ -1,4 +1,5 @@
-import { notFound } from "next/navigation"
+import { connection } from "next/server"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import { PortalHomeTab } from "@/components/portal/tabs/portal-home-tab"
 import { recordPortalAccess } from "@/lib/services/portal-access"
@@ -10,12 +11,14 @@ interface Props {
 
 
 export default async function ClientPortalHome({ params }: Props) {
+  await connection()
   const { token } = await params
   const { access, data } = await loadClientPortalPage(token)
 
   try {
     await recordPortalAccess(access.id)
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     notFound()
   }
 

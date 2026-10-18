@@ -1,0 +1,14 @@
+{
+  "scenario": "STORE-01",
+  "status": "NOT_IMPLEMENTED",
+  "disposition": {
+    "status": "blocked",
+    "packages": [
+      "B06.4"
+    ],
+    "reason": "Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+  },
+  "subcases": [],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T13:15:03.700Z"
+}

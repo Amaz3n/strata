@@ -1,9 +1,11 @@
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { connection } from "next/server"
+import { DesignStudioSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { RunwayBoard } from "@/components/design-studio/runway-board"
-import { getStudioRunway, listBookableHomes } from "@/lib/services/design-studio"
-import { getAmbientDeskContext } from "@/lib/services/desk-context"
+import { getStudioRunway } from "@/lib/services/design-studio"
+import { listStudios } from "@/lib/services/design-studio-appointments"
+import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 import { requireOrgContext } from "@/lib/services/context"
 import { hasPermission } from "@/lib/services/permissions"
 
@@ -13,25 +15,23 @@ interface PageProps {
 }
 
 async function DesignStudioPageContent({ searchParams }: PageProps) {
-  const { community } = await searchParams
-  const ambient = await getAmbientDeskContext()
-  const communityId = community || ambient.communityId
-  const scope = { communityId, divisionId: ambient.divisionId }
+  await connection()
+  const [{ community }, context] = await Promise.all([searchParams, requireOrgContext()])
+  const scope = await resolveProductionDeskScope({ communityId: community })
 
-  const context = await requireOrgContext()
-  const [runway, bookableHomes, canManage] = await Promise.all([
-    getStudioRunway(scope),
-    listBookableHomes(scope),
+  const [runway, canManage, studios] = await Promise.all([
+    getStudioRunway({ communityId: scope.communityId, divisionId: scope.divisionId, refused: scope.refused }),
     hasPermission("design_studio.manage", context),
+    listStudios(),
   ])
 
   return (
     <PageLayout title="Design Studio" fullBleed>
       <RunwayBoard
         runway={runway}
-        communityId={communityId}
-        bookableHomes={bookableHomes}
+        communityId={scope.communityId}
         canManage={canManage}
+        studios={studios.locations}
       />
     </PageLayout>
   )
@@ -39,7 +39,13 @@ async function DesignStudioPageContent({ searchParams }: PageProps) {
 
 export default function DesignStudioPage(props: Parameters<typeof DesignStudioPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense
+      fallback={
+        <PageLayout title="Design Studio" fullBleed>
+          <DesignStudioSkeleton />
+        </PageLayout>
+      }
+    >
       <DesignStudioPageContent {...props} />
     </Suspense>
   )

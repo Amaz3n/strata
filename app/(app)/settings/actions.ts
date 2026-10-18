@@ -3,6 +3,8 @@
 import { getOrganizationSettings, updateOrganizationSettings, type OrganizationSettingsInput } from "@/lib/services/organization-settings"
 
 import { revalidatePath } from "next/cache"
+import { cookies } from "next/headers"
+import { ORG_MFA_POLICY_COOKIE } from "@/lib/auth/mfa-gate-cookie"
 import { z } from "zod"
 
 import { requireOrgMembership } from '@/lib/auth/context'
@@ -10,7 +12,8 @@ import { NotificationService } from '@/lib/services/notifications'
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createStripeBillingPortalSession, createStripeCheckoutSession, createStripeCustomer, getAppBaseUrl } from "@/lib/integrations/payments/stripe"
 import { getCurrentUserPermissions, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
-import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listOrgRolePermissions, listTeamMembers } from "@/lib/services/team"
+import { TEAM_PERMISSION_OPTIONS } from "@/lib/permission-catalog"
+import { listAssignableOrgRoles, listOrgRolePermissions, listTeamMembers } from "@/lib/services/team"
 import { listDivisions } from "@/lib/services/divisions"
 import { getOrgAccessState } from "@/lib/services/access"
 import { recordAudit } from "@/lib/services/audit"
@@ -20,6 +23,10 @@ import { createInitialVersion } from "@/lib/services/file-versions"
 import { buildOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-storage"
 
 import { updateDocumentNumbering } from "@/lib/services/document-numbering"
+import { getOrgSecurityPolicy, setOrgRequireMfa } from "@/lib/services/org-security"
+import { listOrgSupportAccess, revokePlatformAccessGrant } from "@/lib/services/platform-session"
+import type { RevokePlatformAccessGrantInput } from "@/lib/validation/platform-access"
+import type { SetOrgRequireMfaInput } from "@/lib/validation/org-security"
 import { documentNumberingSchema } from "@/lib/validation/document-numbering"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
@@ -923,4 +930,27 @@ export async function updateDocumentNumberingAction(
   } catch (error) {
     return actionError(error)
   }
+}
+
+export async function getOrgSecurityPolicyAction() {
+  return run(() => getOrgSecurityPolicy())
+}
+
+export async function setOrgRequireMfaAction(input: SetOrgRequireMfaInput) {
+  return run(async () => {
+    const policy = await setOrgRequireMfa(input)
+    // The session that turns the rule on holds a cached "no policy" proof; drop
+    // it so the admin is held to the rule on their very next page, not 10 minutes on.
+    if (policy.requireMfa) (await cookies()).delete(ORG_MFA_POLICY_COOKIE)
+    revalidatePath("/settings")
+    return policy
+  })
+}
+
+export async function listOrgSupportAccessAction() {
+  return run(() => listOrgSupportAccess())
+}
+
+export async function revokePlatformAccessGrantAction(input: RevokePlatformAccessGrantInput) {
+  return run(() => revokePlatformAccessGrant(input))
 }

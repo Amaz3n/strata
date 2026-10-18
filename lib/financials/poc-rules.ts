@@ -19,6 +19,7 @@ export type ProjectPocWarning =
   | "missing_eac"
   | "negative_actual_cost"
   | "missing_budget"
+  | "eac_below_actual_cost"
 
 export type ProjectPocResult = ProjectPocInput & {
   costToCompleteCents: number
@@ -41,6 +42,19 @@ function assertSafeCents(value: number, label: string) {
   if (!Number.isSafeInteger(value)) throw new Error(`${label} must be integer cents`)
 }
 
+/** Exact integer rounding, including Math.round's ties toward positive infinity. */
+function roundRatioCents(value: number, numerator: number, denominator: number) {
+  const product = BigInt(value) * BigInt(numerator)
+  const divisor = BigInt(denominator)
+  let rounded = product / divisor
+  const remainder = product % divisor
+  if (remainder * BigInt(2) >= divisor) rounded += BigInt(1)
+  else if (-remainder * BigInt(2) > divisor) rounded -= BigInt(1)
+  const result = Number(rounded)
+  assertSafeCents(result, "Earned revenue")
+  return result
+}
+
 export function computeProjectPoc(
   input: ProjectPocInput,
   options: { extraWarnings?: ProjectPocWarning[] } = {},
@@ -50,6 +64,7 @@ export function computeProjectPoc(
   if (input.revisedContractCents <= 0) warnings.push("missing_contract_value")
   if (input.eacCents <= 0) warnings.push("missing_eac")
   if (input.actualCostCents < 0) warnings.push("negative_actual_cost")
+  if (input.eacCents > 0 && input.eacCents < input.actualCostCents) warnings.push("eac_below_actual_cost")
   // `missing_budget` is known by the caller that tried to load the budget, not
   // by the arithmetic. It still belongs in `warnings` so every consumer reads
   // one list, and so it reaches `inputsHash` — a POC computed without a budget
@@ -59,14 +74,16 @@ export function computeProjectPoc(
   }
 
   const completionRatio = input.eacCents > 0
-    ? Math.min(1, Math.max(0, input.actualCostCents / input.eacCents))
+    ? roundRatioCents(100000, Math.min(input.eacCents, Math.max(0, input.actualCostCents)), input.eacCents) / 100000
     : 0
-  const earnedRevenueCents = Math.round(input.revisedContractCents * completionRatio)
+  const earnedRevenueCents = input.eacCents > 0
+    ? roundRatioCents(input.revisedContractCents, Math.min(input.eacCents, Math.max(0, input.actualCostCents)), input.eacCents)
+    : 0
   const forecastGrossProfitCents = input.revisedContractCents - input.eacCents
   const result = {
     ...input,
     costToCompleteCents: Math.max(0, input.eacCents - input.actualCostCents),
-    completionRatio: Math.round(completionRatio * 100000) / 100000,
+    completionRatio,
     earnedRevenueCents,
     overUnderCents: input.billedCents - earnedRevenueCents,
     forecastGrossProfitCents,
@@ -74,6 +91,9 @@ export function computeProjectPoc(
       ? Math.round((forecastGrossProfitCents / input.revisedContractCents) * 1000) / 10
       : null,
     warnings,
+  }
+  for (const [label, value] of Object.entries(result)) {
+    if (label.endsWith("Cents") && typeof value === "number") assertSafeCents(value, label)
   }
   return { ...result, inputsHash: booksDigest(result) }
 }

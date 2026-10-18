@@ -1,7 +1,6 @@
 import "server-only"
 
-import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
-import { requireAuth } from "@/lib/auth/context"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -48,10 +47,11 @@ interface StageState {
   evidence?: Record<string, unknown>
 }
 
-async function platformContext() {
-  const [access, auth] = await Promise.all([getCurrentPlatformAccess(), requireAuth()])
-  if (!access.canAccessPlatform) throw new Error("Platform access is required")
-  return { supabase: createServiceSupabaseClient(), userId: auth.user.id }
+async function platformContext(intent: "read" | "write" = "write") {
+  const user = await requireAnyPlatformPermission([
+    intent === "read" ? "platform.support.read" : "platform.support.write",
+  ])
+  return { supabase: createServiceSupabaseClient(), userId: user.id }
 }
 
 function stageStateMap(value: unknown) {
@@ -129,7 +129,7 @@ export async function createOnboardingRun(input: { orgId: string; targetLiveDate
 }
 
 export async function getOnboardingRun(orgId: string) {
-  const { supabase } = await platformContext()
+  const { supabase } = await platformContext("read")
   const [{ data: org, error: orgError }, { data: run, error: runError }] = await Promise.all([
     supabase.from("orgs").select("id,name,slug,product_tier").eq("id", orgId).maybeSingle(),
     supabase.from("onboarding_runs").select("*").eq("org_id", orgId).order("created_at", { ascending: false }).limit(1).maybeSingle(),

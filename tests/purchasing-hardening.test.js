@@ -1,8 +1,6 @@
 require("../scripts/register-ts-node-test")
 
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
-const path = require("node:path")
 const test = require("node:test")
 
 const {
@@ -18,15 +16,15 @@ const {
   hasWholeOrderClaim,
 } = require("../lib/services/po-completions")
 const {
-  buildGeneratedPoNumber,
   findExpiringAgreements,
+  generatedPoNumberPrefix,
   generationSourceKey,
-  nextGeneratedPoSequence,
-  selectMissingLines,
 } = require("../lib/services/po-generation")
 const { completedWeekWindows, summarizeVarianceByOrg } = require("../lib/services/purchasing-maintenance")
+const { classifyPoPosition, commitmentBillingAtRelease, poRemainingCents, poRevisedCents } = require("../lib/purchasing/po-position")
+const { varianceAnalysisCsv } = require("../lib/services/reports/variance-analysis")
 
-const migration = (name) => fs.readFileSync(path.resolve(__dirname, "../supabase/migrations", name), "utf8")
+const { asRole, createDatabase, insert, seedMember } = require("./support/pglite")
 
 const agreement = (overrides = {}) => ({
   id: "agreement-a", company_id: "vendor-a", cost_code_id: "cc-1", cost_type: null,
@@ -228,6 +226,14 @@ test("rejected and void completions release their lines so the trade can re-repo
   assert.equal(hasWholeOrderClaim(existing), false)
 })
 
+test("a variance-order completion claims no PO line, and no variance order is billed twice", () => {
+  const billed = [completion({ id: "first", status: "billed", commitment_line_ids: null, change_order_ids: ["vpo-1"] })]
+  assert.equal(findConflictingCompletion({ requestedLineIds: [], requestedChangeOrderIds: ["vpo-2"], existing: billed }), null)
+  assert.equal(findConflictingCompletion({ requestedLineIds: [], requestedChangeOrderIds: ["vpo-1", "vpo-2"], existing: billed }).completionId, "first")
+  const vpoOnly = [completion({ id: "second", status: "verified", commitment_line_ids: [], change_order_ids: ["vpo-3"] })]
+  assert.equal(findConflictingCompletion({ requestedLineIds: null, existing: vpoOnly }), null)
+})
+
 test("live completions report exactly which lines are still reportable", () => {
   const existing = [
     completion({ id: "first", status: "verified", commitment_line_ids: ["line-1"] }),
@@ -239,64 +245,25 @@ test("live completions report exactly which lines are still reportable", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Scoped incremental regeneration
-// ---------------------------------------------------------------------------
-
-const resolvedLine = (sourceId, sourceKind = "takeoff_line") => ({ sourceKind, sourceId, totalCents: 100 })
-
-test("a scoped commit creates only the lines no commitment covers yet", () => {
-  const lines = [resolvedLine("takeoff-1"), resolvedLine("takeoff-2"), resolvedLine("selection-1", "option")]
-  const covered = [generationSourceKey("takeoff_line", "takeoff-1"), generationSourceKey("option", "selection-1")]
-  assert.deepEqual(selectMissingLines(lines, covered).map((line) => line.sourceId), ["takeoff-2"])
-  assert.deepEqual(selectMissingLines(lines, []).map((line) => line.sourceId), ["takeoff-1", "takeoff-2", "selection-1"])
-})
-
-test("re-running a scoped commit after every line landed creates nothing", () => {
-  // This is what makes resolve-then-mark safe to retry: the second attempt after
-  // a partial failure adds no duplicate purchase order.
-  const lines = [resolvedLine("takeoff-1"), resolvedLine("takeoff-2")]
-  const covered = lines.map((line) => generationSourceKey(line.sourceKind, line.sourceId))
-  assert.deepEqual(selectMissingLines(lines, covered), [])
-})
-
-test("source keys separate takeoff lines from options with the same id", () => {
-  assert.notEqual(generationSourceKey("takeoff_line", "shared"), generationSourceKey("option", "shared"))
-  const lines = [resolvedLine("shared"), resolvedLine("shared", "option")]
-  assert.deepEqual(
-    selectMissingLines(lines, [generationSourceKey("takeoff_line", "shared")]).map((line) => line.sourceKind),
-    ["option"],
-  )
-})
-
-// ---------------------------------------------------------------------------
 // Generated purchase-order numbers
 // ---------------------------------------------------------------------------
 
-test("lot 42 in two communities does not produce the same purchase-order number", () => {
-  const north = buildGeneratedPoNumber({ communityCode: "NRD", lotNumber: "42" }, 1)
-  const south = buildGeneratedPoNumber({ communityCode: "STH", lotNumber: "42" }, 1)
+test("source keys separate takeoff lines from options with the same id", () => {
+  assert.notEqual(generationSourceKey("takeoff_line", "shared"), generationSourceKey("option", "shared"))
+})
+
+test("lot 42 in two communities does not produce the same purchase-order prefix", () => {
+  const north = generatedPoNumberPrefix({ communityCode: "NRD", lotNumber: "42" })
+  const south = generatedPoNumberPrefix({ communityCode: "STH", lotNumber: "42" })
   assert.notEqual(north, south)
-  assert.equal(north, "PO-NRD-42-01")
-  assert.equal(south, "PO-STH-42-01")
+  assert.equal(north, "PO-NRD-42")
+  assert.equal(south, "PO-STH-42")
 })
 
-test("regeneration continues the sequence instead of reissuing numbers", () => {
-  const firstRun = [1, 2, 3].map((sequence) => buildGeneratedPoNumber({ communityCode: "NRD", lotNumber: "42" }, sequence))
-  const next = nextGeneratedPoSequence(firstRun)
-  assert.equal(next, 4)
-  const secondRun = [next, next + 1].map((sequence) => buildGeneratedPoNumber({ communityCode: "NRD", lotNumber: "42" }, sequence))
-  const all = [...firstRun, ...secondRun]
-  assert.equal(new Set(all).size, all.length)
-  assert.deepEqual(secondRun, ["PO-NRD-42-04", "PO-NRD-42-05"])
-})
-
-test("purchase-order numbering survives blocks, missing codes, and untidy input", () => {
-  assert.equal(buildGeneratedPoNumber({ communityCode: "NRD", lotNumber: "42", block: "b" }, 7), "PO-NRD-42-BB-07")
-  assert.equal(buildGeneratedPoNumber({ communityName: "Sunset Ridge", lotNumber: "42" }, 1), "PO-SUNSET-RIDGE-42-01")
-  assert.equal(buildGeneratedPoNumber({ lotNumber: null }, 1), "PO-COMM-LOT-01")
-  assert.equal(nextGeneratedPoSequence([]), 1)
-  assert.equal(nextGeneratedPoSequence([null, "PO-NRD-42-09", "hand-typed"]), 10)
-  assert.equal(nextGeneratedPoSequence(["PO-NRD-42-02", "PO-NRD-42-11"]), 12)
+test("purchase-order prefixes survive blocks, missing codes, and untidy input", () => {
+  assert.equal(generatedPoNumberPrefix({ communityCode: "NRD", lotNumber: "42", block: "b" }), "PO-NRD-42-BB")
+  assert.equal(generatedPoNumberPrefix({ communityName: "Sunset Ridge", lotNumber: "42" }), "PO-SUNSET-RIDGE-42")
+  assert.equal(generatedPoNumberPrefix({ lotNumber: null }), "PO-COMM-LOT")
 })
 
 // ---------------------------------------------------------------------------
@@ -383,45 +350,144 @@ test("variance totals are absolute and grouped per organization", () => {
 // Migrations
 // ---------------------------------------------------------------------------
 
-test("the completion overlap guard is enforced at write time and at approval", () => {
-  const sql = migration("20260817120000_po_completion_line_overlap_guard.sql")
-  assert.match(sql, /create trigger po_completions_no_line_overlap/)
-  assert.match(sql, /pg_advisory_xact_lock\(hashtextextended\(new\.commitment_id::text, 0\)\)/)
-  assert.match(sql, /other\.commitment_line_ids && new\.commitment_line_ids/)
-  assert.match(sql, /other\.commitment_line_ids && v_completion\.commitment_line_ids/)
-  assert.match(sql, /already billed by completion/)
-  // Rejected and void completions must stay re-reportable.
-  assert.match(sql, /new\.status not in \('reported', 'verified', 'approved', 'billed'\)/)
-  assert.match(sql, /revoke all on function public\.approve_po_completion\(uuid, uuid, uuid\) from public, anon, authenticated;/)
+async function purchaseOrder(t) {
+  const db = await createDatabase(t)
+  const { orgId, userId } = await seedMember(db)
+  const home = await insert(db, "projects", { org_id: orgId, name: "Lot 4" })
+  const order = await insert(db, "commitments", { org_id: orgId, project_id: home.id, title: "Framing PO", status: "approved", commitment_type: "purchase_order", contract_number: "PO-100" })
+  const lines = [await insert(db, "commitment_lines", { org_id: orgId, commitment_id: order.id, description: "Walls", quantity: 1, unit_cost_cents: 100 }), await insert(db, "commitment_lines", { org_id: orgId, commitment_id: order.id, description: "Roof", quantity: 1, unit_cost_cents: 100 })]
+  const report = (status, lineIds) => insert(db, "po_completions", { org_id: orgId, project_id: home.id, commitment_id: order.id, status, commitment_line_ids: lineIds, reported_source: "office", reported_by_user_id: userId })
+  return { db, orgId, userId, home, order, lines, report }
+}
+
+test("two live completions cannot cover the same purchase-order line, and a rejected one releases it", async (t) => {
+  const { lines, report } = await purchaseOrder(t)
+  const [walls, roof] = lines.map((line) => line.id)
+
+  await report("reported", [walls])
+  await assert.rejects(report("verified", [walls]), /already covered by completion/)
+  await report("reported", [roof])
+  await assert.rejects(report("reported", null), /already covered by completion/, "a whole-order completion collides with every line")
 })
 
-test("PO generation serializes per project and cannot reissue a number", () => {
-  const sql = migration("20260817120100_po_generation_serialization.sql")
-  assert.match(sql, /perform pg_advisory_xact_lock\(hashtextextended\(p_org_id::text \|\| ':' \|\| v_run\.project_id::text, 0\)\)/)
-  assert.match(sql, /create unique index if not exists po_generation_runs_commit_fingerprint_uidx/)
-  assert.match(sql, /create unique index if not exists commitments_generated_po_number_uidx/)
-  assert.match(sql, /metadata->>'source' = 'po_generation'/)
-  assert.match(sql, /revoke all on function public\.run_po_generation_commit\(uuid, uuid, jsonb\) from public, anon, authenticated;/)
-  const body = sql.slice(sql.indexOf("function public.run_po_generation_commit"))
-  assert.ok(
-    body.indexOf("pg_advisory_xact_lock") < body.indexOf("v_prior_run_id := nullif"),
-    "the lock must be taken before the prior-run delete-and-recreate decision",
-  )
+test("a rejected completion releases its lines for the trade to re-report", async (t) => {
+  const { db, lines, report } = await purchaseOrder(t)
+  const [walls] = lines.map((line) => line.id)
+  const first = await report("reported", [walls])
+  await db.query("update po_completions set status = 'rejected' where id = $1", [first.id])
+
+  const again = await report("reported", [walls])
+
+  assert.equal(again.status, "reported")
+  await assert.rejects(db.query("update po_completions set status = 'reported' where id = $1", [first.id]), /already covered by completion/)
 })
 
-test("price-book imports and the bid-package constraint backlog are covered", () => {
-  assert.match(
-    migration("20260817120200_price_agreement_import_key_unique.sql"),
-    /create unique index if not exists vendor_price_agreements_import_key_uidx/,
-  )
-  const validate = migration("20260817120300_validate_bid_package_award_target.sql")
-  assert.match(validate, /validate constraint bid_packages_award_target_context/)
-  // Both constraints are validated now. `bid_packages_parent_context` had two
-  // violating rows — leftovers from testing prospect-to-project conversion,
-  // each already pointing at a real project — so the migration clears the stale
-  // prospect pointer first. The cleanup must stay scoped to rows carrying BOTH
-  // pointers, or a legitimate prospect-only bid package would lose its parent.
-  assert.match(validate, /validate constraint bid_packages_parent_context/)
-  assert.match(validate, /set prospect_id = null/)
-  assert.match(validate, /where project_id is not null\s*\n\s*and prospect_id is not null/)
+test("generated purchase orders cannot share a number, and a commit cannot be recorded twice for the same input", async (t) => {
+  const { db, orgId, home } = await purchaseOrder(t)
+  const generated = (number, source = "po_generation") => insert(db, "commitments", { org_id: orgId, project_id: home.id, title: "Generated", status: "draft", commitment_type: "purchase_order", contract_number: number, metadata: { source } })
+  await generated("PO-200")
+  await assert.rejects(generated("PO-200"), /commitments_generated_po_number_uidx/)
+  await generated("PO-100", "manual")
+  await generated("PO-200", "manual")
+
+  const community = await insert(db, "communities", { org_id: orgId, name: "Oak Ridge", code: "OR" })
+  const lot = await insert(db, "lots", { org_id: orgId, community_id: community.id, lot_number: "4", status: "assigned", project_id: home.id })
+  const plan = await insert(db, "house_plans", { org_id: orgId, name: "Mangrove", code: "MG" })
+  const version = await insert(db, "house_plan_versions", { org_id: orgId, house_plan_id: plan.id, version_number: 1, status: "draft" })
+  const run = (extra = {}) => insert(db, "po_generation_runs", { org_id: orgId, project_id: home.id, lot_id: lot.id, house_plan_version_id: version.id, mode: "commit", status: "succeeded", input_fingerprint: "a".repeat(64), ...extra })
+  await run()
+  await assert.rejects(run(), /po_generation_runs_commit_fingerprint_uidx/)
+  await run({ status: "failed" })
+  await run({ mode: "dry_run" })
+})
+
+test("commit and approval functions are the server's alone", async (t) => {
+  const { db, orgId } = await purchaseOrder(t)
+  const { userId } = await seedMember(db, { orgId })
+  const call = (sql) => asRole(db, { role: "authenticated", userId }, (tx) => tx.query(sql, [orgId]))
+  await assert.rejects(call("select public.run_po_generation_commit($1, gen_random_uuid(), '[]'::jsonb)"), /permission denied/)
+  await assert.rejects(call("select public.approve_po_completion($1, gen_random_uuid(), gen_random_uuid())"), /permission denied/)
+})
+
+test("an imported price repeating an import key is refused, and a price-book package takes exactly one parent", async (t) => {
+  const { db, orgId, home } = await purchaseOrder(t)
+  const company = await insert(db, "companies", { org_id: orgId, name: "Framing Co" })
+  const costCode = await insert(db, "cost_codes", { org_id: orgId, code: "06-100", name: "Framing" })
+  const imported = (key) => insert(db, "vendor_price_agreements", { org_id: orgId, company_id: company.id, cost_code_id: costCode.id, pricing_kind: "unit", uom: "sf", unit_cost_cents: 1, status: "active", source: "import", metadata: { import_key: key } })
+  await imported("abc")
+  await assert.rejects(imported("abc"), /vendor_price_agreements_import_key_uidx/)
+  await imported("def")
+
+  const community = await insert(db, "communities", { org_id: orgId, name: "Oak Ridge", code: "OR" })
+  const prospect = await insert(db, "prospects", { org_id: orgId, name: "Kitchen" })
+  const parcel = (extra) => insert(db, "bid_packages", { org_id: orgId, title: "Package", status: "draft", ...extra })
+  await assert.rejects(parcel({ award_target: "commitment", project_id: home.id, prospect_id: prospect.id }), /bid_packages_parent_context/)
+  await assert.rejects(parcel({ award_target: "price_agreement", community_id: community.id, prospect_id: prospect.id }), /bid_packages_award_target_context|bid_packages_parent_context/)
+  await assert.rejects(parcel({ award_target: "price_agreement" }), /bid_packages_award_target_context/)
+  await parcel({ award_target: "price_agreement", community_id: community.id })
+  await parcel({ award_target: "commitment", prospect_id: prospect.id })
+})
+
+// ---------------------------------------------------------------------------
+// Purchase-order positions and the variance export
+// ---------------------------------------------------------------------------
+
+const position = (overrides = {}) => ({
+  commitmentId: "po-1", projectId: "home-1", title: "Framing", contractNumber: null, companyId: null, status: "approved",
+  divisionId: null, communityId: null, payOnPo: true, originalCents: 100_000, approvedVpoCents: 20_000, pendingVpoCount: 0,
+  billedCents: 120_000, paidCents: 60_000, retainageHeldCents: 0, completionBilledCents: 120_000, openCompletionCount: 0,
+  unclaimedVpoCents: 0, openVendorCreditCents: 0, ...overrides,
+})
+
+test("a purchase order that reconciles raises nothing, and the revised total includes approved VPOs", () => {
+  assert.deepEqual(classifyPoPosition(position()), [])
+  assert.equal(poRevisedCents(position()), 120_000)
+  assert.equal(poRemainingCents(position({ billedCents: 50_000 })), 70_000)
+})
+
+test("each way the books can disagree with a purchase order is named once, with its amount", () => {
+  assert.deepEqual(classifyPoPosition(position({ billedCents: 130_000, completionBilledCents: 130_000 })), [{ kind: "overbilled", cents: 10_000 }])
+  assert.deepEqual(classifyPoPosition(position({ paidCents: 125_000 })), [{ kind: "paid_exceeds_billed", cents: 5_000 }])
+  assert.deepEqual(classifyPoPosition(position({ completionBilledCents: 100_000 })), [{ kind: "billed_without_completion", cents: 20_000 }])
+  assert.deepEqual(classifyPoPosition(position({ unclaimedVpoCents: 20_000 })), [{ kind: "vpo_unbilled", cents: 20_000 }])
+})
+
+test("a recorded vendor credit explains the excess it covers and is reported as its own exception", () => {
+  const credited = position({ approvedVpoCents: 15_000, openVendorCreditCents: 5_000, completionBilledCents: 120_000 })
+  assert.deepEqual(classifyPoPosition(credited), [{ kind: "vendor_credit_open", cents: 5_000 }])
+  assert.deepEqual(classifyPoPosition({ ...credited, billedCents: 128_000, completionBilledCents: 128_000 }), [
+    { kind: "overbilled", cents: 8_000 }, { kind: "vendor_credit_open", cents: 5_000 },
+  ])
+})
+
+test("a credit approved after a bill does not block that bill, but the next payable is judged with it", () => {
+  const input = (bill) => ({
+    commitmentCents: 100_000,
+    changeOrders: [{ totalCents: 20_000, approvedAt: "2026-10-01T00:00:00Z" }, { totalCents: -5_000, approvedAt: "2026-10-10T00:00:00Z" }],
+    bills: [
+      { id: "b1", totalCents: 120_000, status: "approved", createdAt: "2026-10-05T00:00:00Z" },
+      { id: "b2", totalCents: 40_000, status: "approved", createdAt: "2026-10-12T00:00:00Z" },
+      { id: "b3", totalCents: 9_000, status: "rejected", createdAt: "2026-10-06T00:00:00Z" },
+    ],
+    bill,
+    now: "2026-10-20T00:00:00Z",
+  })
+  const first = commitmentBillingAtRelease(input({ id: "b1", createdAt: "2026-10-05T00:00:00Z", approvedAt: "2026-10-05T00:00:00Z" }))
+  assert.deepEqual(first, { authorizedCents: 120_000, billedCents: 120_000 })
+  const next = commitmentBillingAtRelease(input({ id: "b2", createdAt: "2026-10-12T00:00:00Z", approvedAt: "2026-10-12T00:00:00Z" }))
+  assert.deepEqual(next, { authorizedCents: 115_000, billedCents: 160_000 })
+  const unapproved = commitmentBillingAtRelease(input({ id: "b1", createdAt: "2026-10-05T00:00:00Z", approvedAt: null }))
+  assert.equal(unapproved.authorizedCents, 115_000)
+})
+
+test("completion rules apply only where pay-on-PO does", () => {
+  assert.deepEqual(classifyPoPosition(position({ payOnPo: false, completionBilledCents: 0, unclaimedVpoCents: 20_000 })), [])
+})
+
+test("the variance export states its period and scope and cannot be read as a formula", () => {
+  const rows = [{ dimension: "vendor", dimension_id: "v", dimension_label: "=HYPERLINK(\"x\")", net_variance_cents: 12_345, absolute_variance_cents: 12_345, incidence: 1, direct_cost_budget_cents: 100_000, variance_rate: 0.12345 }]
+  const csv = varianceAnalysisCsv(rows, { startDate: "2026-09-01", endDate: "2026-09-30", scopeLabel: "North" })
+  assert.match(csv, /^Variance analysis,\nPeriod,2026-09-01 to 2026-09-30\nScope,North\n\nDimension,Group,/)
+  assert.match(csv, /'=HYPERLINK/)
+  assert.match(csv, /123\.45,123\.45,1,1000\.00,12\.35%/)
 })

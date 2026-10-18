@@ -7,6 +7,11 @@ import { toast } from "sonner"
 
 import {
   bulkSendTemplateEnvelopesAction,
+  listSignaturesHubAction,
+  updateESignTemplateAction,
+  archiveESignTemplateAction,
+  correctEnvelopeRecipientAction,
+  retryEnvelopeExecutionAction,
   createMySigningLinkAction,
   deleteDraftDocumentAction,
   getEnvelopeExecutedDownloadUrlAction,
@@ -67,6 +72,8 @@ import { AlertTriangle, Ban, Download, Eye, Mail, MoreHorizontal, RefreshCcw, Tr
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 
+import { parseBulkRecipientCsv } from "@/lib/esign/esign-ui-helpers"
+
 import { unwrapAction } from "@/lib/action-result"
 
 type QueueFilter = "all" | "waiting" | "executed" | "expiring" | "drafts" | "voided"
@@ -111,6 +118,8 @@ type SignatureHubRow = {
     signed_at: string | null
     signed_by_name: string | null
     signed_by_email: string | null
+    delivery_status?: string | null
+    delivery_error?: string | null
     identity_mismatch: boolean
     is_current: boolean
     can_remind: boolean
@@ -157,6 +166,9 @@ interface SignaturesHubClientProps {
     rows: SignatureHubRow[]
     summary: SignaturesHubSummary
     generated_at: string
+    has_more?: boolean
+    next_offset?: number | null
+    total_count?: number
   }
   scope: "org" | "project"
   projectsForNewEnvelope: SignatureEnvelopeProject[]
@@ -171,7 +183,7 @@ const envelopeStatusClassName: Record<string, string> = {
   expired: "bg-orange-500/15 text-orange-700 border-orange-500/30",
 }
 
-type RowAction = "preview_source" | "download" | "resend" | "sign_myself" | "mark_offline" | "duplicate_packet" | "void" | "delete_draft" | "continue_draft" | "view_source"
+type RowAction = "preview_source" | "download" | "evidence" | "resend" | "sign_myself" | "mark_offline" | "duplicate_packet" | "void" | "delete_draft" | "continue_draft" | "view_source"
 
 function formatDateTime(value?: string | null) {
   if (!value) return "—"
@@ -226,8 +238,8 @@ function getSourceLabel(row: SignatureHubRow) {
       return `Estimate · ${row.document_title}`
     case "proposal":
       return `Proposal · ${row.document_title}`
-    case "selection":
-      return `Selection · ${row.document_title}`
+    case "selection_approval":
+      return `Selections approval · ${row.document_title}`
     case "subcontract":
       return `Subcontract · ${row.document_title}`
     case "subcontract_change_order":
@@ -247,8 +259,8 @@ function getOpenSourceActionLabel(row: SignatureHubRow) {
       return "Open estimate"
     case "proposal":
       return "Open proposal"
-    case "selection":
-      return "Open selection"
+    case "selection_approval":
+      return "Open selections"
     case "subcontract":
       return "Open commitment"
     case "subcontract_change_order":
@@ -291,7 +303,7 @@ function getAvailableActions(row: SignatureHubRow): RowAction[] {
   const actions: RowAction[] = []
   if (row.document_status === "draft") actions.push("continue_draft")
   if (row.source_file_id) actions.push("preview_source")
-  if (row.can_download) actions.push("download")
+  if (row.can_download) actions.push("download", "evidence")
   if (row.can_remind) actions.push("resend")
   if (row.can_sign_myself) actions.push("sign_myself")
   if (row.can_mark_offline) actions.push("mark_offline")
@@ -323,6 +335,8 @@ function getActionLabel(action: RowAction, row: SignatureHubRow) {
       return "Upload signed copy"
     case "download":
       return "Download executed PDF"
+    case "evidence":
+      return "Download signing evidence"
     case "duplicate_packet":
       return "Void & send new copy"
     case "continue_draft":
@@ -369,7 +383,12 @@ export function SignaturesHubClient({
 }: SignaturesHubClientProps) {
   const router = useRouter()
   const isMobile = useIsMobile()
-  const rows = initialData.rows
+  const [hubData, setHubData] = useState(initialData)
+  const [historySource, setHistorySource] = useState(initialData)
+  const rows = hubData.rows
+  const [loadingHistory, setLoadingHistory] = useState(false)
+  const historyGeneration = useRef(0)
+  const [historyRefresh, setHistoryRefresh] = useState(0)
   const [search, setSearch] = useState("")
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all")
   const [pendingActionId, setPendingActionId] = useState<string | null>(null)
@@ -383,16 +402,26 @@ export function SignaturesHubClient({
   // Detail & Action State
   const [selectedRow, setSelectedRow] = useState<SignatureHubRow | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
+  const [correction, setCorrection] = useState<{ envelopeId: string; requestId: string; name: string; email: string } | null>(null)
   const [voidDialogOpen, setVoidDialogOpen] = useState(false)
   const [voidReason, setVoidReason] = useState("")
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [resendDialogOpen, setResendDialogOpen] = useState(false)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false)
+  const [managedTemplates, setManagedTemplates] = useState<ESignTemplateSummary[]>([])
+  const [templateEdit, setTemplateEdit] = useState<{ templateId: string; name: string; description: string } | null>(null)
+  const [templateArchiveId, setTemplateArchiveId] = useState<string | null>(null)
+  const [templateManagerProject, setTemplateManagerProject] = useState("")
+  const [templateManagerBusy, setTemplateManagerBusy] = useState(false)
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false)
   const [templates, setTemplates] = useState<ESignTemplateSummary[]>([])
   const [loadingTemplates, setLoadingTemplates] = useState(false)
   const [bulkTemplateId, setBulkTemplateId] = useState("")
   const [bulkRecipientsText, setBulkRecipientsText] = useState("")
+  const [bulkResults, setBulkResults] = useState<Array<{ email: string; envelopeId: string | null; error?: string }>>([])
+  const bulkBatchId = useRef<string | null>(null)
+  const bulkPreview = useMemo(() => parseBulkRecipientCsv(bulkRecipientsText), [bulkRecipientsText])
   const [bulkExpiresInDays, setBulkExpiresInDays] = useState("14")
   const [bulkRemindersEnabled, setBulkRemindersEnabled] = useState(true)
   const [bulkReminderIntervalDays, setBulkReminderIntervalDays] = useState("3")
@@ -408,7 +437,7 @@ export function SignaturesHubClient({
 
   useEffect(() => {
     if (scope === "org") {
-      setNewEnvelopeProjectId("")
+      if (newEnvelopeProjectId && !projectsForNewEnvelope.some(project => project.id === newEnvelopeProjectId)) setNewEnvelopeProjectId("")
       return
     }
     if (projectsForNewEnvelope.length === 0) {
@@ -420,8 +449,46 @@ export function SignaturesHubClient({
     }
   }, [newEnvelopeProjectId, projectsForNewEnvelope, scope])
 
+  const historyProjectId = scope === "project" ? projectsForNewEnvelope[0]?.id : undefined
+  if (historySource !== initialData) {
+    setHistorySource(initialData)
+    if (!search.trim()) setHubData(initialData)
+  }
+  useEffect(() => {
+    const generation = ++historyGeneration.current
+    if (!search.trim() && historyRefresh === 0) {
+      setHubData(initialData)
+      setLoadingHistory(false)
+      return () => { historyGeneration.current++ }
+    }
+    setLoadingHistory(true)
+    const timer = window.setTimeout(() => {
+      void listSignaturesHubAction({ projectId: historyProjectId, search: search.trim(), offset: 0 })
+        .then(result => { if (generation === historyGeneration.current) setHubData(result) })
+        .catch(() => { if (generation === historyGeneration.current) toast.error("Unable to search signature history") })
+        .finally(() => { if (generation === historyGeneration.current) setLoadingHistory(false) })
+    }, 300)
+    return () => { window.clearTimeout(timer); historyGeneration.current++ }
+  }, [search, historyProjectId, historyRefresh, initialData])
+
+  useEffect(() => {
+    if (!detailOpen) return
+    setSelectedRow(previous => previous ? hubData.rows.find(row => row.envelope_id === previous.envelope_id) ?? previous : previous)
+  }, [hubData.rows, detailOpen])
+
+  const loadMoreHistory = async () => {
+    if (loadingHistory || !hubData.has_more || hubData.next_offset == null) return
+    const generation = historyGeneration.current
+    setLoadingHistory(true)
+    try {
+      const result = await listSignaturesHubAction({ projectId: historyProjectId, search: search.trim(), offset: hubData.next_offset })
+      if (generation !== historyGeneration.current) return
+      setHubData(previous => ({ ...result, rows: [...previous.rows, ...result.rows.filter(row => !previous.rows.some(existing => existing.envelope_id === row.envelope_id))] }))
+    } catch { toast.error("Unable to load more signature history") }
+    finally { if (generation === historyGeneration.current) setLoadingHistory(false) }
+  }
+
   const filteredRows = useMemo(() => {
-    const term = search.trim().toLowerCase()
     return rows.filter((row) => {
       const queueMatch =
         queueFilter === "all" ||
@@ -432,28 +499,16 @@ export function SignaturesHubClient({
         (queueFilter === "voided" && row.envelope_status === "voided")
 
       if (!queueMatch) return false
-      if (!term) return true
-
-      const haystack = [
-        row.document_title,
-        row.document_type,
-        row.project_name ?? "",
-        row.envelope_status,
-        row.source_entity_type ?? "",
-        ...row.recipient_names,
-      ]
-        .join(" ")
-        .toLowerCase()
-
-      return haystack.includes(term)
+      return true
     })
-  }, [rows, queueFilter, search])
+  }, [rows, queueFilter])
 
   const withPendingAction = async (envelopeId: string, fn: () => Promise<void>) => {
     setPendingActionId(envelopeId)
     try {
       await fn()
       router.refresh()
+      setHistoryRefresh(value => value + 1)
     } catch (error: any) {
       console.error(error)
       toast.error("Action failed", { description: error?.message ?? "Please try again." })
@@ -465,8 +520,8 @@ export function SignaturesHubClient({
   const handleResendReminder = async (row: SignatureHubRow) => {
     if (!row.next_pending_request_id) return
     await withPendingAction(row.envelope_id, async () => {
-      unwrapAction(await sendDocumentSigningReminderAction(row.next_pending_request_id as string))
-      toast.success("Reminder sent")
+      const result = unwrapAction(await sendDocumentSigningReminderAction(row.next_pending_request_id as string))
+      toast.success(result.queued ? "Reminder queued" : "Reminder sent")
     })
   }
 
@@ -488,19 +543,23 @@ export function SignaturesHubClient({
     })
   }
 
-  const handleDownload = async (row: SignatureHubRow) => {
+  const openResolvedLink = async (row: SignatureHubRow, resolve: () => Promise<string>) => {
+    const popup = window.open("about:blank", "_blank")
+    if (popup) popup.opener = null
     await withPendingAction(row.envelope_id, async () => {
-      const result = await getEnvelopeExecutedDownloadUrlAction({ envelopeId: row.envelope_id })
-      window.open(result.url, "_blank", "noopener,noreferrer")
+      try {
+        const url = await resolve()
+        if (popup) popup.location.replace(url)
+        else window.location.assign(url)
+      } catch (error) { popup?.close(); throw error }
     })
   }
 
-  const handleSignMyself = async (row: SignatureHubRow) => {
-    await withPendingAction(row.envelope_id, async () => {
-      const result = unwrapAction(await createMySigningLinkAction({ envelopeId: row.envelope_id }))
-      window.open(result.url, "_blank", "noopener,noreferrer")
-    })
-  }
+  const handleDownload = (row: SignatureHubRow) => openResolvedLink(row, async () => (await getEnvelopeExecutedDownloadUrlAction({ envelopeId: row.envelope_id })).url)
+
+  const handleEvidence = (row: SignatureHubRow) => openResolvedLink(row, async () => `${(await getEnvelopeExecutedDownloadUrlAction({ envelopeId: row.envelope_id })).url}?evidence=1`)
+
+  const handleSignMyself = (row: SignatureHubRow) => openResolvedLink(row, async () => unwrapAction(await createMySigningLinkAction({ envelopeId: row.envelope_id })).url)
 
   const handleOfflineTrigger = (row: SignatureHubRow) => {
     setSelectedRow(row)
@@ -574,7 +633,7 @@ export function SignaturesHubClient({
       estimate: "estimates",
       proposal: "proposals",
       change_order: "change-orders",
-      selection: "selections",
+      selection_approval: "selections",
       subcontract: "commitments",
       subcontract_change_order: "commitments",
       closeout: "closeout",
@@ -617,7 +676,6 @@ export function SignaturesHubClient({
       sourceType === "proposal" ||
       sourceType === "change_order" ||
       sourceType === "lien_waiver" ||
-      sourceType === "selection" ||
       sourceType === "subcontract" ||
       sourceType === "subcontract_change_order" ||
       sourceType === "closeout" ||
@@ -674,6 +732,8 @@ export function SignaturesHubClient({
       return
     }
     setNewEnvelopeProjectId(projectId)
+    setBulkResults([])
+    bulkBatchId.current = null
     setLoadingTemplates(true)
     try {
       const rows = await listESignTemplatesAction({ projectId })
@@ -697,26 +757,14 @@ export function SignaturesHubClient({
     await loadTemplatesForBulk(newEnvelopeProjectId || projectsForNewEnvelope[0]?.id || "")
   }
 
-  const parseBulkRecipients = () => {
-    return bulkRecipientsText
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [nameOrEmail, maybeEmail, maybeTitle] = line.split(",").map((part) => part.trim())
-        const email = maybeEmail || nameOrEmail
-        const name = maybeEmail ? nameOrEmail : ""
-        return { name, email, title: maybeTitle }
-      })
-      .filter((recipient) => recipient.email.includes("@"))
-  }
-
-  const handleBulkSend = async () => {
+  const handleBulkSend = async (retryFailed = false) => {
     if (!bulkTemplateId || !newEnvelopeProjectId) {
       toast.error("Choose a project and template")
       return
     }
-    const recipients = parseBulkRecipients()
+    if (bulkPreview.errors.length) { toast.error("Correct the recipient rows before sending"); return }
+    const failedEmails = new Set(bulkResults.filter(result => result.error).map(result => result.email.toLowerCase()))
+    const recipients = retryFailed ? bulkPreview.recipients.filter(recipient => failedEmails.has(recipient.email)) : bulkPreview.recipients
     if (recipients.length === 0) {
       toast.error("Add recipients as name,email rows")
       return
@@ -727,6 +775,7 @@ export function SignaturesHubClient({
       const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString()
       const result = unwrapAction(await bulkSendTemplateEnvelopesAction({
         templateId: bulkTemplateId,
+        batch_id: bulkBatchId.current ?? (bulkBatchId.current = crypto.randomUUID()),
         projectId: newEnvelopeProjectId,
         recipients,
         expires_at: expiresAt,
@@ -734,7 +783,7 @@ export function SignaturesHubClient({
         reminder_interval_days: Math.max(1, Math.min(30, Number(bulkReminderIntervalDays) || 3)),
       }))
       toast.success(`Bulk send complete: ${result.sent} sent${result.failed ? `, ${result.failed} failed` : ""}`)
-      setBulkDialogOpen(false)
+      setBulkResults(previous => retryFailed ? [...previous.filter(item => !failedEmails.has(item.email.toLowerCase())), ...result.results] : result.results)
       router.refresh()
     } catch (error: any) {
       console.error(error)
@@ -753,6 +802,46 @@ export function SignaturesHubClient({
     voided: "Voided / Canceled",
   }
 
+  const loadManagedTemplates = async (projectId: string) => {
+    setTemplateManagerProject(projectId)
+    setTemplateManagerBusy(true)
+    setTemplateEdit(null)
+    setTemplateArchiveId(null)
+    try { setManagedTemplates(await listESignTemplatesAction({ projectId })) }
+    catch { toast.error("Unable to load templates") }
+    finally { setTemplateManagerBusy(false) }
+  }
+
+  const openTemplateManager = () => {
+    setTemplateManagerOpen(true)
+    const projectId = newEnvelopeProjectId || projectsForNewEnvelope[0]?.id
+    if (projectId) void loadManagedTemplates(projectId)
+  }
+
+  const saveManagedTemplate = async (archive = false) => {
+    if (archive ? !templateArchiveId : !templateEdit?.name.trim()) return
+    setTemplateManagerBusy(true)
+    try {
+      if (archive) unwrapAction(await archiveESignTemplateAction({ templateId: templateArchiveId! }))
+      else unwrapAction(await updateESignTemplateAction(templateEdit!))
+      toast.success(archive ? "Template archived" : "Template updated")
+      await loadManagedTemplates(templateManagerProject)
+      setTemplates([])
+      setBulkTemplateId("")
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to update template") }
+    finally { setTemplateManagerBusy(false) }
+  }
+
+  const recipientManagement = (row: SignatureHubRow) => (
+    <div className="space-y-2 rounded-md border p-3">
+      <p className="text-xs font-medium">Manage signing</p>
+      {!['executed', 'voided', 'expired', 'declined', 'draft'].includes(row.envelope_status) ? row.recipient_statuses.filter(recipient => recipient.status !== "signed" && recipient.status !== "voided" && recipient.status !== "declined").map(recipient => (
+        <Button key={recipient.id} variant="outline" size="sm" onClick={() => setCorrection({ envelopeId: row.envelope_id, requestId: recipient.id, name: recipient.name, email: recipient.email ?? "" })}>Correct {recipient.name || recipient.email || "recipient"}</Button>
+      )) : null}
+      {row.signer_summary.total > 0 && row.signer_summary.signed === row.signer_summary.total && !['executed', 'voided', 'declined'].includes(row.envelope_status) ? <Button variant="outline" size="sm" disabled={pendingActionId !== null} onClick={() => void withPendingAction(row.envelope_id, async () => { unwrapAction(await retryEnvelopeExecutionAction({ envelopeId: row.envelope_id })); toast.success("Finalization retried") })}>Retry document finalization</Button> : null}
+    </div>
+  )
+
   return (
     <TooltipProvider>
       <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
@@ -764,7 +853,7 @@ export function SignaturesHubClient({
                 <Input
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search signatures..."
+                  placeholder="Search document titles..."
                   className="h-10 pl-9 pr-3 text-sm"
                   inputMode="search"
                 />
@@ -815,7 +904,7 @@ export function SignaturesHubClient({
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search documents..."
+                placeholder="Search document titles..."
                 className="w-full pl-9"
               />
             </div>
@@ -849,7 +938,10 @@ export function SignaturesHubClient({
         )}
 
         <div className="min-h-0 flex-1 overflow-auto">
-          {!isMobile ? <SummaryTiles summary={initialData.summary} /> : null}
+          <Button variant="outline" size="sm" className="mb-2" onClick={openTemplateManager} disabled={projectsForNewEnvelope.length === 0}>Manage templates</Button>
+          <p className="text-xs text-muted-foreground" role="status">{loadingHistory ? "Loading signature history…" : `Showing ${rows.length} of ${hubData.total_count ?? rows.length} matching records. Status counts and filters apply to loaded records.`}</p>
+          {hubData.has_more ? <Button variant="outline" disabled={loadingHistory} onClick={() => void loadMoreHistory()}>Load more history</Button> : null}
+          {!isMobile ? <SummaryTiles summary={{ total: rows.length, waiting_on_client: rows.filter(row => row.queue_flags.waiting_on_client).length, executed_this_week: rows.filter(row => row.queue_flags.executed_this_week).length, expiring_soon: rows.filter(row => row.queue_flags.expiring_soon).length }} /> : null}
           {isMobile ? (
             <MobileEnvelopeList
               rows={filteredRows}
@@ -1018,6 +1110,7 @@ export function SignaturesHubClient({
                                   Download executed PDF
                                 </DropdownMenuItem>
                               ) : null}
+                              {availableActions.includes("evidence") ? <DropdownMenuItem onClick={() => void handleEvidence(row)}><Download className="mr-2 h-4 w-4" />Download signing evidence</DropdownMenuItem> : null}
                               {availableActions.includes("duplicate_packet") ? (
                                 <DropdownMenuItem onClick={() => handleDuplicatePacketTrigger(row)}>
                                   <RefreshCcw className="mr-2 h-4 w-4" />
@@ -1100,6 +1193,28 @@ export function SignaturesHubClient({
           }}
         />
 
+        <Dialog open={templateManagerOpen} onOpenChange={setTemplateManagerOpen}>
+          <DialogContent className="sm:max-w-2xl"><DialogHeader><DialogTitle>Signature templates</DialogTitle><DialogDescription>Update names and descriptions or archive templates you no longer use. Existing envelopes keep their original document and fields.</DialogDescription></DialogHeader>
+            <Select value={templateManagerProject} onValueChange={value => void loadManagedTemplates(value)} disabled={templateManagerBusy}><SelectTrigger aria-label="Template project"><SelectValue placeholder="Choose project" /></SelectTrigger><SelectContent>{projectsForNewEnvelope.map(project => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}</SelectContent></Select>
+            <div className="max-h-80 space-y-3 overflow-auto">
+              {templateManagerBusy ? <p role="status">Loading…</p> : managedTemplates.length === 0 ? <p className="text-sm text-muted-foreground">No templates for this project. Save a prepared envelope as a template to create one.</p> : managedTemplates.map(template => <div key={template.id} className="space-y-2 rounded-md border p-3">
+                {templateEdit?.templateId === template.id ? <>
+                  <label className="text-sm">Name<Input maxLength={200} value={templateEdit.name} onChange={event => setTemplateEdit(value => value && ({ ...value, name: event.target.value }))} /></label>
+                  <label className="text-sm">Description<Textarea maxLength={2000} value={templateEdit.description} onChange={event => setTemplateEdit(value => value && ({ ...value, description: event.target.value }))} /></label>
+                  <Button size="sm" onClick={() => void saveManagedTemplate()} disabled={!templateEdit.name.trim()}>Save changes</Button><Button variant="ghost" size="sm" onClick={() => setTemplateEdit(null)}>Cancel</Button>
+                </> : <><p className="text-sm font-medium">{template.name}</p><p className="text-xs text-muted-foreground">{template.description || template.source_file_name}</p><Button variant="outline" size="sm" onClick={() => { setTemplateArchiveId(null); setTemplateEdit({ templateId: template.id, name: template.name, description: template.description ?? "" }) }}>Edit details</Button> <Button variant="ghost" size="sm" onClick={() => { setTemplateEdit(null); setTemplateArchiveId(template.id) }}>Archive</Button></>}
+                {templateArchiveId === template.id ? <div className="space-y-2 border-t pt-2"><p className="text-sm">Archive this template? It will no longer appear when preparing new envelopes.</p><Button variant="destructive" size="sm" onClick={() => void saveManagedTemplate(true)}>Archive template</Button><Button variant="ghost" size="sm" onClick={() => setTemplateArchiveId(null)}>Keep template</Button></div> : null}
+              </div>)}
+            </div>
+          </DialogContent>
+        </Dialog>
+        <Dialog open={Boolean(correction)} onOpenChange={open => { if (!open) setCorrection(null) }}>
+          <DialogContent><DialogHeader><DialogTitle>Correct recipient</DialogTitle><DialogDescription>The old signing link will be revoked and a replacement invitation sent. Already completed signatures remain unchanged.</DialogDescription></DialogHeader>
+            <label className="space-y-1 text-sm">Name<Input value={correction?.name ?? ""} onChange={event => setCorrection(value => value && ({ ...value, name: event.target.value }))} /></label>
+            <label className="space-y-1 text-sm">Email<Input type="email" value={correction?.email ?? ""} onChange={event => setCorrection(value => value && ({ ...value, email: event.target.value }))} /></label>
+            <DialogFooter><Button variant="outline" onClick={() => setCorrection(null)}>Cancel</Button><Button disabled={pendingActionId !== null || !correction?.email.trim()} onClick={() => { if (correction) void withPendingAction(correction.envelopeId, async () => { unwrapAction(await correctEnvelopeRecipientAction(correction)); setCorrection(null); setDetailOpen(false); toast.success("Recipient corrected") }) }}>Correct and notify</Button></DialogFooter>
+          </DialogContent>
+        </Dialog>
         <Dialog open={projectPickerOpen} onOpenChange={setProjectPickerOpen}>
           <DialogContent>
             <DialogHeader>
@@ -1165,6 +1280,7 @@ export function SignaturesHubClient({
 
                 <ScrollArea className="flex-1">
                   <div className="px-6 py-4 space-y-6">
+                    {recipientManagement(selectedRow)}
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1">
                         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Created</p>
@@ -1268,6 +1384,11 @@ export function SignaturesHubClient({
                                       ? "Current signer"
                                       : "Awaiting previous signers"}
                                   </p>
+                                  {recipient.delivery_status && !isSigned ? (
+                                    <p className={cn("mt-1 text-xs", ["bounced", "complained", "failed"].includes(recipient.delivery_status) ? "text-destructive" : "text-muted-foreground")}>
+                                      Email: {recipient.delivery_status}{recipient.delivery_error ? ` — ${recipient.delivery_error}` : ""}
+                                    </p>
+                                  ) : null}
                                   {recipient.identity_mismatch ? (
                                     <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
                                       <AlertTriangle className="h-3 w-3" />
@@ -1300,6 +1421,7 @@ export function SignaturesHubClient({
                             if (action === "sign_myself") handleSignMyself(selectedRow)
                             if (action === "mark_offline") handleOfflineTrigger(selectedRow)
                             if (action === "download") handleDownload(selectedRow)
+                            if (action === "evidence") void handleEvidence(selectedRow)
                             if (action === "duplicate_packet") handleDuplicatePacketTrigger(selectedRow)
                             if (action === "continue_draft") handleContinueDraft(selectedRow)
                             if (action === "void") handleVoidTrigger(selectedRow)
@@ -1311,6 +1433,7 @@ export function SignaturesHubClient({
                           {action === "resend" && <><Mail className="mr-2 h-4 w-4" /> Send reminder</>}
                           {action === "sign_myself" && <><Link2 className="mr-2 h-4 w-4" /> Sign myself now</>}
                           {action === "mark_offline" && <><Upload className="mr-2 h-4 w-4" /> Upload signed copy</>}
+                          {action === "evidence" && <><Download className="mr-2 h-4 w-4" /> Download signing evidence</>}
                           {action === "download" && <><Download className="mr-2 h-4 w-4" /> Download executed PDF</>}
                           {action === "duplicate_packet" && <><RefreshCcw className="mr-2 h-4 w-4" /> Void & send new copy</>}
                           {action === "continue_draft" && <><RefreshCcw className="mr-2 h-4 w-4" /> Continue draft</>}
@@ -1397,6 +1520,7 @@ export function SignaturesHubClient({
 
                 <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain border-t">
                   <div className="space-y-5 px-4 py-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
+                    {recipientManagement(selectedRow)}
                     {/* Source */}
                     <div>
                       <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1472,6 +1596,11 @@ export function SignaturesHubClient({
                                       ? "Current signer"
                                       : "Awaiting"}
                                   </p>
+                                  {recipient.delivery_status && !isSigned ? (
+                                    <p className={cn("mt-1 text-xs", ["bounced", "complained", "failed"].includes(recipient.delivery_status) ? "text-destructive" : "text-muted-foreground")}>
+                                      Email: {recipient.delivery_status}{recipient.delivery_error ? ` — ${recipient.delivery_error}` : ""}
+                                    </p>
+                                  ) : null}
                                   {recipient.identity_mismatch ? (
                                     <p className="mt-0.5 truncate text-[11px] font-medium text-amber-700 dark:text-amber-400">
                                       Signed by {recipient.signed_by_email}
@@ -1541,6 +1670,7 @@ export function SignaturesHubClient({
                                   if (action === "sign_myself") void handleSignMyself(selectedRow)
                                   if (action === "mark_offline") handleOfflineTrigger(selectedRow)
                                   if (action === "download") void handleDownload(selectedRow)
+                                  if (action === "evidence") void handleEvidence(selectedRow)
                                   if (action === "duplicate_packet") handleDuplicatePacketTrigger(selectedRow)
                                   if (action === "continue_draft") handleContinueDraft(selectedRow)
                                   if (action === "void") handleVoidTrigger(selectedRow)
@@ -1652,6 +1782,7 @@ export function SignaturesHubClient({
                           if (action === "sign_myself") void handleSignMyself(row)
                           if (action === "mark_offline") handleOfflineTrigger(row)
                           if (action === "download") void handleDownload(row)
+                          if (action === "evidence") void handleEvidence(row)
                           if (action === "duplicate_packet") handleDuplicatePacketTrigger(row)
                           if (action === "continue_draft") handleContinueDraft(row)
                           if (action === "void") handleVoidTrigger(row)
@@ -1699,6 +1830,7 @@ export function SignaturesHubClient({
                   <Select
                     value={newEnvelopeProjectId}
                     onValueChange={(value) => void loadTemplatesForBulk(value)}
+                    disabled={pendingActionId === "bulk-send"}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Choose project" />
@@ -1714,7 +1846,7 @@ export function SignaturesHubClient({
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Template</label>
-                  <Select value={bulkTemplateId} onValueChange={setBulkTemplateId} disabled={loadingTemplates || templates.length === 0}>
+                  <Select value={bulkTemplateId} onValueChange={value => { setBulkTemplateId(value); setBulkResults([]); bulkBatchId.current = null }} disabled={pendingActionId === "bulk-send" || loadingTemplates || templates.length === 0}>
                     <SelectTrigger>
                       <SelectValue placeholder={loadingTemplates ? "Loading..." : "Choose template"} />
                     </SelectTrigger>
@@ -1732,10 +1864,16 @@ export function SignaturesHubClient({
                 <label className="text-sm font-medium">Recipients</label>
                 <Textarea
                   value={bulkRecipientsText}
-                  onChange={(event) => setBulkRecipientsText(event.target.value)}
+                  onChange={(event) => { setBulkRecipientsText(event.target.value); setBulkResults([]); bulkBatchId.current = null }}
+                  disabled={pendingActionId === "bulk-send"}
                   rows={7}
                   placeholder={"Jane Client,jane@example.com,Optional title\nsam@example.com"}
                 />
+              </div>
+              <div aria-live="polite" className="max-h-48 overflow-auto rounded-md border p-3 text-sm">
+                <p>{bulkPreview.recipients.length} valid recipients</p>
+                {bulkPreview.errors.map(error => <p key={error} className="text-destructive">{error}</p>)}
+                {bulkResults.length ? bulkResults.map(result => <p key={result.email}>{result.email}: {result.error || "Sent"}</p>) : bulkPreview.recipients.map(recipient => <p key={recipient.email}>{recipient.name} — {recipient.email}{recipient.title ? ` — ${recipient.title}` : ""}</p>)}
               </div>
               <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
                 <div className="space-y-2">
@@ -1769,8 +1907,8 @@ export function SignaturesHubClient({
               <Button variant="outline" onClick={() => setBulkDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button onClick={() => void handleBulkSend()} disabled={pendingActionId === "bulk-send" || !bulkTemplateId}>
-                {pendingActionId === "bulk-send" ? "Sending..." : "Send envelopes"}
+              <Button onClick={() => void handleBulkSend(bulkResults.length > 0)} disabled={pendingActionId === "bulk-send" || !bulkTemplateId || !newEnvelopeProjectId || bulkPreview.errors.length > 0 || bulkPreview.recipients.length === 0 || (bulkResults.length > 0 && !bulkResults.some(result => result.error))}>
+                {pendingActionId === "bulk-send" ? "Sending..." : bulkResults.length ? "Retry failed recipients" : "Send envelopes"}
               </Button>
             </DialogFooter>
           </DialogContent>

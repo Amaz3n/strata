@@ -1,0 +1,563 @@
+{
+  "scenario": "BANK-01",
+  "status": "PASSED",
+  "reviewedFrom": "Bank reconciliation practice: statement opening + statement activity = statement closing; GL control balance = statement balance adjusted by outstanding book items (checks/deposits in transit); each bank line is owned by exactly one book entry; card purchases are expensed once when charged and a card repayment only moves cash to the card liability; transfers between accounts move cash without income or expense. Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "two-banks-and-card-two-cycles",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "5256938d-d15f-4d39-86b0-77bd17c3d897"
+      },
+      "checks": [
+        {
+          "label": "2026-07: statement, outstanding and GL tie for each account",
+          "pass": true,
+          "expected": {
+            "operating": {
+              "ending": 5077500,
+              "outstanding": -200000,
+              "book": 4877500
+            },
+            "payroll": {
+              "ending": 150000,
+              "outstanding": 0,
+              "book": 150000
+            },
+            "card": {
+              "ending": 30000,
+              "outstanding": 0,
+              "book": 30000
+            }
+          },
+          "observed": {
+            "operating": {
+              "ending": 5077500,
+              "outstanding": -200000,
+              "book": 4877500
+            },
+            "payroll": {
+              "ending": 150000,
+              "outstanding": 0,
+              "book": 150000
+            },
+            "card": {
+              "ending": 30000,
+              "outstanding": 0,
+              "book": 30000
+            }
+          }
+        },
+        {
+          "label": "July ledger after close",
+          "pass": true,
+          "expected": {
+            "1000": 4877500,
+            "1005": 150000,
+            "1010": 400000,
+            "2100": -30000,
+            "2230": -50000,
+            "2350": 900000,
+            "3010": -5000000,
+            "4000": -900000,
+            "4900": -1400000,
+            "5000": 500000,
+            "5020": 100000,
+            "6020": 50000,
+            "6050": 2500,
+            "6070": 400000
+          },
+          "observed": {
+            "1000": 4877500,
+            "1005": 150000,
+            "1010": 400000,
+            "2100": -30000,
+            "2230": -50000,
+            "2350": 900000,
+            "3010": -5000000,
+            "4000": -900000,
+            "4900": -1400000,
+            "5000": 500000,
+            "5020": 100000,
+            "6020": 50000,
+            "6050": 2500,
+            "6070": 400000
+          }
+        },
+        {
+          "label": "2026-08: statement, outstanding and GL tie for each account",
+          "pass": true,
+          "expected": {
+            "operating": {
+              "ending": 5245000,
+              "outstanding": 0,
+              "book": 5245000
+            },
+            "payroll": {
+              "ending": 100000,
+              "outstanding": 0,
+              "book": 100000
+            },
+            "card": {
+              "ending": 25000,
+              "outstanding": 0,
+              "book": 25000
+            }
+          },
+          "observed": {
+            "operating": {
+              "ending": 5245000,
+              "outstanding": 0,
+              "book": 5245000
+            },
+            "payroll": {
+              "ending": 100000,
+              "outstanding": 0,
+              "book": 100000
+            },
+            "card": {
+              "ending": 25000,
+              "outstanding": 0,
+              "book": 25000
+            }
+          }
+        },
+        {
+          "label": "final ledger: no duplicated card expense or deposit cash",
+          "pass": true,
+          "expected": {
+            "1000": 5245000,
+            "1005": 100000,
+            "2100": -25000,
+            "2350": 900000,
+            "3010": -5000000,
+            "4000": -900000,
+            "4900": -1400000,
+            "5000": 500000,
+            "5020": 100000,
+            "6020": 75000,
+            "6050": 5000,
+            "6070": 400000
+          },
+          "observed": {
+            "1000": 5245000,
+            "1005": 100000,
+            "2100": -25000,
+            "2350": 900000,
+            "3010": -5000000,
+            "4000": -900000,
+            "4900": -1400000,
+            "5000": 500000,
+            "5020": 100000,
+            "6020": 75000,
+            "6050": 5000,
+            "6070": 400000
+          }
+        },
+        {
+          "label": "re-importing July's statement adds no transactions",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        }
+      ],
+      "startedAt": "2026-10-07T17:56:58.642Z"
+    },
+    {
+      "name": "reopen-order-and-frozen-evidence",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "72c291d7-2ab4-4bf2-92d5-916e262c4db1"
+      },
+      "checks": [
+        {
+          "label": "a reconciled statement line cannot be edited",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the closed statement shows the description it was closed on",
+          "pass": true,
+          "expected": "Check 101",
+          "observed": "Check 101"
+        },
+        {
+          "label": "July cannot reopen while August is closed",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "reclosing in order reproduces every statement digest",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        }
+      ],
+      "startedAt": "2026-10-07T17:57:05.172Z"
+    },
+    {
+      "name": "grouped-net-deposit-with-fees",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "90bd57d5-98a3-44ec-9cd9-254df101c2b1"
+      },
+      "checks": [
+        {
+          "label": "a retry of the same payout is a duplicate, not a second deposit",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "a retry with a different fee is refused",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "July statement ties with the payout owned once",
+          "pass": true,
+          "expected": {
+            "ending": 145500,
+            "outstanding": 0,
+            "book": 145500
+          },
+          "observed": {
+            "ending": 145500,
+            "outstanding": 0,
+            "book": 145500
+          }
+        },
+        {
+          "label": "ledger: receipts cleared, fee expensed once",
+          "pass": true,
+          "expected": {
+            "1000": 145500,
+            "4900": -150000,
+            "6050": 4500
+          },
+          "observed": {
+            "1000": 145500,
+            "4900": -150000,
+            "6050": 4500
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T17:57:08.648Z"
+    },
+    {
+      "name": "imported-outstanding-items",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "692535bf-0646-42f6-8fea-9662e0e83637"
+      },
+      "checks": [
+        {
+          "label": "an outstanding item without its reference is refused",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the statement-balance opening line cannot be matched",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the first statement clears exactly the imported items",
+          "pass": true,
+          "expected": {
+            "ending": 908500,
+            "outstanding": 0,
+            "book": 908500
+          },
+          "observed": {
+            "ending": 908500,
+            "outstanding": 0,
+            "book": 908500
+          }
+        },
+        {
+          "label": "ledger: one opening posting, cleared items, fee",
+          "pass": true,
+          "expected": {
+            "1000": 908500,
+            "3010": -910000,
+            "6050": 1500
+          },
+          "observed": {
+            "1000": 908500,
+            "3010": -910000,
+            "6050": 1500
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T17:57:09.296Z"
+    },
+    {
+      "name": "supplier-refund-and-vendor-credit",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "6b5962a9-bd2b-41f1-840a-98ce4d9c3f8c"
+      },
+      "checks": [
+        {
+          "label": "July statement ties",
+          "pass": true,
+          "expected": {
+            "ending": 665000,
+            "outstanding": 0,
+            "book": 665000
+          },
+          "observed": {
+            "ending": 665000,
+            "outstanding": 0,
+            "book": 665000
+          }
+        },
+        {
+          "label": "July closes: payables and job-cost controls tie",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "ledger: refund and credit reduce job cost once",
+          "pass": true,
+          "expected": {
+            "1000": 665000,
+            "2350": 502500,
+            "3010": -1000000,
+            "4000": -502500,
+            "5000": 335000
+          },
+          "observed": {
+            "1000": 665000,
+            "2350": 502500,
+            "3010": -1000000,
+            "4000": -502500,
+            "5000": 335000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T17:57:09.784Z"
+    },
+    {
+      "name": "voided-checks-offset",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "89863e28-c10b-4ca2-acc2-d5509ea56876",
+        "reconciliationId": "680cc07a-d890-46f7-b1cf-ad0a358b18b7"
+      },
+      "checks": [
+        {
+          "label": "before offsets: the imported check, check 301, its void and the 998 void are outstanding",
+          "pass": true,
+          "expected": 4,
+          "observed": 4
+        },
+        {
+          "label": "entries that do not cancel cannot offset",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "an offset entry cannot be offset again",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "after offsets nothing is outstanding",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "the statement closes with nothing outstanding",
+          "pass": true,
+          "expected": {
+            "ending": 998500,
+            "outstanding": 0,
+            "book": 998500
+          },
+          "observed": {
+            "ending": 998500,
+            "outstanding": 0,
+            "book": 998500
+          }
+        },
+        {
+          "label": "both offsets are part of the closed evidence",
+          "pass": true,
+          "expected": 2,
+          "observed": 2
+        },
+        {
+          "label": "ledger: a voided check counts once each way and the bill is owed again",
+          "pass": true,
+          "expected": {
+            "1000": 998500,
+            "2000": -100000,
+            "3010": -880000,
+            "5000": 100000,
+            "6050": 1500,
+            "6900": -120000
+          },
+          "observed": {
+            "1000": 998500,
+            "2000": -100000,
+            "3010": -880000,
+            "5000": 100000,
+            "6050": 1500,
+            "6900": -120000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T17:57:11.085Z"
+    },
+    {
+      "name": "voided-after-posting",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "e972b5b2-af36-43b5-bf54-52949b5f6793"
+      },
+      "checks": [
+        {
+          "label": "the voided payment's own entry stays posted",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "cash nets to zero and the bill is owed again",
+          "pass": true,
+          "expected": {
+            "2000": -50000,
+            "5000": 50000
+          },
+          "observed": {
+            "2000": -50000,
+            "5000": 50000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T17:57:11.881Z"
+    },
+    {
+      "name": "funding-ownership",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "211522de-cb8c-46dc-af58-d48eddd0c80c",
+        "ambiguousRefusal": "Failed to record bill payment: Choose the actual bank or card account before recording this payment"
+      },
+      "checks": [
+        {
+          "label": "with two cash accounts a payment must say where it was paid from",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the employee is owed until reimbursed",
+          "pass": true,
+          "expected": -40000,
+          "observed": -40000
+        },
+        {
+          "label": "each account's statement ties on its own",
+          "pass": true,
+          "expected": {
+            "operating": {
+              "ending": -140000,
+              "outstanding": 0,
+              "book": -140000
+            },
+            "payroll": {
+              "ending": -200000,
+              "outstanding": 0,
+              "book": -200000
+            }
+          },
+          "observed": {
+            "operating": {
+              "ending": -140000,
+              "outstanding": 0,
+              "book": -140000
+            },
+            "payroll": {
+              "ending": -200000,
+              "outstanding": 0,
+              "book": -200000
+            }
+          }
+        },
+        {
+          "label": "the split bill is fully paid",
+          "pass": true,
+          "expected": "paid",
+          "observed": "paid"
+        },
+        {
+          "label": "ledger: each payment credits its own account; reimbursement clears the employee payable",
+          "pass": true,
+          "expected": {
+            "1000": -140000,
+            "1005": -200000,
+            "2000": -50000,
+            "5000": 390000
+          },
+          "observed": {
+            "1000": -140000,
+            "1005": -200000,
+            "2000": -50000,
+            "5000": 390000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T17:57:12.661Z"
+    },
+    {
+      "name": "feed-failure-manual-fallback",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "b033f0f9-6eb9-4a97-a490-70886d0d49dd"
+      },
+      "checks": [
+        {
+          "label": "manual reconciliation closes while the feed is failing",
+          "pass": true,
+          "expected": {
+            "ending": -2500,
+            "outstanding": 0,
+            "book": -2500
+          },
+          "observed": {
+            "ending": -2500,
+            "outstanding": 0,
+            "book": -2500
+          }
+        },
+        {
+          "label": "the feed failure stays visible on the connection",
+          "pass": true,
+          "expected": {
+            "status": "reauth_required",
+            "hasError": true
+          },
+          "observed": {
+            "status": "reauth_required",
+            "hasError": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T17:57:14.022Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T17:57:14.308Z"
+}

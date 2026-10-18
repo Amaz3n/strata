@@ -3,27 +3,26 @@ export const instant = false
 
 interface ProjectFinancialsPageProps {
   params: Promise<{ id: string }>
-  searchParams?: Promise<{ tab?: string }>
+  searchParams?: Promise<{ tab?: string | string[] }>
 }
 
 const legacyTabRoutes: Record<string, string> = {
-  budget: "budget",
-  receivables: "billing",
-  billing: "billing",
-  payables: "payables",
-  "cost-plus": "cost-inbox",
-  inbox: "cost-inbox",
-  review: "cost-inbox",
-  "trust-center": "trust-center",
+  budget: "financials/budget",
+  receivables: "financials/billing",
+  billing: "financials/billing",
+  payables: "financials/payables",
+  "cost-plus": "financials/cost-inbox",
+  inbox: "financials/cost-inbox",
+  review: "financials/cost-inbox",
+  "trust-center": "reports/reconciliation",
 }
 
 export default async function ProjectFinancialsLandingPage({ params, searchParams }: ProjectFinancialsPageProps) {
   const { id } = await params
   const { tab } = (await searchParams) ?? {}
 
-  if (tab && legacyTabRoutes[tab]) {
-    redirect(`/projects/${id}/financials/${legacyTabRoutes[tab]}`)
-  }
-
-  redirect(`/projects/${id}/financials/billing`)
+  const route = typeof tab === "string" && Object.hasOwn(legacyTabRoutes, tab)
+    ? legacyTabRoutes[tab]
+    : "financials/billing"
+  redirect(`/projects/${id}/${route}`)
 }

@@ -35,22 +35,14 @@ test("the client portal team page uses its narrow read model", () => {
 })
 
 test("client portal token validation starts only after request time", () => {
-  const layout = source("app/p/[token]/layout.tsx")
-  const loader = source("app/p/[token]/load-portal.ts")
+  // Every portal entry point (layout gate, page loader, actions) validates the
+  // token through validatePortalToken, which owns the single request boundary.
   const service = source("lib/services/portal-access.ts")
-  const layoutBoundary = layout.indexOf("await connection()")
-  const layoutValidation = layout.indexOf("await resolvePortalGate(")
-  const pageBoundary = loader.indexOf("await connection()")
-  const pageValidation = loader.indexOf("await assertPortalActionAccess(")
-  const sharedBoundary = service.indexOf("await connection()", service.indexOf("export async function validatePortalToken"))
+  const validator = service.indexOf("export async function validatePortalToken")
+  const sharedBoundary = service.indexOf("await connection()", validator)
   const sharedValidation = service.indexOf(".from(\"portal_access_tokens\")", sharedBoundary)
 
-  assert.notEqual(layoutBoundary, -1)
-  assert.notEqual(layoutValidation, -1)
-  assert.ok(layoutBoundary < layoutValidation)
-  assert.notEqual(pageBoundary, -1)
-  assert.notEqual(pageValidation, -1)
-  assert.ok(pageBoundary < pageValidation)
+  assert.notEqual(validator, -1)
   assert.notEqual(sharedBoundary, -1)
   assert.notEqual(sharedValidation, -1)
   assert.ok(sharedBoundary < sharedValidation)

@@ -1,0 +1,6 @@
+390,391d389
+< GRANT ALL ON FUNCTION public.capture_books_ownership_before_invoice_correction_reviews(p_org uuid, p_actor uuid) TO service_role;
+< GRANT ALL ON FUNCTION public.capture_books_ownership_before_invoice_corrections(p_org uuid, p_actor uuid) TO service_role;
+4295,4296d4292
+< REVOKE ALL ON FUNCTION public.capture_books_ownership_before_invoice_correction_reviews(p_org uuid, p_actor uuid) FROM PUBLIC;
+< REVOKE ALL ON FUNCTION public.capture_books_ownership_before_invoice_corrections(p_org uuid, p_actor uuid) FROM PUBLIC;

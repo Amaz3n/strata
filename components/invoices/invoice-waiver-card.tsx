@@ -1,6 +1,7 @@
 "use client"
 
 import dynamic from "next/dynamic"
+import { useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
 import { FileText, MoreHorizontal, Plus, Loader2 } from "lucide-react"
 import { toast } from "sonner"
@@ -16,6 +17,7 @@ import { unwrapAction } from "@/lib/action-result"
 import { voidInvoiceLienWaiverAction } from "@/app/(app)/invoices/actions"
 import { shareWaiverAction, matchWaiverPaymentAction } from "@/app/(app)/invoices/waiver-actions"
 import { formatDateOnly, formatMoneyFromCents } from "./invoice-presentation"
+import { PhysicalWaiverReturn } from "./physical-waiver-return"
 import { cn } from "@/lib/utils"
 
 const loadPreparation = () => import("./waiver-preparation")
@@ -25,6 +27,7 @@ export function InvoiceWaiverCard({ invoice, waivers, payments = [], reversals =
   invoice: Invoice; waivers: InvoiceLienWaiver[]; payments?: Payment[]; reversals?: PaymentReversal[];
   link?: string; failed?: boolean; onChanged: () => void | Promise<void>;
 }) {
+  const router = useRouter()
   const [items, setItems] = useState(waivers)
   const [preparing, setPreparing] = useState(false)
   const [draft, setDraft] = useState<InvoiceLienWaiver>()
@@ -45,7 +48,10 @@ export function InvoiceWaiverCard({ invoice, waivers, payments = [], reversals =
     catch (error) { toast.error(error instanceof Error ? error.message : "Could not update waiver") }
     finally { setBusy(null) }
   }
-  const open = (existing?: InvoiceLienWaiver) => { setDraft(existing); setPreparing(true) }
+  const open = (existing?: InvoiceLienWaiver) => {
+    if (!existing) { router.push(invoice.project_id ? `/projects/${invoice.project_id}/financials/billing?compose=${invoice.id}` : `/billing?compose=${invoice.id}`); return }
+    setDraft(existing); setPreparing(true)
+  }
   return <section className="space-y-2">
     <div className="flex items-center justify-between"><h3 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Your company’s waivers</h3>
       {items.length > 0 && <Button variant="ghost" size="sm" className="h-7 text-xs" disabled={invoice.status === "void" || failed} onMouseEnter={() => void loadPreparation()} onFocus={() => void loadPreparation()} onClick={() => open()}><Plus className="mr-1 size-3" />Prepare</Button>}
@@ -54,10 +60,11 @@ export function InvoiceWaiverCard({ invoice, waivers, payments = [], reversals =
       <button type="button" onMouseEnter={() => void loadPreparation()} onFocus={() => void loadPreparation()} onClick={() => open()} disabled={invoice.status === "void"}
         className="group flex w-full items-center gap-3 rounded-xl border bg-card p-4 text-left transition-colors duration-150 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 motion-reduce:transition-none">
         <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border bg-muted/30"><FileText className="size-4 text-muted-foreground" /></span>
-        <span className="min-w-0 flex-1"><span className="block text-xs font-medium">Prepare a waiver</span><span className="mt-1 block text-[11px] text-muted-foreground">Prepare from a company template, then sign in Arc.</span></span><Plus className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-hover:scale-110 motion-reduce:transform-none" />
+        <span className="min-w-0 flex-1"><span className="block text-xs font-medium">Prepare a waiver</span><span className="mt-1 block text-[11px] text-muted-foreground">Prepare a printable waiver, then return the signed and notarized scan here.</span></span><Plus className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-hover:scale-110 motion-reduce:transform-none" />
       </button> : <div className="divide-y overflow-hidden rounded-xl border bg-card">{items.map((waiver) => {
         const workflow = readWaiverWorkflow(waiver)
         const isDraft = workflow?.lifecycle === "draft"
+        const physical = workflow?.input.execution_method === "physical" || Boolean(waiver.metadata?.physical_execution) || (invoice.metadata?.waiver_packet?.delivery_mode === "after_physical_execution" && invoice.metadata.waiver_packet.waiver_id === waiver.id)
         const matchedIds = workflow ? waiverPaymentIds(workflow) : []
         const matchedPayments = available.filter((p) => matchedIds.includes(p.id))
         const paymentChanged = matchedIds.length > 0 && (matchedPayments.length !== matchedIds.length || matchedPayments.reduce((sum, p) => sum + p.available_cents, 0) < waiver.amount_cents)
@@ -66,8 +73,8 @@ export function InvoiceWaiverCard({ invoice, waivers, payments = [], reversals =
           <FileText className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0 flex-1 space-y-1.5"><div className="flex items-baseline justify-between gap-2"><p className="text-xs font-medium">{INVOICE_WAIVER_TYPE_LABELS[waiver.waiver_type]}</p><span className="shrink-0 text-xs font-medium tabular-nums">{formatMoneyFromCents(waiver.amount_cents)}</span></div>
             <p className="text-[11px] text-muted-foreground">{workflow?.template_name ? workflow.template_name : workflow?.source === "upload" ? "Signed elsewhere" : "Arc form"}{waiver.through_date ? ` · Through ${formatDateOnly(waiver.through_date)}` : ""}</p>
-            <p className={cn("text-[11px]", paymentChanged ? "text-warning" : "text-muted-foreground")}>{workflow?.needs_review ? "Details changed during signing · Prepare a new waiver" : isDraft ? workflow?.signing_document_id ? "In signing · Only your team can see this" : "Draft · Only your team can see this" : paymentChanged ? "Payment changed · Review payment evidence" : workflow ? `${workflow.shared ? "Included with invoice" : "Internal only"} · ${workflow.payment_id ? "Payment matched" : "Awaiting payment match"}` : waiver.status === "released" ? "Payment recorded" : "Awaiting payment"}</p>
-            {isDraft ? <button type="button" onClick={() => open(waiver)} className="text-[11px] font-medium underline-offset-4 hover:underline">{workflow?.signing_document_id ? "Continue signing" : "Review & finish"}</button> : href ? <a href={href} target="_blank" rel="noreferrer" className="text-[11px] font-medium underline-offset-4 hover:underline">View document</a> : null}
+            <p className={cn("text-[11px]", paymentChanged ? "text-warning" : "text-muted-foreground")}>{physical ? "Physical signing" : workflow?.needs_review ? "Details changed during signing · Prepare a new waiver" : isDraft ? workflow?.signing_document_id ? "In signing · Only your team can see this" : "Draft · Only your team can see this" : paymentChanged ? "Payment changed · Review payment evidence" : workflow ? `${workflow.shared ? "Included with invoice" : "Internal only"} · ${workflow.payment_id ? "Payment matched" : "Awaiting payment match"}` : waiver.status === "released" ? "Payment recorded" : "Awaiting payment"}</p>
+            {physical ? <PhysicalWaiverReturn invoice={invoice} waiver={waiver} onSaved={saved} onChanged={onChanged} /> : isDraft ? <button type="button" onClick={() => open(waiver)} className="text-[11px] font-medium underline-offset-4 hover:underline">{workflow?.signing_document_id ? "Continue signing" : "Review & finish"}</button> : href ? <a href={href} target="_blank" rel="noreferrer" className="text-[11px] font-medium underline-offset-4 hover:underline">View document</a> : null}
           </div>
           <DropdownMenu><DropdownMenuTrigger asChild><Button aria-label="Waiver actions" size="icon" variant="ghost" className="-mr-1 -mt-1 size-7 shrink-0" disabled={Boolean(busy) || invoice.status === "void"}>{busy === waiver.id ? <Loader2 className="size-3.5 animate-spin" /> : <MoreHorizontal className="size-4" />}</Button></DropdownMenuTrigger><DropdownMenuContent align="end">
             {workflow && !isDraft && <><DropdownMenuItem onSelect={() => void mutate(waiver.id, async () => { saved(unwrapAction(await shareWaiverAction(invoice.id, waiver.id, !workflow.shared))); toast.success(workflow.shared ? "Removed from client invoice" : "Included with client invoice") })}>{workflow.shared ? "Keep internal only" : "Include with invoice"}</DropdownMenuItem><DropdownMenuItem onSelect={() => { setMatching(waiver); setPaymentId(""); setConfirmed(false) }}>Match payment…</DropdownMenuItem></>}

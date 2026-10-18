@@ -40,7 +40,7 @@ test("Open-WIP cutover imports current state without historical financial rows",
 
 test("org imports are permission-gated and team imports never email", () => {
   const service = read("lib/services/imports.ts")
-  assert.match(service, /requirePermission\("import\.manage"/)
+  assert.match(service, /requirePermission\([^\n]*"import\.manage"/)
   assert.match(service, /Open-WIP cutover is restricted to the platform/)
   assert.match(service, /sendEmail: false/)
   assert.match(read("supabase/migrations/20260719022535_onboarding_and_import_staging.sql"), /has_org_permission\(org_id, 'import\.manage'\)/)
@@ -55,11 +55,11 @@ test("pilot gate requires all fifteen audited surfaces and an Arc-native start",
   assert.match(onboarding, /status", "released"/)
 })
 
-test("sample community is idempotent, notification-silent, and reset-guarded", () => {
+test("sample community is notification-silent and unsafe reset is fenced", () => {
   const seed = read("lib/services/demo-community-seed.ts")
   assert.match(seed, /contains\("metadata", \{ is_sample: true \}\)\.maybeSingle/)
-  assert.match(seed, /Only a marked sample community can be removed/)
+  assert.match(seed, /Sample reset is unavailable until original ownership can be verified/)
   assert.doesNotMatch(seed, /sendEmail|notification/i)
-  assert.match(seed, /sample-buyer-%@example\.invalid/)
+  assert.doesNotMatch(seed.slice(seed.indexOf("export async function deleteSampleCommunity")), /\.delete\(/)
   assert.match(seed, /release_house_plan_version/)
 })

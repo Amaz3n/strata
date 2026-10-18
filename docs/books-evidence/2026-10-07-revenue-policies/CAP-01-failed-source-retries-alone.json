@@ -1,0 +1,91 @@
+{
+  "scenario": "CAP-01",
+  "status": "INCOMPLETE",
+  "reviewedFrom": "B09.2 definition of done (advisor-plans/013): >1,000 records and repeated cursor ties exactly once; interruption/resume and concurrent workers without skips or duplicates; work scales with selected sources, not the ledger.",
+  "subcases": [
+    {
+      "name": "first-run-ties-idle-and-one-change",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "interrupted-run-resumes",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "concurrent-workers",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "late-commit",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "nightly-pass",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "time-budget",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "failed-source-retries",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "6cee411d-f4b3-4d05-931e-e531354f0e25"
+      },
+      "checks": [
+        {
+          "label": "the failed bill posts on the next ordinary run once the failure clears",
+          "pass": true,
+          "expected": {
+            "failed": {
+              "findings": [
+                "projection_failed"
+              ],
+              "posted": []
+            },
+            "afterCure": {
+              "findings": [],
+              "posted": [
+                "2026-07-10"
+              ]
+            }
+          },
+          "observed": {
+            "failed": {
+              "findings": [
+                "projection_failed"
+              ],
+              "posted": []
+            },
+            "afterCure": {
+              "findings": [],
+              "posted": [
+                "2026-07-10"
+              ]
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T14:11:58.362Z"
+    },
+    {
+      "name": "close-review-reads",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "narrowed-proof",
+      "status": "SKIPPED",
+      "checks": []
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T14:12:02.414Z"
+}

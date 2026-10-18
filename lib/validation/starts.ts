@@ -28,17 +28,43 @@ export const gateAttestSchema = z.object({
 export const gateWaiveSchema = z.object({ reason: z.string().trim().min(10).max(2000) })
 
 export const releaseInputSchema = z.object({
+  // Every zone Arc serves is at most a day behind UTC; the release checks the
+  // home's own calendar day.
   scheduledStartDate: z.string().date().refine(
-    (value) => value >= new Date().toISOString().slice(0, 10),
+    (value) => value >= new Date(Date.now() - 86_400_000).toISOString().slice(0, 10),
     "Scheduled start date cannot be in the past",
   ),
-  confirmOverSlot: z.boolean().optional().default(false),
+  // Naming why a week goes over its target is what confirms it: there is no
+  // bare yes, so "why did we exceed the target" always has an answer on record.
+  overTargetReason: z.string().trim().min(10).max(1000).optional(),
 })
 
 export const slotSchema = z.object({
   weekStart: mondayDate,
   targetStarts: z.number().int().min(0).max(20),
   notes: z.string().trim().max(1000).optional().nullable(),
+})
+
+export const throughputTargetSchema = z.object({
+  weekStart: mondayDate,
+  /** Null is the organization-wide target. */
+  divisionId: z.string().uuid().nullable(),
+  /** Null clears the target for that scope and week. */
+  targetStarts: z.number().int().min(0).max(500).nullable(),
+  notes: z.string().trim().max(1000).optional().nullable(),
+})
+
+export const superintendentLimitSchema = z.object({
+  /** Null is the organization default. */
+  userId: z.string().uuid().nullable(),
+  warnHouses: z.number().int().min(1).max(100),
+  maxHouses: z.number().int().min(1).max(100),
+  notes: z.string().trim().max(1000).optional().nullable(),
+}).refine((value) => value.warnHouses <= value.maxHouses, { message: "The warning cannot come after the limit", path: ["warnHouses"] })
+
+export const superintendentAssignmentSchema = z.object({
+  /** Past a superintendent's limit, why this house goes to them anyway. */
+  overReason: z.string().trim().min(10).max(1000).optional(),
 })
 
 export const gateDefinitionSchema = z.object({
@@ -49,7 +75,7 @@ export const gateDefinitionSchema = z.object({
   checkKind: z.enum(["auto", "manual"]),
   autoSource: z.enum([
     "selections_locked", "budget_generated", "pos_generated", "plan_pinned",
-    "plot_plan_file", "po_exceptions_clear",
+    "plot_plan_file", "po_exceptions_clear", "entitlements_clear", "agreement_milestones_clear", "permit_approved",
   ]).optional().nullable(),
   requiresAttestationPermission: z.string().trim().max(100).optional().nullable(),
   appliesWhen: z.enum(["always", "financed_only", "purchasing_enabled"]).default("always"),
@@ -65,11 +91,45 @@ export const gateDefinitionSchema = z.object({
 })
 
 export const lookaheadSchema = z.object({
+  divisionId: z.string().uuid().optional(),
   weeks: z.union([z.literal(2), z.literal(3), z.literal(4)]),
   communityId: z.string().uuid().optional(),
   companyId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
   page: z.number().int().positive().optional().default(1),
   pageSize: z.number().int().positive().max(100).optional().default(50),
+})
+
+export const tradeLookaheadWorkspaceSchema = lookaheadSchema.extend({
+  q: z.string().trim().max(120).optional().default(""),
+  group: z.string().max(500).optional(),
+  itemPage: z.number().int().safe().positive().max(1000000).optional().default(1),
+  page: z.number().int().safe().positive().max(1000000).optional().default(1),
+})
+
+/** Runtime proof for a dynamic embedded projection; malformed source is not an empty page. */
+export const tradeSchedulePageSchema = z.array(z.object({
+  id: z.string().min(1), project_id: z.string().min(1), name: z.string(),
+  trade: z.string().nullable().optional().default(null),
+  status: z.string().optional().default("planned"),
+  start_date: z.string().date(), end_date: z.string().date().nullable().optional().default(null),
+  cost_code_id: z.string().nullable().optional().default(null), project: z.unknown(),
+  assignments: z.array(z.object({ company_id: z.string().nullable().optional(), confirmed_at: z.string().nullable().optional(), company: z.unknown() })).optional().default([]),
+})).max(100)
+
+const tradeSummaryReply = z.object({
+  key: z.string().max(500), companyId: z.string().uuid().nullable(), companyName: z.string(), trade: z.string().nullable(),
+  itemCount: z.number().int().safe().positive(), confirmedCount: z.number().int().safe().nonnegative(), inferredCount: z.number().int().safe().nonnegative(), firstDate: z.string().date(),
+})
+const tradeTaskReply = z.object({
+  scheduleItemId: z.string().uuid(), projectId: z.string().uuid(), lotLabel: z.string(), communityName: z.string(), name: z.string(),
+  startDate: z.string().date(), endDate: z.string().date(), status: z.string(), assignment: z.enum(["assigned", "inferred", "unassigned"]), confirmation: z.enum(["confirmed", "unsent"]),
+})
+export const tradeWorkspaceReplySchema = z.object({
+  orgId: z.string().uuid(), actorId: z.string().uuid(), divisionId: z.string().uuid().nullable(), communityId: z.string().uuid().nullable(),
+  weeks: z.union([z.literal(2),z.literal(3),z.literal(4)]), q: z.string().max(120), group: z.string().max(500).nullable(),
+  page: z.number().int().safe().positive(), pageSize: z.literal(50), itemPage: z.number().int().safe().positive(), itemPageSize: z.literal(50), total: z.number().int().safe().nonnegative(),
+  rows: z.array(tradeSummaryReply).max(50), selected: tradeSummaryReply.extend({ items: z.array(tradeTaskReply).max(50) }).nullable(), selectedUnavailable: z.boolean(),
 })
 
 export type GateDefinitionInput = z.infer<typeof gateDefinitionSchema>

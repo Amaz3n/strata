@@ -1,5 +1,7 @@
-import { BooksSectionPage } from "../_components/books-section-page"
+import { redirect } from "next/navigation"
+
+export const instant = false
 
 export default function BooksOpeningBalancesPage() {
-  return <BooksSectionPage section="opening-balances" />
+  redirect("/settings/accounting/opening-balances")
 }

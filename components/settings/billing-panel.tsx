@@ -1,5 +1,8 @@
 "use client"
 
+import { businessBrand } from "@/lib/business-profile"
+import { usePageTitle } from "@/components/layout/page-title-context"
+
 import { type CSSProperties, useEffect, useState, useTransition } from "react"
 
 import { AlertTriangle, ArrowUpRight, Clock, ExternalLink, Shield } from "@/components/icons"
@@ -13,7 +16,6 @@ import {
 } from "@/app/(app)/settings/actions"
 import { unwrapAction } from "@/lib/action-result"
 import {
-  PRODUCT_TIER_BRAND_NAMES,
   normalizeProductTier,
   type ProductTier,
 } from "@/lib/product-tier"
@@ -105,6 +107,7 @@ function StatusChip({ status }: { status: string | null | undefined }) {
 }
 
 export function BillingPanel({ canManageBilling, initialBilling }: { canManageBilling: boolean; initialBilling: Billing | null }) {
+  const { businessProfile } = usePageTitle()
   const [billing, setBilling] = useState<Billing | null>(initialBilling)
   const [actionError, setActionError] = useState<string | null>(null)
   const [checkoutPending, startCheckout] = useTransition()
@@ -157,7 +160,7 @@ export function BillingPanel({ canManageBilling, initialBilling }: { canManageBi
   const plan = billing?.plan ?? null
 
   const tier = normalizeProductTier(org?.product_tier)
-  const productName = PRODUCT_TIER_BRAND_NAMES[tier]
+  const productName = businessBrand(businessProfile, tier)
 
   const status = subscription?.status ?? null
   const isActive = status === "active"

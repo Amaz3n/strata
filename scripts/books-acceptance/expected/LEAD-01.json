@@ -1,0 +1,226 @@
+{
+  "scenario": "LEAD-01",
+  "reviewedFrom": "EP05-01 (docs/enterprise-production/completion-checklist.json) and the EP05 owner decisions of 2026-10-12 (Arc's own pipeline is the CRM; signed server-to-server website leads; round-robin among the community's consultants who reach its division, rules first, unrouted leads visible; merge only into open deals; prospect permission hole closed; dismissed/rejected payloads purged after 90 days). Code: lib/services/lead-intake.ts, lib/sales/{lead-routing,lead-identity,lead-desk}.ts, lib/inbound/signature.ts, app/api/leads/intake/[sourceId]/route.ts, lib/services/{sales-inquiries,prospects,prospect-write-access}.ts; migration 20261013010000_lead_intake (file_lead, lead_routing_context, can_write_deal, community_assignments/community_traffic write policies). Fixture: production-seed productionBuilder + seedCommunity (Cypress Landing, code CYP, Gulf Coast; consultant A assigned as sales), plus consultant B assigned by the owner, Treasure Coast with Seagrape Hammock (SGH) and a fallback owner limited to Treasure Coast, an online sales counselor (org_sales_agent) limited to Gulf Coast, and one website source created by the owner.",
+  "subcases": {
+    "signed-lead-files-and-routes": {
+      "derivation": "Dana Rivers posts with every attribution field for community code CYP; Lee Park posts for 'cyp'. Neither consultant has a Cypress Landing lead yet, so the rotation hands Dana to one and Lee to the other. Dana is filed (202), routed by community rotation, appears on the Sales board, counts one web inquiry, carries channel web, source label Website and every UTM/click id/referrer/landing URL on touch 1, gets a directory contact (matched by email/phone only), and her owner receives one lead_assigned notification.",
+      "inputs": {
+        "community": "CYP"
+      },
+      "expected": {
+        "responses": [
+          202,
+          202
+        ],
+        "receipt": {
+          "status": "filed",
+          "routing_outcome": "community_assignee"
+        },
+        "onSalesBoard": true,
+        "ownedByAConsultant": true,
+        "secondLeadToTheOtherConsultant": true,
+        "community": true,
+        "firstTouch": {
+          "touch": 1,
+          "channel": "web",
+          "source_label": "Website",
+          "utm_source": "google",
+          "utm_medium": "cpc",
+          "utm_campaign": "spring-open-house",
+          "utm_term": "naples new homes",
+          "utm_content": "hero",
+          "click_ids": {
+            "gclid": "gclid-123"
+          },
+          "landing_url": "https://builder.example.test/cypress-landing",
+          "referrer_url": "https://www.google.com/"
+        },
+        "webTrafficAdded": 2,
+        "ownerNotified": 1,
+        "directoryContact": true
+      }
+    },
+    "duplicates-merge-and-keep-attribution": {
+      "derivation": "Sam Ortiz posts (campaign spring). The same email in another case (campaign summer) and the same phone in another format (no email) both merge into Sam's open deal, matched by email then phone, keeping the existing owner. Replaying the first Idempotency-Key with the same body answers 200 with the first receipt; the same key with a changed body is 409. Consultant A registers Sam walking in: the walk-in merges as touch 4. A different buyer named Sam Ortiz with another email is a new deal, which is the only new web inquiry counted after the first delivery.",
+      "inputs": {
+        "email": "sam.ortiz@lead-01.example.test"
+      },
+      "expected": {
+        "statuses": {
+          "byEmail": 202,
+          "byPhone": 202,
+          "replay": 200,
+          "conflict": 409
+        },
+        "merged": [
+          {
+            "status": "merged",
+            "matched_by": "email",
+            "sameDeal": true,
+            "routing_outcome": "existing_owner"
+          },
+          {
+            "status": "merged",
+            "matched_by": "phone",
+            "sameDeal": true,
+            "routing_outcome": "existing_owner"
+          }
+        ],
+        "replayIsTheFirstReceipt": true,
+        "dealsForThisBuyer": 1,
+        "touches": [
+          {
+            "touch": 1,
+            "channel": "web",
+            "utm_campaign": "spring"
+          },
+          {
+            "touch": 2,
+            "channel": "web",
+            "utm_campaign": "summer"
+          },
+          {
+            "touch": 3,
+            "channel": "web",
+            "utm_campaign": null
+          },
+          {
+            "touch": 4,
+            "channel": "walk_in",
+            "utm_campaign": null
+          }
+        ],
+        "ownerUnchanged": true,
+        "webTrafficAdded": 1,
+        "namesakeIsANewDeal": true
+      }
+    },
+    "routing-fallbacks-respect-divisions": {
+      "derivation": "Seagrape Hammock has no consultant, so Ana Torres goes to the Treasure Coast fallback owner. A rule (utm_source zillow, priority 10) sends Rob Zane to the online sales counselor ahead of the Cypress rotation; the match ignores case. With the rule deleted and the division fallback cleared, Kim Hale (SGH) is filed with no owner (unrouted). Lou Grant names community NOPE: 422 unknown_community, not filed. The owner's Sales desk band shows Lou (failed) and Kim (unrouted); the Gulf-Coast-only counselor sees Lou (no community) but not Kim (Treasure Coast). Once the owner takes Kim's deal through the deal edit, Kim leaves the band.",
+      "inputs": {
+        "rule": {
+          "utmSource": "zillow",
+          "priority": 10
+        }
+      },
+      "expected": {
+        "divisionFallback": {
+          "outcome": "division_default",
+          "owner": "Treasure Coast fallback"
+        },
+        "ruleWins": {
+          "outcome": "rule",
+          "owner": "online sales counselor"
+        },
+        "unrouted": {
+          "status": 202,
+          "outcome": "unrouted",
+          "owner": null
+        },
+        "unknownCommunity": {
+          "status": 422,
+          "reason": "unknown_community",
+          "filed": 0
+        },
+        "ownerSees": [
+          [
+            "failed",
+            "Lou Grant"
+          ],
+          [
+            "unrouted",
+            "Kim Hale"
+          ]
+        ],
+        "gulfCoastOscSees": [
+          [
+            "failed",
+            "Lou Grant"
+          ]
+        ],
+        "assignOwner": "allowed",
+        "afterAssignment": [
+          [
+            "failed",
+            "Lou Grant"
+          ]
+        ]
+      }
+    },
+    "bad-deliveries-are-visible-not-filed": {
+      "derivation": "A zero signature is bad_signature (401); a timestamp an hour old is stale_timestamp (401); both are logged as rejected receipts and add 2 to the source's rejected_count. A submission with neither email nor phone is kept and failed no_contact_key (422) and shows on consultant A's band. An unknown source id is 404 with nothing written. No deal is created.",
+      "inputs": {},
+      "expected": {
+        "wrongSignature": [
+          401,
+          "bad_signature"
+        ],
+        "stale": [
+          401,
+          "stale_timestamp"
+        ],
+        "nameless": [
+          422,
+          "no_contact_key"
+        ],
+        "unknownSource": 404,
+        "rejectedCountAdded": 2,
+        "prospectsAdded": 0,
+        "namelessShownToConsultant": true
+      }
+    },
+    "transient-failure-retries-then-surfaces": {
+      "derivation": "A temporary trigger makes inserting 'Faulty Buyer' fail. The inline attempt fails: 202 received, attempts 1, a retry scheduled. The queued job is made due and drained twice: attempt 2 fails and is requeued, attempt 3 fails and the receipt becomes failed/filing_error with 3 attempts, shown as failed on the desk. The superintendent (no sales.manage or pipeline.write) cannot dismiss it. With the trigger dropped, consultant A's Retry files it: one deal.",
+      "inputs": {
+        "maxAttempts": 3
+      },
+      "expected": {
+        "response": [
+          202,
+          "received"
+        ],
+        "afterInline": {
+          "status": "received",
+          "attempts": 1,
+          "retryScheduled": true
+        },
+        "afterRetries": {
+          "status": "failed",
+          "failure": "filing_error",
+          "attempts": 3
+        },
+        "shownAs": "failed",
+        "superintendentDismisses": "refused: permission",
+        "retry": "filed",
+        "deals": 1
+      }
+    },
+    "secret-rotation-grace": {
+      "derivation": "The owner rotates the secret; the new one is shown once and its last four characters become the hint. The old secret still files a lead (202) during the 24-hour grace window; once the window is ended (fixture) it is refused (401); the new secret files (202). A member selecting the ciphertext column is refused by the column grants.",
+      "inputs": {
+        "graceHours": 24
+      },
+      "expected": {
+        "secretChanged": true,
+        "hintIsTheNewSecret": true,
+        "secretNotReadable": "permission denied",
+        "oldDuringGrace": 202,
+        "oldAfterGrace": 401,
+        "newSecret": 202
+      }
+    },
+    "only-sales-can-touch-leads": {
+      "derivation": "Consultant A (sales.manage) creates a deal. The superintendent (org.member only) is refused creating, reassigning or deleting a deal through the services, inserting a prospect directly (can_write_deal), and assigning themself as the community's sales consultant (community_assignments now takes community.write). The deal keeps its owner.",
+      "inputs": {},
+      "expected": {
+        "consultantCreates": true,
+        "superintendentCreates": "refused: permission",
+        "superintendentReassigns": "refused: permission",
+        "superintendentDeletes": "refused: permission",
+        "directWrite": "refused",
+        "superintendentAssignsThemself": "refused",
+        "dealStillOwnedByConsultant": true
+      }
+    }
+  }
+}

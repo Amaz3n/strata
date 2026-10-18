@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { PortalPayApplicationRegister } from "@/components/portal/pay-applications/portal-pay-application-register"
 import { loadClientPortalPayApplicationsPage } from "../load-portal"
@@ -7,6 +8,7 @@ interface Props {
 }
 
 export default async function ClientPortalPayApplicationsPage({ params }: Props) {
+  await connection()
   const { token } = await params
   const { applications } = await loadClientPortalPayApplicationsPage(token)
 

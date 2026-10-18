@@ -1,5 +1,7 @@
 import "server-only"
 
+import { openRouterMetadata } from "@/lib/services/ai/provider-metadata"
+
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { createOpenAI } from "@ai-sdk/openai"
@@ -73,6 +75,16 @@ export function resolveLanguageModel(provider: AiProvider, apiKey: string, model
 function openRouterProvider(apiKey: string) {
   return createOpenAICompatible({
     name: "openrouter",
+    metadataExtractor: {
+      extractMetadata: async ({ parsedBody }) => openRouterMetadata(parsedBody),
+      createStreamExtractor: () => {
+        let metadata: ReturnType<typeof openRouterMetadata>
+        return {
+          processChunk(chunk) { metadata = openRouterMetadata(chunk) ?? metadata },
+          buildMetadata() { return metadata },
+        }
+      },
+    },
     apiKey,
     baseURL: getOpenRouterBaseUrl(),
     headers: {

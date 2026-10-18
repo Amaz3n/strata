@@ -10,7 +10,32 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { slotSchema } from "@/lib/validation/starts"
+import { slotSchema, throughputTargetSchema } from "@/lib/validation/starts"
+import { readAllRows, type RangeReader } from "@/lib/land/paging"
+
+/**
+ * PostgREST caps every response at its configured max_rows, so a bare `.limit()`
+ * above that silently returns a prefix. Reports read every row or refuse.
+ */
+const REPORT_ROW_CAP = 50_000
+/**
+ * Communities one desk or report reads. Past this the read refuses and says to
+ * narrow the scope, rather than drawing meters for a prefix of them.
+ */
+const COMMUNITY_SCOPE_CAP = 500
+
+async function readReportRows<Row>(read: RangeReader<Row>, label: string): Promise<Row[]> {
+  const { rows, truncated } = await readAllRows(read, { cap: REPORT_ROW_CAP, label })
+  if (truncated) throw new Error(`${label}: more than ${REPORT_ROW_CAP} rows; narrow the range`)
+  return rows
+}
+
+/** Every community in a scope, or an error saying to narrow it. */
+async function readScopedCommunities<Row>(read: RangeReader<Row>, label: string): Promise<Row[]> {
+  const { rows, truncated } = await readAllRows(read, { cap: COMMUNITY_SCOPE_CAP + 1, label })
+  if (truncated) throw new Error(`${label}: more than ${COMMUNITY_SCOPE_CAP} communities in scope; narrow the desk by division`)
+  return rows
+}
 
 function settingsNumber(settings: unknown, key: string, fallback: number, max: number) {
   if (!settings || typeof settings !== "object") return fallback
@@ -18,17 +43,22 @@ function settingsNumber(settings: unknown, key: string, fallback: number, max: n
   return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(0, Math.trunc(value))) : fallback
 }
 
-async function ensureSlotsWithClient(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-  orgId: string,
-  community: { id: string; settings: unknown },
-) {
+function slotHorizonRows(orgId: string, community: { id: string; settings: unknown }, current: string) {
   const target = settingsNumber(community.settings, "starts_per_week", 2, 20)
   const horizon = settingsNumber(community.settings, "release_horizon_weeks", 16, 104)
-  const current = mondayOfIsoWeek(new Date())
-  const rows = Array.from({ length: horizon }, (_, index) => ({
+  return Array.from({ length: horizon }, (_, index) => ({
     org_id: orgId, community_id: community.id, week_start: addWeeks(current, index), target_starts: target,
   }))
+}
+
+/** One upsert for every community given: a page of communities is one request, not one each. */
+async function ensureSlotsWithClient(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  communities: Array<{ id: string; org_id: string; settings: unknown }>,
+) {
+  const current = mondayOfIsoWeek(new Date())
+  const rows = communities.flatMap((community) => slotHorizonRows(community.org_id, community, current))
+  if (!rows.length) return
   const { error } = await supabase.from("community_release_slots").upsert(rows, { onConflict: "community_id,week_start", ignoreDuplicates: true })
   if (error) throw new Error(`Failed to seed release slots: ${error.message}`)
 }
@@ -39,7 +69,7 @@ export async function ensureReleaseSlots(communityId: string, orgId?: string) {
   const { data: community, error } = await context.supabase.from("communities").select("id,settings")
     .eq("org_id", context.orgId).eq("id", communityId).maybeSingle()
   if (error || !community) throw new Error("Community not found")
-  await ensureSlotsWithClient(createServiceSupabaseClient(), context.orgId, community)
+  await ensureSlotsWithClient(createServiceSupabaseClient(), [{ ...community, org_id: context.orgId }])
 }
 
 /**
@@ -71,12 +101,25 @@ export async function getReleaseSlotTarget(orgId: string, communityId: string, w
   return target
 }
 
-export async function ensureReleaseSlotsForActiveCommunities(limit = 200) {
+/**
+ * Seeds the slot horizon of every active community, a page at a time by id so a
+ * run reaches all of them instead of re-seeding the same first page forever.
+ */
+export async function ensureReleaseSlotsForActiveCommunities(pageSize = 200) {
   const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase.from("communities").select("id,org_id,settings")
-    .eq("status", "active").is("archived_at", null).order("updated_at").limit(Math.min(200, Math.max(1, limit)))
-  if (error) throw new Error(`Failed to load slot communities: ${error.message}`)
-  await Promise.all((data ?? []).map((community) => ensureSlotsWithClient(supabase, community.org_id, community)))
+  const size = Math.min(200, Math.max(1, pageSize))
+  let after: string | null = null
+  for (;;) {
+    let query = supabase.from("communities").select("id,org_id,settings")
+      .eq("status", "active").is("archived_at", null).order("id").limit(size)
+    if (after) query = query.gt("id", after)
+    const { data, error } = await query
+    if (error) throw new Error(`Failed to load slot communities: ${error.message}`)
+    const page = data ?? []
+    await ensureSlotsWithClient(supabase, page)
+    if (page.length < size) return
+    after = page[page.length - 1].id
+  }
 }
 
 export async function setReleaseSlot(
@@ -88,9 +131,11 @@ export async function setReleaseSlot(
   const parsed = slotSchema.parse({ weekStart, ...input })
   const context = await requireOrgContext(orgId)
   await requirePermission("start.slots", context)
+  // Read on the caller's session so the division wall decides whether they can
+  // see the community; the table itself takes writes only from the server.
   const { data: community } = await context.supabase.from("communities").select("id").eq("org_id", context.orgId).eq("id", communityId).maybeSingle()
   if (!community) throw new Error("Community not found")
-  const { data, error } = await context.supabase.from("community_release_slots").upsert({
+  const { data, error } = await createServiceSupabaseClient().from("community_release_slots").upsert({
     org_id: context.orgId, community_id: communityId, week_start: parsed.weekStart,
     target_starts: parsed.targetStarts, notes: parsed.notes ?? null,
   }, { onConflict: "community_id,week_start" }).select("*").single()
@@ -127,30 +172,29 @@ export async function getCommunityReleaseSlots(
     return []
   }
   let communitiesQuery = context.supabase.from("communities").select("id,name,settings")
-    .eq("org_id", context.orgId).eq("status", "active").is("archived_at", null).order("name").limit(50)
+    .eq("org_id", context.orgId).eq("status", "active").is("archived_at", null)
   if (opts.communityId) communitiesQuery = communitiesQuery.eq("id", opts.communityId)
   if (opts.divisionId) communitiesQuery = communitiesQuery.eq("division_id", opts.divisionId)
   else if (divisionAccess.assignedOnly) {
     if (divisionAccess.divisionIds.length === 0) return []
     communitiesQuery = communitiesQuery.in("division_id", divisionAccess.divisionIds)
   }
-  const { data: communities, error } = await communitiesQuery
-  if (error) throw new Error(`Failed to load communities: ${error.message}`)
-  await Promise.all((communities ?? []).map((community) => ensureSlotsWithClient(createServiceSupabaseClient(), context.orgId, community)))
-  const communityIds = (communities ?? []).map((community) => community.id)
+  const orderedCommunities = communitiesQuery.order("name").order("id")
+  const communities = await readScopedCommunities((from, to) => orderedCommunities.range(from, to), "Failed to load communities")
+  await ensureSlotsWithClient(createServiceSupabaseClient(), communities.map((community) => ({ ...community, org_id: context.orgId })))
+  const communityIds = communities.map((community) => community.id)
   if (!communityIds.length) return []
   const currentWeek = mondayOfIsoWeek(new Date())
   const from = addWeeks(currentWeek, -Math.min(52, Math.max(0, opts.weeksBack ?? 4)))
   const to = addWeeks(currentWeek, Math.min(104, Math.max(1, opts.weeksAhead ?? 12)))
-  const { data: slots, error: slotsError } = await context.supabase.from("community_release_slots")
-    .select("community_id,week_start,target_starts")
+  const slots = await readReportRows((rangeFrom, rangeTo) => context.supabase.from("community_release_slots")
+    .select("id,community_id,week_start,target_starts")
     .eq("org_id", context.orgId).in("community_id", communityIds)
-    .gte("week_start", from).lte("week_start", to).order("week_start")
-  if (slotsError) throw new Error(`Failed to load release slots: ${slotsError.message}`)
-  return (communities ?? []).map((community) => ({
+    .gte("week_start", from).lte("week_start", to).order("week_start").order("id").range(rangeFrom, rangeTo), "Failed to load release slots")
+  return communities.map((community) => ({
     communityId: community.id,
     communityName: community.name,
-    weeks: (slots ?? [])
+    weeks: slots
       .filter((slot) => slot.community_id === community.id)
       .map((slot) => ({ weekStart: slot.week_start, targetStarts: Number(slot.target_starts) })),
   }))
@@ -186,10 +230,10 @@ export async function getCycleTimeReport(
     return []
   }
   let query = context.supabase.from("start_packages").select(`
-    actual_start_date,community_id,project_id,
+    id,actual_start_date,community_id,project_id,
     lot:lots(house_plan_id,plan:house_plans(id,name,code)),community:communities!inner(name,division_id),
     project:projects(end_date,status,superintendent_id,superintendent:app_users!projects_superintendent_id_fkey(full_name))
-  `).eq("org_id", context.orgId).eq("status", "released").not("actual_start_date", "is", null).limit(10_000)
+  `).eq("org_id", context.orgId).eq("status", "released").not("actual_start_date", "is", null)
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
   if (opts.divisionId) query = query.eq("community.division_id", opts.divisionId)
   else if (divisionAccess.assignedOnly) {
@@ -198,8 +242,8 @@ export async function getCycleTimeReport(
   }
   if (opts.from) query = query.gte("actual_start_date", opts.from)
   if (opts.to) query = query.lte("actual_start_date", opts.to)
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to load cycle-time report: ${error.message}`)
+  const ordered = query.order("id")
+  const data = await readReportRows((from, to) => ordered.range(from, to), "Failed to load cycle-time report")
   type CycleGroup = { label: string; completed: Array<{ start: string; days: number }>; inProgress: number }
   const groups = new Map<string, CycleGroup>()
   for (const row of data ?? []) {
@@ -259,10 +303,10 @@ export async function getEvenFlowAdherence(
   if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
     return []
   }
-  let slotsQuery = context.supabase.from("community_release_slots").select("community_id,week_start,target_starts")
+  let slotsQuery = context.supabase.from("community_release_slots").select("id,community_id,week_start,target_starts")
     .eq("org_id", context.orgId).gte("week_start", opts.from).lte("week_start", opts.to)
-  let startsQuery = context.supabase.from("start_packages").select("community_id,target_week")
-    .eq("org_id", context.orgId).eq("status", "released").gte("target_week", opts.from).lte("target_week", opts.to)
+  let startsQuery = context.supabase.from("start_packages").select("id,community_id,target_week")
+    .eq("org_id", context.orgId).in("status", ["releasing", "released"]).gte("target_week", opts.from).lte("target_week", opts.to)
   if (opts.communityId) { slotsQuery = slotsQuery.eq("community_id", opts.communityId); startsQuery = startsQuery.eq("community_id", opts.communityId) }
   const scopedDivisionIds = opts.divisionId
     ? [opts.divisionId]
@@ -278,24 +322,27 @@ export async function getEvenFlowAdherence(
     slotsQuery = slotsQuery.in("community_id", ids)
     startsQuery = startsQuery.in("community_id", ids)
   }
-  const [slots, starts] = await Promise.all([slotsQuery, startsQuery])
-  if (slots.error || starts.error) throw new Error("Failed to load even-flow adherence")
+  const orderedSlots = slotsQuery.order("id")
+  const orderedStarts = startsQuery.order("id")
+  const [slotRows, startRows] = await Promise.all([
+    readReportRows((from, to) => orderedSlots.range(from, to), "Failed to load even-flow slots"),
+    readReportRows((from, to) => orderedStarts.range(from, to), "Failed to load even-flow starts"),
+  ])
   // The closing half of even-flow is what a builder actually paces against, and
   // it used to be hardcoded `null` / `0`. Both halves are read from the closings
   // ledger here; `scheduled_date` is the plan, `actual_date` on a closed row is
   // what happened.
-  const communityIds = Array.from(new Set((slots.data ?? []).map((slot) => slot.community_id as string)))
+  const communityIds = Array.from(new Set(slotRows.map((slot) => slot.community_id as string)))
   const windowEnd = addWeeks(opts.to, 1)
   const closings = communityIds.length
-    ? await context.supabase.from("closings").select("community_id,scheduled_date,actual_date,status")
+    ? await readReportRows((from, to) => context.supabase.from("closings").select("id,community_id,scheduled_date,actual_date,status")
       .eq("org_id", context.orgId).in("community_id", communityIds).neq("status", "cancelled")
       .or(`and(scheduled_date.gte.${opts.from},scheduled_date.lt.${windowEnd}),and(actual_date.gte.${opts.from},actual_date.lt.${windowEnd})`)
-      .limit(10_000)
-    : { data: [], error: null }
-  if (closings.error) throw new Error(`Failed to load closings: ${closings.error.message}`)
+      .order("id").range(from, to), "Failed to load closings")
+    : []
   const planned = new Map<string, number>()
   const actual = new Map<string, number>()
-  for (const closing of closings.data ?? []) {
+  for (const closing of closings) {
     if (closing.scheduled_date) {
       const key = `${closing.community_id}:${mondayOfIsoWeek(closing.scheduled_date)}`
       planned.set(key, (planned.get(key) ?? 0) + 1)
@@ -306,9 +353,9 @@ export async function getEvenFlowAdherence(
     }
   }
   const currentWeek = mondayOfIsoWeek(new Date())
-  return (slots.data ?? []).map((slot) => {
+  return slotRows.map((slot) => {
     const plannedStarts = Number(slot.target_starts)
-    const actualStarts = (starts.data ?? []).filter((start) => start.community_id === slot.community_id && start.target_week === slot.week_start).length
+    const actualStarts = startRows.filter((start) => start.community_id === slot.community_id && start.target_week === slot.week_start).length
     const key = `${slot.community_id}:${slot.week_start}`
     return {
       weekStart: slot.week_start, communityId: slot.community_id, plannedStarts, actualStarts,
@@ -348,37 +395,40 @@ export async function getMissedStarts(
   const divisionAccess = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
   if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) return empty
   let communitiesQuery = context.supabase.from("communities").select("id")
-    .eq("org_id", context.orgId).eq("status", "active").is("archived_at", null).limit(200)
+    .eq("org_id", context.orgId).eq("status", "active").is("archived_at", null)
   if (opts.communityId) communitiesQuery = communitiesQuery.eq("id", opts.communityId)
   if (opts.divisionId) communitiesQuery = communitiesQuery.eq("division_id", opts.divisionId)
   else if (divisionAccess.assignedOnly) {
     if (divisionAccess.divisionIds.length === 0) return empty
     communitiesQuery = communitiesQuery.in("division_id", divisionAccess.divisionIds)
   }
-  const { data: communities, error } = await communitiesQuery
-  if (error) throw new Error(`Failed to scope missed starts: ${error.message}`)
-  const communityIds = (communities ?? []).map((community) => community.id)
+  const orderedCommunities = communitiesQuery.order("id")
+  const communities = await readScopedCommunities((rangeFrom, rangeTo) => orderedCommunities.range(rangeFrom, rangeTo), "Failed to scope missed starts")
+  const communityIds = communities.map((community) => community.id)
   if (!communityIds.length) return empty
   const [slots, released] = await Promise.all([
-    context.supabase.from("community_release_slots").select("community_id,week_start,target_starts")
-      .eq("org_id", context.orgId).in("community_id", communityIds).gte("week_start", from).lte("week_start", to),
-    context.supabase.from("start_packages").select("community_id,target_week")
-      .eq("org_id", context.orgId).in("community_id", communityIds).in("status", ["releasing", "released"])
-      .gte("target_week", from).lte("target_week", to).limit(10_000),
+    readReportRows((rangeFrom, rangeTo) => context.supabase.from("community_release_slots").select("id,community_id,week_start,target_starts")
+      .eq("org_id", context.orgId).in("community_id", communityIds).gte("week_start", from).lte("week_start", to)
+      .order("id").range(rangeFrom, rangeTo), "Failed to load release slots"),
+    readReportRows((rangeFrom, rangeTo) => context.supabase.from("start_packages").select("id,community_id,target_week")
+      .eq("org_id", context.orgId).in("community_id", communityIds).in("status", ["releasing", "released", "attention"])
+      .gte("target_week", from).lte("target_week", to)
+      .order("id").range(rangeFrom, rangeTo), "Failed to load released starts"),
   ])
-  if (slots.error) throw new Error(`Failed to load release slots: ${slots.error.message}`)
-  if (released.error) throw new Error(`Failed to load released starts: ${released.error.message}`)
   const filled = new Map<string, number>()
-  for (const row of released.data ?? []) {
+  for (const row of released) {
     const key = `${row.community_id}:${row.target_week}`
     filled.set(key, (filled.get(key) ?? 0) + 1)
   }
-  const missed = (slots.data ?? []).reduce(
+  const missed = slots.reduce(
     (sum, slot) => sum + Math.max(0, Number(slot.target_starts) - (filled.get(`${slot.community_id}:${slot.week_start}`) ?? 0)),
     0,
   )
   return { ...empty, missed }
 }
+
+/** Projects per request: keeps the id list inside the request URL. */
+const MARKER_CHUNK = 100
 
 export async function listReleasedStartMarkers(projectIds: string[], orgId?: string) {
   if (!projectIds.length) return new Map<string, string>()
@@ -393,9 +443,111 @@ export async function listReleasedStartMarkers(projectIds: string[], orgId?: str
     ? projectIds
     : projectIds.filter((projectId) => authorizedProjectIds.includes(projectId))
   if (scopedProjectIds.length === 0) return new Map<string, string>()
-  const { data, error } = await context.supabase.from("start_packages")
-    .select("project_id,actual_start_date").eq("org_id", context.orgId).eq("status", "released")
-    .in("project_id", scopedProjectIds.slice(0, 500)).not("actual_start_date", "is", null).limit(500)
-  if (error) throw new Error(`Failed to load portfolio start markers: ${error.message}`)
-  return new Map((data ?? []).flatMap((row) => row.project_id && row.actual_start_date ? [[row.project_id, row.actual_start_date] as const] : []))
+  const chunks = Array.from({ length: Math.ceil(scopedProjectIds.length / MARKER_CHUNK) }, (_, index) => scopedProjectIds.slice(index * MARKER_CHUNK, (index + 1) * MARKER_CHUNK))
+  const rows = (await Promise.all(chunks.map((ids) => readReportRows((from, to) => context.supabase.from("start_packages")
+    .select("id,project_id,actual_start_date").eq("org_id", context.orgId).eq("status", "released")
+    .in("project_id", ids).not("actual_start_date", "is", null).order("id").range(from, to), "Failed to load portfolio start markers")))).flat()
+  return new Map(rows.flatMap((row) => row.project_id && row.actual_start_date ? [[row.project_id, row.actual_start_date] as const] : []))
+}
+
+export interface ThroughputWeekDTO {
+  weekStart: string
+  /** Null is the organization-wide target. */
+  divisionId: string | null
+  scopeName: string
+  target: number
+  /** Releasing and released houses the target counts, from every community it covers. */
+  filled: number
+}
+
+/**
+ * The division and org throughput targets that cap starts across communities,
+ * with what already fills each week. The org-wide target is only shown to a
+ * reader whose division reach is the whole org, because its count is theirs to
+ * see only then.
+ */
+export async function getThroughputWeeks(
+  opts: { weeksBack?: number; weeksAhead?: number; divisionId?: string } = {},
+  orgId?: string,
+): Promise<ThroughputWeekDTO[]> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("start.read", context)
+  const access = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
+  const currentWeek = mondayOfIsoWeek(new Date())
+  const from = addWeeks(currentWeek, -Math.min(52, Math.max(0, opts.weeksBack ?? 1)))
+  const to = addWeeks(currentWeek, Math.min(104, Math.max(1, opts.weeksAhead ?? 11)))
+  const [targets, divisions] = await Promise.all([
+    readReportRows((rangeFrom, rangeTo) => context.supabase.from("release_throughput_targets").select("id,division_id,week_start,target_starts")
+      .eq("org_id", context.orgId).gte("week_start", from).lte("week_start", to).order("id").range(rangeFrom, rangeTo), "Failed to load throughput targets"),
+    readReportRows((rangeFrom, rangeTo) => context.supabase.from("divisions").select("id,name")
+      .eq("org_id", context.orgId).order("id").range(rangeFrom, rangeTo), "Failed to load divisions"),
+  ])
+  const visible = targets.filter((target) => target.division_id === null
+    ? !access.assignedOnly
+    : !opts.divisionId || target.division_id === opts.divisionId)
+  if (!visible.length) return []
+  const packages = await readReportRows((rangeFrom, rangeTo) => context.supabase.from("start_packages")
+    .select("id,target_week,community:communities!inner(division_id)")
+    .eq("org_id", context.orgId).in("status", ["releasing", "released", "attention"]).gte("target_week", from).lte("target_week", to)
+    .order("id").range(rangeFrom, rangeTo), "Failed to count throughput")
+  const names = new Map(divisions.map((division) => [division.id, division.name]))
+  const filled = (weekStart: string, divisionId: string | null) => packages.filter((row) => {
+    const community = Array.isArray(row.community) ? row.community[0] : row.community
+    return row.target_week === weekStart && (divisionId === null || community?.division_id === divisionId)
+  }).length
+  return visible
+    .map((target) => ({
+      weekStart: target.week_start, divisionId: target.division_id,
+      scopeName: target.division_id ? names.get(target.division_id) ?? "Division" : "Organization",
+      target: Number(target.target_starts), filled: filled(target.week_start, target.division_id),
+    }))
+    .sort((a, b) => a.weekStart.localeCompare(b.weekStart) || (a.divisionId ?? "").localeCompare(b.divisionId ?? ""))
+}
+
+/**
+ * Caps how many houses a division, or the whole org, starts in a week.
+ * Enforced by the release transaction, which counts every community the cap
+ * covers; a null target clears it. Needs start.slots, the permission that
+ * already sets a community's slot.
+ */
+export async function setThroughputTarget(
+  input: { weekStart: string; divisionId: string | null; targetStarts: number | null; notes?: string | null },
+  orgId?: string,
+) {
+  const parsed = throughputTargetSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("start.slots", context)
+  const access = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
+  if (parsed.divisionId === null) {
+    if (access.assignedOnly) throw new Error("The organization-wide target is set by someone whose reach is the whole organization")
+  } else {
+    if (access.assignedOnly && !access.divisionIds.includes(parsed.divisionId)) throw new Error("Division not found")
+    const { data: division } = await context.supabase.from("divisions").select("id").eq("org_id", context.orgId).eq("id", parsed.divisionId).maybeSingle()
+    if (!division) throw new Error("Division not found")
+  }
+  const service = createServiceSupabaseClient()
+  let existing = service.from("release_throughput_targets").select("*").eq("org_id", context.orgId).eq("week_start", parsed.weekStart)
+  existing = parsed.divisionId === null ? existing.is("division_id", null) : existing.eq("division_id", parsed.divisionId)
+  const { data: before, error: beforeError } = await existing.maybeSingle()
+  if (beforeError) throw new Error(`Failed to read the throughput target: ${beforeError.message}`)
+  if (parsed.targetStarts === null) {
+    if (!before) return null
+    const { error } = await service.from("release_throughput_targets").delete().eq("org_id", context.orgId).eq("id", before.id)
+    if (error) throw new Error(`Failed to clear the throughput target: ${error.message}`)
+    await Promise.all([
+      recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "release_throughput_target.cleared", entityType: "release_throughput_target", entityId: before.id, payload: { division_id: parsed.divisionId, week_start: parsed.weekStart } }),
+      recordAudit({ orgId: context.orgId, actorId: context.userId, action: "delete", entityType: "release_throughput_target", entityId: before.id, before }),
+    ])
+    return null
+  }
+  const { data, error } = await service.from("release_throughput_targets").upsert({
+    org_id: context.orgId, division_id: parsed.divisionId, week_start: parsed.weekStart,
+    target_starts: parsed.targetStarts, notes: parsed.notes ?? null, updated_by: context.userId,
+  }, { onConflict: "org_id,division_key,week_start" }).select("*").single()
+  if (error) throw new Error(`Failed to set the throughput target: ${error.message}`)
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "release_throughput_target.updated", entityType: "release_throughput_target", entityId: data.id, payload: { division_id: parsed.divisionId, week_start: parsed.weekStart, target_starts: parsed.targetStarts } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: before ? "update" : "insert", entityType: "release_throughput_target", entityId: data.id, before: before ?? undefined, after: data }),
+  ])
+  return { id: data.id as string }
 }

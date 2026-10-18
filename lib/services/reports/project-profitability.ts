@@ -4,7 +4,8 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import { getOrgBilling } from "@/lib/services/orgs"
-import { resolveRevisedContractCents, type PocBillingContract } from "@/lib/financials/poc-inputs"
+import { resolveRevisedContractCents } from "@/lib/financials/poc-inputs"
+import { loadProjectBillingContracts } from "@/lib/services/poc"
 
 /**
  * `accrual` counts an invoice when it is billed; `cash` counts only what has
@@ -128,13 +129,14 @@ export async function getProjectProfitabilityReport({
   // an "assigned only" member must belong to the project.
   await requireProjectPermission(userId, projectId, "financials.margin.read")
 
-  const [projectResult, invoicesResult, jobCostResult, budgetData, orgBilling] = await Promise.all([
+  const [projectResult, billingContracts, invoicesResult, jobCostResult, budgetData, orgBilling] = await Promise.all([
     supabase
       .from("projects")
-      .select("id, name, billing_contract, total_contract_value_cents")
+      .select("id, name, total_contract_value_cents")
       .eq("org_id", resolvedOrgId)
       .eq("id", projectId)
       .maybeSingle(),
+    loadProjectBillingContracts(supabase, resolvedOrgId, [projectId]),
     supabase
       .from("invoices")
       .select("id, status, total_cents, balance_due_cents, issue_date, created_at, metadata")
@@ -340,14 +342,11 @@ export async function getProjectProfitabilityReport({
   const grossProfitCents = totalIncomeCents - totalCostCents
   const netProfitCents = grossProfitCents
 
-  // One contract value per project. This used to read the active `contracts`
-  // row while POC/WIP read `projects.billing_contract` + `total_contract_value_cents`
-  // through `resolveRevisedContractCents`; a stale mirror made this report's
-  // contract KPI and percent-billed disagree with the WIP report for the same
-  // project. Both now go through the same resolver.
+  // One contract value per project, from the same resolver as POC and WIP: the
+  // primary contract in force, or the sum of several (`loadProjectBillingContracts`).
   const contractValueCents =
     resolveRevisedContractCents({
-      billingContract: (projectResult.data.billing_contract ?? null) as PocBillingContract,
+      billingContract: billingContracts.get(projectId) ?? null,
       totalContractValueCents:
         typeof projectResult.data.total_contract_value_cents === "number"
           ? projectResult.data.total_contract_value_cents

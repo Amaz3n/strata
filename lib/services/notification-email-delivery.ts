@@ -1,4 +1,5 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { authorizeNotificationDelivery, recheckNotificationDelivery, type NotificationDeliveryContext } from "@/lib/services/notification-delivery-authorization"
 import { AccountingReconciliationEmail } from "@/lib/emails/accounting-reconciliation-email"
 import {
   BankChangeReviewEmail,
@@ -96,7 +97,7 @@ function buildNotificationHref(payload: Record<string, unknown>): string | null 
   const companyId = typeof payload.company_id === "string" ? payload.company_id : null
 
   if (entityType === "estimate") {
-    return typeof payload.prospect_id === "string" ? "/pipeline" : "/estimates"
+    return typeof payload.prospect_id === "string" ? `/pipeline/${payload.prospect_id}` : "/estimates"
   }
 
   // Every payment entity type has to resolve here, before the project guard.
@@ -573,18 +574,24 @@ async function renderBankChangeEmail(args: {
  * Deliver one durable in-app notification by email.
  *
  * Provider rejection throws so callers can leave the outbox job retryable.
- * The notification id is the provider idempotency key: an immediate attempt
- * racing a reaped job cannot produce two messages.
+ * The notification id is the provider idempotency key. Resend retains keys for
+ * 24 hours; this reduces duplicates within that window, not across all recovery.
  */
 export async function deliverNotificationEmail(
   notificationId: string,
+  orgId: string,
   supabase: ServiceSupabaseClient = createServiceSupabaseClient(),
+  context?: NotificationDeliveryContext | null,
 ): Promise<"sent" | "skipped"> {
-  const { data: notification, error: notificationError } = await supabase
+  if (context && (context.channel !== "deliver_notification" || context.notificationId !== notificationId || context.orgId !== orgId)) throw new Error("Invalid email delivery context")
+  const authorized = context ? await authorizeNotificationDelivery(supabase, context) : null
+  const { data: legacyNotification, error: notificationError } = authorized ? { data: authorized, error: null } : await supabase
     .from("notifications")
     .select("id, org_id, user_id, notification_type, payload, created_at")
     .eq("id", notificationId)
+    .eq("org_id", orgId)
     .maybeSingle()
+  const notification = legacyNotification
 
   if (notificationError || !notification) {
     throw new Error(
@@ -594,12 +601,13 @@ export async function deliverNotificationEmail(
 
   if (!isEmailEligible(notification.notification_type)) return "skipped"
 
-  const { data: preferences } = await supabase
+  const { data: preferences, error: preferencesError } = await supabase
     .from("user_notification_prefs")
     .select("email_enabled, email_type_settings")
     .eq("org_id", notification.org_id)
     .eq("user_id", notification.user_id)
     .maybeSingle()
+  if (preferencesError) throw new Error(`Unable to verify email preferences: ${preferencesError.message}`)
 
   if (preferences?.email_enabled === false) return "skipped"
   if (
@@ -711,6 +719,7 @@ export async function deliverNotificationEmail(
       appUrl,
     })
 
+  if (context && authorized) await recheckNotificationDelivery(supabase, context, authorized)
   const sent = await sendEmail({
     to: [user.email],
     subject: richHtml && org?.name ? `${org.name} · ${title}` : title,

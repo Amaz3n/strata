@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Clock, Phone, Plus, ReceiptText } from "lucide-react"
@@ -32,6 +33,7 @@ function needsWaiver(status: string, lienWaiverStatus?: string | null) {
 }
 
 export default async function SubPortalHome({ params }: SubPortalHomeProps) {
+  await connection()
   const { token } = await params
 
   let access

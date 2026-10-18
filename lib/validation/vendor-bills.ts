@@ -103,6 +103,7 @@ export const vendorBillCreateSchema = z.object({
   qbo_vendor_name: z.string().optional(),
   bill_number: z.string().min(1, "Invoice number is required").max(50),
   total_cents: z.number().int().positive("Amount must be greater than zero"),
+  work_through_date: z.string().date("Invalid work through date").optional(),
   bill_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format"),
   tax_jurisdiction_id: z.string().uuid().nullable().optional(),
   tax_included_cents: z.number().int().nonnegative().optional(),

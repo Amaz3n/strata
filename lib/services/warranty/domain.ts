@@ -287,16 +287,34 @@ export type WarrantySlaState = "unset" | "met" | "on_track" | "due_soon" | "brea
 const FIRST_RESPONSE_DUE_SOON_MS = 12 * 3_600_000
 const RESOLUTION_DUE_SOON_MS = 3 * 86_400_000
 
+type SlaMetadata = { metadata?: Record<string, unknown> | null }
+
+/** A breach the sweep (or a severity change) recorded. Once recorded, it stays. */
+function recordedBreach(request: SlaMetadata, key: "sla_breached_at" | "first_response_breached_at") {
+  const value = request.metadata?.[key]
+  return typeof value === "string" && value.length > 0 ? value : null
+}
+
+const later = (actual: string, due: string) => new Date(actual).getTime() > new Date(due).getTime()
+
 /**
  * First response and resolution are two different promises to the homeowner:
  * "we called you back" and "we fixed it". They breach independently and are
  * reported independently.
+ *
+ * A breach is a fact about the past. Calling back late, closing late, or
+ * re-grading the severity to a longer target afterwards does not make the
+ * promise kept: a recorded breach, or a completion after the due time, reports
+ * breached forever.
  */
 export function warrantyFirstResponseState(
-  request: { first_response_due_at?: string | null; first_responded_at?: string | null },
+  request: { first_response_due_at?: string | null; first_responded_at?: string | null } & SlaMetadata,
   asOf: Date,
 ): WarrantySlaState {
-  if (request.first_responded_at) return "met"
+  if (recordedBreach(request, "first_response_breached_at")) return "breached"
+  if (request.first_responded_at) {
+    return request.first_response_due_at && later(request.first_responded_at, request.first_response_due_at) ? "breached" : "met"
+  }
   if (!request.first_response_due_at) return "unset"
   const remaining = new Date(request.first_response_due_at).getTime() - asOf.getTime()
   if (remaining < 0) return "breached"
@@ -304,14 +322,60 @@ export function warrantyFirstResponseState(
 }
 
 export function warrantyResolutionState(
-  request: { resolution_due_at?: string | null; status?: string | null },
+  request: { resolution_due_at?: string | null; status?: string | null; closed_at?: string | null } & SlaMetadata,
   asOf: Date,
 ): WarrantySlaState {
-  if (request.status === "resolved" || request.status === "closed") return "met"
+  if (recordedBreach(request, "sla_breached_at")) return "breached"
+  if (request.status === "resolved" || request.status === "closed") {
+    return request.closed_at && request.resolution_due_at && later(request.closed_at, request.resolution_due_at) ? "breached" : "met"
+  }
   if (!request.resolution_due_at) return "unset"
   const remaining = new Date(request.resolution_due_at).getTime() - asOf.getTime()
   if (remaining < 0) return "breached"
   return remaining <= RESOLUTION_DUE_SOON_MS ? "due_soon" : "on_track"
+}
+
+/**
+ * The breaches a request has already incurred under its current targets, as
+ * the metadata stamps that record them (each dated when its clock ran out).
+ * Written before the targets move — a severity change re-stamps both due
+ * dates, and without this a request already past due would quietly un-breach.
+ */
+export function warrantySlaBreachStamps(
+  request: {
+    first_response_due_at?: string | null
+    first_responded_at?: string | null
+    resolution_due_at?: string | null
+    status?: string | null
+    closed_at?: string | null
+  } & SlaMetadata,
+  asOf: Date,
+): { first_response_breached_at?: string; sla_breached_at?: string } {
+  const stamps: { first_response_breached_at?: string; sla_breached_at?: string } = {}
+  if (!recordedBreach(request, "first_response_breached_at") && warrantyFirstResponseState(request, asOf) === "breached" && request.first_response_due_at) {
+    stamps.first_response_breached_at = request.first_response_due_at
+  }
+  if (!recordedBreach(request, "sla_breached_at") && warrantyResolutionState(request, asOf) === "breached" && request.resolution_due_at) {
+    stamps.sla_breached_at = request.resolution_due_at
+  }
+  return stamps
+}
+
+/**
+ * Whether a completed visit closes its request or waits for the office to
+ * verify it. A trade reporting its own work is always a claim. The office's
+ * own "resolved" closes the request only with evidence a reviewer could check
+ * later — a photo of the repair or the homeowner's sign-off; without either it
+ * joins the same verification queue.
+ */
+export function completionAwaitsVerification(input: {
+  source: "office" | "portal"
+  outcome: WarrantyVisitOutcome
+  photoCount: number
+  buyerSignoffName?: string | null
+}): boolean {
+  if (input.source === "portal") return true
+  return input.outcome === "resolved" && input.photoCount === 0 && !input.buyerSignoffName?.trim()
 }
 
 export type CourtesyMilestoneKey = "day_30" | "month_11"
@@ -373,4 +437,69 @@ export function findOverlappingVisits<T extends WarrantyVisitWindow>(
     if (candidate.exclude_visit_id && visit.id === candidate.exclude_visit_id) return false
     return new Date(visit.window_start).getTime() < end && start < new Date(visit.window_end).getTime()
   })
+}
+
+export interface WarrantyRoutingRule {
+  id: string
+  name: string
+  priority: number
+  severity: WarrantySeverity | null
+  category: string | null
+  community_id: string | null
+  cost_code_id: string | null
+  assignee_kind: "tech" | "trade"
+  assigned_user_id: string | null
+  assigned_company_id: string | null
+  is_active: boolean
+}
+
+export interface WarrantyRoutingContext {
+  severity: WarrantySeverity
+  category: string | null
+  community_id: string | null
+  cost_code_id: string | null
+}
+
+const normalizedCategory = (value: string | null) => value?.trim().toLowerCase() || null
+
+function routingConditions(rule: WarrantyRoutingRule) {
+  return [rule.severity, normalizedCategory(rule.category), rule.community_id, rule.cost_code_id].filter((condition) => condition !== null).length
+}
+
+/**
+ * Who owns a new request. A rule matches when every condition it sets agrees
+ * with the request (an unset condition matches anything). Among matches the
+ * lowest priority number wins; between equal priorities the rule that says more
+ * (severity + community beats severity alone) wins, so a broad catch-all can
+ * sit under specific rules without the coordinator ordering them by hand. The
+ * id breaks the last tie so the same request always routes the same way.
+ */
+export function selectWarrantyRoutingRule(rules: WarrantyRoutingRule[], context: WarrantyRoutingContext): WarrantyRoutingRule | null {
+  const category = normalizedCategory(context.category)
+  const matches = rules.filter((rule) =>
+    rule.is_active
+    && (rule.severity === null || rule.severity === context.severity)
+    && (normalizedCategory(rule.category) === null || normalizedCategory(rule.category) === category)
+    && (rule.community_id === null || rule.community_id === context.community_id)
+    && (rule.cost_code_id === null || rule.cost_code_id === context.cost_code_id))
+  return matches.sort((a, b) => a.priority - b.priority || routingConditions(b) - routingConditions(a) || a.id.localeCompare(b.id))[0] ?? null
+}
+
+/** How a request came to have its owner: the metadata the desk and the audit trail read. */
+export interface WarrantyRoutingRecord {
+  source: "rule" | "manual"
+  rule_id: string | null
+  rule_name: string | null
+  routed_at: string
+  routed_by: string | null
+  overridden_rule_id?: string | null
+  override_reason?: string | null
+}
+
+export function routingRecordFrom(metadata: unknown): WarrantyRoutingRecord | null {
+  const value = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? (metadata as Record<string, unknown>).routing : null
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (record.source !== "rule" && record.source !== "manual") return null
+  return record as unknown as WarrantyRoutingRecord
 }

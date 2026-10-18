@@ -27,6 +27,7 @@ import {
   setPortalTokenRequireAccount,
   updatePortalTokenAccessOptions,
 } from "@/lib/services/portal-access"
+import { getProjectPosture, isProductionProjectPosture } from "@/lib/product-tier"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { sendProjectPortalInviteEmail } from "@/lib/services/mailer"
@@ -199,7 +200,7 @@ export async function sendPortalInviteAction({
         throw new Error("This subcontractor contact needs a company before you can send a sub portal invite")
       }
 
-      const { supabase, orgId, userId } = await requireOrgContext()
+      const { supabase, orgId, userId, productTier } = await requireOrgContext()
       await requireAnyPermission(["org.member", "directory.write", "project.manage"], {
         supabase,
         orgId,
@@ -212,7 +213,7 @@ export async function sendPortalInviteAction({
         .eq("org_id", orgId)
         .eq("id", projectId)
         .maybeSingle()
-      const productionBuyerPermissions = portalType === "client" && portalProject?.property_type === "production"
+      const productionBuyerPermissions = portalType === "client" && isProductionProjectPosture(getProjectPosture(portalProject?.property_type, productTier))
         ? {
             can_view_schedule: true,
             can_view_photos: true,

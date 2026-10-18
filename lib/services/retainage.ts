@@ -3,6 +3,11 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { recordAudit } from "@/lib/services/audit"
+import { recordEvent } from "@/lib/services/events"
+import { getNextInvoiceNumber, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
+import { chunk } from "@/lib/utils"
+import { z } from "zod"
 
 /**
  * Both loaders below page with `.range()`, so both impose a total order.
@@ -41,51 +46,53 @@ const RETAINAGE_PAGE_SIZE = 1000
 export async function loadRetainageReleaseInvoiceCents(args: {
   supabase: SupabaseClient
   orgId: string
+  /** Only these invoices; the projector reads what it is about to post, not the ledger. */
+  invoiceIds?: string[]
 }): Promise<Map<string, number>> {
-  const byInvoice = new Map<string, number>()
-  for (let page = 0; ; page += 1) {
-    const from = page * RETAINAGE_PAGE_SIZE
-    const { data, error } = await args.supabase
-      .from("retainage")
-      .select("release_invoice_id, amount_cents")
-      .eq("org_id", args.orgId)
-      .not("release_invoice_id", "is", null)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, from + RETAINAGE_PAGE_SIZE - 1)
-
-    if (error) throw new Error(`Failed to load retainage release invoices: ${error.message}`)
-    for (const row of data ?? []) {
-      const invoiceId = String(row.release_invoice_id)
-      byInvoice.set(invoiceId, (byInvoice.get(invoiceId) ?? 0) + Number(row.amount_cents ?? 0))
-    }
-    if ((data ?? []).length < RETAINAGE_PAGE_SIZE) return byInvoice
-  }
+  return sumRetainageByInvoice(args, "release_invoice_id", "retainage release invoices")
 }
 
 export async function loadInvoiceRetainageCents(args: {
   supabase: SupabaseClient
   orgId: string
+  invoiceIds?: string[]
 }): Promise<Map<string, number>> {
-  const byInvoice = new Map<string, number>()
-  for (let page = 0; ; page += 1) {
-    const from = page * RETAINAGE_PAGE_SIZE
-    const { data, error } = await args.supabase
-      .from("retainage")
-      .select("invoice_id, amount_cents")
-      .eq("org_id", args.orgId)
-      .not("invoice_id", "is", null)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, from + RETAINAGE_PAGE_SIZE - 1)
+  return sumRetainageByInvoice(args, "invoice_id", "invoice retainage")
+}
 
-    if (error) throw new Error(`Failed to load invoice retainage: ${error.message}`)
-    for (const row of data ?? []) {
-      const invoiceId = String(row.invoice_id)
-      byInvoice.set(invoiceId, (byInvoice.get(invoiceId) ?? 0) + Number(row.amount_cents ?? 0))
+// A URL carries about 200 uuids comfortably; larger selections are read in slices.
+const RETAINAGE_ID_CHUNK = 200
+
+async function sumRetainageByInvoice(
+  args: { supabase: SupabaseClient; orgId: string; invoiceIds?: string[] },
+  column: "invoice_id" | "release_invoice_id",
+  label: string,
+): Promise<Map<string, number>> {
+  const byInvoice = new Map<string, number>()
+  const slices: Array<string[] | null> = args.invoiceIds ? chunk(args.invoiceIds, RETAINAGE_ID_CHUNK) : [null]
+  for (const slice of slices) {
+    for (let page = 0; ; page += 1) {
+      const from = page * RETAINAGE_PAGE_SIZE
+      let query = args.supabase
+        .from("retainage")
+        .select(`${column}, amount_cents`)
+        .eq("org_id", args.orgId)
+        .not(column, "is", null)
+      if (slice) query = query.in(column, slice)
+      const { data, error } = await query
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, from + RETAINAGE_PAGE_SIZE - 1)
+
+      if (error) throw new Error(`Failed to load ${label}: ${error.message}`)
+      for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+        const invoiceId = String(row[column])
+        byInvoice.set(invoiceId, (byInvoice.get(invoiceId) ?? 0) + Number(row.amount_cents ?? 0))
+      }
+      if ((data ?? []).length < RETAINAGE_PAGE_SIZE) break
     }
-    if ((data ?? []).length < RETAINAGE_PAGE_SIZE) return byInvoice
   }
+  return byInvoice
 }
 
 export async function createRetainageRecord({
@@ -137,138 +144,6 @@ export async function createRetainageRecord({
   return data
 }
 
-export async function releaseRetainage({
-  retainageId,
-  release_invoice_id,
-  status = "released",
-  orgId,
-}: {
-  retainageId: string
-  release_invoice_id?: string | null
-  status?: "released" | "invoiced" | "paid"
-  orgId?: string
-}) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const now = new Date().toISOString()
-  if (status === "paid") {
-    throw new Error("Use the payment workflow to mark retainage paid")
-  }
-  if (status === "invoiced" && !release_invoice_id) {
-    throw new Error("Invoiced retainage requires a release invoice")
-  }
-
-  const { data: existing, error: existingError } = await supabase
-    .from("retainage")
-    .select("id, project_id")
-    .eq("id", retainageId)
-    .eq("org_id", resolvedOrgId)
-    .maybeSingle()
-
-  if (existingError || !existing) {
-    throw new Error("Retainage record not found")
-  }
-
-  await requireAuthorization({
-    permission: "invoice.write",
-    userId,
-    orgId: resolvedOrgId,
-    projectId: existing.project_id,
-    supabase,
-    logDecision: true,
-    resourceType: "retainage",
-    resourceId: retainageId,
-  })
-
-  if (release_invoice_id) {
-    const { data: releaseInvoice, error: releaseInvoiceError } = await supabase
-      .from("invoices")
-      .select("id, project_id, status")
-      .eq("org_id", resolvedOrgId)
-      .eq("id", release_invoice_id)
-      .maybeSingle()
-    if (releaseInvoiceError || !releaseInvoice || releaseInvoice.project_id !== existing.project_id || releaseInvoice.status === "void") {
-      throw new Error("Release invoice is missing, void, or belongs to another project")
-    }
-  }
-
-  const { error } = await supabase
-    .from("retainage")
-    .update({
-      status,
-      released_at: now,
-      release_invoice_id: release_invoice_id ?? null,
-    })
-    .eq("id", retainageId)
-    .eq("org_id", resolvedOrgId)
-
-  if (error) {
-    throw new Error(`Failed to release retainage: ${error.message}`)
-  }
-
-  return { success: true }
-}
-
-export async function markRetainagePaid(retainageId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-
-  const { data: existing, error: existingError } = await supabase
-    .from("retainage")
-    .select("id, project_id")
-    .eq("id", retainageId)
-    .eq("org_id", resolvedOrgId)
-    .maybeSingle()
-
-  if (existingError || !existing) {
-    throw new Error("Retainage record not found")
-  }
-
-  await requireAuthorization({
-    permission: "payment.release",
-    userId,
-    orgId: resolvedOrgId,
-    projectId: existing.project_id,
-    supabase,
-    logDecision: true,
-    resourceType: "retainage",
-    resourceId: retainageId,
-  })
-
-  const { data: retainage, error: retainageError } = await supabase
-    .from("retainage")
-    .select("id, release_invoice_id")
-    .eq("id", retainageId)
-    .eq("org_id", resolvedOrgId)
-    .maybeSingle()
-  if (retainageError || !retainage?.release_invoice_id) {
-    throw new Error("Retainage must have a release invoice before it can be marked paid")
-  }
-
-  const { data: releaseInvoice, error: invoiceError } = await supabase
-    .from("invoices")
-    .select("id, status, balance_due_cents")
-    .eq("id", retainage.release_invoice_id)
-    .eq("org_id", resolvedOrgId)
-    .maybeSingle()
-  if (invoiceError || !releaseInvoice || (releaseInvoice.status !== "paid" && releaseInvoice.balance_due_cents !== 0)) {
-    throw new Error("Retainage cannot be marked paid until its release invoice is paid")
-  }
-
-  const { error } = await supabase
-    .from("retainage")
-    .update({
-      status: "paid",
-      released_at: new Date().toISOString(),
-    })
-    .eq("id", retainageId)
-    .eq("org_id", resolvedOrgId)
-
-  if (error) {
-    throw new Error(`Failed to mark retainage paid: ${error.message}`)
-  }
-
-  return { success: true }
-}
-
 export async function applyRetainageToInvoice({
   invoiceId,
   contract_id,
@@ -292,54 +167,45 @@ export async function applyRetainageToInvoice({
   })
 }
 
-export async function releaseRetainageForContract({
-  contract_id,
-  orgId,
-  release_invoice_id,
-}: {
-  contract_id: string
-  orgId?: string
-  release_invoice_id?: string | null
-}) {
-  const supabase = createServiceSupabaseClient()
-  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const { data: contract, error: contractError } = await supabase
-    .from("contracts")
-    .select("id, project_id")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", contract_id)
-    .maybeSingle()
-  if (contractError || !contract) throw new Error("Contract not found")
+/**
+ * Release held retainage on a job billed without a schedule of values. The
+ * release is its own invoice: it moves what was withheld from retainage
+ * receivable into receivables, oldest holds first, without billing the work again.
+ */
+export async function releaseProjectRetainage(projectId: string, input: { amount_cents: number; title: string; notes?: string }, orgId?: string) {
+  const parsed = z.object({
+    amount_cents: z.number().int().positive(),
+    title: z.string().trim().min(1).max(200),
+    notes: z.string().trim().max(5000).optional(),
+  }).parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  for (const permission of ["invoice.write", "invoice.send"] as const)
+    await requireAuthorization({ permission, userId, orgId: resolvedOrgId, projectId, supabase, logDecision: true, resourceType: "retainage", resourceId: projectId })
 
-  await requireAuthorization({
-    permission: "invoice.write",
-    userId,
-    orgId: resolvedOrgId,
-    projectId: contract.project_id,
-    supabase,
-    logDecision: true,
-    resourceType: "contract",
-    resourceId: contract_id,
+  const next = await getNextInvoiceNumber(resolvedOrgId, projectId)
+  const { data, error } = await createServiceSupabaseClient().rpc("release_project_retainage_atomic", {
+    p_org_id: resolvedOrgId,
+    p_project_id: projectId,
+    p_actor_id: userId,
+    p_amount_cents: parsed.amount_cents,
+    p_invoice_number: next.number,
+    p_reservation_id: next.reservation_id ?? null,
+    p_title: parsed.title,
+    p_notes: parsed.notes ?? null,
+    p_issue_date: new Date().toISOString().slice(0, 10),
+    p_due_date: null,
   })
-
-  const { data: held } = await supabase
-    .from("retainage")
-    .select("id")
-    .eq("org_id", resolvedOrgId)
-    .eq("contract_id", contract_id)
-    .eq("status", "held")
-
-  for (const row of held ?? []) {
-    await releaseRetainage({
-      retainageId: row.id,
-      release_invoice_id,
-      status: release_invoice_id ? "invoiced" : "released",
-      orgId: resolvedOrgId,
-    })
+  const result = releaseResultSchema.safeParse(data)
+  if (error || !result.success) {
+    if (next.reservation_id) await releaseInvoiceNumberReservation(next.reservation_id, resolvedOrgId)
+    throw new Error(`Failed to release retainage: ${error?.message ?? "No result returned"}`)
   }
-
-  return { released: (held ?? []).length }
+  await Promise.all([
+    recordEvent({ orgId: resolvedOrgId, eventType: "retainage_released", entityType: "invoice", entityId: result.data.invoice_id, payload: { project_id: projectId, amount_cents: result.data.released_cents } }),
+    recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "retainage_release", entityId: result.data.invoice_id,
+      after: { project_id: projectId, invoice_id: result.data.invoice_id, amount_cents: result.data.released_cents } }),
+  ])
+  return result.data
 }
 
-
-
+const releaseResultSchema = z.object({ invoice_id: z.string().uuid(), released_cents: z.number().int() })

@@ -5,6 +5,7 @@ import { z } from "zod"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireAuthorization } from "@/lib/services/authorization"
+import { assertDateInOpenPeriod, assertNotPostedInClosedPeriod } from "@/lib/services/books/closed-period-guard"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -71,6 +72,7 @@ export async function createReceivableAdjustment(input: CreateReceivableAdjustme
     resourceId: parsed.invoiceId,
   })
 
+  await assertDateInOpenPeriod({ orgId, date: parsed.effectiveDate, document: parsed.adjustmentType === "write_off" ? "write-off" : "credit memo" })
   const service = createServiceSupabaseClient()
   const { data, error } = await service.rpc("create_receivable_adjustment_atomic", {
     p_org_id: orgId,
@@ -95,6 +97,8 @@ export async function createReceivableAdjustment(input: CreateReceivableAdjustme
   )
 
   await recordEvent({
+    orgId,
+    actorId: userId,
     eventType: "receivable_adjustment_posted",
     entityType: "invoice",
     entityId: parsed.invoiceId,
@@ -115,7 +119,7 @@ export async function voidReceivableAdjustment(adjustmentId: string) {
   const { orgId, userId, supabase } = await requireOrgContext()
   const { data: adjustment, error: adjustmentError } = await supabase
     .from("receivable_adjustments")
-    .select("id, invoice_id, project_id")
+    .select("id, invoice_id, project_id, adjustment_type")
     .eq("org_id", orgId)
     .eq("id", parsedId)
     .maybeSingle()
@@ -133,6 +137,7 @@ export async function voidReceivableAdjustment(adjustmentId: string) {
     resourceId: adjustment.invoice_id,
   })
 
+  await assertNotPostedInClosedPeriod({ orgId, sourceId: parsedId, document: adjustment.adjustment_type === "write_off" ? "write-off" : "credit memo", action: "void it" })
   const service = createServiceSupabaseClient()
   const { data, error } = await service.rpc("void_receivable_adjustment_atomic", {
     p_org_id: orgId,
@@ -150,6 +155,8 @@ export async function voidReceivableAdjustment(adjustmentId: string) {
   )
 
   await recordEvent({
+    orgId,
+    actorId: userId,
     eventType: "receivable_adjustment_voided",
     entityType: "invoice",
     entityId: adjustment.invoice_id,

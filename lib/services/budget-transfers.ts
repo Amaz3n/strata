@@ -4,6 +4,7 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { refuseSeparationOfDuties } from "@/lib/services/separation-of-duties"
 import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
 import { budgetTransferInputSchema, type BudgetTransferInput } from "@/lib/validation/budget-transfers"
 
@@ -178,7 +179,18 @@ export async function approveBudgetTransfer(transferId: string, orgId?: string):
   const transfer = existing as unknown as BudgetTransfer
   await requireProjectPermission("budget.approve", { ...context, projectId: transfer.project_id })
   if (transfer.status !== "pending_approval") throw new Error("Only pending transfers can be approved")
-  if (transfer.requested_by === context.userId) throw new Error("The requester cannot approve their own budget transfer")
+  if (transfer.requested_by === context.userId) {
+    await refuseSeparationOfDuties({
+      orgId: context.orgId,
+      userId: context.userId,
+      actionKey: "budget.approve",
+      resourceType: "budget_transfer",
+      resourceId: transfer.id,
+      projectId: transfer.project_id,
+      rule: "budget_transfer.requester_cannot_approve",
+      message: "The requester cannot approve their own budget transfer",
+    })
+  }
 
   await buildValidatedLines({
     project_id: transfer.project_id,
@@ -197,7 +209,7 @@ export async function approveBudgetTransfer(transferId: string, orgId?: string):
   if (!updated) throw new Error("Approved budget transfer could not be reloaded")
 
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "budget_transfer.approved", entityType: "budget_transfer", entityId: transfer.id, payload: { project_id: transfer.project_id, transfer_number: transfer.transfer_number } })
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "budget_transfer", entityId: transfer.id, before: transfer, after: updated })
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "budget_transfer", entityId: transfer.id, before: transfer, after: updated, critical: true })
   return updated
 }
 

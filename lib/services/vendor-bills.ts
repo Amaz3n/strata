@@ -9,7 +9,8 @@ import { findDuplicatePayable } from "@/lib/services/payable-duplicate-check"
 import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { requireOrgContext } from "@/lib/services/context"
+import { requireOrgContext, runWithServiceOrgContext } from "@/lib/services/context"
+import { normalizeProductTier } from "@/lib/product-tier"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -47,7 +48,10 @@ import { readEvenFlowAssessment, type EvenFlowPriceAssessment } from "@/lib/fina
 import { readBillScheduleAssessment, type BillScheduleAssessment } from "@/lib/financials/bill-schedule-crosscheck"
 import { sendManualPaymentRemittanceAdvice } from "@/lib/services/vendor-remittance"
 import { assertPayableApprovalPeriodOpen, notifyPayableApprovalDecision } from "@/lib/services/payable-approval-gate"
+import { BILL_SELF_APPROVAL_MESSAGE } from "@/lib/financials/separation-of-duties"
+import { refuseSelfApprovedBills } from "@/lib/services/separation-of-duties"
 import { createCompany, getCompany, saveCompanyAccountingVendorLink } from "@/lib/services/companies"
+import { assertNotPostedInClosedPeriod } from "@/lib/services/books/closed-period-guard"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid" | "rejected"
 
@@ -331,6 +335,20 @@ export async function approveVendorBillsAtomic(
     }
   }
 
+  // The person who entered a payable does not approve it when someone else
+  // could. Refusals are audited by the service, not just thrown.
+  const selfApproved = await refuseSelfApprovedBills({
+    orgId: context.orgId,
+    userId: context.userId,
+    bills: (bills ?? []).map((bill) => ({ id: bill.id, project_id: bill.project_id, metadata: bill.metadata })),
+  })
+  if (selfApproved.size > 0) {
+    if (mode === "all_or_nothing") throw new Error(BILL_SELF_APPROVAL_MESSAGE)
+    for (const id of selfApproved) {
+      preflightOutcomes.set(id, { id, ok: false, reason: BILL_SELF_APPROVAL_MESSAGE })
+    }
+  }
+
   const rpcItems = parsed.filter((item) => !preflightOutcomes.has(item.id))
   if (rpcItems.length === 0) {
     const outcomes = parsed.map((item) => preflightOutcomes.get(item.id)!)
@@ -393,6 +411,32 @@ export async function approveVendorBillsAtomic(
     }),
   )
   return { approvedCount: approved.size, outcomes }
+}
+
+/**
+ * The outbox retry of an approval's ledger side effects (job cost, billable cost,
+ * accounting sync), for when the approving request ended before they ran. The
+ * worker has no session, so it runs as the member who approved the bill; one who
+ * has since left the organization stops the retry rather than being impersonated.
+ */
+export async function runVendorBillApprovalProjection(orgId: string, billId: string) {
+  const supabase = createServiceSupabaseClient()
+  const [{ data: bill, error: billError }, { data: org, error: orgError }] = await Promise.all([
+    supabase.from("vendor_bills").select("id, approved_by").eq("org_id", orgId).eq("id", billId).maybeSingle(),
+    supabase.from("orgs").select("product_tier").eq("id", orgId).maybeSingle(),
+  ])
+  if (billError || orgError) throw new Error(`Failed to load the approved bill: ${(billError ?? orgError)?.message}`)
+  if (!bill) throw new Error("Approved vendor bill no longer exists")
+  if (!bill.approved_by) throw new Error("Vendor bill has no approver to run its ledger update as")
+  const { data: member, error: memberError } = await supabase.from("memberships").select("id")
+    .eq("org_id", orgId).eq("user_id", bill.approved_by).eq("status", "active").maybeSingle()
+  if (memberError) throw new Error(`Failed to verify the bill's approver: ${memberError.message}`)
+  if (!member) throw new Error("The member who approved this bill is no longer active; re-approve it to post its job cost")
+  await runWithServiceOrgContext({ supabase, orgId, userId: bill.approved_by, productTier: normalizeProductTier(org?.product_tier) }, async () => {
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId })
+    const result = await enqueueVendorBillSync(billId, orgId)
+    await recordPayableAccountingEnqueueResult({ orgId, billId, entityType: "vendor_bill", entityId: billId, result })
+  })
 }
 
 export const vendorBillSelect = `
@@ -1668,6 +1712,14 @@ export async function updateVendorBillStatus({
   // period or not depending on which screen you used.
   const isEnteringApproval = parsed.status === "approved" && existing.status !== "approved"
   if (isEnteringApproval) {
+    // A payable's own enterer cannot move it into approved when anyone else
+    // could. Checked before the period gate so the attempt is always audited.
+    const selfApproved = await refuseSelfApprovedBills({
+      orgId: resolvedOrgId,
+      userId,
+      bills: [{ id: billId, project_id: existing.project_id, metadata: existing.metadata }],
+    })
+    if (selfApproved.has(billId)) throw new Error(BILL_SELF_APPROVAL_MESSAGE)
     await assertPayableApprovalPeriodOpen({
       supabase,
       orgId: resolvedOrgId,
@@ -1773,6 +1825,7 @@ export async function updateVendorBillStatus({
     if ((settledPayments ?? 0) > 0) {
       throw new Error("This payable has recorded payments, so it cannot be returned to pending. Reverse the payment first.")
     }
+    await assertNotPostedInClosedPeriod({ orgId: resolvedOrgId, sourceId: billId, document: "bill", action: "return it to pending" })
   }
 
   if (parsed.status === "rejected") {
@@ -2069,7 +2122,13 @@ export async function updateVendorBillStatus({
     await replaceBillLineCoding(supabase, { orgId: resolvedOrgId, billId, lines: actualLines })
   }
 
-  if (!isVendorCredit && isApprovedOrReleased && existing.project_id) {
+  // A bill brought over at cutover was costed in the builder's previous books;
+  // paying it settles the payable and codes no new cost.
+  const billMetadata = existing.metadata
+  const openingDocument = Boolean(billMetadata) && typeof billMetadata === "object" && !Array.isArray(billMetadata) && typeof billMetadata.opening_batch_id === "string"
+  // A sales commission is a selling expense coded to 6100, never construction cost.
+  const commissionBill = Boolean(billMetadata) && typeof billMetadata === "object" && !Array.isArray(billMetadata) && billMetadata.source === "sales_commission"
+  if (!isVendorCredit && isApprovedOrReleased && existing.project_id && !openingDocument && !commissionBill) {
     const approvalSettings = await loadApprovalGateSettings({ supabase, orgId: resolvedOrgId, projectId: existing.project_id })
 
     if (approvalSettings.cost_codes_enabled) {
@@ -2207,7 +2266,7 @@ export async function updateVendorBillStatus({
       await voidJobCostEntriesForVendorBill({ billId, orgId: resolvedOrgId })
     }
   } catch (error) {
-    await supabase
+    const { error: rollbackError } = await supabase
       .from("vendor_bills")
       .update({
         status: existing.status,
@@ -2220,6 +2279,9 @@ export async function updateVendorBillStatus({
       .eq("id", billId)
 
     const message = error instanceof Error ? error.message : String(error ?? "Unknown error")
+    if (rollbackError) {
+      throw new Error(`The project cost ledger could not be updated (${message}), and the payable could not be returned to ${existing.status}: ${rollbackError.message}. Reconcile its status before retrying.`)
+    }
     throw new Error(`Vendor bill status was not saved because the project cost ledger could not be updated: ${message}`)
   }
 
@@ -2537,6 +2599,7 @@ export async function createProjectVendorBill({
       file_id: parsed.file_id ?? null,
       submitted_by_contact_id: null,
       metadata: {
+        ...(projectId && parsed.work_through_date ? { billing_period_end: parsed.work_through_date } : {}),
         description: parsed.description,
         submitted_by_user_id: userId,
         vendor_name: vendorName ?? undefined,
@@ -2709,6 +2772,11 @@ export interface ProjectVendorCreditInput {
   description: string
   lines: Array<{ description: string; amount_cents: number; cost_code_id?: string | null }>
   metadata?: Record<string, unknown>
+  /**
+   * Narrow alternative to bill.approve: the warranty backcharge flow authorizes
+   * the credit with warranty.backcharge on the project. bill.write is still required.
+   */
+  approvalAuthority?: "warranty.backcharge"
 }
 
 /**
@@ -2717,7 +2785,8 @@ export interface ProjectVendorCreditInput {
  * negative accounting amounts here; no warranty-specific AP tables are used.
  */
 export async function createProjectVendorCredit(input: ProjectVendorCreditInput, orgId?: string): Promise<VendorBillSummary> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
   await requireAuthorization({
     permission: "bill.write",
     userId,
@@ -2731,8 +2800,9 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
   // A credit extinguishes a real vendor obligation just like cash. Until there
   // is a separate routed credit-approval UI, creating an immediately usable
   // credit is an approval decision and requires the corresponding permission.
+  const approvalPermission = input.approvalAuthority ?? "bill.approve"
   await requireAuthorization({
-    permission: "bill.approve",
+    permission: approvalPermission,
     userId,
     orgId: resolvedOrgId,
     projectId: input.projectId,
@@ -2741,6 +2811,16 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
     resourceType: "project",
     resourceId: input.projectId,
   })
+  // The named authority was checked on this project above. The warranty manager is not a member of the
+  // home, so the posting below runs on the service client, still attributed to them, as other warranty writes do.
+  if (input.approvalAuthority) {
+    return runWithServiceOrgContext({ ...context, supabase: createServiceSupabaseClient() }, () => postVendorCredit(input, resolvedOrgId))
+  }
+  return postVendorCredit(input, resolvedOrgId)
+}
+
+async function postVendorCredit(input: ProjectVendorCreditInput, orgId: string): Promise<VendorBillSummary> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   if (!input.lines.length || input.lines.some((line) => !Number.isInteger(line.amount_cents) || line.amount_cents >= 0)) {
     throw new Error("Vendor credit lines must be negative")
   }
@@ -2767,7 +2847,7 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
       currency: "usd",
       status: "approved",
       bill_date: input.billDate,
-      metadata: { source: "vendor_credit", description: input.description, ...input.metadata },
+      metadata: { source: "vendor_credit", description: input.description, ...(input.approvalAuthority ? { approval_authority: input.approvalAuthority } : {}), ...input.metadata },
       approved_at: new Date().toISOString(),
       approved_by: userId,
     })
@@ -2800,7 +2880,7 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
     eventType: "vendor_credit_created",
     entityType: "vendor_bill",
     entityId: data.id,
-    payload: { project_id: input.projectId, commitment_id: input.commitmentId ?? null, total_cents: totalCents },
+    payload: { project_id: input.projectId, commitment_id: input.commitmentId ?? null, total_cents: totalCents, approval_authority: input.approvalAuthority ?? "bill.approve" },
   })
   await propagateApprovalToLedger({ source: "vendor_bill", sourceId: data.id, orgId: resolvedOrgId })
   const syncResult = await enqueueVendorBillSync(data.id, resolvedOrgId)
@@ -3194,6 +3274,20 @@ export async function deleteVendorBill({ billId, orgId }: { billId: string; orgI
   if (activeRunError) throw new Error(`Unable to validate in-flight payments: ${activeRunError.message}`)
   if ((activeRunItems ?? []).length > 0) {
     throw new Error("This payable belongs to an active payment run. Cancel that run before deleting it.")
+  }
+  // The database refuses this delete too, but only after the cleanup below has
+  // voided the bill's job cost; refuse first so a posted bill stays whole.
+  const { data: postedEntries, error: postedError } = await createServiceSupabaseClient()
+    .from("journal_entries")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("source_type", "vendor_bill")
+    .eq("source_id", billId)
+    .eq("status", "posted")
+    .limit(1)
+  if (postedError) throw new Error(`Unable to check the bill's ledger posting: ${postedError.message}`)
+  if ((postedEntries ?? []).length > 0) {
+    throw new Error("This record has posted to the ledger. Return it to pending or void it, then delete it once its journal is reversed (within about 10 minutes).")
   }
 
   // Fetch related billable costs

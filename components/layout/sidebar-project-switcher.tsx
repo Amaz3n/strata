@@ -27,6 +27,7 @@ import {
 import type { ProjectNavigationItem } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useHydrated } from "@/hooks/use-hydrated"
+import { useShellProject } from "./page-title-context"
 
 function isArchived(status?: ProjectNavigationItem["status"]) {
   return status === "completed" || status === "cancelled"
@@ -45,6 +46,8 @@ interface SidebarProjectSwitcherProps {
    * showed a skeleton on every fresh page load.
    */
   projects: ProjectNavigationItem[]
+  /** The list stopped at its cap (the newest projects); the menu says so and links to them all. */
+  truncated: boolean
 }
 
 function getProjectIdFromPath(pathname: string): string | null {
@@ -52,7 +55,7 @@ function getProjectIdFromPath(pathname: string): string | null {
   return match?.[1] ?? null
 }
 
-export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSwitcherProps) {
+export function SidebarProjectSwitcher({ projectId, projects, truncated }: SidebarProjectSwitcherProps) {
   const { isMobile, state } = useSidebar()
   const isPending = useIsNavigationPending()
   const pathname = usePathname()
@@ -79,7 +82,7 @@ export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSw
     })
   }, [projects, query])
 
-  const currentProject = projects.find((p) => p.id === resolvedProjectId)
+  const currentProject = useShellProject(projects, resolvedProjectId)
 
   // The destination for a switch keeps the tab you are on: /projects/A/schedule
   // becomes /projects/B/schedule, not /projects/B.
@@ -151,7 +154,7 @@ export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSw
   return (
     <SidebarMenu className="w-full">
       <SidebarMenuItem className="w-full">
-        <DropdownMenu onOpenChange={(open) => { if (!open) setQuery("") }}>
+        <DropdownMenu key={pathname} onOpenChange={(open) => { if (!open) setQuery("") }}>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
               className="project-avatar-host h-10 min-w-0 data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:justify-center"
@@ -189,6 +192,15 @@ export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSw
               <div className="px-2 py-3 text-sm text-muted-foreground">No projects found.</div>
             )}
 
+            {truncated && (
+              <p className="px-2 pb-2 text-xs text-muted-foreground">
+                Showing the {projects.length} newest projects.{" "}
+                <OptimisticLink href="/projects" className="text-foreground underline-offset-4 hover:underline">
+                  All projects
+                </OptimisticLink>
+              </p>
+            )}
+
             <div className="max-h-72 overflow-auto">
               {sortedProjects.map((project) => {
                 const archived = isArchived(project.status)
@@ -199,6 +211,15 @@ export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSw
                     asChild
                     onPointerEnter={() => handleIntent(project.id)}
                     onFocus={() => handleIntent(project.id)}
+                    // Keep the native Link mounted until Next commits its
+                    // navigation, so the selected link retains its prefetch
+                    // strategy. The pathname key closes the menu on commit.
+                    onSelect={(event) => {
+                      if (!isCurrent) {
+                        event.preventDefault()
+                        setQuery("")
+                      }
+                    }}
                   >
                     <OptimisticLink
                       href={hrefFor(project.id)}

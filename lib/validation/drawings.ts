@@ -223,6 +223,47 @@ export const calibrationMethodSchema = z.enum([
 
 export type CalibrationMethod = z.infer<typeof calibrationMethodSchema>
 
+// Stored evidence predates the input form; retain absent legacy methods and
+// unbounded source labels, but never turn malformed scale evidence into zero.
+export const storedSheetCalibrationSchema = z.object({
+  feet_per_image_px: z.number().positive().finite(),
+  method: calibrationMethodSchema.nullish(),
+  source_label: z.string().nullish(),
+  carried_from_version_id: z.string().uuid().nullish(),
+}).passthrough()
+
+export const storedSheetCalibrationProposalSchema = z.object({
+  feet_per_image_px: z.number().positive().finite(),
+  method: z.enum(["title_block", "dimension_check", "space_area"]),
+  raw: z.string().nullish(),
+  sample_count: z.number().int().nonnegative().safe().nullish(),
+  spread_pct: z.number().nonnegative().finite().nullish(),
+}).passthrough()
+
+export const storedSheetCalibrationScanSchema = z.object({
+  at: z.string().datetime({ offset: true }),
+  found: z.boolean(),
+  method: z.enum(["title_block", "dimension_check", "space_area"]).optional(),
+}).passthrough()
+
+export const storedSpaceCalibrationSchema = z.object({
+  inferred_feet_per_image_px: z.number().positive().finite(),
+  verified_count: z.number().int().nonnegative().safe().nullish(),
+}).passthrough()
+
+const storedDrawingDimensionSchema = z.preprocess(
+  value => typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value,
+  z.number().int().nonnegative().safe().nullable(),
+)
+export const storedDrawingManifestSchema = z.object({
+  Image: z.object({
+    Size: z.object({
+      Width: storedDrawingDimensionSchema.optional(),
+      Height: storedDrawingDimensionSchema.optional(),
+    }).passthrough().nullish(),
+  }).passthrough().nullish(),
+}).passthrough().nullable()
+
 export const setSheetVersionCalibrationInputSchema = z.object({
   sheet_version_id: z.string().uuid(),
   feet_per_image_px: z.number().positive().finite(),
@@ -255,43 +296,24 @@ export function formatFeetInches(feet: number): string {
  * (so the pipeline's scale detection reads it), and it is what
  * `formatFeetInches` emits — without it the pair does not round-trip.
  */
+export function normalizeFeetInchesText(raw: string): string {
+  const fractions: Record<string, string> = { '¼': '1/4', '½': '1/2', '¾': '3/4', '⅛': '1/8', '⅜': '3/8', '⅝': '5/8', '⅞': '7/8' }
+  return raw.toLowerCase().replace(/[“”″]/g, '"').replace(/[‘’′]/g, "'")
+    .replace(/[¼½¾⅛⅜⅝⅞]/g, (c) => ` ${fractions[c]}`).trim()
+}
+
 export function parseFeetInches(raw: string): number | null {
-  const input = raw
-    .trim()
-    .toLowerCase()
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
-  if (!input) return null
-
-  // Feet marker present, optional inches: 24' 6", 24'6, 24'-6", 24 ft 6 in
-  const feetMatch = input.match(
-    /^(\d+(?:\.\d+)?)\s*(?:'|ft\.?|feet)\s*(?:[-\s]\s*)?(?:(\d+(?:\.\d+)?)\s*(?:"|in\.?|inches)?)?$/,
-  )
-  if (feetMatch) {
-    const feet = Number.parseFloat(feetMatch[1])
-    const inches = feetMatch[2] ? Number.parseFloat(feetMatch[2]) : 0
-    if (!Number.isFinite(feet) || !Number.isFinite(inches)) return null
-    const total = feet + inches / 12
-    return total > 0 ? total : null
+  const input = normalizeFeetInchesText(raw)
+  const quantity = String.raw`(?:\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+)`
+  const number = (value: string): number => {
+    const fraction = value.trim().match(/^(?:(\d+(?:\.\d+)?)\s+)?(\d+)\/(\d+)$/)
+    return fraction ? Number(fraction[1] ?? 0) + Number(fraction[2]) / Number(fraction[3]) : Number(value)
   }
-
-  // Inches only: 8", 8 in
-  const inchesMatch = input.match(/^(\d+(?:\.\d+)?)\s*(?:"|in\.?|inches)$/)
-  if (inchesMatch) {
-    const inches = Number.parseFloat(inchesMatch[1])
-    if (!Number.isFinite(inches)) return null
-    return inches > 0 ? inches / 12 : null
-  }
-
-  // Plain number = decimal feet
-  const plainMatch = input.match(/^(\d+(?:\.\d+)?)$/)
-  if (plainMatch) {
-    const feet = Number.parseFloat(plainMatch[1])
-    if (!Number.isFinite(feet)) return null
-    return feet > 0 ? feet : null
-  }
-
-  return null
+  const feet = input.match(new RegExp(`^(${quantity})\\s*(?:'|ft\\.?|feet)\\s*(?:-\\s*)?(?:(${quantity})\\s*(?:"|in\\.?|inches)?)?$`))
+  const inches = input.match(new RegExp(`^(${quantity})\\s*(?:"|in\\.?|inches)$`))
+  const value = feet ? number(feet[1]) + number(feet[2] ?? '0') / 12
+    : inches ? number(inches[1]) / 12 : /^\d+(?:\.\d+)?$/.test(input) ? Number(input) : NaN
+  return Number.isFinite(value) && value > 0 ? value : null
 }
 
 // ============================================================================
@@ -455,6 +477,11 @@ export const drawingMarkupUpdateSchema = z.object({
 })
 
 export type DrawingMarkupUpdate = z.infer<typeof drawingMarkupUpdateSchema>
+
+export const drawingMarkupRevisionSchema = z.object({
+  id: z.string().uuid(),
+  updated_at: z.string().datetime({ offset: true }),
+})
 
 export const drawingMarkupListFiltersSchema = z.object({
   drawing_sheet_id: z.string().uuid().optional(),

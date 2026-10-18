@@ -1,0 +1,176 @@
+{
+  "scenario": "LOSS-01",
+  "status": "PASSED",
+  "reviewedFrom": "B12.1 and B12.2 definitions of done (advisor-plans/013), docs/books-revenue-recognition.md (expected loss and impairment).",
+  "subcases": [
+    {
+      "name": "contract-loss-lifecycle",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "7115aced-8b7f-455e-a681-161fd0e12cd2",
+        "projectId": "6908badb-abe4-40fe-8c77-3c93e1d65bf1"
+      },
+      "checks": [
+        {
+          "label": "reserve plus recognized loss equals the reviewed total every month, and re-closing posts nothing twice",
+          "pass": true,
+          "expected": {
+            "positions": {
+              "2026-06": {
+                "totalLoss": 1000000,
+                "reserve": 636364,
+                "incurredLoss": 363636,
+                "reservePlusIncurredIsTotal": true
+              },
+              "2026-07": {
+                "totalLoss": 1500000,
+                "reserve": 586957,
+                "incurredLoss": 913043,
+                "reservePlusIncurredIsTotal": true
+              },
+              "2026-08": {
+                "totalLoss": 800000,
+                "reserve": 207407,
+                "incurredLoss": 592593,
+                "reservePlusIncurredIsTotal": true
+              },
+              "2026-09": {
+                "totalLoss": 800000,
+                "reserve": 0,
+                "incurredLoss": 800000,
+                "reservePlusIncurredIsTotal": true
+              }
+            },
+            "recloseAddsNothing": true
+          },
+          "observed": {
+            "positions": {
+              "2026-06": {
+                "totalLoss": 1000000,
+                "reserve": 636364,
+                "incurredLoss": 363636,
+                "reservePlusIncurredIsTotal": true
+              },
+              "2026-07": {
+                "totalLoss": 1500000,
+                "reserve": 586957,
+                "incurredLoss": 913043,
+                "reservePlusIncurredIsTotal": true
+              },
+              "2026-08": {
+                "totalLoss": 800000,
+                "reserve": 207407,
+                "incurredLoss": 592593,
+                "reservePlusIncurredIsTotal": true
+              },
+              "2026-09": {
+                "totalLoss": 800000,
+                "reserve": 0,
+                "incurredLoss": 800000,
+                "reservePlusIncurredIsTotal": true
+              }
+            },
+            "recloseAddsNothing": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:45:01.062Z"
+    },
+    {
+      "name": "contracts-not-netted",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "c17264c7-d500-4926-b09f-bfcea9b36a36",
+        "projectId": "6f9257b9-00ee-4af3-8d1c-8110f39c734d"
+      },
+      "checks": [
+        {
+          "label": "the losing contract carries its own reserve; the profitable one carries none and offsets nothing",
+          "pass": true,
+          "expected": {
+            "reserveOnProfitable": 0,
+            "reserveOnLosing": 500000,
+            "jobLevelNetForecast": 1000000
+          },
+          "observed": {
+            "reserveOnProfitable": 0,
+            "reserveOnLosing": 500000,
+            "jobLevelNetForecast": 1000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:45:03.516Z"
+    },
+    {
+      "name": "home-impairment",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "34cbc7a7-45de-4e07-84ed-f1d5c7246a2c",
+        "impairmentId": "c1af0b49-6d13-41fb-af79-32f2ef8dc3b4"
+      },
+      "checks": [
+        {
+          "label": "the write-down is reviewed, permanent, tied to the ledger, and sold as its own component",
+          "pass": true,
+          "expected": {
+            "staleApproval": "refused: cost changed since the review was prepared",
+            "selfApproval": "refused: approved by someone other than the preparer",
+            "review": {
+              "carrying": 26500000,
+              "netRealizable": 24000000,
+              "writeDown": 2500000
+            },
+            "afterWriteDown": {
+              "1170": 24000000,
+              "5070": 2500000
+            },
+            "recovery": "refused: value covers cost, nothing is written back",
+            "julyClosed": "closed",
+            "impairmentControl": {
+              "status": "passed",
+              "ledger": 2500000,
+              "reviews": 2500000
+            },
+            "reliefByComponent": {
+              "construction": 20500000,
+              "impairment": -2500000,
+              "land_and_development": 6000000
+            },
+            "totalCostRecognized": 26500000,
+            "augustBlockingFailures": []
+          },
+          "observed": {
+            "staleApproval": "refused: cost changed since the review was prepared",
+            "selfApproval": "refused: approved by someone other than the preparer",
+            "review": {
+              "carrying": 26500000,
+              "netRealizable": 24000000,
+              "writeDown": 2500000
+            },
+            "afterWriteDown": {
+              "1170": 24000000,
+              "5070": 2500000
+            },
+            "recovery": "refused: value covers cost, nothing is written back",
+            "julyClosed": "closed",
+            "impairmentControl": {
+              "status": "passed",
+              "ledger": 2500000,
+              "reviews": 2500000
+            },
+            "reliefByComponent": {
+              "construction": 20500000,
+              "impairment": -2500000,
+              "land_and_development": 6000000
+            },
+            "totalCostRecognized": 26500000,
+            "augustBlockingFailures": []
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:45:04.603Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T22:45:08.578Z"
+}

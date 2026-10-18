@@ -41,6 +41,7 @@ export function PlanStatusBand({
   costCents,
   cycleMedianDays,
   canRelease,
+  onReviewHomes,
 }: {
   plan: HousePlanDto
   version: HousePlanVersionDto
@@ -50,6 +51,7 @@ export function PlanStatusBand({
   costCents: number | null
   cycleMedianDays: number | null
   canRelease: boolean
+  onReviewHomes: () => void
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -58,8 +60,14 @@ export function PlanStatusBand({
   function release() {
     startTransition(async () => {
       try {
-        unwrapAction(await releasePlanVersionAction(plan.id, version.id))
-        toast.success(`v${version.version_number} released`)
+        const released = unwrapAction(await releasePlanVersionAction(plan.id, version.id))
+        const behind = released.homes_on_earlier_versions
+        toast.success(`v${version.version_number} released`, behind > 0
+          ? {
+            description: `${behind} ${behind === 1 ? "home is" : "homes are"} still on earlier editions. Review which adopt v${version.version_number}.`,
+            action: { label: "Review", onClick: onReviewHomes },
+          }
+          : undefined)
         setConfirming(false)
         router.refresh()
       } catch (error) {
@@ -164,9 +172,9 @@ export function PlanStatusBand({
                 <p>
                   v{releasedVersion.version_number} becomes superseded. Its{" "}
                   {releasedVersion.pinned_lot_count === 1
-                    ? "1 pinned house keeps"
-                    : `${releasedVersion.pinned_lot_count} pinned houses keep`}{" "}
-                  building to it — only houses started after this release use v{version.version_number}.
+                    ? "1 pinned house stays"
+                    : `${releasedVersion.pinned_lot_count} pinned houses stay`}{" "}
+                  on it until a plan change review decides which adopt v{version.version_number}. Nothing moves on release.
                 </p>
               </div>
             ) : (

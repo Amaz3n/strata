@@ -1,3 +1,8 @@
+import { connection } from "next/server"
+import { Suspense } from "react"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { evaluateReport } from "@/lib/services/report-workspace"
+import { getSavedReportConfig } from "@/lib/services/report-configs"
 import { notFound } from "next/navigation"
 
 import { getProjectAction } from "@/app/(app)/projects/[id]/actions"
@@ -6,7 +11,7 @@ import { getReportDefinition } from "@/lib/reports/registry"
 import { PageLayout } from "@/components/layout/page-layout"
 import { ReportView } from "@/components/reports/report-view"
 import { canRunReport, resolveProjectReportScope } from "@/lib/services/report-catalog"
-import { getReportRun, listReportRuns } from "@/lib/services/report-runs"
+import { getReportRun } from "@/lib/services/report-runs"
 
 
 interface PageProps {
@@ -14,7 +19,8 @@ interface PageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }
 
-export default async function ProjectReportPage({ params, searchParams }: PageProps) {
+async function ProjectReportPageContent({ params, searchParams }: PageProps) {
+  await connection()
   const [{ id, slug }, search] = await Promise.all([params, searchParams])
   const definition = getReportDefinition(slug)
   if (!definition || !definition.scopes.includes("project")) notFound()
@@ -23,40 +29,47 @@ export default async function ProjectReportPage({ params, searchParams }: PagePr
   if (!project) notFound()
 
   const resolution = await resolveProjectReportScope(project)
-  if (!canRunReport(resolution, definition)) notFound()
-
-  const reportParams = parseReportParams(definition, search)
-  const context = { ...resolution.context, params: reportParams }
+  if (!search.run && !search.config && !canRunReport(resolution, definition)) notFound()
 
   const runId = typeof search.run === "string" ? search.run : undefined
-  const snapshot = runId ? await getReportRun(runId) : null
+  const [saved, snapshot] = await Promise.all([
+    typeof search.config === "string" ? getSavedReportConfig(search.config) : undefined,
+    runId ? getReportRun(runId) : null,
+  ])
+  if (saved && (saved.slug !== slug || saved.project_id !== (resolution.context.projectId ?? null))) notFound()
+  const reportParams = parseReportParams(definition, saved ? { ...saved.params, _division: saved.division_id ?? "", _community: saved.community_id ?? "" } : search)
+  const context = { ...resolution.context, params: reportParams }
+
   if (runId && (!snapshot || snapshot.slug !== definition.slug || snapshot.projectId !== project.id)) notFound()
 
-  const [result, runs] = await Promise.all([
-    snapshot ? Promise.resolve(snapshot.snapshot) : definition.run(context),
-    listReportRuns({ slug: definition.slug, projectId: project.id, limit: 25 }).catch(() => []),
-  ])
+  const result = snapshot ? { base: snapshot.snapshot, context } : await evaluateReport(definition, context)
 
   return (
-    <PageLayout
-      title={definition.title}
-      breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}` },
-        { label: "Reports", href: `/projects/${project.id}/reports` },
-        { label: definition.title },
-      ]}
-      fullBleed
-    >
-      <div className="desk-rise mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <PageLayout fullBleed>
+      <div className="desk-rise mx-auto w-full max-w-[1800px] px-4 py-6 sm:px-6 lg:px-8">
         <ReportView
           definition={definition}
-          context={context}
-          params={snapshot ? (snapshot.params as typeof reportParams) : reportParams}
-          result={result}
-          runs={runs}
+          context={result.context}
+          params={snapshot ? (snapshot.params as typeof reportParams) : result.context.params}
+          result={result.base}
+          saved={saved}
           snapshot={snapshot ?? undefined}
         />
       </div>
     </PageLayout>
+  )
+}
+
+export default function ProjectReportPage(props: Parameters<typeof ProjectReportPageContent>[0]) {
+  return (
+    <Suspense
+      fallback={
+        <PageLayout title="Report" fullBleed>
+          <PageLoadingSkeleton />
+        </PageLayout>
+      }
+    >
+      <ProjectReportPageContent {...props} />
+    </Suspense>
   )
 }

@@ -11,15 +11,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Check, ChevronsUpDown, Plus } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
-export function LocationPicker({
-  projectId,
-  locations,
-  value,
-  onValueChange,
-  canCreate = false,
-  disabled = false,
-  placeholder = "Select location",
-}: {
+interface LocationPickerProps {
   projectId: string
   locations: ProjectLocation[]
   value?: string | null
@@ -27,10 +19,29 @@ export function LocationPicker({
   canCreate?: boolean
   disabled?: boolean
   placeholder?: string
-}) {
+}
+
+export function LocationPicker(props: LocationPickerProps) {
+  return <LocationPickerContent key={props.projectId} {...props} />
+}
+
+function LocationPickerContent({
+  projectId,
+  locations,
+  value,
+  onValueChange,
+  canCreate = false,
+  disabled = false,
+  placeholder = "Select location",
+}: LocationPickerProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [localLocations, setLocalLocations] = useState(locations)
+  const [locationSource, setLocationSource] = useState(locations)
+  if (locationSource !== locations) {
+    setLocationSource(locations)
+    setLocalLocations(locations)
+  }
   const [pending, startTransition] = useTransition()
   const selected = useMemo(() => localLocations.find((location) => location.id === value), [localLocations, value])
   const createName = query.trim()
@@ -91,4 +102,3 @@ export function LocationPicker({
     </Popover>
   )
 }
-

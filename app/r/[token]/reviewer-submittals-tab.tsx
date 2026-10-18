@@ -38,7 +38,12 @@ interface ReviewerSubmittalsTabProps {
 }
 
 export function ReviewerSubmittalsTab({ initialQueue, token }: ReviewerSubmittalsTabProps) {
+  return <ReviewerSubmittalsWorkspace key={token} initialQueue={initialQueue} token={token} />
+}
+
+function ReviewerSubmittalsWorkspace({ initialQueue, token }: ReviewerSubmittalsTabProps) {
   const router = useRouter()
+  const [queueSource, setQueueSource] = useState(initialQueue)
   const [queue, setQueue] = useState<ReviewerQueueEntry[]>(initialQueue)
   const [itemsBySubmittal, setItemsBySubmittal] = useState<Record<string, SubmittalItem[]>>({})
   const [decisionByStep, setDecisionByStep] = useState<Record<string, string>>({})
@@ -46,20 +51,37 @@ export function ReviewerSubmittalsTab({ initialQueue, token }: ReviewerSubmittal
   const [decidingStepId, setDecidingStepId] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
+  const documentRead = useRef<AbortController | null>(null)
+  if (initialQueue !== queueSource) {
+    setQueueSource(initialQueue)
+    setQueue(initialQueue)
+  }
   const activeQueue = queue.filter((entry) => !entry.is_history)
   const history = queue.filter((entry) => entry.is_history)
 
   useEffect(() => {
+    const controller = new AbortController()
+    documentRead.current = controller
+    setItemsBySubmittal({})
+    const requested = new Set<string>()
     for (const entry of queue) {
+      if (entry.is_history) continue
       const submittalId = entry.submittal.id
-      if (itemsBySubmittal[submittalId]) continue
+      if (requested.has(submittalId)) continue
+      requested.add(submittalId)
       listReviewerSubmittalItemsAction(token, submittalId)
-        .then((items) => setItemsBySubmittal((prev) => ({ ...prev, [submittalId]: items })))
-        .catch((error) => console.error("Failed to load submittal items", error))
+        .then((items) => {
+          if (!controller.signal.aborted) setItemsBySubmittal((prev) => ({ ...prev, [submittalId]: items }))
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) console.error("Failed to load submittal items", error)
+        })
     }
-  }, [queue, itemsBySubmittal, token])
+    return () => controller.abort()
+  }, [queue, token])
 
   const handleDecide = (entry: ReviewerQueueEntry) => {
+    const controller = documentRead.current
     const stepId = entry.step.id
     const decision = decisionByStep[stepId] ?? "approved"
     setDecidingStepId(stepId)
@@ -73,18 +95,21 @@ export function ReviewerSubmittalsTab({ initialQueue, token }: ReviewerSubmittal
         if (file) formData.set("markup_file", file)
 
         await decideReviewerStepAction(token, formData)
+        if (!controller || controller.signal.aborted) return
         toast.success("Review returned", {
           description: `Submittal #${entry.submittal.submittal_number} — ${decisionLabels[decision] ?? decision}`,
         })
         const refreshed = await loadReviewerQueueAction(token)
+        if (controller.signal.aborted) return
         setQueue(refreshed)
         router.refresh()
       } catch (error) {
+        if (!controller || controller.signal.aborted) return
         toast.error("Failed to return review", {
           description: error instanceof Error ? error.message : "Please try again.",
         })
       } finally {
-        setDecidingStepId(null)
+        if (controller && !controller.signal.aborted) setDecidingStepId(null)
       }
     })
   }

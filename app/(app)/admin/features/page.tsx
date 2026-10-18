@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -17,7 +18,8 @@ async function FeatureFlagsData() {
 }
 
 async function FeaturesPageContent() {
-  await requireAnyPermissionGuard(["features.manage", "platform.feature_flags.manage"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.feature_flags.manage"])
 
   return (
     <PageLayout
@@ -46,7 +48,17 @@ function FeatureFlagsSkeleton() {
 
 export default function FeaturesPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="Feature Flags"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "Feature Flags" },
+      ]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <FeaturesPageContent />
     </Suspense>
   )

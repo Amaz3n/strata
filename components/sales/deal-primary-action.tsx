@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useState } from "react"
 
-import type { PipelineCommunityOption } from "@/components/prospects/prospect-presentation"
+import type { SalesCommunityOption } from "@/components/sales/community-option"
 import { FindAHomeDialog } from "@/components/sales/find-a-home-dialog"
 import type { HoldBuyer } from "@/components/sales/lot-hold-form"
 import { PurchaseAgreementSheet } from "@/components/sales/purchase-agreement-sheet"
@@ -32,10 +32,12 @@ export function DealPrimaryAction({
   buyer,
   communities,
   reserveTarget,
+  canManageSale,
 }: {
+  canManageSale: boolean
   deal: SalesDeal
   buyer: HoldBuyer | null
-  communities: PipelineCommunityOption[]
+  communities: SalesCommunityOption[]
   /** Null when there is no live reservation to reserve or paper. */
   reserveTarget: ReserveLotTarget | null
 }) {
@@ -65,13 +67,13 @@ export function DealPrimaryAction({
       <Button
         size="sm"
         className="rounded-none"
-        disabled={blocked || !isInPlace(action.kind)}
+        disabled={!canManageSale || blocked || !isInPlace(action.kind)}
         onClick={() => setOpenKind(isInPlace(action.kind) ? action.kind : null)}
       >
         {action.label}
       </Button>
 
-      {buyer ? (
+      {canManageSale && buyer ? (
         <FindAHomeDialog
           buyer={buyer}
           communities={communities}
@@ -80,7 +82,7 @@ export function DealPrimaryAction({
         />
       ) : null}
 
-      {reserveTarget ? (
+      {canManageSale && reserveTarget ? (
         <>
           <ReserveLotDialog
             target={reserveTarget}

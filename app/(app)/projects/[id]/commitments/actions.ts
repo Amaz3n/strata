@@ -1,9 +1,11 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { z } from "zod"
 
 import { commitmentInputSchema, commitmentUpdateSchema, commitmentLineInputSchema, commitmentLineUpdateSchema, commitmentExecutionSchema } from "@/lib/validation/commitments"
-import { createCommitment, updateCommitment, listCommitmentLines, createCommitmentLine, updateCommitmentLine, deleteCommitmentLine, getCommitmentDetail, executeCommitment } from "@/lib/services/commitments"
+import { createCommitmentWithLine, updateCommitment, listCommitmentLines, createCommitmentLine, updateCommitmentLine, deleteCommitmentLine, getCommitmentDetail, executeCommitment } from "@/lib/services/commitments"
+import { getPoIssuance } from "@/lib/services/po-acknowledgments"
 import {
   approveCommitmentChangeOrder,
   createCommitmentChangeOrder,
@@ -35,26 +37,15 @@ function revalidateCommitmentSurfaces(projectId: string, companyId?: string | nu
   if (companyId) revalidatePath(`/directory/${companyId}/commitments`)
 }
 
-export async function createProjectCommitmentAction(projectId: string, input: unknown) {
-  return run(async () => {
-    const parsed = commitmentInputSchema.parse({ ...(input as any), project_id: projectId })
-    const result = await createCommitment({ input: parsed })
-    revalidateCommitmentSurfaces(projectId, parsed.company_id)
-    return result
-  })
-}
-
 /**
  * A commitment with no lines contributes nothing to the budget rollup, so the
  * one-step create always lands a line with it.
  */
 export async function createProjectCommitmentWithLineAction(projectId: string, input: unknown) {
   return run(async () => {
-    const payload = input as { commitment?: unknown; line?: unknown }
-    const parsed = commitmentInputSchema.parse({ ...(payload.commitment as any), project_id: projectId })
-    const lineInput = commitmentLineInputSchema.parse(payload.line)
-    const result = await createCommitment({ input: parsed })
-    await createCommitmentLine(result.id, lineInput)
+    const payload = z.object({ commitment: z.record(z.string(), z.unknown()), line: z.unknown() }).parse(input)
+    const parsed = commitmentInputSchema.parse({ ...payload.commitment, project_id: projectId })
+    const result = await createCommitmentWithLine({ input: parsed, line: commitmentLineInputSchema.parse(payload.line) })
     revalidateCommitmentSurfaces(projectId, parsed.company_id)
     return result
   })
@@ -73,6 +64,10 @@ export async function getCommitmentDetailAction(commitmentId: string) {
   return run(() => getCommitmentDetail(commitmentId))
 }
 
+export async function getPoIssuanceAction(commitmentId: string) {
+  return run(() => getPoIssuance(commitmentId))
+}
+
 /** Records an agreement signed outside Arc, with the countersigned document. */
 export async function executeProjectCommitmentAction(
   projectId: string,
@@ -88,7 +83,7 @@ export async function executeProjectCommitmentAction(
 }
 
 export async function listCommitmentLinesAction(commitmentId: string) {
-  return await listCommitmentLines(commitmentId)
+  return run(() => listCommitmentLines(commitmentId))
 }
 
 export async function createCommitmentLineAction(commitmentId: string, input: unknown) {
@@ -112,7 +107,7 @@ export async function deleteCommitmentLineAction(lineId: string) {
 }
 
 export async function listCommitmentChangeOrdersAction(commitmentId: string) {
-  return await listCommitmentChangeOrders({ commitmentId })
+  return run(() => listCommitmentChangeOrders({ commitmentId }))
 }
 
 export async function createCommitmentChangeOrderAction(projectId: string, input: unknown) {
@@ -152,7 +147,7 @@ export async function approveCommitmentChangeOrderAction(
 export async function voidCommitmentChangeOrderAction(
   projectId: string,
   commitmentChangeOrderId: string,
-  reason?: string | null,
+  reason: string,
 ) {
   return run(async () => {
     const result = await voidCommitmentChangeOrder({ commitmentChangeOrderId, reason })
@@ -180,5 +175,12 @@ export async function generateSubcontractDocumentAction(projectId: string, commi
     const result = await generateSubcontractSigningDocument({ commitmentId })
     revalidateCommitmentSurfaces(projectId)
     return result
+  })
+}
+
+export async function previewSubcontractPdfAction(commitmentId: string) {
+  return run(async () => {
+    const { renderSubcontractPreview } = await import("@/lib/services/subcontract-documents")
+    return { pdfBase64: await renderSubcontractPreview({ commitmentId }) }
   })
 }

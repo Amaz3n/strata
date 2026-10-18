@@ -1,0 +1,262 @@
+{
+  "scenario": "BID-01",
+  "reviewedFrom": "EP08-03 and EP08-05 (docs/enterprise-production/completion-checklist.json), the EP08 owner decisions of 2026-10-15 (write fence on bid and price-book tables, immutable ancestry and issued packages, division-fenced agreements; a different vendor winning a rebid ends the incumbent at the buyer-chosen effective date, rescind restores the displaced price unless it changed since, reason required on void/end/reprice, award notices to every bidder) and the W-A audit. Code: lib/services/{bids,price-book}.ts, lib/financials/{award-displacement,renewal-compare}.ts; migration 20261015100000_bid_and_price_book_fences. Values are derived from each subcase's inputs and confirmed by the first run on the acceptance stack.",
+  "subcases": {
+    "bid-and-price-book-writes-are-fenced-at-the-data-api": {
+      "derivation": "A package on the community and plan has one Palmetto bid. In their own sessions a sales agent (no bid.write, no price_book.write) cannot rename the package (the update policy filters it: no rows) nor add a scope line or an agreement (row-level security). The unrestricted purchasing manager's rename and org-wide agreement land. A purchasing manager limited to the community's division can add an agreement on that community but not an org-wide one, and a manager of the other division cannot add one on it (the restrictive division policy names itself). Planting an award-sourced agreement is refused by the insert guard. After the award the owner cannot stamp it rescinded (no write grant), reopen the package, clear its plan, retarget it or move its invite, and a direct UPDATE of the agreement matches no row (there is no member update policy). Each refusal raises inside a block, so nothing a refusal test attempts persists. The reasoned void through the service refuses a blank reason, voids, reports no orders priced from a fresh agreement and leaves one event.",
+      "expected": {
+        "dataApi": {
+          "beforeAward": {
+            "salesRenamesPackage": "no rows touched",
+            "salesAddsScopeLine": "new row violates row-level security policy for table \"bid_scope_items\"",
+            "salesAddsAgreement": "new row violates row-level security policy for table \"vendor_price_agreements\"",
+            "buyerRenamesPackage": "landed",
+            "buyerAddsOrgWideAgreement": "landed",
+            "gulfBuyerAddsOrgWideAgreement": "new row violates row-level security policy \"vendor_price_agreements_division_scope\" for table \"vendor_price_agreements\"",
+            "gulfBuyerAddsOwnCommunityAgreement": "landed",
+            "atlanticBuyerAddsGulfCommunityAgreement": "new row violates row-level security policy \"vendor_price_agreements_division_scope\" for table \"vendor_price_agreements\"",
+            "buyerPlantsAwardSourcedAgreement": "A price agreement is created as a manual or imported draft or active row; awards, repricing and supersession go through their own paths"
+          },
+          "afterAward": {
+            "ownerStampsAwardRescinded": "permission denied for table bid_awards",
+            "ownerReopensAwardedPackage": "An awarded bid package reopens by rescinding its award",
+            "ownerClearsAwardedPackagePlan": "An issued bid package keeps its community, plan and cost code",
+            "ownerRetargetsPackage": "A bid package's award target is fixed when it is created",
+            "ownerMovesInviteToAnotherPackage": "A bid invites cannot move to another parent",
+            "ownerVoidsAgreementDirectly": "no rows touched"
+          }
+        },
+        "service": {
+          "statusAfterForgery": "active",
+          "voidWithoutReason": "refused: reason required",
+          "voidedStatus": "void",
+          "voidedAffectedOrders": 0,
+          "voidEvents": 1
+        }
+      }
+    },
+    "rebid-by-a-different-vendor-ends-the-incumbent-on-the-chosen-date": {
+      "derivation": "Palmetto Framing holds a community-and-plan price of 5,000 cents per sf (1,000 sf bid at 5,000,000) ending in 60 days. A rebid package takes Gulf Concrete at 4,500 and Palmetto at 4,800, each with an invited email. The award sheet's preview for Gulf's bid, starting in 10 days, replaces Palmetto's 5,000 with 4,500 (-10%) ending the day before. An effective date of yesterday is refused. The renewal view lists the expiring incumbent with its two bids and Gulf lowest. Awarding for day 10 leaves Palmetto active ending on day 9 and replaced by the new row, Gulf's row active from day 10 at 4,500; the price book resolves to Palmetto today and on day 9 and to Gulf on day 10. The winner and the other bidder are each queued an award notice.",
+      "expected": {
+        "preview": [
+          [
+            {
+              "vendor": "Palmetto Framing",
+              "wasCents": 5000,
+              "nowCents": 4500,
+              "deltaPct": -10,
+              "endsOn": "day before the chosen date"
+            }
+          ]
+        ],
+        "pastDate": {
+          "refusal": "refused: effective date"
+        },
+        "renewal": {
+          "bids": 2,
+          "lowest": "Gulf Concrete"
+        },
+        "handover": {
+          "incumbent": {
+            "status": "active",
+            "endsDayBeforeStart": true,
+            "replacedByMinted": true
+          },
+          "minted": {
+            "status": "active",
+            "startsOnChosenDate": true,
+            "cents": 4500,
+            "fromAward": true
+          },
+          "today": {
+            "vendor": "Palmetto Framing",
+            "cents": 5000
+          },
+          "dayBeforeStart": {
+            "vendor": "Palmetto Framing",
+            "cents": 5000
+          },
+          "onStart": {
+            "vendor": "Gulf Concrete",
+            "cents": 4500
+          }
+        },
+        "notices": [
+          {
+            "outcome": "not_selected",
+            "recipient": "palmetto@bid01.example.test"
+          },
+          {
+            "outcome": "winner",
+            "recipient": "gulf@bid01.example.test"
+          }
+        ]
+      }
+    },
+    "rescinding-restores-the-prior-price-and-void-end-need-a-reason": {
+      "derivation": "Continues the rebid. A sales agent and a blank reason cannot rescind the rebid award. The purchasing manager (bid.write, no project.manage) rescinds with a reason: the minted Gulf row is void, Palmetto's incumbent is active again ending on its original date with no successor, the package is closed and tomorrow prices from Palmetto at 5,000; no purchase order was generated from the rows so none is affected. Palmetto's rebid bid can then be awarded for day 10 and that award rescinded again, restoring the incumbent a second time. Ending the incumbent needs a reason; a manager of the other division cannot see it; a manager of its own division ends it on a chosen date and the reason is recorded on the row; voiding the already-void minted row is refused.",
+      "expected": {
+        "rescindRefusals": {
+          "salesConsultant": "refused: missing permission",
+          "noReason": "refused: reason required"
+        },
+        "rescind": {
+          "voided": 1,
+          "restored": 1,
+          "skipped": 0,
+          "affectedOrders": 0,
+          "minted": "void",
+          "incumbent": {
+            "status": "active",
+            "endsOnItsOriginalDate": true,
+            "replacedBy": null
+          },
+          "packageStatus": "closed",
+          "priceTomorrow": {
+            "vendor": "Palmetto Framing",
+            "cents": 5000
+          }
+        },
+        "reAward": {
+          "agreements": 1,
+          "restoredOnSecondRescind": 1
+        },
+        "end": {
+          "noReason": "refused: reason required",
+          "otherDivisionBuyer": "refused: outside division",
+          "divisionBuyerEndsIt": {
+            "status": "active",
+            "endsOn": true,
+            "recordedEndedOn": true,
+            "reason": "Seasonal contract ends"
+          },
+          "voidingAVoidRow": "refused: not active"
+        }
+      }
+    },
+    "concurrent-awards-for-the-same-scope-leave-one-active-price": {
+      "derivation": "Two packages for the same community, plan and cost code, one bid each (Gulf 4,000 and Palmetto 3,900), are awarded by two database sessions released together for the same effective date 30 days out. The award function serializes on the scope: whichever runs second finds the first's row due to start the same day and supersedes it outright, so both calls succeed, exactly one of the two rows is active from that date and the other is superseded.",
+      "expected": {
+        "bothSucceeded": true,
+        "activeFromTheDate": 1,
+        "supersededOutright": 1
+      }
+    },
+    "bid-lines-price-only-their-own-package": {
+      "derivation": "Two packages each hold one bid. As a purchasing manager in their own session, re-pointing package A's bid line to package B's scope item is refused by the response fence (a member may only level a bid), as is inserting a line on A's submission. The line-to-package trigger that binds the writers the fence lets through is exercised twice: in the PGlite suite by name (service role insert on another package's scope item), and here through the bid service's own manual-entry write, which runs as the service role and so passes the response fence: a manual bid entered on package A with a line pricing package B's scope item is refused by that trigger ('A bid line must price a scope item of the package it bids on'), and the whole entry rolls back. Awarding A then mints its agreement from A's own cost code (06-100).",
+      "expected": {
+        "repointLineToAnotherPackage": "A vendor's bid cannot be changed; only its leveling can",
+        "insertLineOnAnotherPackage": "A bid response is recorded through the bid service, not edited as data",
+        "awardMintsFromOwnScope": true,
+        "manualEntryOnAnotherPackagesScopeItem": "refused: scope item of its own package"
+      }
+    },
+    "rescind-restores-an-incumbent-the-sweep-expired": {
+      "derivation": "Bright Electric holds an electrical price ending in 60 days; a rebid by Coastal Plumbing is awarded from day 10. The incumbent stays active until day 9; the maintenance sweep flips an active row to expired once its end date passes, which the scenario stands in for by setting the status directly. The purchasing manager's rescind voids Coastal's row and restores the incumbent: active again with its original end date and no successor, none skipped.",
+      "expected": {
+        "voided": 1,
+        "restored": 1,
+        "skipped": 0,
+        "incumbent": {
+          "status": "active",
+          "endsOnItsOriginalDate": true,
+          "replacedBy": null
+        },
+        "mintedRow": "void"
+      }
+    },
+    "plan-only-packages-need-unrestricted-division-scope": {
+      "derivation": "The seeded plans are organisation-wide. A buyer limited to the community's division creating a plan-only package is refused by the service (the plan is shared only beside one of the member's own communities) and by the data API (restrictive policy: row-level security); the same buyer with a community and the plan succeeds, and an unrestricted buyer's plan-only package succeeds.",
+      "expected": {
+        "service": {
+          "divisionLimitedPlanOnly": "refused: plan alone prices every division",
+          "divisionLimitedCommunityAndPlan": "allowed",
+          "unrestrictedPlanOnly": "allowed"
+        },
+        "dataApi": "refused: row-level security"
+      }
+    },
+    "bidder-uses-the-portal-on-a-community-package": {
+      "status": "NOT_IMPLEMENTED",
+      "requires": "storage",
+      "reason": "The bid portal needs BID_PORTAL_SECRET and file storage, which the stack has only under --storage-env. Rules to prove when available: the quote upload row has no project or prospect and carries the invite in its metadata (it used to put the community id in files.project_id and violate the foreign key); a project RFI is refused for a package with no project; submission file_ids must be files uploaded under that invite. They are covered by the service code and unit tests, not yet by the stack."
+    },
+    "a-vendors-quote-is-not-rewritable-by-a-member": {
+      "derivation": "A package for electrical on the community and plan holds one Bright Electric bid of 2,000,000 cents for 1,000 sf. In the purchasing manager's own session, before and after the award, changing the line's price or the submission's total is refused by the response fence, and deleting the line is refused (members level a bid, the service records it). Setting the line's leveling plug and note still lands. After the award is rescinded through the service, the package re-awards from the stored lines: 2,000,000 / 1,000 sf = 2,000 cents per sf both times, and the stored amount and total are untouched.",
+      "expected": {
+        "beforeAward": {
+          "rewriteLinePrice": "A vendor's bid cannot be changed; only its leveling can",
+          "rewriteTotal": "A vendor's bid cannot be changed; only its leveling can",
+          "deleteLine": "A bid response is recorded through the bid service, not edited as data"
+        },
+        "afterAward": {
+          "rewriteLinePrice": "A vendor's bid cannot be changed; only its leveling can",
+          "rewriteTotal": "A vendor's bid cannot be changed; only its leveling can",
+          "deleteLine": "A bid response is recorded through the bid service, not edited as data"
+        },
+        "leveling": "landed",
+        "storedAmountCents": 2000000,
+        "storedTotalCents": 2000000,
+        "firstAwardCents": 2000,
+        "reAwardCents": 2000
+      }
+    },
+    "a-rescind-and-an-award-for-one-scope-leave-one-active-price": {
+      "derivation": "A plumbing scope (community, plan, 22-000) has Coastal Plumbing's price, replaced the same day by Bright Electric's award (Coastal superseded). A challenger package (Palmetto Framing) is awarded by one database session while another rescinds Bright's award, released together. Both take the same scope lock, so they run one after the other. Rescind first: Bright's row is voided, Coastal is restored, then the challenger's award displaces Coastal. Award first: the challenger displaces Bright's row, then the rescind finds nothing active to void and restores nothing. Either way both calls succeed and exactly one price is active: the challenger's.",
+      "expected": {
+        "bothSucceeded": true,
+        "activePrices": [
+          "Palmetto Framing"
+        ]
+      }
+    },
+    "an-invite-is-the-vendors-identity-on-a-package": {
+      "derivation": "A package for site work (31-000) on the community and plan holds one Cypress Sitework bid of 3,000,000 cents for 1,000 sf. In the purchasing manager's own session, before and after the award, pointing the invite at Gulf Concrete or at another email address is refused by the invite fence ('An invite belongs to the vendor it was sent to; invite the other vendor instead'). An update that leaves the vendor and address alone (updated_at) touches the one invite and is reported as landed. The award mints its agreement to the vendor who bid: Cypress.",
+      "expected": {
+        "beforeAward": {
+          "swapVendor": "An invite belongs to the vendor it was sent to; invite the other vendor instead",
+          "swapContact": "An invite belongs to the vendor it was sent to; invite the other vendor instead"
+        },
+        "afterAward": {
+          "swapVendor": "An invite belongs to the vendor it was sent to; invite the other vendor instead",
+          "swapContact": "An invite belongs to the vendor it was sent to; invite the other vendor instead"
+        },
+        "harmless": "landed",
+        "awardMintedToTheBidder": true
+      }
+    },
+    "rescinding-after-a-reprice-voids-the-whole-chain": {
+      "derivation": "Site work (31-000): Cypress Sitework holds an incumbent price from its award (3,000,000 over 1,000 sf = 3,000 per sf). A replacement package takes Gulf Concrete at 2,800,000 (2,800 per sf), awarded today, which supersedes Cypress's row (a different vendor, effective today). The buyer reprices Gulf's price to 2,600 effective in 5 days: the repriced successor is a new row that keeps the award's id, and the original minted row is superseded. The rescind dialog's impact counts the one live minted row (the repriced one) and one price to restore. Rescinding the award voids the repriced row (the only active row of the chain), leaves the original minted row superseded as history, and restores Cypress: restored 1, skipped 0, Cypress active again with no successor.",
+      "expected": {
+        "before": {
+          "repricedKeepsTheAward": true,
+          "incumbent": "superseded"
+        },
+        "impact": {
+          "agreements": 1,
+          "restorable": 1
+        },
+        "rescind": {
+          "voided": 1,
+          "restored": 1,
+          "skipped": 0
+        },
+        "original": "superseded",
+        "repriced": "void",
+        "incumbent": {
+          "status": "active",
+          "replacedBy": null
+        }
+      }
+    },
+    "a-rescind-and-an-award-for-one-package-never-deadlock": {
+      "derivation": "One package for concrete (03-300) with two bids, Gulf's awarded first. A rescind of Gulf's award and a second award (Cypress's bid) for the same package are released together from two database sessions. Both now take the scope lock first and the package row second, so they queue rather than interleave: rescind first, the award then succeeds; award first, it is refused because the package is already awarded. The rescind succeeds either way, no session reports a deadlock, and the number of active prices from this package equals its number of active awards (1 after rescind-then-award, 0 after award-refused-then-rescind).",
+      "expected": {
+        "rescindSucceeded": true,
+        "noDeadlock": true,
+        "awardOutcomeIsOrdered": true,
+        "activePricesMatchActiveAwards": true
+      }
+    }
+  }
+}

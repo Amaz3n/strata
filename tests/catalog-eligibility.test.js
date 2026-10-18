@@ -1,0 +1,123 @@
+require("../scripts/register-ts-node-test")
+const assert = require("node:assert/strict")
+const fs = require("node:fs")
+const vm = require("node:vm")
+const ts = require("typescript")
+const test = require("node:test")
+
+function resolver({ options = [], packages = [], prices = [], categories = null, rowCap = 1000 } = {}) {
+  const tables = { selection_categories: categories ?? [...new Set(options.map((row) => row.category_id))].map((id) => ({ id, parent_category_id: null, community_id: null, is_archived: false })), selection_options: options, selection_packages: packages, selection_catalog_prices: prices.map((row,i) => ({ id: `price-${String(i).padStart(5, "0")}`, ...row })) }
+  const supabase = { from(table) {
+    let rows = tables[table]
+    let pageLimit = 1000
+    const query = { returns() { return query }, select() { return query }, eq(key, value) { if (key !== "org_id" && key !== "house_plan_version_id") rows = rows.filter((row) => row[key] === value); return query },
+      order() { rows = [...rows].sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0); return query }, limit(value) { pageLimit = value; return query }, gt(key,value) { rows = rows.filter(row => row[key] > value); return query }, range(from, to) { rows = rows.slice(from, to + 1); return query }, in(key, values) { rows = rows.filter((row) => values.includes(row[key])); return query }, or() { return query },
+      then(resolve, reject) { return Promise.resolve({ data: rows.slice(0, Math.min(pageLimit, rowCap)), error: null }).then(resolve, reject) },
+    }; return query
+  } }
+  const compiled = { exports: {} }
+  const source = fs.readFileSync(require.resolve("../lib/services/option-catalog.ts"), "utf8")
+  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, { exports: compiled.exports, require(id) {
+    if (id === "zod") return require("zod")
+    if (id === "@/lib/validation/selections") return require("../lib/validation/selections")
+    if (id === "@/lib/land/paging") return require("../lib/land/paging")
+    if (id === "@/lib/supabase/server") return { createServiceSupabaseClient: () => supabase }
+    if (id === "@/lib/selections/catalog-math") return require("../lib/selections/catalog-math")
+    return {}
+  } })
+  return compiled.exports.resolveOptionPricing
+}
+const option = { id: "option", category_id: "category", community_id: null, price_cents: 100, cost_cents: 60, is_available: true, is_archived: false }
+
+test("archiving an option overrides a stale available plan price", async () => {
+  const resolve = resolver({ options: [{ ...option, is_archived: true }], prices: [{ option_id: "option", community_id: null, price_cents: 200, cost_cents: 100, is_available: true }] })
+  const [result] = await resolve({ orgId: "org", housePlanVersionId: "plan", items: [{ optionId: "option" }] })
+  assert.equal(result.available, false)
+})
+
+test("community-only options cannot be selected from another community or without a community", async () => {
+  const resolve = resolver({ options: [{ ...option, community_id: "oak" }] })
+  for (const communityId of [undefined, "pine"]) {
+    const [result] = await resolve({ orgId: "org", communityId, items: [{ optionId: "option" }] })
+    assert.equal(result.available, false)
+  }
+  assert.equal((await resolve({ orgId: "org", communityId: "oak", items: [{ optionId: "option" }] }))[0].available, true)
+})
+
+test("archived or out-of-community packages cannot be restored by pricing records", async () => {
+  for (const patch of [{ is_archived: true }, { community_id: "other" }]) {
+    const resolve = resolver({ packages: [{ id: "package", price_cents: 100, is_available: true, ...patch }] })
+    assert.equal((await resolve({ orgId: "org", communityId: "oak", items: [{ packageId: "package" }] }))[0].available, false)
+  }
+})
+
+test("a community override keeps the selection category and resolves the correct option ID", async () => {
+  const override = { ...option, id: "override", parent_option_id: "option", community_id: "oak", price_cents: 250 }
+  const resolve = resolver({ options: [option, override] })
+  const [result] = await resolve({ orgId: "org", communityId: "oak", items: [{ optionId: "option" }] })
+  assert.equal(result.optionId, "override")
+  assert.equal(result.categoryId, "category")
+  assert.equal(result.priceCents, 250)
+  const invalid = resolver({ options: [option, { ...override, category_id: "different" }] })
+  await assert.rejects(invalid({ orgId: "org", communityId: "oak", items: [{ optionId: "option" }] }), /different selection category/)
+})
+
+test("pricing a requested item does not truncate behind a large unrelated plan catalog", async () => {
+  const prices = Array.from({ length: 1203 }, (_, index) => ({ option_id: `unrelated-${index}`, community_id: null, price_cents: 1, cost_cents: 1, is_available: true }))
+  prices.push({ option_id: "option", community_id: null, price_cents: 900, cost_cents: 400, is_available: true })
+  const resolve = resolver({ options: [option], prices })
+  const [result] = await resolve({ orgId: "org", housePlanVersionId: "plan", items: [{ optionId: "option" }] })
+  assert.equal(result.priceCents, 900)
+})
+
+test("the resolved community override's plan price takes priority over its parent price", async () => {
+  const resolve = resolver({ options: [option, { ...option, id: "override", parent_option_id: "option", community_id: "oak" }], prices: [
+    { option_id: "option", community_id: "oak", price_cents: 200, cost_cents: 100, is_available: true },
+    { option_id: "override", community_id: "oak", price_cents: 350, cost_cents: 150, is_available: true },
+  ] })
+  const [result] = await resolve({ orgId: "org", communityId: "oak", housePlanVersionId: "plan", items: [{ optionId: "option" }] })
+  assert.equal(result.priceCents, 350)
+})
+
+
+test("large requested catalogs are chunked without losing items after the first thousand", async () => {
+  const options = Array.from({ length: 1203 }, (_, index) => ({ ...option, id: `option-${index}` }))
+  const resolve = resolver({ options })
+  const result = await resolve({ orgId: "org", items: options.map((item) => ({ optionId: item.id })) })
+  assert.equal(result.length, 1203)
+  assert.equal(result.at(-1).optionId, "option-1202")
+})
+
+test("ambiguous override and duplicate price configuration fail instead of picking arbitrary pricing", async () => {
+  const override = { ...option, parent_option_id: "option", community_id: "oak" }
+  await assert.rejects(resolver({ options: [option, { ...override, id: "one" }, { ...override, id: "two" }] })({ orgId: "org", communityId: "oak", items: [{ optionId: "option" }] }), /Multiple community overrides/)
+  const price = { option_id: "option", community_id: null, price_cents: 100, cost_cents: 50, is_available: true }
+  await assert.rejects(resolver({ options: [option], prices: [price, { ...price, price_cents: 999 }] })({ orgId: "org", housePlanVersionId: "plan", items: [{ optionId: "option" }] }), /Multiple prices/)
+})
+
+
+test("community category overrides remain compatible with the original home selection category", async () => {
+  const resolve = resolver({ options: [option, { ...option, id: "override", parent_option_id: "option", category_id: "community-category", community_id: "oak" }], categories: [
+    { id: "category", parent_category_id: null, community_id: null, is_archived: false },
+    { id: "community-category", parent_category_id: "category", community_id: "oak", is_archived: false },
+  ] })
+  const [result] = await resolve({ orgId: "org", communityId: "oak", items: [{ optionId: "option" }] })
+  assert.equal(result.available, true)
+  assert.ok(result.categoryIds.includes("category"))
+  assert.ok(result.categoryIds.includes("community-category"))
+})
+
+test("archived categories make their options unavailable", async () => {
+  const resolve = resolver({ options: [option], categories: [{ id: "category", parent_category_id: null, community_id: null, is_archived: true }] })
+  assert.equal((await resolve({ orgId: "org", items: [{ optionId: "option" }] }))[0].available, false)
+})
+
+test("short provider pages preserve every catalog item and plan-specific price", async () => {
+  const options = Array.from({ length: 12 }, (_, i) => ({ ...option, id: `option-${String(i).padStart(3, "0")}` }))
+  const prices = options.map((row, i) => ({ option_id: row.id, package_id: null, community_id: null, price_cents: 200 + i, cost_cents: 100, is_available: true }))
+  const resolve = resolver({ options, prices, rowCap: 3 })
+  const result = await resolve({ orgId: "org", housePlanVersionId: "plan", items: options.map(row => ({ optionId: row.id })) })
+  assert.equal(result.length, 12)
+  assert.equal(result.at(-1).available, true)
+  assert.equal(result.at(-1).priceCents, 211)
+})

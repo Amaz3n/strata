@@ -1,0 +1,116 @@
+{
+  "scenario": "SCALE-01",
+  "reviewedFrom": "EP13-01 and EP13-02 (docs/enterprise-production/completion-checklist.json): the first-builder target (3 divisions, 30 communities, 1,500 lots, 500 active homes, 2,500 installed homes with warranty history, 50 concurrent users; desk p95 at most 2 s, mutation p95 at most 1.5 s) is built reproducibly in an isolated acceptance org and run as a mixed-role workload with post-run invariants. The acceptance app is `next dev`, so the page targets are NOT PROVEN here: both page subcases are blocked until they run against a production build. Write latency is service-call time (the service the page's server action calls, in-process; no server-action round trip or revalidation render). Mobile is out of scope.",
+  "subcases": {
+    "first-builder-dataset": {
+      "inputs": {
+        "profile": "first-builder",
+        "prngSeed": 20261020,
+        "seedBudgetSeconds": 900
+      },
+      "derivation": "production-scale-seed.cjs builds the small production builder of production-seed.cjs (its community of 50 lots), then one template home per kind through the real services on lots 1-10 (installed quiet, installed with a resolved warranty request, installed with an open one, building, completed, spec, ready, sold, reserved, hold), then copies the template community 29 times (three divisions, ten communities each) and the template homes onto lots by the profile's mix with the fixed PRNG seed, each copy moved back in whole weeks so homes are spread over the build cycle and installed homes over ten years of closings. Active 500: reserved 10% = 50, sold 14% = 70, ready 10% = 50, building 44% = 220, spec 14% = 70, completed 8% = 40. Installed 2,500: quiet 70% = 1,750, one resolved request 26% = 650, one open request 4% = 100. Homes: 3,000. Lots: the 1,500 community lots (assigned = reserved + sold + ready = 170; started = building + completed + spec = 330; 60 developed lots carry the holds; the three installed templates are closed; the other 937 are controlled) plus one closed lot per installed copy (2,497), so closed = 2,500. Start packages: released = installed + started = 2,830, ready = 50. Reservations: converted = installed + sold + ready + building + completed = 2,880, reserved 50, hold 60. Prospects = 2,880 + 50 + 60 + 300 walk-ins = 3,290. Agreements: one active per converted reservation, 2,880 at the templates' prices. Purchase orders: the templates' orders per home (approved on every released home, draft on spec homes awaiting approval). Members: the 10 of the small builder plus starts, purchasing, warranty, land and design per division (15), sales per two communities (15) and a superintendent per 12.5 active homes (40) = 80.",
+      "expected": {
+        "shape": {
+          "divisions": 3,
+          "communities": 30,
+          "members": 80,
+          "homes": 3000,
+          "closedHomes": 2500,
+          "warrantyCoverage": 2500
+        },
+        "placement": {
+          "active": {
+            "reserved": 50,
+            "sold": 70,
+            "ready": 50,
+            "building": 220,
+            "spec": 70,
+            "completed": 40
+          },
+          "installed": {
+            "quiet": 1750,
+            "resolved": 650,
+            "open": 100
+          }
+        },
+        "lots": {
+          "assigned": 170,
+          "closed": 2500,
+          "controlled": 937,
+          "developed": 60,
+          "started": 330
+        },
+        "queues": {
+          "startPackages": {
+            "ready": 50,
+            "released": 2830
+          },
+          "reservations": {
+            "converted": 2880,
+            "hold": 60,
+            "reserved": 50
+          },
+          "warrantyRequests": {
+            "open": 100,
+            "resolved": 650
+          },
+          "prospects": 3290
+        },
+        "money": {
+          "agreements": {
+            "n": 2880,
+            "cents": "128123000000"
+          },
+          "purchaseOrders": {
+            "approved": {
+              "n": 13800,
+              "cents": "76601400000"
+            },
+            "draft": {
+              "n": 350,
+              "cents": "1899800000"
+            }
+          }
+        }
+      }
+    },
+    "desk-render-at-scale": {
+      "inputs": {
+        "rounds": 20,
+        "deskP95Ms": 2000
+      },
+      "derivation": "One member of each role (the first division's starts coordinator, purchasing manager and warranty manager, the first sales agent, the first superintendent) opens their desk once untimed and then 20 times timed, alone on the app; the superintendent also opens one of their started homes. Each must render every time (HTTP 200, no error state) with p95 within the frozen 2 s desk target. This isolates what a desk costs to build at this volume from queueing behind other sessions. Blocked: on `next dev` single views stall on recompiles and the development process restarts near its memory threshold (cut-off requests: terminated, fetch failed), so a pass or a failure there says nothing about production; it is judged only against a production build. The 2026-10-17 run judged the median after p95 failed; that loosening is withdrawn.",
+      "expected": {},
+      "blocked": "Needs a production build of the app: the acceptance app is `next dev`, where single views stall on recompiles and the process restarts near its memory threshold. Measured on next dev with --include-pending; not proven."
+    },
+    "mixed-role-load": {
+      "inputs": {
+        "sessions": 50,
+        "minutes": 5,
+        "thinkSeconds": [
+          5,
+          15
+        ],
+        "mutationP95Ms": 1500
+      },
+      "derivation": "50 sessions by role share (largest remainder): superintendents 40% = 20, sales 24% = 12, starts, purchasing and warranty 12% = 6 each. The profile has one starts coordinator, purchasing manager and warranty manager per division (3 each), so those 18 sessions share 9 members, two sessions apiece: 41 distinct members, each signed in once. Each session draws from its own PRNG (the profile seed plus its index), so the workload does not depend on how requests interleave. Each session, after a staggered arrival, loops for 5 minutes with 5-15 s think time: 20% of actions are its role's write through the service its page's server action calls (starts sets an even-flow release slot 8-15 weeks out, purchasing approves a draft purchase order in its division, sales registers a walk-in, warranty opens a request on a closed home, a superintendent files today's daily log on one of their homes), the rest open the desk or (20% of reads) one of their homes. After a warm-up the database is read before and after. Invariants: the starts queue, lot statuses, active agreements and succeeded deposits do not move; approved orders gain and draft orders lose exactly the approvals' count and cents and the purchase-order total does not change; prospects, warranty requests, daily logs and release slots grow by exactly what the workload wrote. Every role's write runs, with no errors and p95 within the 1.5 s mutation target. Write latency is service-call time: the service the page's server action calls, run in-process, without the server-action round trip or the revalidation render.",
+      "expected": {
+        "writeSurfaces": [
+          "write purchasing: purchase order approval",
+          "write sales: walk-in registration",
+          "write starts: release slot",
+          "write superintendent: daily log",
+          "write warranty: warranty request"
+        ]
+      }
+    },
+    "desk-p95-under-load": {
+      "inputs": {
+        "deskP95Ms": 2000
+      },
+      "derivation": "The page side of mixed-role-load: every desk and the home workbench render without errors with p95 within 2 s at 50 sessions. Blocked: the acceptance app is one `next dev` process, which builds about one page a second at this volume (a desk alone takes 1-1.7 s) and restarts itself when it nears its memory threshold, so 50 sessions queue behind it (page p50 near 30 s) and some requests are cut off by the restarts (503, terminated). The database side is measured in mixed-role-load (statement totals in its evidence); the page target needs a production build of the app, measured on a production-like host.",
+      "expected": {},
+      "blocked": "Needs a production build of the app on a production-like host: one `next dev` process cannot serve 50 sessions. Measured on next dev with --include-pending; not proven."
+    }
+  }
+}

@@ -47,19 +47,19 @@ export interface VisionImage {
  * offering vision assist at all, so that a sheet with no vectors on an org with
  * no provider says "no help available here" instead of spinning and failing.
  */
-export async function drawingsVisionConfigured(): Promise<boolean> {
+export async function drawingsVisionConfigured(feature: "drawings_vision" | "drawing_metadata" = "drawings_vision"): Promise<boolean> {
   try {
-    const config = await getAiFeatureTierConfig({
-      supabase: createServiceSupabaseClient(),
-      feature: "drawings_vision",
-    })
-    return isProviderConfigured(config.provider)
+    const supabase = createServiceSupabaseClient()
+    const configs = await Promise.all((["fast", "standard", "heavy"] as const)
+      .map((tier) => getAiFeatureTierConfig({ supabase, feature, tier })))
+    return configs.some((config) => isProviderConfigured(config.provider))
   } catch {
     return false
   }
 }
 
 export async function runDrawingsVisionObject<T>(input: {
+  feature?: "drawings_vision" | "drawing_metadata"
   schema: z.ZodType<T>
   system?: string
   prompt: string
@@ -69,12 +69,16 @@ export async function runDrawingsVisionObject<T>(input: {
   entityId?: string
   tier?: AiTier
   timeoutMs?: number
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high"
   /** Off for interactive callers: a user waiting on a sheet will not wait twice. */
   allowEscalation?: boolean
+  /** False when the caller is restricted to its selected provider. */
+  allowFallback?: boolean
+  onFailure?: (error: unknown) => void
   verify?: (value: T) => { ok: boolean; message?: string }
 }): Promise<T | null> {
   const result = await runAiObject({
-    feature: "drawings_vision",
+    feature: input.feature ?? "drawings_vision",
     schema: input.schema,
     system: input.system,
     prompt: input.prompt,
@@ -87,8 +91,13 @@ export async function runDrawingsVisionObject<T>(input: {
     entityType: input.entityType,
     entityId: input.entityId,
     tier: input.tier,
-    timeoutMs: input.timeoutMs,
-    allowEscalation: input.allowEscalation ?? false,
+    timeoutMs: input.timeoutMs ?? 30_000,
+    reasoningEffort: input.reasoningEffort,
+    totalTimeoutMs: input.timeoutMs ?? 60_000,
+    maxAttemptsPerTier: 1,
+    allowEscalation: input.allowEscalation ?? true,
+    allowFallback: input.allowFallback ?? true,
+    onFailure: input.onFailure,
     verify: input.verify,
   })
 

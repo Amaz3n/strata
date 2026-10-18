@@ -1,3 +1,5 @@
+import { evaluateReport } from "@/lib/services/report-workspace"
+import { getSavedReportConfig } from "@/lib/services/report-configs"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
@@ -8,7 +10,7 @@ import { getReportDefinition } from "@/lib/reports/registry"
 import { PageLayout } from "@/components/layout/page-layout"
 import { ReportView } from "@/components/reports/report-view"
 import { canRunReport, resolveOrgReportScope } from "@/lib/services/report-catalog"
-import { getReportRun, listReportRuns } from "@/lib/services/report-runs"
+import { getReportRun } from "@/lib/services/report-runs"
 
 
 interface PageProps {
@@ -23,31 +25,32 @@ async function OrgReportPageContent({ params, searchParams }: PageProps) {
   if (!definition || !definition.scopes.includes("org")) notFound()
 
   const resolution = await resolveOrgReportScope()
-  if (!canRunReport(resolution, definition)) notFound()
+  if (!search.run && !search.config && !canRunReport(resolution, definition)) notFound()
 
-  const reportParams = parseReportParams(definition, search)
+  const runId = typeof search.run === "string" ? search.run : undefined
+  const [saved, snapshot] = await Promise.all([
+    typeof search.config === "string" ? getSavedReportConfig(search.config) : undefined,
+    runId ? getReportRun(runId) : null,
+  ])
+  if (saved && (saved.slug !== slug || saved.project_id !== (resolution.context.projectId ?? null))) notFound()
+  const reportParams = parseReportParams(definition, saved ? { ...saved.params, _division: saved.division_id ?? "", _community: saved.community_id ?? "" } : search)
   const context = { ...resolution.context, params: reportParams }
 
   // `?run=<id>` replays a snapshot instead of re-querying, so the numbers a
   // lender received months ago are reproducible after the live data has drifted.
-  const runId = typeof search.run === "string" ? search.run : undefined
-  const snapshot = runId ? await getReportRun(runId) : null
-  if (runId && (!snapshot || snapshot.slug !== definition.slug)) notFound()
+  if (runId && (!snapshot || snapshot.slug !== definition.slug || snapshot.scope !== "org")) notFound()
 
-  const [result, runs] = await Promise.all([
-    snapshot ? Promise.resolve(snapshot.snapshot) : definition.run(context),
-    listReportRuns({ slug: definition.slug, limit: 25 }).catch(() => []),
-  ])
+  const result = snapshot ? { base: snapshot.snapshot, context } : await evaluateReport(definition, context)
 
   return (
-    <PageLayout title={definition.title} breadcrumbs={[{ label: "Reports", href: "/reports" }, { label: definition.title }]} fullBleed>
-      <div className="desk-rise mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <PageLayout fullBleed>
+      <div className="desk-rise mx-auto w-full max-w-[1800px] px-4 py-6 sm:px-6 lg:px-8">
         <ReportView
           definition={definition}
-          context={context}
-          params={snapshot ? (snapshot.params as typeof reportParams) : reportParams}
-          result={result}
-          runs={runs.filter((run) => run.scope === "org")}
+          context={result.context}
+          params={snapshot ? (snapshot.params as typeof reportParams) : result.context.params}
+          result={result.base}
+          saved={saved}
           snapshot={snapshot ?? undefined}
         />
       </div>
@@ -57,7 +60,7 @@ async function OrgReportPageContent({ params, searchParams }: PageProps) {
 
 export default function OrgReportPage(props: Parameters<typeof OrgReportPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="Report" breadcrumbs={[{ label: "Reports", href: "/reports" }, { label: "Report" }]} fullBleed><PageLoadingSkeleton /></PageLayout>}>
       <OrgReportPageContent {...props} />
     </Suspense>
   )

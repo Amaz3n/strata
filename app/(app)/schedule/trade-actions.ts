@@ -19,6 +19,8 @@ async function run<T>(operation: () => Promise<T>, paths: string[]): Promise<Act
 }
 
 export async function sendTradeLookaheadAction(companyId: string, input: unknown) {
-  const parsed = z.object({ weeks: weeksSchema }).parse(input)
-  return await run(() => sendTradeLookahead(z.string().uuid().parse(companyId), parsed), ["/schedule/trades"])
+  return await run(() => {
+    const parsed = z.object({ weeks: weeksSchema, communityId: z.string().uuid().optional(), divisionId: z.string().uuid().optional() }).strict().parse(input)
+    return sendTradeLookahead(z.string().uuid().parse(companyId), parsed)
+  }, ["/schedule/trades"])
 }

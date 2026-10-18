@@ -1,0 +1,244 @@
+{
+  "scenario": "CAP-01",
+  "status": "FAILED",
+  "reviewedFrom": "B09.2 definition of done (advisor-plans/013): >1,000 records and repeated cursor ties exactly once; interruption/resume and concurrent workers without skips or duplicates; work scales with selected sources, not the ledger.",
+  "subcases": [
+    {
+      "name": "first-run-ties-idle-and-one-change",
+      "status": "FAILED",
+      "identities": {
+        "orgId": "ce76a404-9baa-446c-84cc-ba1fdf0e7ab6",
+        "measurements": {
+          "first": {
+            "requests": 7255,
+            "rows": 6072,
+            "projections": 1200,
+            "receipts": 1200
+          },
+          "idle": {
+            "requests": 57,
+            "rows": 2477,
+            "projections": 1,
+            "receipts": 1
+          },
+          "change": {
+            "requests": 64,
+            "rows": 2481,
+            "projections": 2,
+            "receipts": 2
+          }
+        }
+      },
+      "checks": [
+        {
+          "label": "1200 tied bills post exactly once",
+          "pass": true,
+          "expected": {
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            },
+            "projections": 1200
+          },
+          "observed": {
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            },
+            "projections": 1200
+          }
+        },
+        {
+          "label": "an idle run reads only configuration and posts nothing",
+          "pass": false,
+          "expected": {
+            "rowsUnderBudget": true,
+            "projections": 0,
+            "receipts": 0
+          },
+          "observed": {
+            "rowsUnderBudget": false,
+            "projections": 1,
+            "receipts": 1,
+            "observedRows": 2477
+          }
+        },
+        {
+          "label": "one changed bill: one projection, reads bounded by the change",
+          "pass": false,
+          "expected": {
+            "rowsUnderBudget": true,
+            "projections": 1
+          },
+          "observed": {
+            "rowsUnderBudget": false,
+            "projections": 2,
+            "observedRows": 2481
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T23:57:45.214Z"
+    },
+    {
+      "name": "interrupted-run-resumes",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "7b4f5cb5-fe20-4e5c-8cef-3859af683871",
+        "receiptsAtKill": 325
+      },
+      "checks": [
+        {
+          "label": "after the kill, one ordinary run completes every bill exactly once",
+          "pass": true,
+          "expected": {
+            "killedPartway": true,
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            }
+          },
+          "observed": {
+            "killedPartway": true,
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T23:58:02.594Z"
+    },
+    {
+      "name": "concurrent-workers",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "1d064d1d-3b55-488a-a66b-3c3ffa6726c1"
+      },
+      "checks": [
+        {
+          "label": "3 concurrent workers post each bill once",
+          "pass": true,
+          "expected": {
+            "workersFinished": 3,
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            }
+          },
+          "observed": {
+            "workersFinished": 3,
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T23:58:15.921Z"
+    },
+    {
+      "name": "late-commit",
+      "status": "FAILED",
+      "identities": {
+        "orgId": "2dd5ed6c-9012-4269-b0fe-0f3186456f14"
+      },
+      "checks": [
+        {
+          "label": "the late-committed change posts on the next ordinary run",
+          "pass": false,
+          "expected": {
+            "late": "2026-07-11",
+            "other": "2026-07-12"
+          },
+          "observed": {
+            "other": "2026-07-12",
+            "late": "2026-07-10"
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T23:58:26.938Z"
+    },
+    {
+      "name": "nightly-pass",
+      "status": "FAILED",
+      "identities": {
+        "orgId": "e86dd1c5-994b-46c0-a8a5-2c855cea5ed0",
+        "measurements": {
+          "unchanged": {
+            "requests": 4845,
+            "rows": 8472,
+            "projections": 1200,
+            "receipts": 1200
+          },
+          "quiet": {
+            "requests": 60,
+            "rows": 2478,
+            "projections": 1,
+            "receipts": 1
+          },
+          "full": {
+            "requests": 8444,
+            "rows": 9673,
+            "projections": 1200,
+            "receipts": 1200
+          }
+        }
+      },
+      "checks": [
+        {
+          "label": "unchanged full pass makes no projection calls",
+          "pass": false,
+          "expected": {
+            "projections": 0,
+            "receipts": 0
+          },
+          "observed": {
+            "projections": 1200,
+            "receipts": 1200
+          }
+        },
+        {
+          "label": "an unannounced dimension change waits for the nightly pass, which re-posts every affected bill",
+          "pass": false,
+          "expected": {
+            "incrementalProjections": 0,
+            "fullProjections": 1200,
+            "templateTagged": true
+          },
+          "observed": {
+            "incrementalProjections": 1,
+            "fullProjections": 1200,
+            "templateTagged": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T23:58:33.582Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-06T23:59:06.378Z"
+}

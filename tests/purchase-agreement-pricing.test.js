@@ -254,3 +254,26 @@ test("settlement statement groups the sale and reconciles final price to the bal
     [...statement.purchasePrice, ...statement.changeOrders, ...statement.adjustments],
   )
 })
+
+test("a home's own price lines total and print apart from community incentives", () => {
+  const pricing = composePurchaseAgreementPricing({
+    basePriceCents: 320_000_00,
+    lotPremiumCents: 5_000_00,
+    incentives: [{ incentiveId: "community", name: "Fall credit", incentiveType: "fixed_amount", appliesTo: "price", amountCents: 2_000_00 }],
+    homeAdjustments: [{ kind: "home_incentive", sourceId: "proposal", label: "Home incentive", amountCents: -7_500_00 }],
+  })
+  assert.deepEqual(pricing.incentives.map((item) => item.incentiveId), ["community"])
+  assert.equal(pricing.incentivesCents, 2_000_00)
+  assert.equal(pricing.homeAdjustmentsCents, -7_500_00)
+  assert.equal(pricing.totalCents, 315_500_00)
+  const lines = buildClosingInvoiceLines({ pricing, lotLabel: "4", planLabel: "Oak", approvedChangeOrders: [] })
+  assert.deepEqual(lines.slice(-2), [{ description: "Incentive — Fall credit", amountCents: -2_000_00 }, { description: "Home incentive", amountCents: -7_500_00 }])
+  assert.equal(closingInvoiceLinesTotalCents(lines), pricing.totalCents)
+})
+
+test("an agreement priced before home lines were separated still settles", () => {
+  const { homeAdjustments, homeAdjustmentsCents, ...stored } = composePurchaseAgreementPricing({ basePriceCents: 300_000_00, lotPremiumCents: 0 })
+  assert.deepEqual([homeAdjustments, homeAdjustmentsCents], [[], 0])
+  const lines = buildClosingInvoiceLines({ pricing: stored, lotLabel: "4", planLabel: "Oak", approvedChangeOrders: [] })
+  assert.equal(closingInvoiceLinesTotalCents(lines), 300_000_00)
+})

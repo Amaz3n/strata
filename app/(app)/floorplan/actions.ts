@@ -1,4 +1,4 @@
-"use server"
+"use server";
 
 /**
  * Floorplan-model mutations — one home for both postures.
@@ -9,30 +9,47 @@
  * below treats a plan version and a project identically.
  */
 
-import { revalidatePath } from "next/cache"
-import { z } from "zod"
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
 
-import { actionError, type ActionResult } from "@/lib/action-result"
-import type { FloorplanEdit } from "@/lib/drawings/floorplan-model"
+import { actionError, type ActionResult } from "@/lib/action-result";
+import type {
+  FloorplanEdit,
+  FloorplanModel,
+} from "@/lib/drawings/floorplan-model";
 import {
   applyFloorplanCorrections,
   getFloorplanModelWithSheets,
+  getFloorplanModelStatus,
+  getFloorplanSources,
+  replaceFloorplanDraft,
+  listFloorplanRevisions,
+  getFloorplanRevisionModel,
+  restoreFloorplanRevision,
   getPublishedFloorplanModelForPlan,
   interpretAllActivePlans,
   publishFloorplanModel,
   requestFloorplanInterpretation,
   unpublishFloorplanModel,
   type FloorplanTarget,
-} from "@/lib/services/floorplan-models"
-import { floorplanEditsSchema, floorplanTargetSchema } from "@/lib/validation/floorplan"
+} from "@/lib/services/floorplan-models";
+import {
+  floorplanEditsSchema,
+  floorplanTargetSchema,
+  floorplanModelSchema,
+  sourceSelectionsSchema,
+} from "@/lib/validation/floorplan";
 
-async function run<T>(operation: () => Promise<T>, paths: string[]): Promise<ActionResult<T>> {
+async function run<T>(
+  operation: () => Promise<T>,
+  paths: string[],
+): Promise<ActionResult<T>> {
   try {
-    const data = await operation()
-    for (const path of paths) revalidatePath(path)
-    return { success: true, data }
+    const data = await operation();
+    for (const path of paths) revalidatePath(path);
+    return { success: true, data };
   } catch (error) {
-    return actionError(error)
+    return actionError(error);
   }
 }
 
@@ -43,59 +60,165 @@ async function run<T>(operation: () => Promise<T>, paths: string[]): Promise<Act
  * surface its own edit is visible on.
  */
 function pathsFor(target: FloorplanTarget, planId?: string | null): string[] {
-  if (target.kind === "project") return [`/projects/${target.projectId}/drawings`]
-  return planId ? ["/plans", `/plans/${planId}`] : ["/plans"]
+  if (target.kind === "project")
+    return [`/projects/${target.projectId}/drawings`];
+  return planId ? ["/plans", `/plans/${planId}`] : ["/plans"];
 }
 
 export async function loadFloorplanModelAction(target: unknown) {
   try {
-    const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget
-    return { success: true as const, data: await getFloorplanModelWithSheets(parsed) }
+    const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget;
+    return {
+      success: true as const,
+      data: await getFloorplanModelWithSheets(parsed),
+    };
   } catch (error) {
-    return actionError(error)
+    return actionError(error);
   }
 }
 
-export async function interpretFloorplanAction(target: unknown, force = false, planId?: string) {
-  const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget
-  return run(
-    () => requestFloorplanInterpretation({ target: parsed, force: z.boolean().parse(force) }),
-    pathsFor(parsed, planId),
-  )
+/** Status only, for polling a model while it generates. */
+export async function loadFloorplanModelStatusAction(target: unknown) {
+  try {
+    const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget;
+    return { success: true as const, data: await getFloorplanModelStatus(parsed) };
+  } catch (error) {
+    return actionError(error);
+  }
 }
 
-export async function correctFloorplanAction(target: unknown, edits: unknown, planId?: string) {
-  const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget
+export async function interpretFloorplanAction(
+  target: unknown,
+  force = false,
+  planId?: string,
+  sources?: unknown,
+) {
+  const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget;
+  return run(
+    () =>
+      requestFloorplanInterpretation({
+        target: parsed,
+        force: z.boolean().parse(force),
+        sources: sources ? sourceSelectionsSchema.parse(sources) : undefined,
+      }),
+    pathsFor(parsed, planId),
+  );
+}
+
+export async function correctFloorplanAction(
+  target: unknown,
+  edits: unknown,
+  planId?: string,
+  expectedUpdatedAt?: string,
+) {
+  const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget;
   return run(
     () =>
       applyFloorplanCorrections({
         target: parsed,
         edits: floorplanEditsSchema.parse(edits) as FloorplanEdit[],
+        expectedUpdatedAt: z
+          .string()
+          .datetime({ offset: true })
+          .parse(expectedUpdatedAt),
       }),
     pathsFor(parsed, planId),
-  )
+  );
+}
+
+export async function loadFloorplanSourcesAction(target: unknown) {
+  try {
+    return {
+      success: true as const,
+      data: await getFloorplanSources(floorplanTargetSchema.parse(target)),
+    };
+  } catch (error) {
+    return actionError(error);
+  }
+}
+
+export async function restoreFloorplanDraftAction(
+  target: unknown,
+  model: unknown,
+  expectedUpdatedAt: string,
+  planId?: string,
+) {
+  const parsed = floorplanTargetSchema.parse(target);
+  return run(
+    () =>
+      replaceFloorplanDraft({
+        target: parsed,
+        model: floorplanModelSchema.parse(model) as FloorplanModel,
+        expectedUpdatedAt: z
+          .string()
+          .datetime({ offset: true })
+          .parse(expectedUpdatedAt),
+      }),
+    pathsFor(parsed, planId),
+  );
 }
 
 export async function publishFloorplanAction(target: unknown, planId?: string) {
-  const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget
-  return run(() => publishFloorplanModel({ target: parsed }), pathsFor(parsed, planId))
+  const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget;
+  return run(
+    () => publishFloorplanModel({ target: parsed }),
+    pathsFor(parsed, planId),
+  );
 }
 
-export async function unpublishFloorplanAction(target: unknown, planId?: string) {
-  const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget
-  return run(() => unpublishFloorplanModel({ target: parsed }), pathsFor(parsed, planId))
+export async function unpublishFloorplanAction(
+  target: unknown,
+  planId?: string,
+) {
+  const parsed = floorplanTargetSchema.parse(target) as FloorplanTarget;
+  return run(
+    () => unpublishFloorplanModel({ target: parsed }),
+    pathsFor(parsed, planId),
+  );
 }
 
 export async function interpretAllActivePlansAction() {
-  return run(() => interpretAllActivePlans(), ["/plans"])
+  return run(() => interpretAllActivePlans(), ["/plans"]);
 }
 
 /** The published model for a plan — what the offering page's 3D button opens. */
 export async function loadPublishedFloorplanModelAction(planId: string) {
   try {
-    const record = await getPublishedFloorplanModelForPlan(z.string().uuid().parse(planId))
-    return { success: true as const, data: record?.model ?? null }
+    const record = await getPublishedFloorplanModelForPlan(
+      z.string().uuid().parse(planId),
+    );
+    return { success: true as const, data: record?.model ?? null };
   } catch (error) {
-    return actionError(error)
+    return actionError(error);
   }
+}
+
+export async function loadFloorplanRevisionsAction(target: unknown) {
+  return run(
+    () => listFloorplanRevisions(floorplanTargetSchema.parse(target)),
+    [],
+  );
+}
+export async function loadFloorplanRevisionModelAction(target: unknown, revisionId: string) {
+  return run(() => getFloorplanRevisionModel(floorplanTargetSchema.parse(target), z.string().uuid().parse(revisionId)), []);
+}
+export async function restoreFloorplanRevisionAction(
+  target: unknown,
+  revisionId: string,
+  expectedUpdatedAt: string,
+  planId?: string,
+) {
+  const parsed = floorplanTargetSchema.parse(target);
+  return run(
+    () =>
+      restoreFloorplanRevision({
+        target: parsed,
+        revisionId: z.string().uuid().parse(revisionId),
+        expectedUpdatedAt: z
+          .string()
+          .datetime({ offset: true })
+          .parse(expectedUpdatedAt),
+      }),
+    pathsFor(parsed, planId),
+  );
 }

@@ -47,7 +47,6 @@ import {
   createConditionTemplate,
   deleteConditionTemplate,
   listConditionTemplates,
-  listTemplateGroups,
   saveConditionsAsTemplates,
   updateConditionTemplate,
   type ApplyTemplatesResult,
@@ -56,7 +55,6 @@ import {
 } from "@/lib/services/takeoff-templates"
 import {
   getTakeoffCoverage,
-  setTakeoffSheetStatus,
   type CoverageSummary,
 } from "@/lib/services/takeoff-coverage"
 import {
@@ -79,7 +77,6 @@ import type {
   CreateTakeoffConditionInput,
   FindSymbolMatchesInput,
   SaveConditionsAsTemplatesInput,
-  SetTakeoffSheetStatusInput,
   SyncConditionsInput,
   UpdateConditionTemplateInput,
   UpdateTakeoffConditionInput,
@@ -109,8 +106,8 @@ export async function getConditionRollupAction(
 /** Sheet to open when deep-linking to a condition from an estimate line. */
 export async function getConditionLandingSheetAction(
   conditionId: string,
-): Promise<{ drawing_sheet_id: string } | null> {
-  return getConditionLandingSheet(conditionId)
+): Promise<ActionResult<{ drawing_sheet_id: string } | null>> {
+  return run(() => getConditionLandingSheet(conditionId))
 }
 
 export async function createTakeoffConditionAction(
@@ -136,9 +133,10 @@ export async function updateTakeoffConditionAction(
 
 export async function deleteTakeoffConditionAction(
   conditionId: string,
+  seenUpdatedAt?: string | null,
 ): Promise<ActionResult<{ released_markups: number; detached_lines: number }>> {
   return run(async () => {
-    const result = await deleteTakeoffCondition(conditionId)
+    const result = await deleteTakeoffCondition(conditionId, undefined, seenUpdatedAt)
     return result
   })
 }
@@ -165,6 +163,7 @@ export async function syncConditionsAction(
   return run(async () => {
     const result = await syncConditions(input)
     revalidatePath("/estimates")
+    revalidatePath("/pipeline", "layout")
     return result
   })
 }
@@ -228,8 +227,8 @@ export async function getCostCodeRateHistoryAction(
 /** Measurements carried onto a new revision and awaiting confirmation. */
 export async function listReanchorReviewQueueAction(
   projectId: string,
-): Promise<ReanchorReviewItem[]> {
-  return listReanchorReviewQueue(projectId)
+): Promise<ActionResult<ReanchorReviewItem[]>> {
+  return run(() => listReanchorReviewQueue(projectId))
 }
 
 export async function confirmReanchoredMarkupsAction(
@@ -244,8 +243,8 @@ export async function confirmReanchoredMarkupsAction(
 /** Executed estimates whose quantity the drawings have since moved away from. */
 export async function listStaleEstimateAlertsAction(
   projectId: string,
-): Promise<StaleEstimateAlert[]> {
-  return listStaleEstimateAlerts(projectId)
+): Promise<ActionResult<StaleEstimateAlert[]>> {
+  return run(() => listStaleEstimateAlerts(projectId))
 }
 
 // ---------------------------------------------------------------------------
@@ -256,10 +255,6 @@ export async function listConditionTemplatesAction(): Promise<
   ActionResult<ConditionTemplate[]>
 > {
   return run(() => listConditionTemplates())
-}
-
-export async function listTemplateGroupsAction(): Promise<ActionResult<string[]>> {
-  return run(() => listTemplateGroups())
 }
 
 export async function createConditionTemplateAction(
@@ -286,9 +281,10 @@ export async function updateConditionTemplateAction(
 
 export async function deleteConditionTemplateAction(
   templateId: string,
+  seenUpdatedAt?: string | null,
 ): Promise<ActionResult<null>> {
   return run(async () => {
-    await deleteConditionTemplate(templateId)
+    await deleteConditionTemplate(templateId, undefined, seenUpdatedAt)
     revalidatePath("/settings/takeoff")
     return null
   })
@@ -326,15 +322,6 @@ export async function getTakeoffCoverageAction(
     | { house_plan_version_id: string; source_project_ids: string[] },
 ): Promise<ActionResult<CoverageSummary>> {
   return run(() => getTakeoffCoverage(scope))
-}
-
-export async function setTakeoffSheetStatusAction(
-  input: SetTakeoffSheetStatusInput,
-): Promise<ActionResult<null>> {
-  return run(async () => {
-    await setTakeoffSheetStatus(input)
-    return null
-  })
 }
 
 // ---------------------------------------------------------------------------
@@ -376,4 +363,27 @@ export async function acceptSymbolMatchesAction(
     const result = await acceptSymbolMatches(input)
     return result
   })
+}
+
+export async function proposeTakeoffAreasAction(input: import("@/lib/validation/area-takeoff").DetectAreasInput) {
+  return run(async () => (await import("@/lib/services/area-takeoff")).proposeTakeoffAreas(input))
+}
+
+export async function exportAreaDetectionReplayAction(sheetVersionId: string, inputHash: string) {
+  return run(async () => (await import("@/lib/services/area-takeoff")).exportAreaDetectionReplay(sheetVersionId, inputHash))
+}
+
+export async function acceptTakeoffAreasAction(input: import("@/lib/validation/area-takeoff").AcceptAreasInput) {
+  return run(async () => (await import("@/lib/services/area-takeoff")).acceptTakeoffAreas(input))
+}
+
+export async function beginWorksheetMeasurementAction(prospectId: string, rowId: string, unit: string) {
+  return run(async () => {
+    const result = await (await import("@/lib/services/measurement-context")).beginWorksheetMeasurement(prospectId, rowId, unit)
+    revalidatePath("/pipeline", "layout")
+    return result
+  })
+}
+export async function listMeasurementRowsAction(prospectId: string) {
+  return run(() => import("@/lib/services/measurement-context").then(service => service.listMeasurementRows(prospectId)))
 }

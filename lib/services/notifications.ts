@@ -1,3 +1,5 @@
+import { insertImmutableRecord } from "@/lib/services/immutable-record"
+import { reserveNotificationDeliveries } from "@/lib/services/notification-delivery-reservation"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { isApnsConfigured } from "@/lib/services/apns"
@@ -32,33 +34,32 @@ export interface NotificationRecord {
 
 export class NotificationService {
   // Create notification + queue delivery
-  async createAndQueue(input: NotificationInput): Promise<string> {
+  async createAndQueue(input: NotificationInput, options?: { idempotencyId: string }): Promise<string> {
     const supabase = createServiceSupabaseClient()
 
-    // Create notification record
-    const { data: notification, error } = await supabase
-      .from('notifications')
-      .insert({
-        org_id: input.orgId,
-        user_id: input.userId,
-        notification_type: input.type,
-        payload: {
-          title: input.title,
-          message: input.message,
-          project_id: input.projectId,
-          entity_type: input.entityType,
-          entity_id: input.entityId,
-          event_id: input.eventId,
-          ...(input.metadata ?? {}),
-        }
-      })
-      .select('id')
-      .single()
-
-    if (error) {
-      console.error('Failed to create notification:', error)
-      throw new Error(`Failed to create notification: ${error.message}`)
+    const values = {
+      org_id: input.orgId, user_id: input.userId, notification_type: input.type,
+      payload: {
+        title: input.title, message: input.message, project_id: input.projectId,
+        entity_type: input.entityType, entity_id: input.entityId, event_id: input.eventId,
+        ...(input.metadata ?? {}),
+      },
     }
+    let notification: { id: string }
+    if (options?.idempotencyId) {
+      const receipt = await insertImmutableRecord(supabase, "notifications", { id: options.idempotencyId, ...values })
+      notification = { id: receipt.record.id }
+      const reserved = await reserveNotificationDeliveries({ supabase, orgId: input.orgId, notificationId: notification.id,
+        channels: [...(isEmailEligibleNotificationType(input.type) ? ["deliver_notification" as const] : []),
+          ...(isApnsConfigured() ? ["deliver_push" as const] : [])] })
+      if (reserved) return notification.id
+      if (isEmailEligibleNotificationType(input.type)) await this.ensureDurableDelivery(notification.id, input.orgId, "deliver_notification")
+      if (isApnsConfigured()) await this.ensureDurableDelivery(notification.id, input.orgId, "deliver_push")
+      return notification.id
+    }
+    const result = await supabase.from("notifications").insert(values).select("id").single()
+    if (result.error || !result.data) throw new Error(`Failed to create notification: ${result.error?.message ?? "Record unavailable"}`)
+    notification = result.data
 
     // Only queue email delivery for email-eligible types. Everything else stays
     // in-app only — email notifications are reserved for important events.
@@ -86,6 +87,20 @@ export class NotificationService {
     }
 
     return notification.id
+  }
+
+  private async ensureDurableDelivery(notificationId: string, orgId: string, jobType: "deliver_notification" | "deliver_push") {
+    const supabase = createServiceSupabaseClient()
+    const { data, error } = await supabase.from("outbox").select("id,status").eq("org_id", orgId).eq("job_type", jobType)
+      .eq("payload->>notificationId", notificationId).order("id", { ascending: false }).limit(1).maybeSingle()
+    if (error) throw new Error(`Failed to recover notification delivery: ${error.message}`)
+    if (data) {
+      if (data.status === "failed") throw new Error("Notification delivery requires failed-job recovery")
+      if (!["pending", "processing", "completed"].includes(data.status)) throw new Error("Invalid notification delivery receipt")
+      return
+    }
+    const queued = await enqueueOutboxJob({ orgId, jobType, payload: { notificationId }, dedupeByPayloadKeys: ["notificationId"] })
+    if (!queued.enqueued && queued.reason !== "duplicate") throw new Error("Failed to queue notification delivery")
   }
 
   // Queue delivery for a notification
@@ -126,7 +141,7 @@ export class NotificationService {
     }
 
     try {
-      await deliverNotificationEmail(notificationId, supabase)
+      await deliverNotificationEmail(notificationId, orgId, supabase)
       await supabase
         .from("outbox")
         .update({ status: "completed", last_error: null })

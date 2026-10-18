@@ -8,14 +8,71 @@ export interface GateReadinessInput {
 }
 export const RELEASE_PRODUCED_GATE_KEYS = new Set(["budget", "po_set"])
 
+/** Gates every start carries: their source is fixed and they are never switched off. */
+export const SYSTEM_GATE_KEYS = new Set(["permit", "plot_plan"])
+
+/**
+ * Auto sources the database evidences itself (start_gate_sql_evidence), from
+ * the home's permit application, so no caller's row security or supplied
+ * verdict decides them.
+ */
+export const SQL_EVIDENCE_SOURCES = new Set(["permit_approved", "plot_plan_file"])
+
+/** The milestone each kind of buyer's financing is proved by, as the agreement seeds them. */
+export const FINANCING_MILESTONE_KEYS = { financed: "lender:loan_approval", cash: "buyer:proof_of_funds" } as const
+
+export interface FinancingMilestoneRecord {
+  templateKey: string
+  status: "open" | "satisfied" | "waived" | "failed"
+  evidenceFileId: string | null
+  /** The evidence file is still on the home and not archived. */
+  evidenceOnFile: boolean
+}
+
+/**
+ * Whether a home's financing is proved. A spec home has no buyer and nothing to
+ * prove, but a home whose sale was cancelled is not a spec home: with no
+ * agreement in force it proves nothing until its gate is waived. A sold home needs the lender's loan approval (financed) or proof of
+ * funds (cash) satisfied WITH the document on file: a missing record, an open
+ * or failed one, a waiver (no document) and an archived file all hold it.
+ * Absence is never a pass; the gate itself can still be waived by a releaser.
+ */
+export function financingGateClear(record: { agreement: { milestones: FinancingMilestoneRecord[] } | null; saleCancelled: boolean; isFinanced: boolean }) {
+  // A package flagged financed with no agreement in force has a buyer nobody has recorded: that is absence.
+  if (!record.agreement) return !record.isFinanced && !record.saleCancelled
+  const proofs = record.agreement.milestones.filter((milestone) =>
+    milestone.templateKey === FINANCING_MILESTONE_KEYS.financed || milestone.templateKey === FINANCING_MILESTONE_KEYS.cash)
+  return proofs.length > 0 && proofs.every((milestone) =>
+    milestone.status === "satisfied" && milestone.evidenceFileId !== null && milestone.evidenceOnFile)
+}
+
+/** A house starts on an approved permit (or the authority's letter that none is needed), never on a waiver. */
+export function canWaiveGate(gate: { autoSource: string | null }) {
+  return gate.autoSource !== "permit_approved"
+}
+
+/**
+ * A manual gate attests a fact, so it is attested with the file that shows it
+ * on this home — `mutate_start_gate` refuses one without. A sign-off gated by a
+ * permission (and final approval) is a decision, not a fact, and needs none.
+ */
+export function gateRequiresEvidence(gate: { key: string; checkKind: "auto" | "manual"; requiresAttestationPermission: string | null }) {
+  return gate.checkKind === "manual" && gate.requiresAttestationPermission === null && gate.key !== "final_approval"
+}
+
 /**
  * Typical calendar days a gate needs once someone starts chasing it. The permit
  * is the long pole in most jurisdictions, which is why it outranks everything
  * else when we name the one thing holding a house back.
  *
+ * Entitlements outrank it: a permit cannot be pulled before the plat records or
+ * a condition of approval is met, so an unmet entitlement is the real blocker
+ * whenever both are open.
+ *
  * Gate definitions are org-configurable, so an unknown key falls back to a week.
  */
 export const GATE_LEAD_DAYS: Record<string, number> = {
+  entitlements: 45,
   permit: 35,
   financing: 21,
   selections_locked: 21,

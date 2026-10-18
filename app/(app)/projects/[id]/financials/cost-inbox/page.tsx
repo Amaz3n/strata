@@ -1,3 +1,5 @@
+import { PayrollCorrectionWorkflowLink } from "@/components/time/payroll-correction-workflow-link"
+import { connection } from "next/server"
 import { notFound, redirect } from "next/navigation"
 import { Suspense } from "react"
 
@@ -17,14 +19,19 @@ interface PageProps {
   params: Promise<{ id: string }>
 }
 
-export default async function FinancialsCostInboxPage({ params }: PageProps) {
-  const { id } = await params
-
+export default function FinancialsCostInboxPage({ params }: PageProps) {
   return (
     <Suspense fallback={<CostInboxSkeleton />}>
-      <CostInboxContent id={id} />
+      <FinancialsCostInboxPageRoute params={params} />
     </Suspense>
   )
+}
+
+async function FinancialsCostInboxPageRoute({ params }: PageProps) {
+  await connection()
+  const { id } = await params
+
+  return <CostInboxContent id={id} />
 }
 
 async function CostInboxContent({ id }: { id: string }) {
@@ -54,6 +61,7 @@ async function CostInboxContent({ id }: { id: string }) {
       ]}
       fullBleed
     >
+      <Suspense fallback={null}><PayrollCorrectionWorkflowLink projectId={project.id} /></Suspense>
       <FinancialSetupStatusBanner setup={setupStatus} />
       <CostInboxTable
         projectId={project.id}

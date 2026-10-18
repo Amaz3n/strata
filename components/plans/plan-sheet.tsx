@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from "react"
 
 import { PlanBill } from "@/components/plans/plan-bill"
+import { PlanChangeReviewSheet, type PlanChangeReviewState } from "@/components/plans/plan-change-review"
 import { PlanEditions } from "@/components/plans/plan-editions"
 import { PlanManifest } from "@/components/plans/plan-manifest"
 import { PlanMarket } from "@/components/plans/plan-market"
@@ -56,6 +57,8 @@ export function PlanSheet({
   floorplanModels,
   canWrite,
   canRelease,
+  changeReview,
+  canAdopt,
 }: {
   plan: HousePlanDto
   drift: PlanVersionDriftDto[]
@@ -74,6 +77,8 @@ export function PlanSheet({
   floorplanModels: Map<string, FloorplanModelDto>
   canWrite: boolean
   canRelease: boolean
+  changeReview: PlanChangeReviewState
+  canAdopt: boolean
 }) {
   const versions = plan.versions ?? []
   const releasedVersion = versions.find((version) => version.status === "released") ?? null
@@ -141,6 +146,7 @@ export function PlanSheet({
   )
 
   const versionPerformance = performance.find((entry) => entry.version_id === version?.id) ?? null
+  const [reviewOpen, setReviewOpen] = useState(false)
 
   return (
     <div id="plan-overview" className="min-h-full">
@@ -166,6 +172,8 @@ export function PlanSheet({
         onSelect={selectVersion}
         drift={drift}
         canWrite={canWrite}
+        changeReview={changeReview.review}
+        onReviewHomes={() => setReviewOpen(true)}
       />
 
       {version ? (
@@ -179,6 +187,7 @@ export function PlanSheet({
             costCents={costCents}
             cycleMedianDays={cycleMedianDays}
             canRelease={canRelease}
+            onReviewHomes={() => setReviewOpen(true)}
           />
 
           <PlanBill
@@ -221,6 +230,16 @@ export function PlanSheet({
       ) : null}
 
       <PlanMarket plan={plan} rows={offering} communities={communities} />
+
+      <PlanChangeReviewSheet
+        plan={plan}
+        versions={versions}
+        state={changeReview}
+        open={reviewOpen}
+        onOpenChange={setReviewOpen}
+        canWrite={canWrite}
+        canAdopt={canAdopt}
+      />
 
       <AlertDialog open={pendingVersionId !== null} onOpenChange={(open) => !open && setPendingVersionId(null)}>
         <AlertDialogContent>

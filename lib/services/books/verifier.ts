@@ -1,20 +1,29 @@
+import { receivableRetainageAsOf, payableRetainageAsOf } from "@/lib/services/books/retainage-history";
+import { AS_OF_BILL_STATUSES, isBillPayableAsOf, isInvoiceReceivableAsOf, loadLedgerRemovalDates, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements";
 import "server-only";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import {
-  BILLED_INVOICE_STATUSES,
-  PAYABLE_VENDOR_BILL_STATUSES,
-} from "@/lib/financials/ledger-status";
+import { z } from "zod";
+import { isPayableVendorBillStatus } from "@/lib/financials/ledger-status";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
+import {
+  addTo,
+  cashByCompany,
+  completedHomesByCompany,
+  expectedOwner,
+  landByCompany,
+  tieByCompany,
+  withCompanies,
+  type BooksCompany,
+  type CompanyTieOut,
+} from "@/lib/services/books/close-control-rules";
 import {
   buildBalanceSheet,
   buildTrialBalance,
+  forLegalEntity,
+  loadLedgerBalances,
+  type LoadedLedger,
 } from "@/lib/services/books/statements";
-import {
-  sumApRetainageCents,
-  sumApSubledgerCents,
-  sumArSubledgerCents,
-} from "@/lib/services/books/tie-out-rules";
 
 /**
  * The ledger tie-outs.
@@ -29,6 +38,11 @@ import {
  * `job_cost_entries` subledger, and AR/AP tie to the aging subledgers. The
  * job-cost tie-out is the one that never existed — the GL and the cost subledger
  * were derived independently, so nothing would have noticed them diverging.
+ *
+ * With more than one company, AR, AP, cash, job cost (homes under construction),
+ * land and completed homes are also tied per company: each company's own ledger
+ * lines against the subledger records that belong to it (`withCompanies`), so
+ * companies out of balance in opposite directions cannot pass on the org total.
  */
 
 export type LedgerTieOut = {
@@ -43,13 +57,69 @@ export type LedgerTieOut = {
     | "customer_deposits_control"
     | "debt_register_control"
     | "fixed_assets_control"
-    | "accumulated_depreciation_control";
+    | "accumulated_depreciation_control"
+    | "land_inventory_control"
+    | "completed_homes_control"
+    | "warranty_reserve_control"
+    | "impairment_control"
+    | "intercompany_control"
+    | "cash_control";
   label: string;
   status: "passed" | "failed";
   differenceCents: number;
   ledgerCents: number;
   subledgerCents: number;
+  /** What failed, row by row, for controls that tie per lot or per home. */
+  exceptions?: unknown[];
+  /** Supporting rows (completed homes with their age) for the close and its saved evidence. */
+  rows?: unknown[];
+  /** Each company's own tie-out, present only when the org keeps books for more than one. */
+  companies?: CompanyTieOut[];
 };
+
+const companyBalancesSchema = z.array(z.object({ legalEntityId: z.string().uuid(), cents: z.number() }));
+const homeInventoryControlsSchema = z.object({
+  land: z.object({
+    ledgerCents: z.number(), subledgerCents: z.number(), exceptions: z.array(z.unknown()),
+    holdings: z.array(z.object({ lotId: z.string().nullable(), lotNumber: z.string().nullable(), basisCents: z.number(), ledger: companyBalancesSchema })),
+  }),
+  completedHomes: z.object({
+    ledgerCents: z.number(), heldCents: z.number(), homes: z.array(z.unknown()), exceptions: z.array(z.unknown()),
+    holdings: z.array(z.object({ projectId: z.string().uuid().nullable(), held: z.boolean(), ledger: companyBalancesSchema })),
+  }),
+  warrantyReserve: z.object({ ledgerCents: z.number(), subledgerCents: z.number(), recoveryLedgerCents: z.number(), recoverySubledgerCents: z.number() }),
+});
+
+/** Land by lot, completed homes held for sale, and warranty reserve consumption (`books_home_inventory_controls`). */
+async function loadHomeInventoryControls(orgId: string, asOf: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("books_home_inventory_controls", { p_org_id: orgId, p_as_of: asOf });
+  if (error) throw new Error(`Failed to tie home inventory: ${error.message}`);
+  return homeInventoryControlsSchema.parse(data);
+}
+
+/**
+ * What companies owe each other, from both sides (`books_intercompany_positions`):
+ * every company's net position with an affiliate must be the affiliate's opposite.
+ */
+async function loadIntercompanyControl(orgId: string, asOf: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("books_intercompany_positions", { p_org_id: orgId, p_as_of: asOf });
+  if (error) throw new Error(`Failed to tie intercompany balances: ${error.message}`);
+  const rows = z.array(z.object({ entityId: z.string().uuid(), counterpartyId: z.string().uuid(), dueFromCents: z.coerce.number(), dueToCents: z.coerce.number() })).parse(data ?? []);
+  const net = new Map(rows.map((row) => [`${row.entityId}:${row.counterpartyId}`, row.dueFromCents - row.dueToCents]));
+  const exceptions = [...new Set(rows.map((row) => [row.entityId, row.counterpartyId].sort().join(":")))].flatMap((key) => {
+    const [a, b] = key.split(":");
+    const difference = (net.get(`${a}:${b}`) ?? 0) + (net.get(`${b}:${a}`) ?? 0);
+    return difference === 0 ? [] : [{ entityId: a, counterpartyId: b, differenceCents: difference }];
+  });
+  return { dueFromCents: rows.reduce((sum, row) => sum + row.dueFromCents, 0), dueToCents: rows.reduce((sum, row) => sum + row.dueToCents, 0), exceptions };
+}
+
+/** Write-downs posted to 5070 against approved impairment reviews (`books_impairment_control`). */
+async function loadImpairmentControl(orgId: string, asOf: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("books_impairment_control", { p_org_id: orgId, p_as_of: asOf });
+  if (error) throw new Error(`Failed to tie inventory impairments: ${error.message}`);
+  return z.object({ ledgerCents: z.number(), subledgerCents: z.number() }).parse(data);
+}
 
 const PAGE_SIZE = 1000;
 
@@ -72,79 +142,140 @@ async function collectPages<T>(
 }
 
 /** Job cost recognized in the GL: cost-of-goods lines carrying a project. */
-async function loadGlJobCostCents(orgId: string, asOf: string) {
-  const service = createServiceSupabaseClient();
-  const rows = await collectPages(
-    (from, to) =>
-      service
-        .from("journal_lines")
-        .select(
-          "debit_cents, credit_cents, dimensions, entry:journal_entries!inner(status, entry_date), account:gl_accounts!inner(account_type,code)",
-        )
-        .eq("org_id", orgId)
-        .in("entry.status", ["posted", "reversed"])
-        .lte("entry.entry_date", asOf)
-        .or("account_type.eq.cogs,code.in.(1160,1170)", { referencedTable: "account" })
-        .not("project_id", "is", null)
-        .range(from, to),
-    "GL job cost lines",
-  );
-  return rows.filter(row => !(row.dimensions && typeof row.dimensions === "object" && Reflect.get(row.dimensions, "warranty_reserve_adjustment") === true)).reduce(
-    (sum, row) =>
-      sum + Number(row.debit_cents ?? 0) - Number(row.credit_cents ?? 0),
-    0,
-  );
+function glJobCostCents(ledger: LoadedLedger) {
+  const jobCostAccounts = new Set(ledger.accounts
+    .filter((account) => (account.account_type === "cogs" || ["1160", "1170"].includes(account.code)) && account.code !== SYSTEM_ACCOUNT_CODES.expectedLossExpense)
+    .map((account) => account.id));
+  return ledger.lines
+    .filter((line) => line.project_id !== null && jobCostAccounts.has(line.account_id) && line.dimensions?.warranty_reserve_adjustment !== true)
+    .reduce((sum, line) => sum + line.debit_cents - line.credit_cents, 0);
 }
 
-async function loadSubledgerJobCostCents(orgId: string, asOf: string) {
-  const service = createServiceSupabaseClient();
-  const rows = await collectPages(
-    (from, to) =>
-      service
-        .from("job_cost_entries")
-        .select("cost_cents")
-        .eq("org_id", orgId)
-        .eq("status", "posted")
-        .lte("incurred_on", asOf)
-        .range(from, to),
-    "job cost subledger",
-  );
-  return rows.reduce((sum, row) => sum + Number(row.cost_cents ?? 0), 0);
+/** Posted job cost by job (`books_job_cost_subledger_by_project`). */
+async function loadSubledgerJobCost(orgId: string, asOf: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("books_job_cost_subledger_by_project", { p_org_id: orgId, p_as_of: asOf });
+  if (error) throw new Error(`Failed to load job cost subledger: ${error.message}`);
+  return z.array(z.object({ project_id: z.string().uuid(), cost_cents: z.coerce.number() })).parse(data ?? []);
 }
 
-async function loadArApSubledgerCents(orgId: string, asOf: string) {
+/**
+ * The companies the org keeps books for and what each owns: jobs and accounts
+ * that name a company (everything else is the primary company's). Null when the
+ * org has no primary company yet, which means nothing has posted.
+ */
+async function loadCompanyOwnership(orgId: string) {
   const service = createServiceSupabaseClient();
-  const [invoices, bills] = await Promise.all([
-    collectPages(
-      // The status set is the projector's, not a wider one: a control tie-out has
-      // to sum exactly the records that produced the account. Excluding only
-      // `draft` and `void` counted `saved` invoices, which never post to 1100.
-      (from, to) =>
-        service
-          .from("invoices")
-          .select("balance_due_cents")
-          .eq("org_id", orgId)
-          .lte("issue_date", asOf)
-          .in("status", [...BILLED_INVOICE_STATUSES])
-          .range(from, to),
-      "AR subledger",
-    ),
-    collectPages(
-      (from, to) =>
-        service
-          .from("vendor_bills")
-          .select("total_cents, paid_cents, retainage_cents")
-          .eq("org_id", orgId)
-          .lte("bill_date", asOf)
-          .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
-          .range(from, to),
-      "AP subledger",
-    ),
+  const [entities, projects, accounts] = await Promise.all([
+    collectPages((from, to) => service.from("books_legal_entities").select("id,name,is_primary").eq("org_id", orgId).order("id").range(from, to), "companies"),
+    collectPages((from, to) => service.from("projects").select("id,legal_entity_id").eq("org_id", orgId).not("legal_entity_id", "is", null).order("id").range(from, to), "job owners"),
+    collectPages((from, to) => service.from("gl_accounts").select("id,legal_entity_id").eq("org_id", orgId).not("legal_entity_id", "is", null).order("id").range(from, to), "account owners"),
   ]);
+  const companies: BooksCompany[] = entities.map((row) => ({ id: String(row.id), name: String(row.name), isPrimary: row.is_primary === true }));
+  const primary = companies.find((company) => company.isPrimary);
+  if (!primary) return null;
   return {
-    arCents: sumArSubledgerCents(invoices),
-    apCents: sumApSubledgerCents(bills),
+    companies,
+    primaryId: primary.id,
+    projectOwner: new Map(projects.map((row) => [String(row.id), String(row.legal_entity_id)])),
+    accountOwner: new Map(accounts.map((row) => [String(row.id), String(row.legal_entity_id)])),
   };
+}
+type CompanyOwnership = NonNullable<Awaited<ReturnType<typeof loadCompanyOwnership>>>;
+
+const CASH_SUBTYPES = new Set(["cash", "undeposited_funds", "credit_card"]);
+
+/** Payable bills dated by `asOf`, read once for both the AP and the AP retainage tie-outs. */
+async function loadPayableBills(orgId: string, asOf: string) {
+  const service = createServiceSupabaseClient();
+  return collectPages((from, to) => service.from("vendor_bills")
+    .select("id,project_id,status,bill_date,total_cents,retainage_cents,metadata")
+    .eq("org_id", orgId).lte("bill_date", asOf)
+    .in("status", [...AS_OF_BILL_STATUSES]).order("id").range(from, to), "AP subledger");
+}
+
+/** The bills payable at `asOf`, by their ledger dates where they posted. */
+async function payableAsOf(orgId: string, asOf: string, bills: PayableBill[]) {
+  const removedOn = await loadLedgerRemovalDates(orgId, bills.filter((bill) => !isPayableVendorBillStatus(bill.status)).map((bill) => String(bill.id)));
+  return (bill: PayableBill) => isBillPayableAsOf(bill, asOf, removedOn);
+}
+type PayableBill = Awaited<ReturnType<typeof loadPayableBills>>[number];
+
+/** What is open on each receivable and payable at `asOf`, with the job it belongs to. */
+async function loadArApSubledger(orgId: string, asOf: string, allBills: PayableBill[], isPayable: (bill: PayableBill) => boolean) {
+  const bills = allBills.filter(isPayable);
+  const service = createServiceSupabaseClient();
+  const invoiceRows = await collectPages((from, to) => service.from("invoices")
+    .select("id,project_id,total_cents,status,metadata").eq("org_id", orgId)
+    .lte("issue_date", asOf).order("id").range(from, to), "AR subledger");
+  const removedOn = await loadLedgerRemovalDates(orgId, invoiceRows.filter(row => row.status === "void").map(row => String(row.id)));
+  const invoices = invoiceRows.filter(row => isInvoiceReceivableAsOf(row, asOf, removedOn));
+  const [arSettlements, apSettlements] = await Promise.all([
+    loadSubledgerSettlements(service, orgId, "receivable", invoices.map(row => row.id), asOf),
+    loadSubledgerSettlements(service, orgId, "payable", bills.map(row => row.id), asOf),
+  ]);
+  const open = (projectId: unknown, cents: number) => ({ projectId: projectId ? String(projectId) : null, cents });
+  return {
+    receivables: invoices.map((row) => open(row.project_id, Number(row.total_cents) - (arSettlements.get(row.id) ?? 0))),
+    payables: bills.map((row) => open(row.project_id, Number(row.total_cents) - Number(row.retainage_cents ?? 0) - (apSettlements.get(row.id) ?? 0))),
+  };
+}
+type ArApSubledger = Awaited<ReturnType<typeof loadArApSubledger>>;
+type HomeInventoryControls = z.infer<typeof homeInventoryControlsSchema>;
+const sumCents = (rows: { cents: number }[]) => rows.reduce((sum, row) => sum + row.cents, 0);
+
+/**
+ * AR, AP, cash, job cost, land and completed homes held to each company. The
+ * ledger side is the company's own lines (`forLegalEntity`); the subledger side
+ * is the records that belong to it by the posting function's ownership rule.
+ */
+async function companyTieOuts(
+  orgId: string,
+  asOf: string,
+  ledger: LoadedLedger,
+  ownership: CompanyOwnership,
+  subledger: { arAp: ArApSubledger; jobCost: { project_id: string; cost_cents: number }[]; homeInventory: HomeInventoryControls },
+) {
+  const { companies, primaryId, projectOwner, accountOwner } = ownership;
+  const accountIdOf = (code: string) => ledger.accounts.find((account) => account.code === code)?.id;
+  const ownerOfAccount = (code: string) => {
+    const id = accountIdOf(code);
+    return id ? accountOwner.get(id) ?? null : null;
+  };
+  const owner = (projectId: string | null, accountCode?: string) =>
+    expectedOwner({ accountOwner: accountCode ? ownerOfAccount(accountCode) : null, projectOwner: projectId ? projectOwner.get(projectId) : null }, primaryId);
+
+  const balances = await Promise.all(companies.map(async (company) => {
+    const own = forLegalEntity(ledger, company.id);
+    const trialBalance = await buildTrialBalance(orgId, asOf, own);
+    return { company, own, rows: new Map(trialBalance.rows.map((row) => [row.accountId, row.balanceCents])) };
+  }));
+  const ledgerBy = (value: (entry: (typeof balances)[number]) => number) =>
+    new Map(balances.map((entry) => [entry.company.id, value(entry)]));
+  const accountLedger = (code: string) => {
+    const id = accountIdOf(code);
+    return ledgerBy((entry) => (id ? entry.rows.get(id) ?? 0 : 0));
+  };
+  const subledgerBy = (rows: { projectId: string | null; cents: number }[], accountCode: string) =>
+    rows.reduce((totals, row) => addTo(totals, owner(row.projectId, accountCode), row.cents), new Map<string, number>());
+
+  const cash = cashByCompany(ledger.accounts.filter((account) => CASH_SUBTYPES.has(account.subtype)).map((account) => ({
+    accountId: account.id,
+    code: account.code,
+    owner: expectedOwner({ accountOwner: accountOwner.get(account.id), cashAccount: true }, primaryId),
+    ledger: balances.map((entry) => ({ legalEntityId: entry.company.id, cents: entry.rows.get(account.id) ?? 0 })),
+  })));
+  const land = landByCompany(subledger.homeInventory.land.holdings, ownerOfAccount("1120"), primaryId);
+  const homes = completedHomesByCompany(subledger.homeInventory.completedHomes.holdings.map((home) => ({ ...home, owner: owner(home.projectId, "1170") })));
+  const jobCostSubledger = subledger.jobCost.reduce((totals, row) => addTo(totals, owner(row.project_id), row.cost_cents), new Map<string, number>());
+
+  return {
+    ar_control: tieByCompany(companies, accountLedger(SYSTEM_ACCOUNT_CODES.accountsReceivable), subledgerBy(subledger.arAp.receivables, SYSTEM_ACCOUNT_CODES.accountsReceivable)),
+    ap_control: tieByCompany(companies, accountLedger(SYSTEM_ACCOUNT_CODES.accountsPayable), subledgerBy(subledger.arAp.payables, SYSTEM_ACCOUNT_CODES.accountsPayable)),
+    cash_control: tieByCompany(companies, cash.ledger, cash.subledger, cash.exceptions),
+    job_cost_control: tieByCompany(companies, ledgerBy((entry) => glJobCostCents(entry.own)), jobCostSubledger),
+    land_inventory_control: tieByCompany(companies, land.ledger, land.subledger, land.exceptions),
+    completed_homes_control: tieByCompany(companies, homes.ledger, homes.subledger, homes.exceptions),
+  } satisfies Partial<Record<LedgerTieOut["code"], CompanyTieOut[]>>;
 }
 
 /**
@@ -155,51 +286,17 @@ async function loadArApSubledgerCents(orgId: string, asOf: string) {
  * check noticing. AR retainage lives in the `retainage` table (its authoritative home);
  * AP retainage lives in the vendor-bill columns, net of what has been released.
  */
-async function loadRetainageSubledgerCents(orgId: string, asOf: string) {
+async function loadRetainageSubledgerCents(orgId: string, asOf: string, bills: PayableBill[], isPayable: (bill: PayableBill) => boolean) {
   const service = createServiceSupabaseClient();
-  const [held, bills] = await Promise.all([
-    collectPages(
-      // Joined to the invoice rather than filtered on `held_at`, for two reasons.
-      // Retainage only reaches 1110 through `postCustomerInvoice`, so a hold whose
-      // invoice is still `saved` — or which has no invoice at all — was never
-      // posted and must not be summed here. And the GL dates that debit by the
-      // invoice's `issue_date`, so the cutoff has to be the invoice's date, not
-      // the date somebody recorded the hold.
-      //
-      // The `!invoice_id` hint is required, not decorative: `retainage` has two
-      // foreign keys to `invoices` (`invoice_id` and `release_invoice_id`), and
-      // without it PostgREST refuses the embed as ambiguous.
-      (from, to) =>
-        service
-          .from("retainage")
-          .select(
-            "amount_cents, invoice:invoices!invoice_id!inner(status, issue_date)",
-          )
-          .eq("org_id", orgId)
-          .eq("status", "held")
-          .in("invoice.status", [...BILLED_INVOICE_STATUSES])
-          .lte("invoice.issue_date", asOf)
-          .range(from, to),
-      "AR retainage subledger",
-    ),
-    collectPages(
-      (from, to) =>
-        service
-          .from("vendor_bills")
-          .select("retainage_cents, retainage_released_cents")
-          .eq("org_id", orgId)
-          .lte("bill_date", asOf)
-          .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
-          .range(from, to),
-      "AP retainage subledger",
-    ),
-  ]);
+  const holds = await collectPages((from, to) => service.from("retainage")
+    // Disambiguate both invoice FKs. Release state is evaluated at its accounting
+    // date, never from today's hold status or lifetime released amount.
+    .select("id,amount_cents,invoice:invoices!invoice_id!inner(status,issue_date,metadata),release:invoices!release_invoice_id(status,issue_date,metadata)")
+    .eq("org_id", orgId).lte("invoice.issue_date", asOf)
+    .order("id").range(from, to), "AR retainage history");
   return {
-    receivableCents: held.reduce(
-      (sum, row) => sum + Number(row.amount_cents ?? 0),
-      0,
-    ),
-    payableCents: sumApRetainageCents(bills),
+    receivableCents: receivableRetainageAsOf(holds, asOf),
+    payableCents: payableRetainageAsOf(bills, asOf, isPayable),
   };
 }
 
@@ -218,6 +315,7 @@ async function loadCustomerDepositSubledgerCents(orgId: string, asOf: string) {
   );
   const invoiceIds = depositInvoices.map((row) => row.id);
   if (invoiceIds.length === 0) return 0;
+  // A refunded payment still happened; its refund is counted as of its own date.
   let received = 0;
   let refunded = 0;
   const depositPaymentIds: string[] = [];
@@ -229,7 +327,7 @@ async function loadCustomerDepositSubledgerCents(orgId: string, asOf: string) {
           .select("id,amount_cents")
           .eq("org_id", orgId)
           .in("invoice_id", invoiceIds.slice(start, start + 200))
-          .in("status", ["succeeded", "completed"])
+          .in("status", ["succeeded", "completed", "refunded"])
           .lte("received_at", `${asOf}T23:59:59.999Z`)
           .range(from, to),
       "customer-deposit receipts",
@@ -260,11 +358,11 @@ async function loadCustomerDepositSubledgerCents(orgId: string, asOf: string) {
         (from, to) =>
           service
             .from("payments")
-            .select("amount_cents")
+            .select("amount_cents, payment_reversals(amount_cents, status, occurred_at)")
             .eq("org_id", orgId)
             .in("metadata->>deposit_payment_id", ids)
             .contains("metadata", { customer_deposit_application: true })
-            .in("status", ["succeeded", "completed"])
+            .in("status", ["succeeded", "completed", "refunded"])
             .lte("received_at", `${asOf}T23:59:59.999Z`)
             .range(from, to),
         "customer-deposit applications",
@@ -274,8 +372,14 @@ async function loadCustomerDepositSubledgerCents(orgId: string, asOf: string) {
       (sum, row) => sum + Number(row.amount_cents ?? 0),
       0,
     );
+    // A reversed application returns the deposit to the buyer's liability.
     applied += applications.reduce(
-      (sum, row) => sum + Number(row.amount_cents ?? 0),
+      (sum, row) =>
+        sum +
+        Number(row.amount_cents ?? 0) -
+        (row.payment_reversals ?? [])
+          .filter((reversal) => reversal.status === "succeeded" && String(reversal.occurred_at) <= `${asOf}T23:59:59.999Z`)
+          .reduce((total, reversal) => total + Number(reversal.amount_cents ?? 0), 0),
       0,
     );
   }
@@ -369,30 +473,40 @@ export async function runLedgerTieOuts(
   orgId: string,
   asOf: string,
 ): Promise<LedgerTieOut[]> {
+  // The ledger and the payable bills are each read once and shared by every check.
+  const [ledger, bills, ownership] = await Promise.all([loadLedgerBalances(orgId, asOf), loadPayableBills(orgId, asOf), loadCompanyOwnership(orgId)]);
+  const isPayable = await payableAsOf(orgId, asOf, bills);
   const [
     trialBalance,
     balanceSheet,
-    glJobCostCents,
-    subledgerJobCostCents,
-    arAp,
+    jobCost,
+    arApSubledger,
     retainage,
     customerDepositsCents,
     registers,
+    homeInventory,
+    impairment,
+    intercompany,
   ] = await Promise.all([
-    buildTrialBalance(orgId, asOf),
-    buildBalanceSheet(orgId, asOf),
-    loadGlJobCostCents(orgId, asOf),
-    loadSubledgerJobCostCents(orgId, asOf),
-    loadArApSubledgerCents(orgId, asOf),
-    loadRetainageSubledgerCents(orgId, asOf),
+    buildTrialBalance(orgId, asOf, ledger),
+    buildBalanceSheet(orgId, asOf, ledger),
+    loadSubledgerJobCost(orgId, asOf),
+    loadArApSubledger(orgId, asOf, bills, isPayable),
+    loadRetainageSubledgerCents(orgId, asOf, bills, isPayable),
     loadCustomerDepositSubledgerCents(orgId, asOf),
     loadOperationalRegisterBalances(orgId, asOf),
+    loadHomeInventoryControls(orgId, asOf),
+    loadImpairmentControl(orgId, asOf),
+    loadIntercompanyControl(orgId, asOf),
   ]);
+  const glJobCost = glJobCostCents(ledger);
+  const subledgerJobCostCents = jobCost.reduce((sum, row) => sum + row.cost_cents, 0);
+  const arAp = { arCents: sumCents(arApSubledger.receivables), apCents: sumCents(arApSubledger.payables) };
   const accountBalance = (code: string) =>
     trialBalance.rows.find((row) => row.code === code)?.balanceCents ?? 0;
   const trialDifference =
     trialBalance.totalDebitCents - trialBalance.totalCreditCents;
-  const jobCostDifference = glJobCostCents - subledgerJobCostCents;
+  const jobCostDifference = glJobCost - subledgerJobCostCents;
   const arDifference =
     accountBalance(SYSTEM_ACCOUNT_CODES.accountsReceivable) - arAp.arCents;
   const apDifference =
@@ -416,7 +530,11 @@ export async function runLedgerTieOuts(
     "accumulated_depreciation",
   ]);
 
-  return [
+  const cashCents = trialBalance.rows
+    .filter((row) => CASH_SUBTYPES.has(row.subtype))
+    .reduce((sum, row) => sum + row.balanceCents, 0);
+
+  const orgWide: LedgerTieOut[] = [
     {
       code: "trial_balance",
       label: "Trial balance sums to zero",
@@ -438,7 +556,7 @@ export async function runLedgerTieOuts(
       label: "GL job cost ties to the job-cost subledger",
       status: jobCostDifference === 0 ? "passed" : "failed",
       differenceCents: jobCostDifference,
-      ledgerCents: glJobCostCents,
+      ledgerCents: glJobCost,
       subledgerCents: subledgerJobCostCents,
     },
     {
@@ -511,5 +629,64 @@ export async function runLedgerTieOuts(
       ledgerCents: depreciationLedgerCents,
       subledgerCents: registers.depreciationCents,
     },
+    {
+      code: "land_inventory_control",
+      label: "Land ties lot by lot to each lot's cost basis",
+      status: homeInventory.land.exceptions.length === 0 ? "passed" : "failed",
+      differenceCents: homeInventory.land.ledgerCents - homeInventory.land.subledgerCents,
+      ledgerCents: homeInventory.land.ledgerCents,
+      subledgerCents: homeInventory.land.subledgerCents,
+      exceptions: homeInventory.land.exceptions,
+    },
+    {
+      code: "completed_homes_control",
+      label: "Completed homes held for sale tie to the homes not yet sold",
+      status: homeInventory.completedHomes.exceptions.length === 0 ? "passed" : "failed",
+      differenceCents: homeInventory.completedHomes.ledgerCents - homeInventory.completedHomes.heldCents,
+      ledgerCents: homeInventory.completedHomes.ledgerCents,
+      subledgerCents: homeInventory.completedHomes.heldCents,
+      exceptions: homeInventory.completedHomes.exceptions,
+      rows: homeInventory.completedHomes.homes,
+    },
+    {
+      code: "warranty_reserve_control",
+      label: "Warranty reserve use and recoveries tie to approved warranty costs and posted vendor credits",
+      status: homeInventory.warrantyReserve.ledgerCents === homeInventory.warrantyReserve.subledgerCents && homeInventory.warrantyReserve.recoveryLedgerCents === homeInventory.warrantyReserve.recoverySubledgerCents ? "passed" : "failed",
+      differenceCents: (homeInventory.warrantyReserve.ledgerCents - homeInventory.warrantyReserve.subledgerCents) + (homeInventory.warrantyReserve.recoveryLedgerCents - homeInventory.warrantyReserve.recoverySubledgerCents),
+      ledgerCents: homeInventory.warrantyReserve.ledgerCents,
+      subledgerCents: homeInventory.warrantyReserve.subledgerCents,
+    },
+    {
+      code: "impairment_control",
+      label: "Inventory write-downs tie to approved impairment reviews",
+      status: impairment.ledgerCents === impairment.subledgerCents ? "passed" : "failed",
+      differenceCents: impairment.ledgerCents - impairment.subledgerCents,
+      ledgerCents: impairment.ledgerCents,
+      subledgerCents: impairment.subledgerCents,
+    },
+    {
+      code: "intercompany_control",
+      label: "What the companies owe each other agrees on both sides",
+      status: intercompany.exceptions.length === 0 && intercompany.dueFromCents === intercompany.dueToCents ? "passed" : "failed",
+      differenceCents: intercompany.dueFromCents - intercompany.dueToCents,
+      ledgerCents: intercompany.dueFromCents,
+      subledgerCents: intercompany.dueToCents,
+      ...(intercompany.exceptions.length ? { exceptions: intercompany.exceptions } : {}),
+    },
+    {
+      // Org-wide, cash is cash: this control only has something to say per company.
+      code: "cash_control",
+      label: "Cash is booked to the company that owns each account",
+      status: "passed",
+      differenceCents: 0,
+      ledgerCents: cashCents,
+      subledgerCents: cashCents,
+    },
   ];
+  if (!ownership || ownership.companies.length < 2) return orgWide;
+  const byCompany: Partial<Record<LedgerTieOut["code"], CompanyTieOut[]>> = await companyTieOuts(orgId, asOf, ledger, ownership, { arAp: arApSubledger, jobCost, homeInventory });
+  return orgWide.map((tieOut) => {
+    const rows = byCompany[tieOut.code];
+    return rows ? withCompanies(tieOut, ownership.companies, rows) : tieOut;
+  });
 }

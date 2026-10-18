@@ -20,15 +20,37 @@ then the reference docs below.
 
 | Doc | What it covers |
 |---|---|
+| [`reference/arc-trade.md`](reference/arc-trade.md) | Trade workspace behavior, pilot setup, access boundaries, and acceptance checklist. |
+| [`reference/document-transfers.md`](reference/document-transfers.md) | Documents transfer recovery, mutations, exports, verification and pending rollout requirements. |
 | [`design.md`](design.md) | The design standard. Read before building any new surface. |
+| [`testing.md`](testing.md) | The testing standard: tiers, rules, where tests live. Read before adding a test. |
 | [`database-overview.md`](database-overview.md) | Schema reference. Live schema via Supabase MCP `list_tables` always wins. |
 | [`production-org-playbook.md`](production-org-playbook.md) | Role/surface map: who lives on which desk and what they mutate. |
 | [`books-revenue-recognition.md`](books-revenue-recognition.md) | Arc Books' full contract-lifecycle entry set, traced from the posting rules, with a worked percentage-of-completion example. **Carries the construction-CPA sign-off block that gates any org leaving `shadow` mode.** Read before changing anything in `lib/services/books/posting-rules.ts`. |
+| [`books-period-close.md`](books-period-close.md) | How a Books period closes (gates, close-owned entries, saved statements), the year-end transfer to retained earnings, newest-first reopen, and sources dated into closed periods. Read before changing `lib/services/books/period-close.ts`. |
+| [`books-bank-reconciliation.md`](books-bank-reconciliation.md) | How bank and card statements tie to the ledger: the statement proof, outstanding items, owning statement lines, cutover outstanding items and offsets for voided checks. Read before changing `lib/services/books/bank-reconciliation.ts` or the statement SQL. |
+| [`books-posting.md`](books-posting.md) | How source documents post to Arc Books: ordinary and nightly runs, cursors and the late-commit window, time budgets, the posted-document delete guard, per-document posting status, the narrowed proof beside the full rebuild drill, and the database-summed month-end review reads. Read before changing `lib/services/books/projector.ts`, `posting-status.ts` or `rebuild.ts`. |
+| [`books-dimensions.md`](books-dimensions.md) | Which reporting dimensions each kind of Books posting carries, which are required, and the rules that keep them true: own-company records only, never ambiguous, tags stay as posted, reversals inherit. Read before changing `dimensions.ts`, `draftFromFact`, posting-rule dimensions or `journal_lines` triggers. |
+| [`books-1099.md`](books-1099.md) | What counts toward each vendor's 1099-NEC and the reviewed package, filing file and handoff per paying company. Read before changing 1099 reporting or packages. |
+| [`books-restore.md`](books-restore.md) | What a Books archive holds (and never holds), and the verify → preflight → plan → load → compare recovery procedure. Read before changing the export snapshot or restore plan. |
+| [`arc-operations.md`](arc-operations.md) | Running Arc outside the ledger: scheduled-job runs, deadlines and alert routing, fair claiming and bulk budgets, the failed production work view, runbooks (rollback, stopped jobs, files and previews, integrations, starts, imports and the Open-WIP cutover, warranty), the capacity and cost review, and the proposed service levels and incident procedure. |
+| [`books-operations.md`](books-operations.md) | Running Arc Books: ownership, scheduled jobs, the deploy procedure, onboarding a builder, every close blocker and its cure, ledger repair, recovery and the incident drill, secrets by name. |
+| [`books-capabilities.md`](books-capabilities.md) | Arc Books' accounting policy and what it supports for the first client, each capability with its doc, screen, scenarios and acceptance state. Start here for Books. |
+| [`books-entities.md`](books-entities.md) | Legal entities as a segment of the one Books ledger: who owns a posting, intercompany legs, per-entity close and consolidation. The separate per-entity ledger was retired before release. Read before any multi-company work. |
 | [`accounting-sync.md`](accounting-sync.md) | Provider boundaries, durable delivery/import, and the gated D2 release and acceptance process. |
 | [`mobile-api-v1.openapi.yaml`](mobile-api-v1.openapi.yaml) | Mobile API contract. Enforced by `pnpm test:mobile`. |
+| [`reference/starts-cutover.md`](reference/starts-cutover.md) | The ordered window that moves Starts release to production: readiness guard, rollback and re-activation scripts, what only the human does, and retirement of the legacy drain. |
+| [`reference/production-activation.md`](reference/production-activation.md) | The Arc Production release window: the ordered migration set and its lock risk, schema-gated flags, worker drain, monitoring, rollback, and the golden scenarios that rehearse it. |
+| [`reference/security-review-scope.md`](reference/security-review-scope.md) | Scope and threat model for the independent security review (tenant isolation, member authority, portals, storage, payments, imports, job queue), the member write fences, and the internal pre-review checklist. |
+| [`reference/production-approval-package.md`](reference/production-approval-package.md) | First-builder sizing, operating assumptions and the integration inventory form, for the launch owner to approve or amend. |
+| [`reference/pipeline.md`](reference/pipeline.md) | The one-screen pipeline: whose move it is, price firmness, the document that hardens from budget to agreement, client questions, and Start building. |
+| [`reference/drawings-workspace.md`](reference/drawings-workspace.md) | The modeless drawings workspace: item-first measuring, one-click room fill, the takeoff ledger and estimate handoff, and the 3D model as a view of the sheets. |
+| [`reference/audit-trail.md`](reference/audit-trail.md) | Evidence rows and correlation ids, which money mutations are transactional vs critical-audited, and the separation-of-duties rules and their refusal log. |
 | [`reference/payable-waivers.md`](reference/payable-waivers.md) | Incoming waiver preparation, review, payment/closeout integration, and migration/QA status. |
 | [`report-export-api.md`](report-export-api.md) | Report export route contract. |
 | [`repository-health.md`](repository-health.md) | Continuous reachability, deletion, dependency, and plan-lifecycle rules. |
+| [`automatic-area-takeoff.md`](automatic-area-takeoff.md) | Desktop auto-area preview, measurement contract, correction workflow, benchmark and outstanding accuracy gates. |
+| [`takeoff-evaluation.md`](takeoff-evaluation.md) | How takeoff and 3D recognition accuracy is measured: holdout/development split, tracing references and conventions, scoring tools, the frozen release protocol. |
 | [`takeoff-model.md`](takeoff-model.md) | The quantity model: reporting unit vs measured unit, axis factors, what counts and what deliberately does not, count by example. Read before touching `lib/drawings/measure.ts` or `lib/services/takeoff*.ts`. |
 | [`takeoff-reanchor-design.md`](takeoff-reanchor-design.md) | Revision re-anchoring state machine. Referenced from `lib/services/takeoff-reanchor.ts`. |
 | [`takeoff-vector-spike.md`](takeoff-vector-spike.md) | Vector-extraction spike verdict. Referenced from `lib/drawings/vector-snap.ts`. |

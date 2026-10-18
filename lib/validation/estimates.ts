@@ -1,35 +1,101 @@
-import { z } from "zod"
+import { estimateAlternateIssue } from "@/lib/financials/estimate-commercial";
+import { z } from "zod";
 
-export const PRICING_DISPLAY_MODES = ["itemized", "subtotals", "lump_sum"] as const
-export type PricingDisplayMode = (typeof PRICING_DISPLAY_MODES)[number]
+export const PRICING_DISPLAY_MODES = [
+  "itemized",
+  "subtotals",
+  "lump_sum",
+] as const;
+export type PricingDisplayMode = (typeof PRICING_DISPLAY_MODES)[number];
 
 export const estimatePhotoSchema = z.object({
   /** R2 storage path (org-scoped). */
   path: z.string().min(1),
   caption: z.string().trim().max(280).optional().nullable(),
-})
-export type EstimatePhotoInput = z.infer<typeof estimatePhotoSchema>
+});
+export type EstimatePhotoInput = z.infer<typeof estimatePhotoSchema>;
 
-export const estimateLineInputSchema = z.object({
-  description: z.string().min(1, "Description is required"),
-  quantity: z.number().min(0),
-  unit_cost_cents: z.number().min(0),
-  item_type: z.enum(["line", "group"]).default("line"),
-  cost_code_id: z.string().uuid().optional(),
-  markup_pct: z.number().optional(),
-  unit: z.string().optional(),
-  notes: z.string().optional(),
-  /** Client-selectable upgrade/add-on; excluded from the base total. */
-  is_optional: z.boolean().optional(),
-  /** Allowance line: included in the total as a placeholder budget the client can reallocate. */
-  is_allowance: z.boolean().optional(),
-  /** Optional add-ons sharing a group label are mutually exclusive alternates. */
-  option_group: z.string().trim().max(80).optional(),
-  /** Sub bid this line's cost basis was pulled from (estimate builder "Use bid"). */
-  source_bid_submission_id: z.string().uuid().optional(),
-})
+export const estimateLineInputSchema = z
+  .object({
+    description: z.string().min(1, "Description is required"),
+    quantity: z.number().min(0),
+    unit_cost_cents: z.number().int(),
+    item_type: z.enum(["line", "group"]).default("line"),
+    cost_code_id: z.string().uuid().optional(),
+    markup_pct: z.number().optional(),
+    unit: z.string().optional(),
+    notes: z.string().optional(),
+    /** Client-selectable upgrade/add-on; excluded from the base total. */
+    is_optional: z.boolean().optional(),
+    /** Allowance line: included in the total as a placeholder budget the client can reallocate. */
+    is_allowance: z.boolean().optional(),
+    /** Optional add-ons sharing a group label are mutually exclusive alternates. */
+    option_group: z.string().trim().max(80).optional(),
+    /** Sub bid this line's cost basis was pulled from (estimate builder "Use bid"). */
+    source_bid_submission_id: z.string().uuid().optional(),
+    metadata: z.record(z.any()).optional(),
+  })
+  .superRefine((line, context) => {
+    const issue = estimateAlternateIssue(line);
+    if (issue)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: issue,
+        path: ["unit_cost_cents"],
+      });
+  });
+
+export const estimateCommercialSchema = z.object({
+  brief_version: z.number().int().nonnegative().optional(),
+  governing_documents: z
+    .array(
+      z.object({
+        id: z.string().uuid(),
+        version_id: z.string().uuid().nullable(),
+        name: z.string().min(1).max(500),
+      }),
+    )
+    .max(50)
+    .optional(),
+  drawing_revisions: z
+    .array(
+      z.object({
+        id: z.string().uuid(),
+        drawing_set_id: z.string().uuid(),
+        revision_label: z.string().max(500),
+      }),
+    )
+    .max(1000)
+    .optional(),
+  purpose: z.enum([
+    "budget",
+    "preconstruction_agreement",
+    "construction_agreement",
+  ]),
+  maturity: z.enum(["conceptual", "design_development", "construction_ready"]),
+  pricing_basis: z.string().trim().max(12000),
+  billing_model: z.enum([
+    "fixed_price",
+    "cost_plus_percent",
+    "cost_plus_fixed_fee",
+    "cost_plus_gmp",
+    "time_and_materials",
+  ]),
+  fixed_fee_cents: z.number().int().min(0),
+  gmp_cents: z.number().int().min(0),
+  retainage_percent: z.number().min(0).max(100),
+  payment_terms: z.string().trim().max(12000),
+  allowance_policy: z.string().trim().max(12000),
+  contingency_treatment: z.enum([
+    "builder_reserve",
+    "owner_reserve",
+    "included_in_price",
+  ]),
+});
 
 export const estimateInputSchema = z.object({
+  precon: estimateCommercialSchema.optional(),
+  source_budget_estimate_id: z.string().uuid().optional(),
   title: z.string().min(1, "Title is required"),
   project_id: z.string().uuid().optional().nullable(),
   prospect_id: z.string().uuid().optional().nullable(),
@@ -53,7 +119,9 @@ export const estimateInputSchema = z.object({
   /** Scope qualifications rendered on the portal, PDF, and contract snapshot. */
   inclusions: z.string().optional(),
   exclusions: z.string().optional(),
-  lines: z.array(estimateLineInputSchema).min(1, "At least one line is required"),
-})
+  lines: z
+    .array(estimateLineInputSchema)
+    .min(1, "At least one line is required"),
+});
 
-export type EstimateInput = z.infer<typeof estimateInputSchema>
+export type EstimateInput = z.infer<typeof estimateInputSchema>;

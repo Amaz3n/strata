@@ -54,7 +54,7 @@ export function ImpersonationPanel({ orgs }: { orgs: OrgOption[] }) {
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="reason">Reason</Label>
-          <Input id="reason" name="reason" placeholder="Investigating customer report #1234" required />
+          <Input id="reason" name="reason" placeholder="Investigating customer report #1234" minLength={10} required />
         </div>
         <div className="space-y-2">
           <Label htmlFor="expiresInMinutes">Session duration (minutes)</Label>

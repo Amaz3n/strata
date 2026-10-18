@@ -1,0 +1,9 @@
+1..8
+ok 1 - new regular time cost includes burden
+ok 2 - new overtime cost includes premium and burden
+ok 3 - new double-time cost includes premium and burden
+ok 4 - explicit archival policy preserves original double-time underestimate for reviewed correction
+ok 5 - generated numeric half-cent cost agrees with captured payroll basis
+ok 6 - new entries use the corrected policy by default
+ok 7 - unknown cost formula is rejected
+ok 8 - overtime and double time cannot both apply

@@ -1,0 +1,291 @@
+{
+  "scenario": "HOME-01",
+  "status": "PASSED",
+  "reviewedFrom": "B11.3 definition of done (advisor-plans/013) and docs/books-revenue-recognition.md (home closing).",
+  "subcases": [
+    {
+      "name": "sale-relief-by-component",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "97ecb597-ffb9-4753-94f9-e465a5e084a2",
+        "closingId": "0bc1a288-622d-4ed9-8dac-f1150dd859f1"
+      },
+      "checks": [
+        {
+          "label": "the sale is relieved by component, nothing is left in inventory, and only the home's own deposit settles",
+          "pass": true,
+          "expected": {
+            "costOfSalesByComponent": {
+              "capitalized_interest": 250000,
+              "construction": 20000000,
+              "land_and_development": 6000000
+            },
+            "inventoryLeft": {
+              "1160": 0,
+              "1170": 0
+            },
+            "landLeft": 0,
+            "depositsApplied": [
+              1500000
+            ],
+            "homeDepositsHeld": 0,
+            "neighbourDepositsHeld": 1500000,
+            "revenue": 40000000,
+            "controlsTie": {
+              "land_inventory_control": "passed",
+              "completed_homes_control": "passed",
+              "warranty_reserve_control": "passed",
+              "customer_deposits_control": "passed"
+            }
+          },
+          "observed": {
+            "costOfSalesByComponent": {
+              "capitalized_interest": 250000,
+              "construction": 20000000,
+              "land_and_development": 6000000
+            },
+            "inventoryLeft": {
+              "1160": 0,
+              "1170": 0
+            },
+            "landLeft": 0,
+            "depositsApplied": [
+              1500000
+            ],
+            "homeDepositsHeld": 0,
+            "neighbourDepositsHeld": 1500000,
+            "revenue": 40000000,
+            "controlsTie": {
+              "land_inventory_control": "passed",
+              "completed_homes_control": "passed",
+              "warranty_reserve_control": "passed",
+              "customer_deposits_control": "passed"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T18:44:45.148Z"
+    },
+    {
+      "name": "costs-after-the-sale",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "dff1e1d7-ebdd-479d-844c-23b37013683c"
+      },
+      "checks": [
+        {
+          "label": "each cost after the sale follows the stated policy and the closed month is never rewritten",
+          "pass": true,
+          "expected": {
+            "lateCostRelievedOn": [
+              {
+                "date": "2026-07-25",
+                "cents": 300000
+              }
+            ],
+            "postSaleCost": {
+              "account": "5000",
+              "labeledClosedHomeCost": true
+            },
+            "julyBlockingFailures": [],
+            "closedMonthCostOfSalesUnchanged": true,
+            "blockedCostWaits": true,
+            "blockedFinding": [
+              "projection_blocked_by_closed_period"
+            ]
+          },
+          "observed": {
+            "lateCostRelievedOn": [
+              {
+                "date": "2026-07-25",
+                "cents": 300000
+              }
+            ],
+            "postSaleCost": {
+              "account": "5000",
+              "labeledClosedHomeCost": true
+            },
+            "julyBlockingFailures": [],
+            "closedMonthCostOfSalesUnchanged": true,
+            "blockedCostWaits": true,
+            "blockedFinding": [
+              "projection_blocked_by_closed_period"
+            ]
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T18:44:50.059Z"
+    },
+    {
+      "name": "reviewed-development-allocation",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "4b67da7a-70ec-4e21-98fc-4bf415995d98",
+        "allocationId": "ac731b5f-a5f2-4af1-84bd-9b16fdf71c97"
+      },
+      "checks": [
+        {
+          "label": "the allocation posts only after independent review, in exact cents that follow the basis",
+          "pass": true,
+          "expected": {
+            "postedBeforeReview": 0,
+            "selfApproval": "refused: approved by someone other than the proposer",
+            "shares": [
+              40001,
+              30000,
+              30000
+            ],
+            "sharesAddToTotal": true,
+            "landByLot": [
+              1040001,
+              1030000,
+              1030000
+            ],
+            "developmentLeft": 19999,
+            "controlsTie": {
+              "land_inventory_control": "passed",
+              "completed_homes_control": "passed",
+              "warranty_reserve_control": "passed",
+              "customer_deposits_control": "passed"
+            }
+          },
+          "observed": {
+            "postedBeforeReview": 0,
+            "selfApproval": "refused: approved by someone other than the proposer",
+            "shares": [
+              40001,
+              30000,
+              30000
+            ],
+            "sharesAddToTotal": true,
+            "landByLot": [
+              1040001,
+              1030000,
+              1030000
+            ],
+            "developmentLeft": 19999,
+            "controlsTie": {
+              "land_inventory_control": "passed",
+              "completed_homes_control": "passed",
+              "warranty_reserve_control": "passed",
+              "customer_deposits_control": "passed"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T18:44:52.909Z"
+    },
+    {
+      "name": "warranty-consumption",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "19f1a8f3-1664-45b2-9864-d18226be2e35",
+        "visitId": "b1b4a272-4203-4389-8aa0-10da109d6ecc"
+      },
+      "checks": [
+        {
+          "label": "the reserve absorbs the repair against the account the cost was booked to, and the reserve ties",
+          "pass": true,
+          "expected": {
+            "reserveProvided": 500000,
+            "change": {
+              "2260": 80000,
+              "5000": -80000,
+              "5050": 0
+            },
+            "repairBill": true,
+            "controlsTie": {
+              "land_inventory_control": "passed",
+              "completed_homes_control": "passed",
+              "warranty_reserve_control": "passed",
+              "customer_deposits_control": "passed"
+            }
+          },
+          "observed": {
+            "reserveProvided": 500000,
+            "change": {
+              "2260": 80000,
+              "5000": -80000,
+              "5050": 0
+            },
+            "repairBill": true,
+            "controlsTie": {
+              "land_inventory_control": "passed",
+              "completed_homes_control": "passed",
+              "warranty_reserve_control": "passed",
+              "customer_deposits_control": "passed"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T18:44:53.556Z"
+    },
+    {
+      "name": "closing-reversal",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "7b50012f-9018-41e1-bf55-4c70bc8db13e",
+        "closingId": "60012fd1-376b-446a-a569-318d13ddc26b"
+      },
+      "checks": [
+        {
+          "label": "the reversal puts the home's books back to where they stood before the sale",
+          "pass": true,
+          "expected": {
+            "shortReason": "refused: say why",
+            "restored": {
+              "1100": true,
+              "1170": true,
+              "2260": true,
+              "2300": true,
+              "4000": true,
+              "5000": true,
+              "5050": true
+            },
+            "componentsReturned": {},
+            "closing": {
+              "status": "cancelled",
+              "soldOn": null,
+              "lot": "started"
+            },
+            "neighbourDepositsHeld": 1500000,
+            "controlsTie": {
+              "land_inventory_control": "passed",
+              "completed_homes_control": "passed",
+              "warranty_reserve_control": "passed",
+              "customer_deposits_control": "passed"
+            }
+          },
+          "observed": {
+            "shortReason": "refused: say why",
+            "restored": {
+              "1100": true,
+              "1170": true,
+              "2260": true,
+              "2300": true,
+              "4000": true,
+              "5000": true,
+              "5050": true
+            },
+            "componentsReturned": {},
+            "closing": {
+              "status": "cancelled",
+              "soldOn": null,
+              "lot": "started"
+            },
+            "neighbourDepositsHeld": 1500000,
+            "controlsTie": {
+              "land_inventory_control": "passed",
+              "completed_homes_control": "passed",
+              "warranty_reserve_control": "passed",
+              "customer_deposits_control": "passed"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T18:44:55.719Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T18:44:57.887Z"
+}

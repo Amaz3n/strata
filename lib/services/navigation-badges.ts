@@ -1,4 +1,5 @@
 import { authorizeMany } from "@/lib/services/authorization"
+import { unstable_rethrow } from "next/navigation"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { hasPermission } from "@/lib/services/permissions"
 
@@ -17,6 +18,13 @@ const EMPTY_COUNTS: NavigationBadgeCounts = {
   readyToBillBadgeCount: 0,
   projectReviewBadgeCounts: {},
   projectCorrespondenceBadgeCounts: {},
+}
+
+function optional<T>(fallback: T) {
+  return (error: unknown): T => {
+    unstable_rethrow(error)
+    return fallback
+  }
 }
 
 type ProjectRow = { project_id?: string | null }
@@ -51,7 +59,14 @@ function bumpBreakdown(
 async function rowsFromResult<T extends ProjectRow>(
   result: PromiseSettledResult<{ data: T[] | null; error: any }>,
 ) {
-  if (result.status === "rejected" || result.value.error) return []
+  if (result.status === "rejected") {
+    unstable_rethrow(result.reason)
+    return []
+  }
+  if (result.value.error) {
+    unstable_rethrow(result.value.error)
+    return []
+  }
   return result.value.data ?? []
 }
 
@@ -127,7 +142,7 @@ export async function getProjectFinancialReviewBreakdown(
   bumpBreakdown(breakdowns, "costs", await rowsFromResult(billableCosts))
 
   const reviewable = await filterToReviewableProjects(ctx, Object.keys(breakdowns)).catch(
-    () => new Set<string>(),
+    optional(new Set<string>()),
   )
 
   const visible: Record<string, ProjectReviewBreakdown> = {}
@@ -150,7 +165,7 @@ export async function getProjectFinancialReviewBadgeCounts(context?: OrgServiceC
 // the sidebar badge matches "N ready to bill" on the page. Model-aware: fixed-
 // price projects bill by due draws, not their (non-client-billable) job costs.
 async function getReadyToBillBadgeCount(ctx: OrgServiceContext) {
-  const canViewInvoices = await hasPermission("invoice.read", ctx).catch(() => false)
+  const canViewInvoices = await hasPermission("invoice.read", ctx).catch(optional(false))
   if (!canViewInvoices) return 0
 
   const today = new Date().toISOString().split("T")[0]
@@ -197,47 +212,13 @@ async function getReadyToBillBadgeCount(ctx: OrgServiceContext) {
   return readyProjectIds.size
 }
 
-/**
- * Prospects whose follow-up has come due — overdue or scheduled for today. Mirrors the
- * `followup_due` attention count on the Pipeline desk exactly, so the sidebar badge and
- * the page agree: an active-status prospect with a follow-up at or before end of today.
- */
-const ACTIVE_PROSPECT_STATUSES = [
-  "new",
-  "contacted",
-  "qualified",
-  "pricing",
-  "estimate_sent",
-  "changes_requested",
-  "client_approved",
-  "executed",
-]
-
+/** Deals waiting on you — the top group of the pipeline, counted by the same model. */
 async function getPipelineBadgeCount(ctx: OrgServiceContext) {
-  const canViewPipeline = await hasPermission("pipeline.read", ctx).catch(() => false)
+  const canViewPipeline = await hasPermission("pipeline.read", ctx).catch(optional(false))
   if (!canViewPipeline) return 0
-
-  const now = new Date()
-  const endOfToday = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    23,
-    59,
-    59,
-    999,
-  ).toISOString()
-
-  const { count, error } = await ctx.supabase
-    .from("prospects")
-    .select("id", { count: "exact", head: true })
-    .eq("org_id", ctx.orgId)
-    .in("status", ACTIVE_PROSPECT_STATUSES)
-    .not("next_follow_up_at", "is", null)
-    .lte("next_follow_up_at", endOfToday)
-
-  if (error) return 0
-  return count ?? 0
+  const { listPipelineDeals } = await import("./precon-deals")
+  const { deals } = await listPipelineDeals()
+  return deals.filter((deal) => deal.ball === "you").length
 }
 
 async function getAssignedTaskDueSoonCount(ctx: OrgServiceContext) {
@@ -272,7 +253,7 @@ async function getAssignedTaskDueSoonCount(ctx: OrgServiceContext) {
 async function getCorrespondenceReviewCounts(ctx: OrgServiceContext): Promise<Record<string, number>> {
   // RLS already hides mail from anyone without `correspondence.read`; this only
   // skips the query for roles that can never see the log.
-  if (!(await hasPermission("correspondence.read", ctx).catch(() => false))) return {}
+  if (!(await hasPermission("correspondence.read", ctx).catch(optional(false)))) return {}
 
   const { data, error } = await ctx.supabase
     .from("project_emails")
@@ -305,7 +286,7 @@ export async function getNavigationBadgeCounts(): Promise<NavigationBadgeCounts>
       getReadyToBillBadgeCount(ctx),
       getAssignedTaskDueSoonCount(ctx),
       getPipelineBadgeCount(ctx),
-      getCorrespondenceReviewCounts(ctx).catch(() => ({})),
+      getCorrespondenceReviewCounts(ctx).catch(optional({})),
     ])
     const reviewCount = Object.values(projectReviewBadgeCounts).reduce((sum, count) => sum + count, 0)
 
@@ -316,7 +297,8 @@ export async function getNavigationBadgeCounts(): Promise<NavigationBadgeCounts>
       readyToBillBadgeCount,
       myWorkBadgeCount: reviewCount + dueSoonTaskCount,
     }
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     return EMPTY_COUNTS
   }
 }

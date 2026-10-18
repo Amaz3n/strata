@@ -48,6 +48,8 @@ export const projectInputSchema = z.object({
   // null = inherit the org default; omitted = leave the existing value unchanged.
   cost_codes_enabled: z.boolean().optional().nullable(),
   prospect_id: z.string().uuid().optional().nullable(),
+  // Honoured on create only; a project moves between divisions through its lot.
+  division_id: z.string().uuid().optional().nullable(),
   qbo_class_id: z.string().optional().nullable(),
   qbo_class_name: z.string().optional().nullable(),
   qbo_customer_id: z.string().optional().nullable(),

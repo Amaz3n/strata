@@ -1,9 +1,11 @@
+import { connection } from "next/server"
 import { MarkupRulesRoster } from "@/components/cost-codes/markup-rules-roster"
 
 import { getCostCodingSettingsAction } from "./actions"
 import { listMarkupRuleOptionsAction, listMarkupRulesAction } from "./markup-rules-actions"
 
 export async function MarkupRulesSection() {
+  await connection()
   const [rules, options, settings] = await Promise.all([
     listMarkupRulesAction(),
     listMarkupRuleOptionsAction(),

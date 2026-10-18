@@ -28,14 +28,16 @@ export function trafficBucketForSource(source: string | null | undefined): "walk
   return "walkIns"
 }
 
+const TRAFFIC_COLUMN = { walkIns: "walk_ins", appointments: "appointments", webInquiries: "web_inquiries" } as const
+
 /**
  * Counts a new lead against its community's daily traffic.
  *
  * Conversion rates are only as honest as their denominator, and a tally that
  * depends on somebody remembering to open the traffic panel is not a
  * denominator. Called from lead creation, which has already authorized the
- * write, so it does not re-check `sales.manage` — a consultant who may create
- * the lead may count it.
+ * write. One atomic increment (`increment_community_traffic`), so a burst of
+ * leads counts every one; row-level security still decides who may count.
  *
  * Deliberately best-effort: a footfall tally must never be the reason a lead
  * fails to save.
@@ -45,34 +47,13 @@ export async function recordLeadTraffic(
   input: { communityId: string; source?: string | null; occurredOn?: string },
 ) {
   const loggedDate = input.occurredOn ?? isoDay(new Date())
-  const bucket = trafficBucketForSource(input.source)
-  try {
-    const { data: existing, error: existingError } = await context.supabase
-      .from("community_traffic")
-      .select("walk_ins, appointments, web_inquiries, notes")
-      .eq("org_id", context.orgId)
-      .eq("community_id", input.communityId)
-      .eq("logged_date", loggedDate)
-      .maybeSingle()
-    if (existingError) throw new Error(existingError.message)
-    const next = {
-      walk_ins: Number(existing?.walk_ins ?? 0) + (bucket === "walkIns" ? 1 : 0),
-      appointments: Number(existing?.appointments ?? 0) + (bucket === "appointments" ? 1 : 0),
-      web_inquiries: Number(existing?.web_inquiries ?? 0) + (bucket === "webInquiries" ? 1 : 0),
-    }
-    const { error } = await context.supabase.from("community_traffic").upsert({
-      org_id: context.orgId,
-      community_id: input.communityId,
-      logged_date: loggedDate,
-      ...next,
-      notes: (existing?.notes as string | null) ?? null,
-      recorded_by: context.userId,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "community_id,logged_date" })
-    if (error) throw new Error(error.message)
-  } catch (error) {
-    console.error("Failed to record community traffic for a new lead", { communityId: input.communityId, loggedDate, error })
-  }
+  const { error } = await context.supabase.rpc("increment_community_traffic", {
+    p_org_id: context.orgId,
+    p_community_id: input.communityId,
+    p_day: loggedDate,
+    p_bucket: TRAFFIC_COLUMN[trafficBucketForSource(input.source)],
+  })
+  if (error) console.error("Failed to record community traffic for a new lead", { communityId: input.communityId, loggedDate, error })
 }
 
 export async function listCommunityTraffic(
@@ -102,56 +83,6 @@ export async function listCommunityTraffic(
     webInquiries: Number(row.web_inquiries ?? 0),
     notes: (row.notes as string | null) ?? null,
   }))
-}
-
-/**
- * Adds to a day's counters instead of replacing them, so logging a walk-in from
- * the Sales desk and the consultant's own end-of-day entry on the community
- * workbench compose rather than clobber each other.
- *
- * Read-then-upsert: two people registering the same walk-in minute could lose a
- * count, which is the right trade for a footfall tally that nothing financial
- * depends on.
- */
-export async function incrementCommunityTraffic(
-  {
-    communityId,
-    loggedDate,
-    walkIns = 0,
-    appointments = 0,
-    webInquiries = 0,
-  }: {
-    communityId: string
-    loggedDate: string
-    walkIns?: number
-    appointments?: number
-    webInquiries?: number
-  },
-  orgId?: string,
-): Promise<CommunityTrafficDayDTO> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("sales.manage", context)
-
-  const { data: existing, error: existingError } = await context.supabase
-    .from("community_traffic")
-    .select("walk_ins, appointments, web_inquiries, notes")
-    .eq("org_id", context.orgId)
-    .eq("community_id", communityId)
-    .eq("logged_date", loggedDate)
-    .maybeSingle()
-  if (existingError) throw new Error(`Failed to read traffic: ${existingError.message}`)
-
-  return logCommunityTraffic(
-    {
-      communityId,
-      loggedDate,
-      walkIns: Number(existing?.walk_ins ?? 0) + walkIns,
-      appointments: Number(existing?.appointments ?? 0) + appointments,
-      webInquiries: Number(existing?.web_inquiries ?? 0) + webInquiries,
-      notes: (existing?.notes as string | null) ?? null,
-    },
-    orgId,
-  )
 }
 
 export async function logCommunityTraffic(

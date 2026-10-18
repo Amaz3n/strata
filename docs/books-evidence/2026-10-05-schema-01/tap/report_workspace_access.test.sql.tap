@@ -1,0 +1,7 @@
+1..6
+ok 1 - anonymous clients cannot read report evidence
+ok 2 - snapshots require server report and project authorization
+ok 3 - shared configurations require server visibility checks
+ok 4 - schedules require server ownership checks
+ok 5 - authorized server can capture snapshots
+ok 6 - authorized server can save reports

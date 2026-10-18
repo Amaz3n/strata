@@ -1,11 +1,30 @@
 import { ZodError } from "zod"
+import { parsePermissionDenied, permissionLabel } from "@/lib/permission-denied"
+import type { ConfigurationFix } from "@/lib/selections/configuration-fixes"
+import { ConfigurationViolationError, type ConfigurationViolation } from "@/lib/selections/configuration-rules"
+import { SelectionEligibilityError, type SelectionAlternate } from "@/lib/selections/supply-eligibility"
 
 /**
  * Standard server-action result envelope. Actions must return this instead of throwing:
  * thrown errors get redacted to an opaque digest in production, so the client would
  * never see the real message.
  */
-export type ActionResult<T> = { success: true; data: T } | { success: false; error: string; code?: string }
+export type ActionResult<T> = { success: true; data: T } | ActionFailure
+
+/**
+ * A refusal. A configuration that breaks its option rules also carries the
+ * rules it broke and, where the action can work them out, the valid fixes —
+ * so the page can explain and correct instead of showing one long sentence.
+ * A choice the home cannot have in time carries the alternates it still can.
+ */
+export type ActionFailure = {
+  success: false
+  error: string
+  code?: string
+  violations?: ConfigurationViolation[]
+  fixes?: ConfigurationFix[]
+  supply?: { reason: string; alternates: SelectionAlternate[]; exceptionId: string | null }
+}
 
 /**
  * Structural check for AuthorizationError without importing it — that class pulls in
@@ -19,18 +38,30 @@ function isAuthorizationError(error: unknown): boolean {
   )
 }
 
-export function actionError(error: unknown, fallback = "Something went wrong. Please try again."): {
-  success: false
-  error: string
-  code?: string
-} {
+export function actionError(error: unknown, fallback = "Something went wrong. Please try again."): ActionFailure {
   if (isAuthorizationError(error)) {
-    return { success: false, error: "You don't have permission to do that." }
+    const keys = parsePermissionDenied(error as { digest?: string })
+    if (!keys) return { success: false, error: "You don't have permission to do that." }
+    return {
+      success: false,
+      error: `Missing permission: ${keys.map(permissionLabel).join(" or ")}. An org admin can grant it in Settings → Team.`,
+    }
   }
   if (error instanceof ZodError) {
     const issue = error.issues[0]
     const path = issue?.path?.length ? `${issue.path.join(".")}: ` : ""
     return { success: false, error: issue ? `${path}${issue.message}` : fallback }
+  }
+  if (error instanceof ConfigurationViolationError) {
+    return { success: false, error: error.message, code: error.code, violations: error.violations }
+  }
+  if (error instanceof SelectionEligibilityError) {
+    return {
+      success: false,
+      error: error.message,
+      code: error.code,
+      supply: { reason: error.reason, alternates: error.alternates, exceptionId: error.exceptionId },
+    }
   }
   if (error instanceof Error && error.message) {
     const codedError: Error & { code?: unknown } = error

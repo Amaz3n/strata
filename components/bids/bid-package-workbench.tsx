@@ -1,6 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
+import Link from "next/link"
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import type {
@@ -9,15 +10,28 @@ import type {
   BidAwardResult,
   BidInvite,
   BidPackage,
+  BidPackageAward,
   BidScopeItem,
   BidSubmission,
 } from "@/lib/services/bids"
-import { getBidPackageStage } from "@/lib/bids/stage"
 import type { PackageIntelligence, VendorBidStats } from "@/lib/services/bid-intelligence"
 import type { Company, Rfi } from "@/lib/types"
-import type { BidPackageStatus } from "@/lib/validation/bids"
-import { cn } from "@/lib/utils"
+import { computeSubmissionTotals, itemForScope } from "@/lib/bids/leveling"
 import {
+  bidPackageMove,
+  rankBids,
+  subcontractStage,
+  tradeHasPrices,
+  tradeState,
+  type Move,
+  type TradeState,
+} from "@/lib/bids/package-move"
+import { getBidPackageStage } from "@/lib/bids/stage"
+import {
+  beginBidScopeRevisionAction,
+  getBidPackageAction,
+  getBidPackageAwardAction,
+  getPackageIntelligenceAction,
   getVendorBidStatsAction,
   listBidAddendaAction,
   listBidInvitesAction,
@@ -25,21 +39,24 @@ import {
   listBidPackageRfisAction,
   listBidScopeItemsAction,
   listBidSubmissionsAction,
+  removeBidInviteAction,
+  previewRescindImpactAction,
   rescindBidAwardAction,
+  resendBidInviteAction,
+  sendBidPackageAction,
   updateBidPackageAction,
 } from "@/app/(app)/bids/actions"
-import { updateProjectCommitmentAction } from "@/app/(app)/projects/[id]/commitments/actions"
 import { unwrapAction } from "@/lib/action-result"
-import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
-
+import { cn, formatMoneyCents } from "@/lib/utils"
+import { useWorkspaceParam } from "@/components/financials/workspace/use-workspace-param"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -61,25 +78,38 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { MoreHorizontal } from "@/components/icons"
-import { BidStatusBadge } from "@/components/bids/bid-status-badge"
-import { BidScopeSection } from "@/components/bids/bid-scope-section"
-import { BidVendorsSection } from "@/components/bids/bid-vendors-section"
-import { BidTabGrid } from "@/components/bids/bid-tab-grid"
-import { BidSubmissionPanel } from "@/components/bids/bid-submission-panel"
-import { BidAwardPanel } from "@/components/bids/bid-award-panel"
-import { BidDocumentsSection } from "@/components/bids/bid-documents-section"
-import { BidQaSection } from "@/components/bids/bid-qa-section"
-import { BidAddendaSection } from "@/components/bids/bid-addenda-section"
-import { BidActivitySection } from "@/components/bids/bid-activity-section"
-import {
-  STAGE_LABELS,
-  STAGE_ORDER,
-  formatDueDate,
-  isDuePast,
-  money,
-  relativeDueDate,
-  type BidWorkbenchContext,
-} from "@/components/bids/bid-workbench-helpers"
+import { BidBoard, type BoardSelection, type TradeColumn } from "@/components/bids/bid-board"
+import { AwardedInspector, CellInspector, InspectorHeader, InspectorSection, TradeInspector } from "@/components/bids/bid-inspector"
+import { BidConversation } from "@/components/bids/bid-conversation"
+import { BidPackageDocuments } from "@/components/bids/bid-package-documents"
+import { BidAwardSheet } from "@/components/bids/bid-award-sheet"
+import { BidTradePicker } from "@/components/bids/bid-trade-picker"
+import { ManualBidDialog } from "@/components/bids/bid-manual-entry"
+import { BidPackageSettings } from "@/components/bids/bid-package-settings"
+import { BidPricingPanel } from "@/components/bids/bid-pricing-panel"
+import { SubcontractWorkspace } from "@/components/commitments/subcontract-workspace"
+import { formatDueDate, relativeDueDate, type BidWorkbenchContext } from "@/components/bids/bid-workbench-helpers"
+
+/** Board order: the comparison first, cheapest leveled left; then who we're waiting on; then who's out. */
+const COLUMN_ORDER: Record<TradeState, number> = {
+  awarded: 0,
+  priced: 1,
+  not_selected: 2,
+  stale: 3,
+  opened: 4,
+  sent: 5,
+  lined_up: 6,
+  no_response: 7,
+  declined: 8,
+  withdrawn: 9,
+}
+
+const PATH: Array<{ stage: "setup" | "bidding" | "leveling" | "awarded"; label: string }> = [
+  { stage: "setup", label: "Scope" },
+  { stage: "bidding", label: "Out to bid" },
+  { stage: "leveling", label: "Compare" },
+  { stage: "awarded", label: "Award" },
+]
 
 interface BidPackageWorkbenchProps {
   context: BidWorkbenchContext
@@ -91,550 +121,760 @@ interface BidPackageWorkbenchProps {
   rfis: Rfi[]
   activity: BidActivityItem[]
   intelligence: PackageIntelligence | null
+  intelligenceError: string | null
   companies: Company[]
-  tradeOptions: string[]
+  award: BidPackageAward | null
 }
 
-type SectionId = "vendors" | "bid-tab" | "scope" | "documents" | "qa" | "addenda" | "activity"
-
-interface PostAwardCommitment {
-  id: string
-  title: string
-}
-
+/**
+ * The bid package, start to subcontract, on one screen: a sentence that says
+ * where it stands, one button for the next move, the board, and an inspector
+ * that follows whatever you select. Every stage, label and button is derived
+ * by `bidPackageMove()` — nothing here decides what comes next on its own.
+ */
 export function BidPackageWorkbench({
   context,
-  bidPackage,
+  bidPackage: initialPackage,
   invites: initialInvites,
   submissions: initialSubmissions,
   scopeItems: initialScopeItems,
   addenda: initialAddenda,
   rfis: initialRfis,
   activity: initialActivity,
-  intelligence,
+  intelligence: initialIntelligence,
+  intelligenceError: initialIntelligenceError,
   companies,
-  tradeOptions,
+  award: initialAward,
 }: BidPackageWorkbenchProps) {
-  const projectId = context.projectId ?? null
-
-  const [status, setStatus] = useState<BidPackageStatus>(bidPackage.status)
+  const [pkg, setPkg] = useState(initialPackage)
   const [invites, setInvites] = useState(initialInvites)
   const [submissions, setSubmissions] = useState(initialSubmissions)
   const [scopeItems, setScopeItems] = useState(initialScopeItems)
   const [addenda, setAddenda] = useState(initialAddenda)
   const [rfis, setRfis] = useState(initialRfis)
   const [activity, setActivity] = useState(initialActivity)
+  const [award, setAward] = useState(initialAward)
+  const [intelligence, setIntelligence] = useState({ value: initialIntelligence, error: initialIntelligenceError })
   const [vendorStats, setVendorStats] = useState<Record<string, VendorBidStats>>({})
-
-  const [detailSubmission, setDetailSubmission] = useState<BidSubmission | null>(null)
-  const [awardSubmission, setAwardSubmission] = useState<BidSubmission | null>(null)
-  const [awardOpen, setAwardOpen] = useState(false)
-  const [postAward, setPostAward] = useState<PostAwardCommitment | null>(null)
-  const [subcontract, setSubcontract] = useState<PostAwardCommitment | null>(null)
+  const [selection, setSelection] = useState<BoardSelection>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [manualFor, setManualFor] = useState<{ inviteId: string | null } | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [awardFor, setAwardFor] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<"close" | "cancel" | null>(null)
   const [rescindOpen, setRescindOpen] = useState(false)
   const [rescindReason, setRescindReason] = useState("")
-  const [confirmClose, setConfirmClose] = useState<null | "close" | "cancel">(null)
-  const [activeSection, setActiveSection] = useState<SectionId>("vendors")
+  const [rescindImpact, setRescindImpact] = useState<{ agreementCount: number; restorableCount: number; affectedPoCount: number } | null>(null)
+  const [rescindImpactError, setRescindImpactError] = useState<string | null>(null)
+  const [rescindImpactTry, setRescindImpactTry] = useState(0)
+  const [revisionOpen, setRevisionOpen] = useState(false)
+  const [revisionReason, setRevisionReason] = useState("")
+  const [mounted, setMounted] = useState(false)
+  const [subcontractId, openSubcontract] = useWorkspaceParam("subcontract")
   const [isPending, startTransition] = useTransition()
+  const withContext = { ...context, bidPackageId: pkg.id }
+  const projectId = context.projectId ?? null
 
-  const current: BidPackage = useMemo(() => ({ ...bidPackage, status }), [bidPackage, status])
-  const stage = getBidPackageStage(current)
-  const locked = status === "awarded"
-  const canAward = status !== "awarded" && status !== "cancelled"
+  useEffect(() => setMounted(true), [])
 
-  const sectionRefs = useRef<Record<SectionId, HTMLDivElement | null>>({
-    vendors: null,
-    "bid-tab": null,
-    scope: null,
-    documents: null,
-    qa: null,
-    addenda: null,
-    activity: null,
-  })
-
-  // Vendor behaviour stats keyed by company (post-mount; needs invite ids).
+  const companyIds = useMemo(() => Array.from(new Set(invites.map((invite) => invite.company_id).filter(Boolean))), [invites])
   useEffect(() => {
-    const companyIds = Array.from(
-      new Set(invites.map((invite) => invite.company_id).filter((id): id is string => Boolean(id))),
-    )
-    if (companyIds.length === 0) {
-      setVendorStats({})
-      return
-    }
+    if (!companyIds.length) return
     let active = true
+    // Advisory history: a failure leaves the board fully usable, so it only drops the history lines.
     getVendorBidStatsAction(companyIds)
-      .then((stats) => {
-        if (active) setVendorStats(stats)
-      })
-      .catch(() => {
-        /* non-fatal: stats are advisory */
+      .then((result) => {
+        if (active && result.success) setVendorStats(result.data)
       })
     return () => {
       active = false
     }
-  }, [invites])
+  }, [companyIds])
 
-  const reloadInvites = useCallback(async () => {
-    setInvites(await listBidInvitesAction(bidPackage.id))
-  }, [bidPackage.id])
-  const reloadSubmissions = useCallback(async () => {
-    setSubmissions(await listBidSubmissionsAction(bidPackage.id))
-  }, [bidPackage.id])
-  const reloadScope = useCallback(async () => {
-    setScopeItems(await listBidScopeItemsAction(bidPackage.id))
-  }, [bidPackage.id])
-  const reloadAddenda = useCallback(async () => {
-    setAddenda(await listBidAddendaAction(bidPackage.id))
-  }, [bidPackage.id])
-  const reloadRfis = useCallback(async () => {
-    setRfis(await listBidPackageRfisAction(bidPackage.id))
-  }, [bidPackage.id])
-  const reloadActivity = useCallback(async () => {
-    setActivity(await listBidPackageActivityAction(bidPackage.id))
-  }, [bidPackage.id])
+  // ------------------------------------------------------------ reloads
 
-  const sections: Array<{ id: SectionId; label: string; count?: number }> = useMemo(() => {
-    const base: Array<{ id: SectionId; label: string; count?: number }> = [
-      { id: "vendors", label: "Vendors", count: invites.length },
-      { id: "bid-tab", label: "Bid Tab", count: submissions.filter((s) => s.is_current && s.total_cents != null).length },
-      { id: "scope", label: "Scope", count: scopeItems.length },
-    ]
-    if (projectId) base.push({ id: "documents", label: "Documents" })
-    base.push({ id: "qa", label: "Q&A", count: rfis.length })
-    base.push({ id: "addenda", label: "Addenda", count: addenda.length })
-    base.push({ id: "activity", label: "Activity" })
-    return base
-  }, [invites.length, submissions, scopeItems.length, rfis.length, addenda.length, projectId])
+  const reloadInvites = useCallback(async () => setInvites(await listBidInvitesAction(pkg.id)), [pkg.id])
+  const reloadSubmissions = useCallback(async () => setSubmissions(await listBidSubmissionsAction(pkg.id)), [pkg.id])
+  const reloadActivity = useCallback(async () => setActivity(await listBidPackageActivityAction(pkg.id)), [pkg.id])
+  const reloadPackage = useCallback(async () => setPkg(await getBidPackageAction(pkg.id)), [pkg.id])
+  const reloadIntelligence = useCallback(async () => {
+    const next = await getPackageIntelligenceAction(pkg.id)
+    setIntelligence({ value: next.intelligence, error: next.error })
+  }, [pkg.id])
+  const reloadAward = useCallback(async () => setAward(await getBidPackageAwardAction(pkg.id)), [pkg.id])
+  const reloadConversation = useCallback(async () => {
+    const [nextRfis, nextAddenda, nextActivity] = await Promise.all([
+      listBidPackageRfisAction(pkg.id),
+      listBidAddendaAction(pkg.id),
+      listBidPackageActivityAction(pkg.id),
+    ])
+    setRfis(nextRfis)
+    setAddenda(nextAddenda)
+    setActivity(nextActivity)
+  }, [pkg.id])
+  const reloadAll = useCallback(async () => {
+    const [nextPackage, nextInvites, nextSubmissions, nextScope, nextAward, nextActivity] = await Promise.all([
+      getBidPackageAction(pkg.id),
+      listBidInvitesAction(pkg.id),
+      listBidSubmissionsAction(pkg.id),
+      listBidScopeItemsAction(pkg.id),
+      getBidPackageAwardAction(pkg.id),
+      listBidPackageActivityAction(pkg.id),
+    ])
+    setPkg(nextPackage)
+    setInvites(nextInvites)
+    setSubmissions(nextSubmissions)
+    setScopeItems(nextScope)
+    setAward(nextAward)
+    setActivity(nextActivity)
+  }, [pkg.id])
 
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]
-        if (visible?.target instanceof HTMLElement) {
-          const id = visible.target.dataset.section as SectionId | undefined
-          if (id) setActiveSection(id)
+  // ------------------------------------------------------------ derived
+
+  const stage = getBidPackageStage(pkg)
+  const today = new Date().toISOString().slice(0, 10)
+  const scopeRevision = pkg.scope_revision ?? 1
+  const editableScope = pkg.status === "draft"
+  const budgetCents = useMemo(() => {
+    const lines = scopeItems.filter((scope) => scope.item_type !== "alternate").reduce((sum, scope) => sum + (scope.budget_cents ?? 0), 0)
+    return lines > 0 ? lines : pkg.budget_cents ?? null
+  }, [scopeItems, pkg.budget_cents])
+
+  const columns: TradeColumn[] = useMemo(() => {
+    const current = new Map(submissions.filter((submission) => submission.is_current).map((submission) => [submission.bid_invite_id, submission]))
+    const baseScope = scopeItems.filter((scope) => scope.item_type !== "alternate")
+    return invites
+      .map((invite) => {
+        const submission = current.get(invite.id) ?? null
+        const state = tradeState({ inviteStatus: invite.status, submission, packageStage: stage, scopeRevision, today })
+        const priced = tradeHasPrices(state) && submission
+        const unpluggedLines = priced && (submission.items ?? []).length
+          ? baseScope.filter((scope) => {
+              const item = itemForScope(submission, scope.id)
+              return item && item.response !== "priced" && item.gc_plug_cents == null
+            }).length
+          : 0
+        return {
+          invite,
+          name: invite.company?.name ?? invite.invite_email ?? "Trade",
+          state,
+          submission,
+          totals: priced ? computeSubmissionTotals(submission, scopeItems) : null,
+          unpluggedLines,
         }
-      },
-      { rootMargin: "-96px 0px -60% 0px", threshold: 0 },
-    )
-    for (const node of Object.values(sectionRefs.current)) {
-      if (node) observer.observe(node)
-    }
-    return () => observer.disconnect()
-  }, [sections])
+      })
+      .sort((a, b) => COLUMN_ORDER[a.state] - COLUMN_ORDER[b.state] || (a.totals?.leveled ?? 0) - (b.totals?.leveled ?? 0) || a.name.localeCompare(b.name))
+  }, [invites, submissions, scopeItems, stage, scopeRevision, today])
 
-  function scrollToSection(id: SectionId) {
-    sectionRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "start" })
-    setActiveSection(id)
-  }
+  const ranked = useMemo(
+    () =>
+      rankBids(
+        columns
+          .filter((column) => column.state === "priced" && column.submission && column.totals)
+          .map((column) => ({
+            submissionId: column.submission?.id ?? "",
+            companyName: column.name,
+            asBidCents: column.totals?.base ?? 0,
+            leveledCents: column.totals?.leveled ?? 0,
+            unpluggedLines: column.unpluggedLines,
+          })),
+      ),
+    [columns],
+  )
 
-  function transition(to: BidPackageStatus, message: string) {
+  const canAward =
+    pkg.pricing_available !== false &&
+    pkg.status !== "awarded" &&
+    pkg.status !== "cancelled" &&
+    (pkg.award_target === "price_agreement" || (pkg.can_award ?? (!!pkg.project_id && pkg.project_phase !== "precon")))
+
+  const winner = award ? columns.find((column) => column.submission?.id === award.awarded_submission_id) ?? null : null
+  const subStage = award?.commitment
+    ? subcontractStage({ status: award.commitment.status, executed_at: award.commitment.executed_at }, award.envelope)
+    : null
+
+  const move = bidPackageMove({
+    status: pkg.status,
+    dueAt: pkg.due_at ?? null,
+    mode: pkg.mode,
+    awardTarget: pkg.award_target,
+    canAward,
+    scopeLineCount: scopeItems.length,
+    budgetCents,
+    trades: columns,
+    bids: ranked,
+    award: award
+      ? {
+          companyName: award.commitment?.company_name ?? winner?.name ?? "the trade",
+          totalCents: award.commitment?.total_cents ?? winner?.submission?.total_cents ?? 0,
+          subcontract: award.commitment && subStage
+            ? { stage: subStage, number: award.commitment.contract_number, sentAt: award.envelope?.sent_at ?? null, executedAt: award.commitment.executed_at }
+            : null,
+        }
+      : null,
+    now: new Date(),
+  })
+
+  // ------------------------------------------------------------ moves
+
+  function changeStatus(to: BidPackage["status"], message: string) {
     startTransition(async () => {
       try {
-        unwrapAction(await updateBidPackageAction({ ...context, bidPackageId: bidPackage.id }, bidPackage.id, { status: to }))
-        setStatus(to)
+        setPkg(unwrapAction(await updateBidPackageAction(withContext, pkg.id, { status: to })))
         await reloadActivity()
         toast.success(message)
       } catch (error) {
-        toast.error("Status change failed", {
-          description: error instanceof Error ? error.message : "Please try again.",
-        })
+        toast.error("Status not changed", { description: error instanceof Error ? error.message : "Please try again." })
       }
     })
   }
 
-  function handleOpenBidding() {
-    if (!current.due_at) {
-      toast.error("Set a due date before opening bidding")
-      scrollToSection("vendors")
-      return
-    }
-    if (current.mode === "tender" && scopeItems.length === 0) {
-      toast.error("Add at least one scope line before opening a tender")
-      scrollToSection("scope")
-      return
-    }
-    transition("open", "Bidding is open")
-  }
-
-  const figures = useMemo(() => {
-    const invited = invites.length
-    const responded = submissions.filter((s) => s.is_current && s.total_cents != null).length
-    const low = submissions
-      .filter((s) => s.is_current && s.total_cents != null)
-      .reduce<number | null>((min, s) => (min == null ? s.total_cents! : Math.min(min, s.total_cents!)), null)
-    const budget = current.budget_cents ?? null
-    const budgetDeltaPct = budget && budget > 0 && low != null ? Math.round(((low - budget) / budget) * 100) : null
-    return { invited, responded, low, budget, budgetDeltaPct }
-  }, [invites.length, submissions, current.budget_cents])
-
-  function handleAwarded(result: BidAwardResult, submission: BidSubmission) {
-    setStatus("awarded")
-    setSubmissions((prev) => prev.map((entry) => ({ ...entry, is_awarded: entry.id === submission.id })))
-    setDetailSubmission((prev) => (prev ? { ...prev, is_awarded: prev.id === submission.id } : prev))
-    reloadActivity()
-    toast.success("Bid awarded — commitment created")
-    if (projectId && result.commitmentId) {
-      setPostAward({ id: result.commitmentId, title: `${current.title} — Award` })
-    }
-  }
-
-  function handleApproveSubcontract() {
-    if (!postAward || !projectId) return
+  function send() {
     startTransition(async () => {
       try {
-        unwrapAction(await updateProjectCommitmentAction(projectId, postAward.id, { status: "approved" }))
-        setSubcontract(postAward)
-        setPostAward(null)
+        const result = unwrapAction(await sendBidPackageAction(withContext, pkg.id))
+        await reloadAll()
+        if (result.failed.length) {
+          toast.warning(`Sent to ${result.sent}. ${result.failed.length} need attention`, {
+            description: result.failed.map((entry) => `${entry.companyName ?? "Trade"}: ${entry.error}`).join(" · "),
+            duration: 10000,
+          })
+        } else {
+          toast.success(`Sent to ${result.sent} ${result.sent === 1 ? "trade" : "trades"}. Each has a private link.`)
+        }
       } catch (error) {
-        toast.error("Unable to approve commitment", {
-          description: error instanceof Error ? error.message : "Please try again.",
-        })
+        toast.error("Not sent", { description: error instanceof Error ? error.message : "Please try again." })
       }
     })
   }
 
-  function handleRescind() {
-    if (!rescindReason.trim()) {
-      toast.error("A rescind reason is required")
-      return
-    }
+  function nudge(targets: BidInvite[]) {
+    startTransition(async () => {
+      const results = await Promise.all(targets.map((invite) => resendBidInviteAction(withContext, invite.id)))
+      const failed = results.filter((result) => !result.success).length
+      await reloadInvites()
+      if (failed) toast.error(`${failed} of ${targets.length} reminders failed`, { description: "Check that each trade has an email on file." })
+      else toast.success(targets.length === 1 ? `Reminder sent to ${targets[0].company?.name ?? "the trade"}` : `Reminders sent to ${targets.length} trades`)
+    })
+  }
+
+  function removeTrade(invite: BidInvite) {
     startTransition(async () => {
       try {
-        unwrapAction(
-          await rescindBidAwardAction(
-            { ...context, bidPackageId: bidPackage.id },
-            { bid_package_id: bidPackage.id, reason: rescindReason.trim() },
-          ),
-        )
-        setStatus("closed")
-        setSubmissions((prev) => prev.map((entry) => ({ ...entry, is_awarded: false })))
+        unwrapAction(await removeBidInviteAction(withContext, invite.id))
+        setSelection(null)
+        await reloadInvites()
+        toast.success(`${invite.company?.name ?? "Trade"} removed`)
+      } catch (error) {
+        toast.error("Not removed", { description: error instanceof Error ? error.message : "Please try again." })
+      }
+    })
+  }
+
+  function run(next: Move) {
+    switch (next.kind) {
+      case "add_scope":
+        document.querySelector<HTMLButtonElement>("[data-add-scope]")?.click()
+        return
+      case "add_trades":
+        setPickerOpen(true)
+        return
+      case "set_due_date":
+        setSettingsOpen(true)
+        return
+      case "send":
+        send()
+        return
+      case "nudge":
+        nudge(columns.filter((column) => column.state === "sent" || column.state === "opened").map((column) => column.invite))
+        return
+      case "close_bidding":
+        setConfirm("close")
+        return
+      case "reopen":
+        changeStatus("open", "Bidding reopened")
+        return
+      case "award":
+        if (next.submissionId) setAwardFor(next.submissionId)
+        return
+      case "use_quote": {
+        const column = columns.find((entry) => entry.submission?.id === next.submissionId)
+        if (column) setSelection({ kind: "trade", inviteId: column.invite.id })
+        return
+      }
+      case "review_subcontract":
+      case "send_subcontract":
+      case "view_subcontract":
+        if (award?.commitment) openSubcontract(award.commitment.id)
+        return
+      case "restore":
+        changeStatus("draft", "Restored to draft")
+        return
+    }
+  }
+
+  function handleAwarded(result: BidAwardResult) {
+    setSelection(null)
+    startTransition(async () => {
+      await reloadAll()
+      if (result.commitmentId) {
+        toast.success("Awarded. Review the subcontract before it goes out.")
+        openSubcontract(result.commitmentId)
+      } else {
+        toast.success("Added to the price book")
+      }
+    })
+  }
+
+  const isPriceBook = pkg.award_target === "price_agreement"
+
+  useEffect(() => {
+    if (!rescindOpen || !isPriceBook) return
+    let active = true
+    previewRescindImpactAction(pkg.id).then((result) => {
+      if (!active) return
+      if (result.success) setRescindImpact(result.data)
+      else setRescindImpactError(result.error)
+    })
+    return () => {
+      active = false
+      setRescindImpact(null)
+      setRescindImpactError(null)
+    }
+  }, [rescindOpen, isPriceBook, pkg.id, rescindImpactTry])
+
+  function rescind() {
+    if (rescindReason.trim().length < 3) return
+    startTransition(async () => {
+      try {
+        const result = unwrapAction(await rescindBidAwardAction(withContext, { bid_package_id: pkg.id, reason: rescindReason.trim() }))
         setRescindOpen(false)
         setRescindReason("")
-        await reloadActivity()
-        toast.success("Award rescinded")
+        await reloadAll()
+        if (isPriceBook) {
+          toast.success("Award rescinded. The prices it set are void and the package is back in comparison.", {
+            description: [
+              result.restoredAgreementCount ? `${result.restoredAgreementCount} earlier price${result.restoredAgreementCount === 1 ? "" : "s"} restored.` : null,
+              result.skippedAgreementCount ? `${result.skippedAgreementCount} earlier price${result.skippedAgreementCount === 1 ? " was" : "s were"} changed since and stay as they are.` : null,
+              result.affectedPoCount ? `${result.affectedPoCount} purchase order${result.affectedPoCount === 1 ? "" : "s"} priced from this award keep their price.` : null,
+            ].filter(Boolean).join(" ") || undefined,
+          })
+        } else {
+          toast.success("Award rescinded. The subcontract was canceled and the package is back in comparison.")
+        }
       } catch (error) {
-        toast.error("Failed to rescind award", {
-          description: error instanceof Error ? error.message : "Please try again.",
-        })
+        toast.error("Award not rescinded", { description: error instanceof Error ? error.message : "Please try again." })
       }
     })
   }
 
-  const overdue = isDuePast(current.due_at) && stage === "bidding"
+  function startRevision() {
+    if (!revisionReason.trim()) return
+    startTransition(async () => {
+      try {
+        unwrapAction(await beginBidScopeRevisionAction(withContext, revisionReason.trim()))
+        setRevisionOpen(false)
+        setRevisionReason("")
+        await reloadAll()
+        toast.success("Scope reopened. Edit it on the board, then send again — trades reconfirm their prices.")
+      } catch (error) {
+        toast.error("Scope not reopened", { description: error instanceof Error ? error.message : "Please try again." })
+      }
+    })
+  }
+
+  function patchSubmission(updated: BidSubmission) {
+    setSubmissions((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)))
+  }
+
+  // ------------------------------------------------------------ inspector
+
+  const selectedColumn = selection ? columns.find((column) => column.invite.id === selection.inviteId) ?? null : null
+  const awardSubmission = awardFor ? submissions.find((submission) => submission.id === awardFor) ?? null : null
+  const awardColumn = awardSubmission ? columns.find((column) => column.submission?.id === awardSubmission.id) ?? null : null
+  const lowLeveled = ranked[0]?.leveledCents ?? null
+  const notified = columns.filter((column) => !["lined_up", "declined", "withdrawn"].includes(column.state)).length
+
+  function inspector() {
+    if (selection?.kind === "cell" && selectedColumn) {
+      const scope = scopeItems.find((entry) => entry.id === selection.scopeId)
+      if (scope) {
+        const others = columns
+          .filter((column) => column.invite.id !== selectedColumn.invite.id && tradeHasPrices(column.state) && column.submission)
+          .map((column) => (column.submission ? itemForScope(column.submission, scope.id) : undefined))
+          .filter((item) => item?.response === "priced" && item.amount_cents != null)
+          .map((item) => item?.amount_cents ?? 0)
+        return (
+          <CellInspector
+            key={`${selection.inviteId}-${selection.scopeId}`}
+            context={context}
+            bidPackage={pkg}
+            scope={scope}
+            column={selectedColumn}
+            others={others}
+            locked={pkg.status === "awarded"}
+            onSubmissionChanged={patchSubmission}
+            onClose={() => setSelection(null)}
+          />
+        )
+      }
+    }
+    if (selection?.kind === "trade" && selectedColumn) {
+      const submission = selectedColumn.submission
+      const place = submission ? ranked.findIndex((bid) => bid.submissionId === submission.id) : -1
+      const precon = !canAward && pkg.award_target === "commitment" && pkg.status !== "awarded"
+      return (
+        <TradeInspector
+          key={selectedColumn.invite.id}
+          context={context}
+          bidPackage={pkg}
+          column={selectedColumn}
+          versions={submissions.filter((entry) => entry.bid_invite_id === selectedColumn.invite.id).sort((a, b) => b.version - a.version)}
+          rank={place >= 0 ? { place: place + 1, of: ranked.length } : null}
+          budgetCents={budgetCents}
+          stats={vendorStats[selectedColumn.invite.company_id]}
+          canAward={canAward && selectedColumn.state === "priced"}
+          isLow={selectedColumn.totals != null && selectedColumn.totals.leveled === lowLeveled}
+          pricingPanel={
+            precon && submission && selectedColumn.state === "priced" ? (
+              <BidPricingPanel key={`${submission.id}-${scopeRevision}`} context={context} bidPackage={pkg} submission={submission} scopeItems={scopeItems} />
+            ) : null
+          }
+          onAward={(target) => setAwardFor(target.id)}
+          onEnterPrice={() => setManualFor({ inviteId: selectedColumn.invite.id })}
+          onRemove={() => removeTrade(selectedColumn.invite)}
+          onChanged={reloadInvites}
+          onSubmissionChanged={patchSubmission}
+          onClose={() => setSelection(null)}
+        />
+      )
+    }
+    if (award && pkg.status === "awarded") {
+      return (
+        <AwardedInspector
+          bidPackage={pkg}
+          award={award}
+          notified={notified}
+          onOpenSubcontract={() => award.commitment && openSubcontract(award.commitment.id)}
+          onRescind={() => setRescindOpen(true)}
+        />
+      )
+    }
+    return (
+      <>
+        <InspectorHeader title="Package" subtitle="What every trade sees" />
+        {projectId ? (
+          <InspectorSection>
+            <BidPackageDocuments bidPackage={pkg} projectId={projectId} readOnly={pkg.status === "awarded" || pkg.status === "cancelled"} />
+          </InspectorSection>
+        ) : null}
+        <InspectorSection label="Terms">
+          <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-[13px]">
+            <dt className="text-muted-foreground">Due</dt>
+            <dd className="text-right">{formatDueDate(pkg.due_at, pkg.due_tz)}</dd>
+            <dt className="text-muted-foreground">Pricing</dt>
+            <dd className="text-right">{pkg.mode === "tender" ? "Line by line" : "Lump sum"}</dd>
+            <dt className="text-muted-foreground">Bond</dt>
+            <dd className="text-right">{pkg.bond_required ? "Required" : "Not required"}</dd>
+            <dt className="text-muted-foreground">Awards to</dt>
+            <dd className="text-right">{pkg.award_target === "price_agreement" ? "The price book" : "A subcontract"}</dd>
+          </dl>
+          {pkg.instructions ? <p className="whitespace-pre-wrap text-[13px] text-muted-foreground">{pkg.instructions}</p> : null}
+          {pkg.status !== "awarded" && pkg.status !== "cancelled" ? (
+            <Button variant="ghost" size="sm" className="h-7 justify-self-start px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground" onClick={() => setSettingsOpen(true)}>
+              Edit package settings
+            </Button>
+          ) : null}
+        </InspectorSection>
+        <InspectorSection>
+          <BidConversation context={context} bidPackage={pkg} rfis={rfis} addenda={addenda} activity={activity} onChanged={reloadConversation} />
+        </InspectorSection>
+      </>
+    )
+  }
+
+  // ------------------------------------------------------------ render
+
+  const pathIndex = PATH.findIndex((entry) => entry.stage === stage)
+  const due = pkg.due_at ? `${stage === "bidding" ? "Due" : stage === "setup" ? "Due" : "Closed"} ${formatDueDate(pkg.due_at, pkg.due_tz)}${stage === "bidding" && relativeDueDate(pkg.due_at) ? ` · ${relativeDueDate(pkg.due_at)}` : ""}` : "No due date"
+  const locked = pkg.status === "awarded" || pkg.status === "cancelled"
 
   return (
-    <div className="space-y-4 p-6 pt-4">
-      {/* Header */}
-      <header className="space-y-3 border-b pb-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-lg font-semibold">{current.title}</h1>
-              <BidStatusBadge status={status} />
-            </div>
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-              <span>{current.trade ?? "No trade"}</span>
-              {current.cost_code_code ? <span>· {current.cost_code_code}</span> : null}
-              <span>·</span>
-              <Badge variant="outline" className="h-5 px-1.5 text-[11px] capitalize">
-                {current.mode}
-              </Badge>
-              {current.bond_required ? (
-                <Badge variant="outline" className="h-5 px-1.5 text-[11px]">
-                  Bond
-                </Badge>
-              ) : null}
-              <span>·</span>
-              <span className={overdue ? "text-destructive" : undefined}>
-                Due {formatDueDate(current.due_at, current.due_tz)}
-                {relativeDueDate(current.due_at) ? ` (${relativeDueDate(current.due_at)})` : ""}
-              </span>
-            </div>
-          </div>
-
-          {status !== "cancelled" ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {status === "awarded" ? (
-                  <DropdownMenuItem className="text-destructive" onClick={() => setRescindOpen(true)}>
-                    Rescind award
-                  </DropdownMenuItem>
-                ) : null}
-                {status === "closed" ? (
-                  <DropdownMenuItem onClick={() => transition("open", "Bidding reopened")}>Reopen bidding</DropdownMenuItem>
-                ) : null}
-                {status !== "awarded" ? (
-                  <DropdownMenuItem className="text-destructive" onClick={() => setConfirmClose("cancel")}>
-                    Cancel package
-                  </DropdownMenuItem>
-                ) : null}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-        </div>
-
-        {/* Lifecycle rail */}
-        <LifecycleRail
-          stage={stage}
-          disabled={isPending}
-          onOpenBidding={handleOpenBidding}
-          onCloseBidding={() => setConfirmClose("close")}
-        />
-
-        {/* Quiet figures row */}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm tabular-nums">
-          <span className="text-muted-foreground">
-            Invited <span className="text-foreground">{figures.invited}</span>
-          </span>
-          <span className="text-muted-foreground">·</span>
-          <span className="text-muted-foreground">
-            Responses{" "}
-            <span className="text-foreground">
-              {figures.responded}/{figures.invited}
+    <div className="desk-rise mx-auto w-full max-w-[1600px] space-y-4 px-4 pb-16 pt-5 sm:px-6">
+      <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight text-balance">{pkg.title}</h1>
+          <p className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-muted-foreground">
+            <span>
+              {pkg.trade ?? "No trade"}
+              {pkg.cost_code_code ? <span className="text-foreground"> · {pkg.cost_code_code}</span> : null}
             </span>
-          </span>
-          <span className="text-muted-foreground">·</span>
-          <span className="text-muted-foreground">
-            Low <span className="text-foreground">{money(figures.low)}</span>
-          </span>
-          {figures.budgetDeltaPct != null ? (
-            <>
-              <span className="text-muted-foreground">·</span>
-              <span className="text-muted-foreground">
-                Budget Δ{" "}
-                <span className={figures.budgetDeltaPct > 0 ? "text-destructive" : "text-success"}>
-                  {figures.budgetDeltaPct > 0 ? "+" : ""}
-                  {figures.budgetDeltaPct}%
-                </span>
+            {budgetCents ? (
+              <span>
+                Budget <span className="font-mono text-foreground tabular-nums">{formatMoneyCents(budgetCents)}</span>
               </span>
-            </>
-          ) : null}
+            ) : null}
+            <span className={cn(stage === "bidding" && pkg.due_at && new Date(pkg.due_at).getTime() - Date.now() < 86_400_000 && "text-warning")}>{due}</span>
+            <span>{pkg.mode === "tender" ? "Itemized" : "Lump sum"}{pkg.bond_required ? " · Bond required" : ""}</span>
+          </p>
+        </div>
+        <div className="flex items-center gap-4">
+          {stage === "cancelled" ? null : (
+            <ol className="hidden items-center text-xs md:flex" aria-label="Package progress">
+              {PATH.map((entry, index) => (
+                <li
+                  key={entry.stage}
+                  aria-current={index === pathIndex ? "step" : undefined}
+                  className={cn(
+                    "flex items-center gap-1.5 border-l px-3 first:border-l-0 first:pl-0",
+                    index < pathIndex ? "text-foreground" : index === pathIndex ? "font-semibold text-foreground" : "text-muted-foreground",
+                  )}
+                >
+                  <span className={cn("h-1.5 w-1.5 rounded-full", index < pathIndex ? "bg-success" : index === pathIndex ? "bg-primary" : "bg-border")} />
+                  {entry.label}
+                </li>
+              ))}
+            </ol>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Package actions">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {!locked ? <DropdownMenuItem onClick={() => setSettingsOpen(true)}>Package settings</DropdownMenuItem> : null}
+              {!locked ? <DropdownMenuItem onClick={() => setManualFor({ inviteId: null })}>Enter a bid received by email</DropdownMenuItem> : null}
+              {projectId && editableScope ? (
+                <DropdownMenuItem asChild>
+                  <Link href={`/projects/${projectId}/drawings?destination=bid_scope&target=${pkg.id}&takeoff=1`}>Measure scope from drawings</Link>
+                </DropdownMenuItem>
+              ) : null}
+              {!editableScope && !locked && pkg.pricing_available !== false ? (
+                <DropdownMenuItem onClick={() => setRevisionOpen(true)}>Revise the scope…</DropdownMenuItem>
+              ) : null}
+              {pkg.status === "open" || pkg.status === "sent" ? <DropdownMenuItem onClick={() => setConfirm("close")}>Close bidding</DropdownMenuItem> : null}
+              {pkg.status === "closed" ? <DropdownMenuItem onClick={() => changeStatus("open", "Bidding reopened")}>Reopen bidding</DropdownMenuItem> : null}
+              {pkg.status === "awarded" && award ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="text-destructive" onClick={() => setRescindOpen(true)}>Rescind award…</DropdownMenuItem>
+                </>
+              ) : null}
+              {!locked ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="text-destructive" onClick={() => setConfirm("cancel")}>Cancel package…</DropdownMenuItem>
+                </>
+              ) : null}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
-      <div className="flex gap-6">
-        {/* Left rail nav */}
-        <nav className="sticky top-20 hidden h-fit w-40 shrink-0 space-y-0.5 lg:block">
-          {sections.map((section) => (
-            <button
-              key={section.id}
-              type="button"
-              onClick={() => scrollToSection(section.id)}
-              className={cn(
-                "flex w-full items-center justify-between px-2 py-1.5 text-left text-sm",
-                activeSection === section.id
-                  ? "font-medium text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <span>{section.label}</span>
-              {section.count != null ? <span className="tabular-nums text-xs">{section.count}</span> : null}
-            </button>
-          ))}
-        </nav>
-
-        {/* Sections */}
-        <div className="min-w-0 flex-1 space-y-10">
-          <Section id="vendors" refs={sectionRefs}>
-            <BidVendorsSection
-              context={context}
-              bidPackage={current}
-              invites={invites}
-              submissions={submissions}
-              scopeItems={scopeItems}
-              companies={companies}
-              tradeOptions={tradeOptions}
-              locked={locked}
-              reloadInvites={reloadInvites}
-              reloadSubmissions={reloadSubmissions}
-            />
-          </Section>
-
-          <Section id="bid-tab" refs={sectionRefs}>
-            <div className="space-y-3">
-              <h2 className="text-sm font-semibold">Bid Tab</h2>
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-                <div className="min-w-0 flex-1">
-                  <BidTabGrid
-                    context={context}
-                    bidPackage={current}
-                    submissions={submissions}
-                    scopeItems={scopeItems}
-                    intelligence={intelligence}
-                    vendorStats={vendorStats}
-                    awarded={locked}
-                    onColumnClick={setDetailSubmission}
-                    onSubmissionChanged={(updated) =>
-                      setSubmissions((prev) => prev.map((entry) => (entry.id === updated.id ? updated : entry)))
-                    }
-                  />
-                </div>
-                {detailSubmission ? (
-                  <BidSubmissionPanel
-                    submission={
-                      submissions.find((entry) => entry.id === detailSubmission.id) ?? detailSubmission
-                    }
-                    allSubmissions={submissions}
-                    scopeItems={scopeItems}
-                    awarded={locked}
-                    canAward={canAward}
-                    onAward={(submission) => {
-                      setAwardSubmission(submission)
-                      setAwardOpen(true)
-                    }}
-                    onClose={() => setDetailSubmission(null)}
-                  />
-                ) : null}
-              </div>
-            </div>
-          </Section>
-
-          <Section id="scope" refs={sectionRefs}>
-            <BidScopeSection
-              context={context}
-              bidPackage={current}
-              scopeItems={scopeItems}
-              locked={locked}
-              onScopeItemsChanged={(items) => {
-                setScopeItems(items)
-                reloadScope()
-              }}
-            />
-          </Section>
-
-          {projectId ? (
-            <Section id="documents" refs={sectionRefs}>
-              <BidDocumentsSection bidPackage={current} projectId={projectId} />
-            </Section>
+      <section aria-live="polite" className="flex flex-wrap items-center justify-between gap-4 border bg-card py-3.5 pl-5 pr-4">
+        <p className="max-w-[80ch] text-[15px] leading-snug">
+          <span className="font-semibold">{move.lead}</span>
+          {move.detail ? <span className="text-muted-foreground"> {move.detail}</span> : null}
+        </p>
+        <div className="flex shrink-0 items-center gap-2">
+          {move.secondary ? (
+            <Button variant="ghost" onClick={() => run(move.secondary as Move)} disabled={isPending}>
+              {move.secondary.label}
+            </Button>
           ) : null}
-
-          <Section id="qa" refs={sectionRefs}>
-            <BidQaSection context={context} bidPackage={current} rfis={rfis} reloadRfis={reloadRfis} />
-          </Section>
-
-          <Section id="addenda" refs={sectionRefs}>
-            <BidAddendaSection
-              context={context}
-              bidPackage={current}
-              addenda={addenda}
-              reloadAddenda={reloadAddenda}
-            />
-          </Section>
-
-          <Section id="activity" refs={sectionRefs}>
-            <BidActivitySection activity={activity} />
-          </Section>
+          {move.primary ? (
+            <Button onClick={() => run(move.primary as Move)} disabled={isPending}>
+              {isPending && (move.primary.kind === "send" || move.primary.kind === "nudge") ? "Sending…" : move.primary.label}
+            </Button>
+          ) : null}
         </div>
+      </section>
+
+      {intelligence.error ? (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm">
+          <span>
+            <span className="font-medium text-destructive">Comparison signals unavailable.</span>{" "}
+            <span className="text-muted-foreground">{intelligence.error}</span>
+          </span>
+          <Button variant="outline" size="sm" onClick={() => startTransition(reloadIntelligence)} disabled={isPending}>Retry</Button>
+        </div>
+      ) : null}
+
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <BidBoard
+          context={context}
+          bidPackage={pkg}
+          scopeItems={scopeItems}
+          columns={columns}
+          editableScope={editableScope}
+          canAddTrades={!locked && (pkg.award_target === "price_agreement" || companies.length > 0)}
+          selection={selection}
+          signals={intelligence.value?.signals ?? []}
+          onSelect={setSelection}
+          onScopeSaved={(items) => {
+            setScopeItems(items)
+            void reloadPackage()
+          }}
+          onAddTrades={() => setPickerOpen(true)}
+          onNudge={(invite) => nudge([invite])}
+          onRemove={removeTrade}
+          onEnterPrice={(invite) => setManualFor({ inviteId: invite.id })}
+        />
+        <aside className="min-w-0 border bg-card xl:sticky xl:top-4 xl:max-h-[calc(100dvh-2rem)] xl:overflow-y-auto" aria-label="Inspector">
+          {inspector()}
+        </aside>
       </div>
 
-      <BidAwardPanel
-        open={awardOpen}
-        onOpenChange={setAwardOpen}
+      <BidTradePicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
         context={context}
-        bidPackage={current}
-        submission={awardSubmission}
-        scopeItems={scopeItems}
-        budgetCents={current.budget_cents ?? null}
-        onAwarded={handleAwarded}
+        bidPackage={pkg}
+        companies={companies}
+        invitedCompanyIds={new Set(companyIds)}
+        onAdded={reloadInvites}
       />
 
-      {/* Post-award subcontract handoff (project context only) */}
-      <Dialog open={postAward !== null} onOpenChange={(open) => (!open ? setPostAward(null) : null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Award recorded</DialogTitle>
-            <DialogDescription>
-              A subcontract commitment was created. Approve it and send it to the vendor for signature.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPostAward(null)}>
-              Later
-            </Button>
-            <Button onClick={handleApproveSubcontract} disabled={isPending}>
-              Approve &amp; send subcontract
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {manualFor ? (
+        <ManualBidDialog
+          key={manualFor.inviteId ?? "any"}
+          open
+          onOpenChange={(open) => !open && setManualFor(null)}
+          context={withContext}
+          bidPackage={pkg}
+          invites={invites}
+          companies={companies}
+          scopeItems={scopeItems}
+          locked={pkg.status === "awarded"}
+          initialInviteId={manualFor.inviteId}
+          onEntered={async () => {
+            await Promise.all([reloadSubmissions(), reloadInvites()])
+          }}
+        />
+      ) : null}
 
-      <EnvelopeWizard
-        open={subcontract !== null}
-        onOpenChange={(open) => (!open ? setSubcontract(null) : null)}
-        sourceEntity={
-          subcontract && projectId
-            ? ({
-                type: "subcontract",
-                id: subcontract.id,
-                project_id: projectId,
-                title: subcontract.title,
-                document_type: "contract",
-              } satisfies EnvelopeWizardSourceEntity)
-            : null
-        }
-        sourceLabel="Commitment"
-        sheetTitle="Send subcontract for signature"
-        sheetDescription="Upload the subcontract or PO and send it to the awarded vendor for execution."
-        onEnvelopeSent={() => {
-          setSubcontract(null)
-          toast.success("Subcontract sent for signature")
+      <BidPackageSettings
+        key={`${pkg.id}-${pkg.updated_at ?? ""}`}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        context={context}
+        bidPackage={pkg}
+        onSaved={(saved) => {
+          setPkg((current) => ({ ...current, ...saved }))
+          void reloadActivity()
         }}
       />
 
-      {/* Rescind dialog */}
+      {awardSubmission && awardColumn ? (
+        <BidAwardSheet
+          key={awardSubmission.id}
+          open
+          onOpenChange={(open) => !open && setAwardFor(null)}
+          context={context}
+          bidPackage={pkg}
+          submission={{ ...awardSubmission, invite: awardColumn.invite }}
+          companyName={awardColumn.name}
+          scopeItems={scopeItems}
+          addenda={addenda}
+          budgetCents={budgetCents}
+          onAwarded={handleAwarded}
+        />
+      ) : null}
+
+      {mounted && subcontractId && projectId ? (
+        <SubcontractWorkspace
+          key={subcontractId}
+          commitmentId={subcontractId}
+          projectId={projectId}
+          envelope={award?.commitment?.id === subcontractId ? award.envelope : null}
+          awardedTotalCents={award?.commitment?.id === subcontractId ? winnerTotal(award, awardColumn ?? winner) : null}
+          onClose={() => openSubcontract(null)}
+          onChanged={reloadAward}
+        />
+      ) : null}
+
       <Dialog open={rescindOpen} onOpenChange={setRescindOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Rescind award</DialogTitle>
+            <DialogTitle>Rescind the award?</DialogTitle>
             <DialogDescription>
-              Cancels the subcontract commitment and reopens the package for leveling.
+              {isPriceBook
+                ? "Voids the price agreements this award set and restores the prices it replaced, unless they were changed since. The package goes back into comparison. Bidders are not notified automatically."
+                : `Cancels the subcontract${award?.commitment?.contract_number ? ` ${award.commitment.contract_number}` : ""} and puts the package back into comparison. The trade is not notified automatically.`}
             </DialogDescription>
           </DialogHeader>
+          {isPriceBook && rescindImpactError ? (
+            <p role="alert" className="flex items-center justify-between gap-3 border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              Could not read what this award set: {rescindImpactError}
+              <Button size="sm" variant="outline" onClick={() => setRescindImpactTry((n) => n + 1)}>Retry</Button>
+            </p>
+          ) : null}
+          {isPriceBook && rescindImpact ? (
+            <dl className="grid grid-cols-3 gap-px border bg-border text-sm">
+              {[
+                ["Agreements voided", rescindImpact.agreementCount],
+                ["Earlier prices restored", rescindImpact.restorableCount],
+                ["Orders priced from it", rescindImpact.affectedPoCount],
+              ].map(([label, value]) => (
+                <div key={label} className="bg-card px-3 py-2">
+                  <dt className="text-xs text-muted-foreground">{label}</dt>
+                  <dd className="text-lg font-semibold tabular-nums">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
           <div className="space-y-1.5">
-            <Label className="text-xs">Reason</Label>
-            <Textarea value={rescindReason} rows={3} onChange={(event) => setRescindReason(event.target.value)} />
+            <Label htmlFor="rescind-reason">Why</Label>
+            <Textarea id="rescind-reason" rows={3} value={rescindReason} onChange={(event) => setRescindReason(event.target.value)} />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRescindOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleRescind} disabled={isPending}>
-              Rescind award
-            </Button>
+            <Button variant="ghost" onClick={() => setRescindOpen(false)}>Keep the award</Button>
+            <Button variant="destructive" onClick={rescind} disabled={isPending || rescindReason.trim().length < 3 || (isPriceBook && !rescindImpact)}>Rescind</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Close / cancel confirmation */}
-      <AlertDialog open={confirmClose !== null} onOpenChange={(open) => (!open ? setConfirmClose(null) : null)}>
+      <Dialog open={revisionOpen} onOpenChange={setRevisionOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Revise the scope?</DialogTitle>
+            <DialogDescription>
+              The package goes back to draft so you can edit the lines. When you send it again, every trade reconfirms their price against revision {scopeRevision + 1}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="revision-reason">What's changing</Label>
+            <Textarea id="revision-reason" rows={3} value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRevisionOpen(false)}>Cancel</Button>
+            <Button onClick={startRevision} disabled={isPending || !revisionReason.trim()}>Revise scope</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={confirm !== null} onOpenChange={(open) => !open && setConfirm(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{confirmClose === "cancel" ? "Cancel this package?" : "Close bidding?"}</AlertDialogTitle>
+            <AlertDialogTitle>{confirm === "cancel" ? "Cancel this package?" : "Close bidding?"}</AlertDialogTitle>
             <AlertDialogDescription>
-              {confirmClose === "cancel"
-                ? "Vendors will no longer be able to submit. You can restore it to draft later."
-                : "Vendors can no longer submit and the package moves to leveling."}
+              {confirm === "cancel"
+                ? "Trades lose access and can't submit. You can restore it to draft later."
+                : "Trades can no longer submit, and the package moves to comparison."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep open</AlertDialogCancel>
+            <AlertDialogCancel>Keep it open</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                const action = confirmClose
-                setConfirmClose(null)
-                if (action === "cancel") transition("cancelled", "Package cancelled")
-                else transition("closed", "Bidding closed")
+                const action = confirm
+                setConfirm(null)
+                if (action === "cancel") changeStatus("cancelled", "Package cancelled")
+                else changeStatus("closed", "Bidding closed")
               }}
             >
-              {confirmClose === "cancel" ? "Cancel package" : "Close bidding"}
+              {confirm === "cancel" ? "Cancel package" : "Close bidding"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -643,81 +883,13 @@ export function BidPackageWorkbench({
   )
 }
 
-function Section({
-  id,
-  refs,
-  children,
-}: {
-  id: SectionId
-  refs: React.MutableRefObject<Record<SectionId, HTMLDivElement | null>>
-  children: React.ReactNode
-}) {
-  return (
-    <div
-      data-section={id}
-      ref={(node) => {
-        refs.current[id] = node
-      }}
-      className="scroll-mt-24"
-    >
-      {children}
-    </div>
+/** What the subcontract's schedule of values should foot to: the bid plus the alternates accepted at award. */
+function winnerTotal(award: BidPackageAward, column: TradeColumn | null): number | null {
+  const submission = column?.submission
+  if (!submission || submission.total_cents == null) return null
+  const alternates = award.accepted_alternate_ids.reduce(
+    (sum, scopeId) => sum + (itemForScope(submission, scopeId)?.amount_cents ?? 0),
+    0,
   )
-}
-
-function LifecycleRail({
-  stage,
-  disabled,
-  onOpenBidding,
-  onCloseBidding,
-}: {
-  stage: ReturnType<typeof getBidPackageStage>
-  disabled: boolean
-  onOpenBidding: () => void
-  onCloseBidding: () => void
-}) {
-  if (stage === "cancelled") {
-    return <div className="text-sm text-muted-foreground">This package was cancelled.</div>
-  }
-  const currentIndex = STAGE_ORDER.indexOf(stage)
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {STAGE_ORDER.map((node, index) => {
-        const isCurrent = index === currentIndex
-        const isDone = index < currentIndex
-        const isNext = index === currentIndex + 1
-        let action: (() => void) | null = null
-        if (stage === "setup" && node === "bidding") action = onOpenBidding
-        if (stage === "bidding" && node === "leveling") action = onCloseBidding
-        const clickable = isNext && action != null
-        return (
-          <div key={node} className="flex items-center gap-1.5">
-            {index > 0 ? <span className="h-px w-4 bg-border" /> : null}
-            <button
-              type="button"
-              disabled={!clickable || disabled}
-              onClick={action ?? undefined}
-              className={cn(
-                "flex items-center gap-1.5 border px-2 py-1 text-xs",
-                isCurrent && "border-primary bg-primary/5 font-medium text-foreground",
-                isDone && "border-transparent text-muted-foreground",
-                !isCurrent && !isDone && "border-transparent text-muted-foreground",
-                clickable && "cursor-pointer border-primary/40 text-primary hover:bg-primary/5",
-                !clickable && "cursor-default",
-              )}
-            >
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  isCurrent ? "bg-primary" : isDone ? "bg-success" : "bg-muted-foreground/40",
-                )}
-              />
-              {STAGE_LABELS[node]}
-              {clickable ? <span className="text-muted-foreground">→</span> : null}
-            </button>
-          </div>
-        )
-      })}
-    </div>
-  )
+  return submission.total_cents + alternates
 }

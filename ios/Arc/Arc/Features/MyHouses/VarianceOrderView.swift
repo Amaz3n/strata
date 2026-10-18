@@ -179,7 +179,7 @@ struct VarianceOrderComposerView: View {
             } else if store.purchaseOrders.isEmpty {
                 ModuleEmptyRow(
                     title: "No purchase order available",
-                    subtitle: "Arc can't list this house's purchase orders on mobile yet, so a variance can only be charged to a PO that already carries one. Raise the first one on the web.",
+                    subtitle: "No issued purchase orders are available for this house. Issue a purchase order before recording a variance.",
                     systemImage: "doc.text.magnifyingglass"
                 )
             } else {

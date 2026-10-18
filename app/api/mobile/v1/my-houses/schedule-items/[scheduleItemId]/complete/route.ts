@@ -1,5 +1,6 @@
-import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/mobile/api"
+import { mobileErrorResponse, mobileRequestId } from "@/lib/mobile/api"
 import { requireMobileOrg } from "@/lib/mobile/auth"
+import { idempotentResponse, runIdempotent } from "@/lib/mobile/idempotency"
 import { completeMobileMyHouseItem } from "@/lib/mobile/my-houses"
 
 
@@ -12,7 +13,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ sch
     const progress = body && typeof body === "object" && typeof Reflect.get(body, "progress") === "number"
       ? Number(Reflect.get(body, "progress"))
       : 100
-    return mobileDataResponse(await completeMobileMyHouseItem(context, scheduleItemId, progress), requestId)
+    return idempotentResponse(await runIdempotent(context, request, { progress }, () => completeMobileMyHouseItem(context, scheduleItemId, progress)), requestId)
   } catch (error) {
     return mobileErrorResponse(error, requestId)
   }

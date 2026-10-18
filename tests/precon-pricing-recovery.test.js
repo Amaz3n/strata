@@ -1,0 +1,43 @@
+require("../scripts/register-ts-node-test");
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { mergePricingWorksheet } = require("../lib/precon/pricing-recovery");
+const { EMPTY_PRICING_WORKSHEET, pricingRowSchema } = require("../lib/precon/pricing-worksheet");
+const { randomUUID } = require("node:crypto");
+const row = () => pricingRowSchema.parse({ id: randomUUID(), description: "Electrical", unit_cost_cents: 12000 });
+test("quote mutation response preserves unrelated edits and newly added rows", () => {
+  const base = { ...EMPTY_PRICING_WORKSHEET, rows: [row()] };
+  const local = structuredClone(base);
+  local.rows[0].unit_cost_cents = 15000;
+  local.rows.push(row());
+  const remote = structuredClone(base);
+  remote.requests.push({ package_id: randomUUID(), row_ids: [base.rows[0].id], scope_signature: "signature", quote: null });
+  const merged = mergePricingWorksheet(base, local, remote);
+  assert.equal(merged.worksheet.rows[0].unit_cost_cents, 15000);
+  assert.equal(merged.worksheet.rows.length, 2);
+  assert.equal(merged.worksheet.requests.length, 1);
+  assert.deepEqual(merged.conflicts, []);
+});
+test("recovery merges independent fields but requires a choice for conflicting prices", () => {
+  const base = { ...EMPTY_PRICING_WORKSHEET, rows: [row()] };
+  const local = structuredClone(base), remote = structuredClone(base);
+  local.rows[0].unit_cost_cents = 16000;
+  local.rows[0].notes = "Include disposal";
+  remote.rows[0].unit_cost_cents = 18000;
+  remote.markup_percent = 20;
+  const merged = mergePricingWorksheet(base, local, remote);
+  assert.equal(merged.worksheet.markup_percent, 20);
+  assert.equal(merged.worksheet.rows[0].notes, "Include disposal");
+  assert.equal(merged.conflicts.length, 1);
+  assert.equal(merged.conflicts[0].local, 16000);
+  assert.equal(merged.conflicts[0].remote, 18000);
+});
+test("deletion versus edit is a conflict; independent deletions stay deleted", () => {
+  const first = row(), second = row();
+  const base = { ...EMPTY_PRICING_WORKSHEET, rows: [first, second] };
+  const local = { ...base, rows: [first] };
+  const remote = { ...base, rows: [{ ...first, notes: "Updated" }] };
+  assert.equal(mergePricingWorksheet(base, local, remote).worksheet.rows.length, 1);
+  const editedDeleted = { ...base, rows: [first, { ...second, quantity: 2 }] };
+  assert.equal(mergePricingWorksheet(base, local, editedDeleted).conflicts.length, 1);
+});

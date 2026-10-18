@@ -1,19 +1,32 @@
-import { attachFileWithServiceRole } from "@/lib/services/file-links"
+import { z } from "zod"
+import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { readHomePricingScope, type HomePricingScope } from "@/lib/services/home-pricing-scope"
 import { allocatePackageTotal, resolveOptionPricing } from "@/lib/services/option-catalog"
 import { requirePermission } from "@/lib/services/permissions"
-import { createVarianceOrdersForSelectionChange } from "@/lib/services/selection-change-orders"
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { getProjectPosture, isProductionProjectPosture, normalizeProductTier } from "@/lib/product-tier"
+import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import {
-  agreementLocksStructuralOptions,
-  planPackageSelection,
-  type SelectionCostDelta,
-} from "@/lib/selections/selection-variance"
+  listSelectionExceptions,
+  loadSelectionException,
+  openSelectionException,
+  readSelectionChoiceFacts,
+  recordAlternateChosen,
+  type SelectionExceptionDto,
+} from "@/lib/services/selection-exceptions"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { agreementLocksStructuralOptions, planPackageSelection } from "@/lib/selections/selection-variance"
+import {
+  SelectionEligibilityError,
+  eligibleAlternates,
+  formatSupplyDate,
+  supplyRefusal,
+  type SelectionAlternate,
+  type SelectionChoiceFacts,
+} from "@/lib/selections/supply-eligibility"
 import type { Selection, SelectionCategory, SelectionOption } from "@/lib/types"
-import type { SelectionInput } from "@/lib/validation/selections"
+import { selectionExceptionAlternateSchema, type SelectionExceptionAlternateInput, type SelectionInput } from "@/lib/validation/selections"
 
 export type SelectionLockCode = "SELECTION_LOCKED_STRUCTURAL" | "SELECTION_LOCKED_CUTOFF"
 
@@ -25,6 +38,20 @@ export class SelectionLockError extends Error {
     super(message)
     this.name = "SelectionLockError"
   }
+}
+
+/**
+ * The staff side of a selection write: `selections.write` on this home, which
+ * carries the member's division scope. The portal path is authorized by its
+ * token before it gets here.
+ */
+async function authorizeSelectionWrite(orgId: string, projectId: string) {
+  const context = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "selections.write", userId: context.userId, orgId: context.orgId, projectId, supabase: context.supabase,
+    logDecision: true, resourceType: "project", resourceId: projectId,
+  })
+  return context.userId
 }
 
 export type ProjectSelectionDto = Selection & {
@@ -44,6 +71,8 @@ export type ProjectSelectionDto = Selection & {
     override_reason: string | null
     status: "open" | "locked"
     locked_at: string | null
+    /** Start of the task the group's cutoff is anchored to: what an option's lead time counts back from. */
+    needed_by: string | null
   } | null
 }
 
@@ -72,11 +101,27 @@ export async function listSelectionOptions(orgId: string, categoryId: string): P
     .order("sort_order", { ascending: true })
     .limit(500)
   if (error) throw new Error(`Failed to load selection options: ${error.message}`)
-  return data ?? []
+  // A community version is off sale with the option it overrides.
+  const parentIds = [...new Set((data ?? []).flatMap((row) => (row.parent_option_id ? [row.parent_option_id] : [])))]
+  if (parentIds.length === 0) return data ?? []
+  const { data: parents, error: parentError } = await supabase
+    .from("selection_options")
+    .select("id")
+    .eq("org_id", orgId)
+    .in("id", parentIds)
+    .eq("is_archived", false)
+    .eq("is_available", true)
+  if (parentError) throw new Error(`Failed to load selection options: ${parentError.message}`)
+  const parentsOnSale = new Set((parents ?? []).map((row) => row.id))
+  return (data ?? []).filter((row) => !row.parent_option_id || parentsOnSale.has(row.parent_option_id))
 }
 
-export async function listProjectSelections(orgId?: string, projectId?: string, options: { portalAccess?: boolean } = {}): Promise<ProjectSelectionDto[]> {
-  const context = options.portalAccess
+export async function listProjectSelections(orgId?: string, projectId?: string, options: { portalAccess?: boolean; permissionChecked?: boolean } = {}): Promise<ProjectSelectionDto[]> {
+  // `permissionChecked`: the caller already required selections.write, so the read
+  // skips the project_selections RLS that hides a home from non-members (the
+  // design coordinator is org-scoped, never a project member). Same pattern as
+  // loadSelectionMutationContext.
+  const context = options.portalAccess || options.permissionChecked
     ? { supabase: createServiceSupabaseClient(), orgId: orgId ?? "" }
     : await requireOrgContext(orgId)
   const { supabase, orgId: resolvedOrgId } = context
@@ -95,7 +140,7 @@ export async function listProjectSelections(orgId?: string, projectId?: string, 
   const { data: instances, error: instanceError } = projectId && groupIds.length
     ? await supabase
         .from("project_selection_groups")
-        .select("group_id, cutoff_date, cutoff_source, override_reason, status, locked_at")
+        .select("group_id, cutoff_date, cutoff_source, override_reason, status, locked_at, matched_schedule_item:schedule_items(start_date)")
         .eq("org_id", resolvedOrgId)
         .eq("project_id", projectId)
         .in("group_id", groupIds)
@@ -104,13 +149,23 @@ export async function listProjectSelections(orgId?: string, projectId?: string, 
   return (data ?? []).map((selection) => {
     const group = Array.isArray(selection.group) ? selection.group[0] : selection.group
     const instance = (instances ?? []).find((candidate) => candidate.group_id === selection.group_id)
+    const anchor = Array.isArray(instance?.matched_schedule_item) ? instance?.matched_schedule_item[0] : instance?.matched_schedule_item
     return {
       ...selection,
       category: Array.isArray(selection.category) ? selection.category[0] : selection.category,
       selected_option: Array.isArray(selection.selected_option) ? selection.selected_option[0] : selection.selected_option,
       effective_due_date: instance?.cutoff_date ?? selection.due_date ?? null,
       locked: Boolean(selection.locked_at || instance?.status === "locked"),
-      group: group && instance ? { id: group.id, name: group.name, ...instance } : null,
+      group: group && instance ? {
+        id: group.id,
+        name: group.name,
+        cutoff_date: instance.cutoff_date,
+        cutoff_source: instance.cutoff_source,
+        override_reason: instance.override_reason,
+        status: instance.status,
+        locked_at: instance.locked_at,
+        needed_by: anchor?.start_date ?? null,
+      } : null,
     }
   })
 }
@@ -131,34 +186,32 @@ async function loadSelectionMutationContext(input: {
     .maybeSingle()
   if (error || !selection) throw new Error("Selection not found")
   const optionIds = [selection.selected_option_id, input.optionId].filter((value): value is string => Boolean(value))
-  const [{ data: options, error: optionError }, { data: lot, error: lotError }, { data: project, error: projectError }, { data: org, error: orgError }] = await Promise.all([
+  const [{ data: options, error: optionError }, home, { data: groupInstance, error: groupError }, facts] = await Promise.all([
     optionIds.length
-      ? supabase.from("selection_options").select("id, option_scope").eq("org_id", input.orgId).in("id", optionIds)
+      ? supabase.from("selection_options").select("id, name, option_scope").eq("org_id", input.orgId).in("id", optionIds)
       : Promise.resolve({ data: [], error: null }),
-    supabase.from("lots").select("community_id, house_plan_version_id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle(),
-    supabase.from("projects").select("property_type").eq("org_id", input.orgId).eq("id", input.projectId).maybeSingle(),
-    supabase.from("orgs").select("product_tier").eq("id", input.orgId).maybeSingle(),
+    readHomePricingScope(supabase, input.orgId, input.projectId),
+    selection.group_id
+      ? supabase
+          .from("project_selection_groups")
+          .select("status, cutoff_date, group:selection_groups(name)")
+          .eq("org_id", input.orgId)
+          .eq("project_id", input.projectId)
+          .eq("group_id", selection.group_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    readSelectionChoiceFacts(input.orgId, input.projectId, input.selectionId, optionIds),
   ])
-  for (const failure of [optionError, lotError, projectError, orgError]) {
-    if (failure) throw new Error(`Failed to validate selection mutation: ${failure.message}`)
-  }
-  const { data: groupInstance, error: groupError } = selection.group_id
-    ? await supabase
-        .from("project_selection_groups")
-    .select("status, cutoff_date, group:selection_groups(name)")
-        .eq("org_id", input.orgId)
-        .eq("project_id", input.projectId)
-        .eq("group_id", selection.group_id)
-        .maybeSingle()
-    : { data: null, error: null }
+  if (optionError) throw new Error(`Failed to validate selection mutation: ${optionError.message}`)
   if (groupError) throw new Error(`Failed to validate selection deadline: ${groupError.message}`)
   return {
     supabase,
     selection,
     options: options ?? [],
-    lot,
     groupInstance,
-    production: isProductionProjectPosture(getProjectPosture(project?.property_type, normalizeProductTier(org?.product_tier))),
+    production: home.production,
+    pricing: home.pricing,
+    facts,
   }
 }
 
@@ -189,7 +242,8 @@ export async function assertSelectionMutable(
     }
   }
   if (mutation.selection.group_id && mutation.groupInstance) {
-    const today = new Date().toISOString().slice(0, 10)
+    // The community's day, the one the database write checks.
+    const today = mutation.facts.today
     const expired = mutation.groupInstance.status === "locked" || Boolean(mutation.groupInstance.cutoff_date && mutation.groupInstance.cutoff_date < today)
     if (expired) {
       const group = Array.isArray(mutation.groupInstance.group) ? mutation.groupInstance.group[0] : mutation.groupInstance.group
@@ -210,55 +264,171 @@ export async function assertSelectionMutable(
   }
 }
 
-async function updateSingleSelection(input: {
+type SingleSelectionInput = {
   orgId: string
   projectId: string
   selectionId: string
   optionId: string
   selectedByContactId?: string | null
+  actorId: string | null
   portal: boolean
-  skipGate?: boolean
-  sourceChangeOrderId?: string | null
-  forceConfirmed?: boolean
-  packageId?: string | null
-  priceCentsOverride?: number
-  costCentsOverride?: number | null
-}) {
-  const mutation = await loadSelectionMutationContext(input)
-  if (!input.skipGate) await assertSelectionMutable(mutation, { portal: input.portal })
-  const [pricing] = await resolveOptionPricing({
-    orgId: input.orgId,
-    items: [{ optionId: input.optionId }],
-    housePlanVersionId: mutation.lot?.house_plan_version_id ?? undefined,
-    communityId: mutation.lot?.community_id ?? undefined,
+  configurationPrevalidated?: boolean
+}
+
+/**
+ * The options this selection could take instead: offered for this home, in its
+ * category, and orderable in time.
+ */
+async function selectionAlternates(input: {
+  orgId: string
+  projectId: string
+  selectionId: string
+  categoryId: string
+  excludeOptionId: string | null
+  pricing: HomePricingScope
+}): Promise<SelectionAlternate[]> {
+  const options = (await listSelectionOptions(input.orgId, input.categoryId)).slice(0, 100)
+  if (!options.length) return []
+  const priced = await resolveOptionPricing({ orgId: input.orgId, items: options.map((option) => ({ optionId: option.id })), ...input.pricing })
+  const candidates = options.map((option, index) => {
+    const price = priced[index]
+    return {
+      optionId: price?.optionId ?? option.id,
+      name: option.name,
+      priceCents: price?.priceCents ?? option.price_cents ?? 0,
+      available: Boolean(price?.available && price.categoryIds.includes(input.categoryId)),
+    }
   })
-  if (!pricing.available) throw new Error("This option is not available for the lot's plan")
-  const nowIso = new Date().toISOString()
-  const payload = {
-    selected_option_id: pricing.optionId ?? input.optionId,
-    package_id: input.packageId ?? null,
-    status: input.forceConfirmed ? "confirmed" : "selected",
-    selected_at: nowIso,
-    confirmed_at: input.forceConfirmed ? nowIso : null,
-    selected_by_contact_id: input.selectedByContactId ?? null,
-    price_cents_snapshot: input.priceCentsOverride ?? pricing.priceCents,
-    cost_cents_snapshot: input.costCentsOverride !== undefined ? input.costCentsOverride : pricing.costCents,
-    source_change_order_id: input.sourceChangeOrderId ?? null,
+  const facts = await readSelectionChoiceFacts(input.orgId, input.projectId, input.selectionId, candidates.map((candidate) => candidate.optionId))
+  return eligibleAlternates(facts, candidates, input.excludeOptionId)
+}
+
+function refusalWithAlternates(message: string, alternates: SelectionAlternate[], portal: boolean) {
+  if (alternates.length) {
+    const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
+    return `${message} Still in time: ${alternates.map((alternate) => `${alternate.name} (${money.format(alternate.priceCents / 100)})`).join(", ")}.`
   }
-  const { data, error } = await mutation.supabase
-    .from("project_selections")
-    .update(payload)
-    .eq("org_id", input.orgId)
-    .eq("project_id", input.projectId)
-    .eq("id", input.selectionId)
-    .select("id, selected_option_id, status, price_cents_snapshot")
-    .single()
-  if (error || !data) throw new Error(`Failed to update selection: ${error?.message ?? "missing row"}`)
+  return portal ? `${message} Your builder has been asked to find an alternate.` : `${message} Raise a change order or record an expedite on the exception.`
+}
+
+/**
+ * The supply half of a choice: the option must still be offered, orderable by
+ * the task it is needed for, and the selection must not already be bought.
+ * The database write enforces the same rules; this names the reason, records
+ * an exception, and offers what can be had instead.
+ */
+async function assertSupplyEligible(
+  mutation: Awaited<ReturnType<typeof loadSelectionMutationContext>>,
+  input: SingleSelectionInput & { option: { optionId: string; name: string; available: boolean } },
+) {
+  // Keeping the choice already made is not a new order; an option gone off sale is refused either way.
+  if (input.option.optionId === mutation.selection.selected_option_id && input.option.available) return
+  const facts: SelectionChoiceFacts = mutation.facts.options.some((entry) => entry.optionId === input.option.optionId)
+    ? mutation.facts
+    : await readSelectionChoiceFacts(input.orgId, input.projectId, input.selectionId, [input.option.optionId])
+  const refusal = supplyRefusal(facts, input.option)
+  if (!refusal) return
+  const alternates = await selectionAlternates({
+    orgId: input.orgId, projectId: input.projectId, selectionId: input.selectionId, categoryId: mutation.selection.category_id,
+    excludeOptionId: input.option.optionId, pricing: mutation.pricing,
+  })
+  const exception = await openSelectionException({
+    orgId: input.orgId, projectId: input.projectId, selectionId: input.selectionId, optionId: input.option.optionId,
+    reason: refusal.reason, actorId: input.actorId,
+    detail: {
+      requested_option_id: input.option.optionId,
+      order_by: refusal.orderBy,
+      purchase_order_id: facts.releasedPurchaseOrderId,
+      alternates: alternates.map((alternate) => alternate.optionId),
+    },
+  })
+  throw new SelectionEligibilityError(refusalWithAlternates(refusal.message, alternates, input.portal), refusal.code, { reason: refusal.message, alternates, exceptionId: exception.id })
+}
+
+/** Validates one selection change and returns the row it would write, without writing it. */
+async function prepareSingleSelection(input: SingleSelectionInput) {
+  const mutation = await loadSelectionMutationContext(input)
+  await assertSelectionMutable(mutation, { portal: input.portal })
+  const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ optionId: input.optionId }], ...mutation.pricing })
+  if (!pricing.categoryIds.includes(mutation.selection.category_id) && pricing.available) throw new Error("This option belongs to a different selection category")
+  const optionId = pricing.optionId ?? input.optionId
+  const name = mutation.options.find((option) => option.id === input.optionId)?.name ?? "This option"
+  await assertSupplyEligible(mutation, { ...input, option: { optionId, name, available: pricing.available } })
+  if (!input.configurationPrevalidated) await assertProjectConfiguration(input.orgId, input.projectId, [{ selectionId: input.selectionId, optionId }])
+  const payload = {
+    selected_option_id: optionId,
+    package_id: null,
+    status: "selected",
+    selected_at: new Date().toISOString(),
+    confirmed_at: null,
+    selected_by_contact_id: input.selectedByContactId ?? null,
+    price_cents_snapshot: pricing.priceCents,
+    cost_cents_snapshot: pricing.costCents,
+  }
+  return { mutation, payload }
+}
+
+async function recordSelectionWrite(input: SingleSelectionInput, payload: Record<string, unknown>) {
   await Promise.all([
-    recordEvent({ orgId: input.orgId, eventType: input.forceConfirmed ? "selection_confirmed" : "selection_updated", entityType: "selection", entityId: input.selectionId, payload: { project_id: input.projectId, option_id: input.optionId, source_change_order_id: input.sourceChangeOrderId ?? null } }),
-    recordAudit({ orgId: input.orgId, actorId: undefined, action: "update", entityType: "selection", entityId: input.selectionId, after: payload }),
+    recordEvent({ orgId: input.orgId, actorId: input.actorId ?? undefined, eventType: "selection_updated", entityType: "selection", entityId: input.selectionId, payload: { project_id: input.projectId, option_id: input.optionId } }),
+    recordAudit({ orgId: input.orgId, actorId: input.actorId ?? undefined, action: "update", entityType: "selection", entityId: input.selectionId, after: payload }),
   ])
-  return data
+}
+
+/** A selection write was validated against a catalog or a home that has since moved. */
+export class SelectionConfigurationChangedError extends Error {
+  readonly code = "SELECTION_CONFIGURATION_CHANGED"
+}
+
+const FENCE_REFUSALS: Record<string, string> = {
+  SELECTION_CATALOG_CHANGED: "The catalog changed while you were choosing; review and try again.",
+  SELECTION_HOME_CHANGED: "This home's selections changed while you were choosing; review and try again.",
+}
+
+const selectionFenceSchema = z.object({
+  catalogRevision: z.string().regex(/^[1-9][0-9]{0,18}$/),
+  homeState: z.string().regex(/^[0-9a-f]{32}$/),
+})
+type SelectionFence = z.infer<typeof selectionFenceSchema>
+
+/**
+ * The catalog revision and the home's selection state, read BEFORE anything is
+ * validated. The write commits only if neither has moved since, so a price,
+ * rule or availability published mid-choice — or another session changing the
+ * same home — refuses the write instead of landing an unvalidated set.
+ */
+async function readSelectionFence(orgId: string, projectId: string): Promise<SelectionFence> {
+  const { data, error } = await createServiceSupabaseClient().rpc("read_project_selection_fence", { p_org_id: orgId, p_project_id: projectId })
+  if (error) throw new Error(`Failed to read the home's selections: ${error.message}`)
+  const parsed = selectionFenceSchema.safeParse(data)
+  if (!parsed.success) throw new Error("The home's selection state could not be verified")
+  return parsed.data
+}
+
+/**
+ * Writes several selection rows on one home in ONE transaction
+ * (`apply_project_selection_writes`): a package, a group confirmation or a
+ * change order lands whole or not at all, and only against the fence it was
+ * validated on.
+ */
+async function applySelectionWrites(orgId: string, projectId: string, fence: SelectionFence, writes: Array<{ id: string } & Record<string, unknown>>) {
+  const { error } = await createServiceSupabaseClient().rpc("apply_project_selection_writes", {
+    p_org_id: orgId,
+    p_project_id: projectId,
+    p_writes: writes,
+    p_expected_catalog_revision: fence.catalogRevision,
+    p_expected_home_state: fence.homeState,
+  })
+  const refusal = error?.details ? FENCE_REFUSALS[error.details] : undefined
+  if (refusal) throw new SelectionConfigurationChangedError(refusal)
+  // The database's own deadline and supply checks: something moved between the
+  // explanation and the write (a sweep, a schedule pull-in, a released PO).
+  if (error?.details === "SELECTION_LOCKED_CUTOFF") throw new SelectionLockError(`${error.message}.`, "SELECTION_LOCKED_CUTOFF")
+  if (error?.details === "SELECTION_LEAD_TIME") {
+    throw new SelectionEligibilityError(error.hint ? `This option had to be ordered by ${formatSupplyDate(error.hint)} to arrive in time.` : `${error.message}.`, "SELECTION_LEAD_TIME")
+  }
+  if (error?.details === "SELECTION_PROCUREMENT_RELEASED") throw new SelectionEligibilityError(`${error.message}.`, "SELECTION_PROCUREMENT_RELEASED")
+  if (error) throw new Error(`Failed to apply selections: ${error.message}`)
 }
 
 export async function selectProjectOption(input: {
@@ -269,11 +439,44 @@ export async function selectProjectOption(input: {
   selectedByContactId?: string | null
   portalAccess?: boolean
 }) {
-  if (!input.portalAccess) {
-    const context = await requireOrgContext(input.orgId)
-    await requirePermission("selections.write", context)
-  }
-  return updateSingleSelection({ ...input, portal: Boolean(input.portalAccess) })
+  const [written] = await selectProjectOptions({ ...input, changes: [{ selectionId: input.selectionId, optionId: input.optionId }] })
+  return written
+}
+
+/**
+ * Several choices on one home as ONE fenced write: each is gated, priced and
+ * checked against the configuration rules together with the others, then they
+ * land whole or not at all. A correction and the choice it clears (the buyer
+ * portal's fix) go through here, so neither can stick without the other.
+ */
+export async function selectProjectOptions(input: {
+  orgId: string
+  projectId: string
+  changes: Array<{ selectionId: string; optionId: string }>
+  selectedByContactId?: string | null
+  portalAccess?: boolean
+}) {
+  const actorId = input.portalAccess ? null : await authorizeSelectionWrite(input.orgId, input.projectId)
+  if (!input.changes.length) throw new Error("Choose at least one option")
+  if (new Set(input.changes.map((change) => change.selectionId)).size !== input.changes.length) throw new Error("Choose one option per selection")
+  const fence = await readSelectionFence(input.orgId, input.projectId)
+  const prepared = await Promise.all(input.changes.map(async (change) => {
+    const single: SingleSelectionInput = {
+      orgId: input.orgId,
+      projectId: input.projectId,
+      selectionId: change.selectionId,
+      optionId: change.optionId,
+      selectedByContactId: input.selectedByContactId,
+      actorId,
+      portal: Boolean(input.portalAccess),
+      configurationPrevalidated: true,
+    }
+    return { single, ...(await prepareSingleSelection(single)) }
+  }))
+  await assertProjectConfiguration(input.orgId, input.projectId, prepared.map(({ single, payload }) => ({ selectionId: single.selectionId, optionId: payload.selected_option_id })))
+  await applySelectionWrites(input.orgId, input.projectId, fence, prepared.map(({ single, payload }) => ({ id: single.selectionId, ...payload })))
+  await Promise.all(prepared.map(({ single, payload }) => recordSelectionWrite(single, payload)))
+  return prepared.map(({ single, payload }) => ({ id: single.selectionId, selected_option_id: payload.selected_option_id, status: payload.status, price_cents_snapshot: payload.price_cents_snapshot }))
 }
 
 export async function selectProjectPackage(input: {
@@ -283,10 +486,8 @@ export async function selectProjectPackage(input: {
   selectedByContactId?: string | null
   portalAccess?: boolean
 }) {
-  if (!input.portalAccess) {
-    const context = await requireOrgContext(input.orgId)
-    await requirePermission("selections.write", context)
-  }
+  const actorId = input.portalAccess ? null : await authorizeSelectionWrite(input.orgId, input.projectId)
+  const fence = await readSelectionFence(input.orgId, input.projectId)
   const supabase = createServiceSupabaseClient()
   const { data: members, error } = await supabase
     .from("selection_package_items")
@@ -315,9 +516,19 @@ export async function selectProjectPackage(input: {
       group_id: (selection.group_id as string | null) ?? null,
     })),
   })
-  const { data: lot } = await supabase.from("lots").select("community_id, house_plan_version_id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle()
-  const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ packageId: input.packageId }], housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined })
+  const home = await readHomePricingScope(supabase, input.orgId, input.projectId)
+  const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ packageId: input.packageId }], ...home.pricing })
   if (!pricing.available) throw new Error("This package is not available for the lot's plan")
+
+  const memberPrices = await resolveOptionPricing({ orgId: input.orgId, items: plan.members.map((member) => ({ optionId: member.optionId })), ...home.pricing })
+  for (const [index, member] of plan.members.entries()) {
+    const resolved = memberPrices[index]
+    if (!resolved?.available) throw new Error("A package option is no longer available for this home. Review the package before applying it.")
+    const category = packageMembers.find((item) => item.option_id === member.optionId)?.category_id
+    if (!category || !resolved.categoryIds.includes(category)) throw new Error("A package option resolves to a different category")
+  }
+
+  await assertProjectConfiguration(input.orgId, input.projectId, plan.members.map((member) => ({ selectionId: member.selectionId, optionId: memberPrices[member.index].optionId ?? member.optionId })))
 
   // Every member is gated before any member is written. A cutoff lock hit
   // halfway through used to leave the home carrying half a package with no
@@ -325,44 +536,63 @@ export async function selectProjectPackage(input: {
   for (const member of plan.members) {
     const mutation = await loadSelectionMutationContext({ orgId: input.orgId, projectId: input.projectId, selectionId: member.selectionId, optionId: member.optionId })
     await assertSelectionMutable(mutation, { portal: Boolean(input.portalAccess) })
+    const optionId = memberPrices[member.index].optionId ?? member.optionId
+    await assertSupplyEligible(mutation, {
+      orgId: input.orgId, projectId: input.projectId, selectionId: member.selectionId, optionId, actorId, portal: Boolean(input.portalAccess),
+      option: { optionId, name: mutation.options.find((option) => option.id === member.optionId)?.name ?? "A package option", available: true },
+    })
   }
 
   const nowIso = new Date().toISOString()
   const priceAllocations = allocatePackageTotal(pricing.priceCents, plan.members.length)
   const costAllocations = pricing.costCents == null ? null : allocatePackageTotal(pricing.costCents, plan.members.length)
-  for (const member of plan.members) {
-    const { error: updateError } = await supabase
-      .from("project_selections")
-      .update({
-        selected_option_id: member.optionId,
-        package_id: input.packageId,
-        status: "selected",
-        selected_at: nowIso,
-        selected_by_contact_id: input.selectedByContactId ?? null,
-        price_cents_snapshot: priceAllocations[member.index],
-        cost_cents_snapshot: costAllocations?.[member.index] ?? null,
-        metadata: { package_allocated: true, package_member_index: member.index },
-      })
-      .eq("org_id", input.orgId)
-      .eq("id", member.selectionId)
-    if (updateError) throw new Error(`Failed to apply package: ${updateError.message}`)
-  }
-  await recordEvent({ orgId: input.orgId, eventType: "selection_updated", entityType: "selection_package", entityId: input.packageId, payload: { project_id: input.projectId, group_id: plan.groupId } })
+  await applySelectionWrites(input.orgId, input.projectId, fence, plan.members.map((member) => ({
+    id: member.selectionId,
+    selected_option_id: memberPrices[member.index].optionId ?? member.optionId,
+    package_id: input.packageId,
+    status: "selected",
+    selected_at: nowIso,
+    selected_by_contact_id: input.selectedByContactId ?? null,
+    price_cents_snapshot: priceAllocations[member.index],
+    cost_cents_snapshot: costAllocations?.[member.index] ?? null,
+    metadata: { package_allocated: true, package_member_index: member.index },
+  })))
+  await recordEvent({ orgId: input.orgId, actorId: actorId ?? undefined, eventType: "selection_updated", entityType: "selection_package", entityId: input.packageId, payload: { project_id: input.projectId, group_id: plan.groupId } })
   return { success: true }
 }
 
 export async function createProjectSelection({ input, orgId }: { input: SelectionInput; orgId?: string }) {
   const context = await requireOrgContext(orgId)
+  // The design studio works across homes whose team it is not on, which the
+  // row policy (team members and admins) would refuse: the permission is the
+  // org's, the home must sit in the member's divisions, and the service writes.
   await requirePermission("selections.write", context)
+  const service = createServiceSupabaseClient()
+  const [{ data: home, error: homeError }, access] = await Promise.all([
+    service.from("projects").select("id, division_id").eq("org_id", context.orgId).eq("id", input.project_id).maybeSingle(),
+    getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId }),
+  ])
+  if (homeError) throw new Error(`Failed to load the home: ${homeError.message}`)
+  if (!home || (access.assignedOnly && !access.divisionIds.includes(String(home.division_id)))) throw new Error("Home not found")
+  // A selection opened on a home belongs to the deadline group its category is
+  // in there, so it cannot be chosen after that group's cutoff.
+  const [{ data: groups, error: groupsError }, { data: links, error: linksError }] = await Promise.all([
+    service.from("project_selection_groups").select("group_id").eq("org_id", context.orgId).eq("project_id", input.project_id),
+    service.from("selection_group_categories").select("group_id").eq("org_id", context.orgId).eq("category_id", input.category_id),
+  ])
+  if (groupsError || linksError) throw new Error(`Failed to load the home's selection groups: ${(groupsError ?? linksError)?.message}`)
+  const homeGroups = new Set((groups ?? []).map((group) => group.group_id as string))
+  const groupId = (links ?? []).map((link) => link.group_id as string).filter((id) => homeGroups.has(id)).sort()[0] ?? null
   const payload = {
     org_id: context.orgId,
     project_id: input.project_id,
     category_id: input.category_id,
-    status: input.status ?? "pending",
+    group_id: groupId,
+    status: "pending",
     due_date: input.due_date ?? null,
     notes: input.notes ?? null,
   }
-  const { data, error } = await context.supabase
+  const { data, error } = await service
     .from("project_selections")
     .insert(payload)
     .select("id, org_id, project_id, category_id, selected_option_id, status, due_date, selected_at, confirmed_at, notes")
@@ -375,150 +605,40 @@ export async function createProjectSelection({ input, orgId }: { input: Selectio
   return data as Selection
 }
 
-export async function confirmSelection(input: { orgId: string; projectId: string; selectionId: string; portalAccess?: boolean }) {
-  if (!input.portalAccess) {
-    const context = await requireOrgContext(input.orgId)
-    await requirePermission("selections.write", context)
-  }
-  const mutation = await loadSelectionMutationContext(input)
-  await assertSelectionMutable(mutation, { portal: Boolean(input.portalAccess) })
-  if (!mutation.selection.selected_option_id) throw new Error("Choose an option before confirming")
-  const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ optionId: mutation.selection.selected_option_id }], housePlanVersionId: mutation.lot?.house_plan_version_id ?? undefined, communityId: mutation.lot?.community_id ?? undefined })
-  const nowIso = new Date().toISOString()
-  const payload = {
-    status: "confirmed",
-    confirmed_at: nowIso,
-    price_cents_snapshot: mutation.selection.package_id ? mutation.selection.price_cents_snapshot : pricing.priceCents,
-    cost_cents_snapshot: mutation.selection.package_id ? mutation.selection.cost_cents_snapshot : pricing.costCents,
-  }
-  const { error } = await mutation.supabase.from("project_selections").update(payload).eq("org_id", input.orgId).eq("id", input.selectionId)
-  if (error) throw new Error(`Failed to confirm selection: ${error.message}`)
-  await recordEvent({ orgId: input.orgId, eventType: "selection_confirmed", entityType: "selection", entityId: input.selectionId, payload: { project_id: input.projectId } })
-  return { success: true }
+export type HomeSelectionException = SelectionExceptionDto & { alternates: SelectionAlternate[] }
+
+/** Open exceptions answered by an alternate get their live alternates; more than this are listed without. */
+const EXCEPTION_ALTERNATES_CAP = 10
+
+/** The home's selection exceptions, each open supply exception with what the buyer can still have. */
+export async function listHomeSelectionExceptions(projectId: string, orgId?: string): Promise<{ exceptions: HomeSelectionException[]; truncated: boolean }> {
+  const { exceptions, truncated } = await listSelectionExceptions(projectId, orgId)
+  const answerable = exceptions
+    .filter((exception) => exception.status === "open" && (exception.reason === "option_unavailable" || exception.reason === "lead_time_exceeded"))
+    .slice(0, EXCEPTION_ALTERNATES_CAP)
+  if (!answerable.length) return { exceptions: exceptions.map((exception) => ({ ...exception, alternates: [] })), truncated }
+  const home = await readHomePricingScope(createServiceSupabaseClient(), answerable[0].org_id, projectId)
+  const alternates = new Map(await Promise.all(answerable.map(async (exception) => [exception.id, await selectionAlternates({
+    orgId: exception.org_id, projectId, selectionId: exception.selection_id, categoryId: exception.category_id,
+    excludeOptionId: exception.option_id, pricing: home.pricing,
+  })] as const)))
+  return { exceptions: exceptions.map((exception) => ({ ...exception, alternates: alternates.get(exception.id) ?? [] })), truncated }
 }
 
-export async function confirmSelectionGroup(input: { orgId: string; projectId: string; groupId: string; portalAccess?: boolean }) {
-  const selections = await listProjectSelections(input.orgId, input.projectId, { portalAccess: input.portalAccess })
-  const members = selections.filter((selection) => selection.group_id === input.groupId)
-  if (!members.length) throw new Error("Selection group was not found")
-  if (members.some((selection) => !selection.selected_option_id)) throw new Error("Choose an option for every category before confirming")
-  for (const selection of members) {
-    await confirmSelection({ orgId: input.orgId, projectId: input.projectId, selectionId: selection.id, portalAccess: input.portalAccess })
+/**
+ * Answers an exception with an option the home can still have. The choice is
+ * an ordinary selection write (every deadline and supply rule applies); the
+ * write closes the exception and this records who chose.
+ */
+export async function chooseSelectionAlternate(raw: SelectionExceptionAlternateInput) {
+  const input = selectionExceptionAlternateSchema.parse(raw)
+  const context = await requireOrgContext()
+  const exception = await loadSelectionException(context.orgId, input.exceptionId)
+  if (exception.status !== "open") throw new Error("This exception was already resolved")
+  if (exception.reason === "variance_unrouted" || exception.reason === "procurement_released") {
+    throw new Error("This exception is resolved through purchasing or a change order, not by choosing again")
   }
-  return { confirmed: members.length }
-}
-
-export async function applySelectionChangeFromChangeOrder(changeOrderId: string, orgId?: string) {
-  const supabase = createServiceSupabaseClient()
-  let query = supabase.from("change_orders").select("id, org_id, project_id, metadata").eq("id", changeOrderId)
-  if (orgId) query = query.eq("org_id", orgId)
-  const { data: changeOrder, error } = await query.maybeSingle()
-  if (error || !changeOrder) throw new Error("Selection change order was not found")
-  const selectionChange = changeOrder.metadata?.selection_change
-  if (!selectionChange || typeof selectionChange !== "object" || !Array.isArray(selectionChange.changes)) {
-    return { applied: 0, varianceOrders: 0, unroutedDeltas: 0 }
-  }
-  let applied = 0
-  for (const change of selectionChange.changes) {
-    if (!change || typeof change !== "object" || typeof change.selection_id !== "string" || typeof change.new_option_id !== "string") continue
-    const { data: before } = await supabase.from("project_selections").select("selected_option_id").eq("org_id", changeOrder.org_id).eq("id", change.selection_id).maybeSingle()
-    await updateSingleSelection({
-      orgId: changeOrder.org_id,
-      projectId: changeOrder.project_id,
-      selectionId: change.selection_id,
-      optionId: change.new_option_id,
-      portal: false,
-      skipGate: true,
-      sourceChangeOrderId: changeOrder.id,
-      forceConfirmed: true,
-      packageId: typeof change.new_package_id === "string" ? change.new_package_id : null,
-      priceCentsOverride: typeof change.price_cents === "number" ? change.price_cents : undefined,
-      costCentsOverride: typeof change.cost_cents === "number" || change.cost_cents === null ? change.cost_cents : undefined,
-    })
-    await recordEvent({
-      orgId: changeOrder.org_id,
-      eventType: "selection_changed_post_cutoff",
-      entityType: "selection",
-      entityId: change.selection_id,
-      payload: {
-        old_option_id: before?.selected_option_id ?? null,
-        new_option_id: change.new_option_id,
-        cost_delta_cents: change.cost_delta_cents ?? 0,
-        cost_code_id: change.cost_code_id ?? null,
-        project_id: changeOrder.project_id,
-      },
-    })
-    applied += 1
-  }
-  // The buyer half is now flipped; the trade half has to follow or the granite
-  // upgrade is billed and the countertop purchase order is never revised.
-  const variance = await createVarianceOrdersForSelectionChange({
-    orgId: changeOrder.org_id,
-    projectId: changeOrder.project_id,
-    changeOrderId: changeOrder.id,
-    changes: toSelectionCostDeltas(selectionChange.changes),
-  })
-  return { applied, varianceOrders: variance.created, unroutedDeltas: variance.unrouted }
-}
-
-/** `change_orders.metadata` is untyped JSON, so every field is re-checked here. */
-function toSelectionCostDeltas(changes: unknown[]): SelectionCostDelta[] {
-  return changes.flatMap((change): SelectionCostDelta[] => {
-    if (!change || typeof change !== "object") return []
-    const row = change as Record<string, unknown>
-    if (typeof row.selection_id !== "string") return []
-    const delta = Number(row.cost_delta_cents ?? 0)
-    if (!Number.isFinite(delta)) return []
-    return [{
-      selection_id: row.selection_id,
-      cost_code_id: typeof row.cost_code_id === "string" ? row.cost_code_id : null,
-      cost_delta_cents: Math.round(delta),
-      category_name: typeof row.category_name === "string" ? row.category_name : "Selection",
-      option_name: typeof row.option_name === "string" ? row.option_name : "New option",
-    }]
-  })
-}
-
-export async function confirmSelectionFromEnvelopeExecution(input: {
-  orgId: string
-  selectionId: string
-  envelopeId?: string | null
-  documentId: string
-  executedFileId: string
-  signerName?: string | null
-  signerEmail?: string | null
-  signerIp?: string | null
-}) {
-  const supabase = createServiceSupabaseClient()
-  const { data: selection, error: selectionError } = await supabase
-    .from("project_selections")
-    .select("id, org_id, project_id, status, confirmed_at, metadata")
-    .eq("org_id", input.orgId)
-    .eq("id", input.selectionId)
-    .maybeSingle()
-  if (selectionError || !selection) throw new Error(`Selection not found for envelope execution: ${selectionError?.message ?? "missing"}`)
-  const existingMetadata = typeof selection.metadata === "object" && selection.metadata !== null ? selection.metadata : {}
-  const priorEnvelopeId = existingMetadata.approved_envelope_id ?? null
-  const isConfirmed = ["confirmed", "ordered", "received"].includes(selection.status)
-  const alreadyConfirmed = isConfirmed && existingMetadata.approved_via_envelope && priorEnvelopeId && input.envelopeId && priorEnvelopeId === input.envelopeId
-  if (!alreadyConfirmed && !isConfirmed) {
-    await confirmSelection({ orgId: input.orgId, projectId: selection.project_id, selectionId: input.selectionId, portalAccess: true })
-  }
-  await attachFileWithServiceRole({ orgId: selection.org_id, fileId: input.executedFileId, projectId: selection.project_id, entityType: "selection", entityId: input.selectionId, linkRole: "executed_selection", createdBy: null })
-  const nowIso = new Date().toISOString()
-  const metadata = {
-    ...existingMetadata,
-    approved_via_envelope: true,
-    approved_envelope_id: input.envelopeId ?? null,
-    approved_document_id: input.documentId,
-    approved_executed_file_id: input.executedFileId,
-    approved_signer_name: input.signerName ?? null,
-    approved_signer_email: input.signerEmail ?? null,
-    approved_signer_ip: input.signerIp ?? null,
-    approved_at: selection.confirmed_at ?? nowIso,
-  }
-  const { error: updateError } = await supabase.from("project_selections").update({ metadata }).eq("org_id", input.orgId).eq("id", input.selectionId)
-  if (updateError) throw new Error(`Failed to update selection from envelope execution: ${updateError.message}`)
-  await recordEvent({ orgId: selection.org_id, eventType: alreadyConfirmed ? "selection_confirmation_synced" : "selection_confirmed", entityType: "selection", entityId: input.selectionId, payload: { source: "envelope_execution", envelope_id: input.envelopeId ?? null, document_id: input.documentId, executed_file_id: input.executedFileId, signer_name: input.signerName ?? null, signer_email: input.signerEmail ?? null, transitioned: !isConfirmed } })
-  return { success: true, idempotent: Boolean(alreadyConfirmed) }
+  await selectProjectOptions({ orgId: context.orgId, projectId: exception.project_id, changes: [{ selectionId: exception.selection_id, optionId: input.optionId }] })
+  await recordAlternateChosen({ orgId: context.orgId, exceptionId: exception.id, actorId: context.userId, optionId: input.optionId })
+  return { projectId: exception.project_id }
 }

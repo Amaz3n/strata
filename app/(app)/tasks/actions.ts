@@ -1,11 +1,16 @@
 "use server"
 
+import { taskPeople } from "@/lib/services/task-people"
+import { resolveTaskMentions } from "@/lib/tasks/mentions"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import type { AssignableResource } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
+import { searchVisibleProjects } from "@/lib/services/projects"
+import { SEARCH_PICKER_PAGE_SIZE, searchPickerPage, searchPickerQuerySchema } from "@/lib/search-picker"
+import type { SearchPickerPage } from "@/components/ui/search-picker"
 import { recordEvent } from "@/lib/services/events"
 import type { Task } from "@/lib/types"
 import { taskInputSchema, taskUpdateSchema, type TaskInput } from "@/lib/validation/tasks"
@@ -237,6 +242,7 @@ function mapFullTask(row: any): Task {
     actual_hours: metadata.actual_hours ?? undefined,
     checklist: metadata.checklist ?? undefined,
     tags: metadata.tags ?? undefined,
+    mentioned_user_ids: metadata.mentioned_user_ids ?? [],
     created_by: row.created_by ?? undefined,
     created_by_name: creator?.full_name ?? undefined,
     assigned_by: row.assigned_by ?? undefined,
@@ -248,6 +254,7 @@ function mapFullTask(row: any): Task {
 /** Metadata (jsonb) holds the construction-specific fields not in dedicated columns. */
 function buildMetadata(base: Record<string, any>, input: Partial<TaskInput>): Record<string, any> {
   const metadata = { ...base }
+  if (input.mentioned_user_ids !== undefined) metadata.mentioned_user_ids = input.mentioned_user_ids
   if (input.location !== undefined) metadata.location = input.location || undefined
   if (input.trade !== undefined) metadata.trade = input.trade || undefined
   if (input.estimated_hours !== undefined) metadata.estimated_hours = input.estimated_hours
@@ -279,32 +286,65 @@ async function fetchTaskById(
 }
 
 /** Every task the current user created or is assigned to, across projects and personal. */
-export async function listMyTasksAction(): Promise<Task[]> {
+/** The personal worklist shows the newest tasks up to this many, and says so when older ones are left out. */
+const MY_TASKS_CAP = 500
+/** An `id.in (...)` list longer than this overflows the request URL. */
+const ASSIGNED_ID_CHUNK = 100
+
+export async function listMyTasksPage(): Promise<{ tasks: Task[]; truncated: boolean }> {
       const { supabase, orgId, userId } = await requireOrgContext()
 
-      const { data: myAssignments } = await supabase
-        .from("task_assignments")
-        .select("task_id")
-        .eq("org_id", orgId)
-        .eq("user_id", userId)
+      const assignedIds: string[] = []
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase
+          .from("task_assignments")
+          .select("id, task_id")
+          .eq("org_id", orgId)
+          .eq("user_id", userId)
+          .order("id")
+          .range(from, from + 999)
+        if (error) throw new Error(`Failed to load task assignments: ${error.message}`)
+        for (const row of data ?? []) assignedIds.push(row.task_id as string)
+        if ((data?.length ?? 0) < 1000) break
+      }
+      const uniqueAssignedIds = [...new Set(assignedIds)]
 
-      const assignedIds = [...new Set((myAssignments ?? []).map((row: any) => row.task_id as string))]
-
-      let orClause = `created_by.eq.${userId}`
-      if (assignedIds.length > 0) orClause += `,id.in.(${assignedIds.join(",")})`
-
-      const { data, error } = await supabase
+      const ownedOrMentioned = supabase
         .from("tasks")
-        .select(TASK_SELECT)
+        .select(TASK_SELECT, { count: "exact" })
         .eq("org_id", orgId)
-        .or(orClause)
+        .or(`created_by.eq.${userId},metadata->mentioned_user_ids.cs.["${userId}"]`)
         .order("created_at", { ascending: false })
-
-      if (error) {
-        throw new Error(`Failed to list tasks: ${error.message}`)
+        .order("id")
+        .range(0, MY_TASKS_CAP - 1)
+      const assignedChunks = Array.from({ length: Math.ceil(uniqueAssignedIds.length / ASSIGNED_ID_CHUNK) }, (_, index) =>
+        supabase
+          .from("tasks")
+          .select(TASK_SELECT)
+          .eq("org_id", orgId)
+          .in("id", uniqueAssignedIds.slice(index * ASSIGNED_ID_CHUNK, (index + 1) * ASSIGNED_ID_CHUNK))
+          .order("created_at", { ascending: false })
+          .order("id")
+          .range(0, MY_TASKS_CAP - 1),
+      )
+      const [owned, ...assigned] = await Promise.all([ownedOrMentioned, ...assignedChunks])
+      for (const result of [owned, ...assigned]) {
+        if (result.error) throw new Error(`Failed to list tasks: ${result.error.message}`)
       }
 
-      return (data ?? []).map(mapFullTask)
+      const byId = new Map<string, Parameters<typeof mapFullTask>[0]>()
+      for (const result of [owned, ...assigned]) {
+        for (const row of result.data ?? []) byId.set(row.id, row)
+      }
+      const merged = [...byId.values()].sort((a, b) =>
+        a.created_at === b.created_at ? (a.id < b.id ? -1 : 1) : a.created_at < b.created_at ? 1 : -1,
+      )
+      const truncated = (owned.count ?? 0) > MY_TASKS_CAP || assigned.some((result) => (result.data?.length ?? 0) >= MY_TASKS_CAP) || merged.length > MY_TASKS_CAP
+      return { tasks: merged.slice(0, MY_TASKS_CAP).map(mapFullTask), truncated }
+}
+
+export async function listMyTasksAction(): Promise<Task[]> {
+      return (await listMyTasksPage()).tasks
 }
 
 async function applyAssignment(
@@ -340,6 +380,9 @@ export async function createMyTaskAction(input: unknown): Promise<ActionResult<T
       const parsed = taskInputSchema.parse(input)
       const { supabase, orgId, userId } = await requireOrgContext()
 
+      const people = await taskPeople({ supabase, orgId, userId } as Awaited<ReturnType<typeof requireOrgContext>>, parsed.project_id)
+      if (parsed.assignee_kind === "user" && !people.some(person => person.id === parsed.assignee_id)) throw new Error("Choose someone with access to this task")
+      parsed.mentioned_user_ids = resolveTaskMentions(parsed.description ?? "", people.map(person => ({ id: person.id, name: person.full_name })))
       const metadata = buildMetadata({}, parsed)
 
       const { data, error } = await supabase
@@ -393,7 +436,7 @@ export async function updateMyTaskAction(taskId: string, input: Partial<TaskInpu
 
       const { data: existing, error: fetchError } = await supabase
         .from("tasks")
-        .select("id, status, metadata, due_date, reminder_at")
+        .select("id, status, metadata, due_date, reminder_at, description, project_id")
         .eq("org_id", orgId)
         .eq("id", taskId)
         .single()
@@ -402,6 +445,13 @@ export async function updateMyTaskAction(taskId: string, input: Partial<TaskInpu
         throw new Error("Task not found or not accessible")
       }
 
+      if (parsed.description !== undefined || parsed.mentioned_user_ids !== undefined || parsed.project_id !== undefined || parsed.assignee_kind === "user") {
+        const people = await taskPeople({ supabase, orgId, userId } as Awaited<ReturnType<typeof requireOrgContext>>, parsed.project_id === undefined ? existing.project_id : parsed.project_id)
+        if (parsed.assignee_kind === "user" && !people.some(person => person.id === parsed.assignee_id)) throw new Error("Choose someone with access to this task")
+        if (parsed.description !== undefined || parsed.mentioned_user_ids !== undefined || parsed.project_id !== undefined) {
+          parsed.mentioned_user_ids = resolveTaskMentions(parsed.description ?? existing.description ?? "", people.map(person => ({ id: person.id, name: person.full_name })))
+        }
+      }
       const updateData: Record<string, unknown> = {}
       if (parsed.title !== undefined) updateData.title = parsed.title
       if (parsed.description !== undefined) updateData.description = parsed.description || null
@@ -437,8 +487,9 @@ export async function updateMyTaskAction(taskId: string, input: Partial<TaskInpu
       }
 
       // Reassignment: only touch assignments when an assignee was explicitly provided.
-      if (parsed.assignee_id !== undefined && parsed.assignee_kind) {
-        await supabase.from("task_assignments").delete().eq("org_id", orgId).eq("task_id", taskId)
+      if (parsed.clear_assignee || (parsed.assignee_id !== undefined && parsed.assignee_kind)) {
+        const { error: assignmentError } = await supabase.from("task_assignments").delete().eq("org_id", orgId).eq("task_id", taskId)
+        if (assignmentError) throw new Error("Unable to clear task assignment")
         await applyAssignment(supabase, orgId, userId, taskId, {
           assignee_id: parsed.assignee_id,
           assignee_kind: parsed.assignee_kind,
@@ -490,21 +541,18 @@ export async function deleteMyTaskAction(taskId: string): Promise<ActionResult<v
   })
 }
 
-/** Projects for the task's project picker/filter. */
-export async function listTaskProjectsAction(): Promise<Array<{ id: string; name: string }>> {
-      const { supabase, orgId } = await requireOrgContext()
-
-      const { data, error } = await supabase
-        .from("projects")
-        .select("id, name")
-        .eq("org_id", orgId)
-        .order("name", { ascending: true })
-
-      if (error) {
-        throw new Error(`Failed to list projects: ${error.message}`)
-      }
-
-      return (data ?? []).map((row: any) => ({ id: row.id as string, name: String(row.name ?? "Untitled project") }))
+/** Project picker for the task composer: one scoped page of the projects the caller can open per search, never the portfolio. */
+export async function searchTaskProjectsAction(input: unknown): Promise<ActionResult<SearchPickerPage>> {
+  return run(async () => {
+    const query = searchPickerQuerySchema.parse(input)
+    const result = await searchVisibleProjects({ search: query.search, page: query.page, pageSize: SEARCH_PICKER_PAGE_SIZE, includePrecon: true })
+    return searchPickerPage(
+      result.projects.map((project) => ({ id: project.id, name: project.name, detail: [project.noun, project.status].filter(Boolean).join(" · ") })),
+      result.page,
+      result.pageSize,
+      result.total,
+    )
+  })
 }
 
 /** Org-wide people a task can be assigned to: team members + contacts (no companies). */
@@ -517,7 +565,7 @@ export async function listOrgAssignableResourcesAction(): Promise<AssignableReso
           .from("memberships")
           .select(`
             user_id,
-            app_users!inner(id, full_name, email, avatar_url),
+            app_users!memberships_user_id_fkey!inner(id, full_name, email, avatar_url),
             roles!inner(key, label)
           `)
           .eq("org_id", orgId)
@@ -561,4 +609,10 @@ export async function listOrgAssignableResourcesAction(): Promise<AssignableReso
       }
 
       return resources
+}
+
+/** People who can actually open the task; shared by the composer and detail dialog. */
+export async function listTaskPeopleAction(projectId?: string, prospectiveProject = false) {
+  if (projectId) z.string().uuid().parse(projectId)
+  return taskPeople(await requireOrgContext(), projectId, z.boolean().parse(prospectiveProject))
 }

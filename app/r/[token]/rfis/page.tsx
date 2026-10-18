@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { loadReviewerPortalPage } from "../load-reviewer"
 import { ReviewerRfisTab } from "../reviewer-rfis-tab"
@@ -8,6 +9,7 @@ interface Props {
 
 
 export default async function ReviewerRfisPage({ params }: Props) {
+  await connection()
   const { token } = await params
   const { access, data } = await loadReviewerPortalPage(token)
 

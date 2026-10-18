@@ -85,6 +85,22 @@ export function RfisClient({ rfis, projects, companies, contacts, initialRfiId }
   const initialRfi = initialRfiId ? rfis.find((rfi) => rfi.id === initialRfiId) ?? null : null
   const [detailSheetOpen, setDetailSheetOpen] = useState(Boolean(initialRfi))
   const [selectedRfi, setSelectedRfi] = useState<Rfi | null>(initialRfi)
+  const [rfiSource, setRfiSource] = useState(rfis)
+  const [rfiIdSource, setRfiIdSource] = useState(initialRfiId)
+  if (rfiSource !== rfis) {
+    setRfiSource(rfis)
+    setItems(rfis)
+    if (selectedRfi) {
+      const updated = rfis.find((rfi) => rfi.id === selectedRfi.id) ?? null
+      setSelectedRfi(updated)
+      if (!updated) setDetailSheetOpen(false)
+    }
+  }
+  if (rfiIdSource !== initialRfiId) {
+    setRfiIdSource(initialRfiId)
+    setSelectedRfi(initialRfi)
+    setDetailSheetOpen(Boolean(initialRfi))
+  }
   const [isPending, startTransition] = useTransition()
 
   const handleRfiClick = (rfi: Rfi) => {
@@ -167,6 +183,7 @@ export function RfisClient({ rfis, projects, companies, contacts, initialRfiId }
         const scopedProjectId = projects.length === 1 ? projects[0]?.id : undefined
         const updatedRfis = await listRfisAction(scopedProjectId)
         setItems(updatedRfis)
+        setSelectedRfi((current) => current ? updatedRfis.find((rfi) => rfi.id === current.id) ?? null : null)
       } catch (error) {
         console.error("Failed to refresh RFIs:", error)
       }
@@ -187,6 +204,7 @@ export function RfisClient({ rfis, projects, companies, contacts, initialRfiId }
       />
 
       <RfiDetailSheet
+        key={selectedRfi?.id ?? "none"}
         rfi={selectedRfi}
         project={projects.find((p) => p.id === selectedRfi?.project_id)}
         open={detailSheetOpen}

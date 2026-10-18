@@ -93,10 +93,10 @@ export function BooksRegisters() {
   return (
     <section className="border bg-background">
       <div className="border-b px-5 py-4">
-        <p className="text-sm font-semibold">Debt & fixed-asset registers</p>
+        <p className="text-sm font-semibold">Assets & loans</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Every draw, payment, acquisition, and depreciation event posts an
-          inseparable journal entry.
+          Track loans, asset purchases, and depreciation. Each recorded event
+          updates your general ledger.
         </p>
       </div>
       <div className="grid divide-y xl:grid-cols-2 xl:divide-x xl:divide-y-0">
@@ -194,12 +194,14 @@ export function BooksRegisters() {
             ))}
             {workspace.debts.length === 0 ? (
               <p className="p-5 text-sm text-muted-foreground">
-                No debt instruments registered.
+                No loans or lines of credit registered.
               </p>
             ) : null}
           </div>
+          <details className="border-t">
+            <summary className="cursor-pointer px-5 py-4 text-sm font-medium hover:bg-muted/30">Add loan or line of credit</summary>
           <form
-            className="grid gap-2 border-t bg-muted/20 p-5 sm:grid-cols-2"
+            className="grid gap-3 px-5 pb-5 sm:grid-cols-2"
             action={(formData) =>
               startTransition(async () => {
                 const result = await createDebtInstrumentAction({
@@ -229,12 +231,10 @@ export function BooksRegisters() {
               })
             }
           >
-            <p className="text-xs font-semibold sm:col-span-2">
-              Add debt instrument
-            </p>
+
             <Input name="name" required placeholder="Loan or line name" />
-            <Input name="openedOn" type="date" required />
-            <Input name="maturityOn" type="date" />
+            <label className="space-y-1 text-xs">Opened on<Input name="openedOn" type="date" required /></label>
+            <label className="space-y-1 text-xs">Maturity date<Input name="maturityOn" type="date" /></label>
             <Input
               name="originalPrincipal"
               type="number"
@@ -287,8 +287,9 @@ export function BooksRegisters() {
               subtypes={["interest"]}
               placeholder="Interest expense GL"
             />
-            <Button disabled={pending}>Create instrument</Button>
+            <Button disabled={pending}>Add loan</Button>
           </form>
+          </details>
         </div>
         <div>
           <div className="border-b px-5 py-3 text-xs font-semibold uppercase tracking-wide">
@@ -425,8 +426,10 @@ export function BooksRegisters() {
               </p>
             ) : null}
           </div>
+          <details className="border-t">
+            <summary className="cursor-pointer px-5 py-4 text-sm font-medium hover:bg-muted/30">Register fixed asset</summary>
           <form
-            className="grid gap-2 border-t bg-muted/20 p-5 sm:grid-cols-2"
+            className="grid gap-3 px-5 pb-5 sm:grid-cols-2"
             action={(formData) =>
               startTransition(async () => {
                 const result = await createFixedAssetAction({
@@ -454,12 +457,10 @@ export function BooksRegisters() {
               })
             }
           >
-            <p className="text-xs font-semibold sm:col-span-2">
-              Register fixed asset
-            </p>
+
             <Input name="assetNumber" required placeholder="Asset number" />
             <Input name="name" required placeholder="Asset name" />
-            <Input name="placedInServiceOn" type="date" required />
+            <label className="space-y-1 text-xs">Placed in service<Input name="placedInServiceOn" type="date" required /></label>
             <Input
               name="cost"
               type="number"
@@ -526,6 +527,7 @@ export function BooksRegisters() {
             </Select>
             <Button disabled={pending}>Register asset</Button>
           </form>
+          </details>
         </div>
       </div>
     </section>

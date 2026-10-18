@@ -32,6 +32,10 @@ export function AiUsagePanel({ usage }: { usage: AiUsageReport }) {
 
   return (
     <div className="space-y-6 py-4">
+      <p className="px-4 text-xs text-muted-foreground">
+        Costs are estimates from reported usage, not provider invoices. Calls include retries;
+        unknown usage remains unpriced.
+      </p>
       {usage.truncated ? (
         <div className="mx-4 border border-warning/40 bg-warning/5 px-3 py-2">
           <p className="text-xs text-warning">

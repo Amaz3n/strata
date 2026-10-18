@@ -1,10 +1,11 @@
+import { ELECTRONIC_SIGNATURE_CONSENT_TEXT } from "@/lib/esign/consent"
 import { AlertTriangle, CheckCircle2, Loader2, PenLine } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-import { isFieldComplete, normalizeFieldLabel, type SigningField } from "./types"
+import { formatFieldValue, isFieldComplete, normalizeFieldLabel, type SigningField } from "./types"
 
 interface ReviewStepProps {
   documentTitle: string
@@ -37,6 +38,8 @@ export function ReviewStep({
 }: ReviewStepProps) {
   const requiredFields = visibleFields.filter((field) => field.required !== false)
   const missingRequired = requiredFields.filter((field) => !isFieldComplete(field, values))
+  const invalidOptional = visibleFields.filter(field => field.required === false && typeof values[field.id] === "string" && (values[field.id] as string).trim() && !isFieldComplete(field, values))
+  const incompleteFields = [...missingRequired, ...invalidOptional]
 
   return (
     <section className="mx-auto w-full max-w-2xl rounded-lg border bg-card p-4 sm:p-6">
@@ -45,14 +48,14 @@ export function ReviewStep({
         <h2 className="text-xl font-semibold">Sign {documentTitle}</h2>
       </div>
 
-      {missingRequired.length > 0 ? (
+      {incompleteFields.length > 0 ? (
         <div className="mt-4 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
           <div className="flex items-start gap-2">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
-              <p className="font-semibold">Complete required fields before signing</p>
+              <p className="font-semibold">Complete required fields and correct invalid values</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Missing: {missingRequired.map((field) => normalizeFieldLabel(field)).join(", ")}
+                Review: {incompleteFields.map((field) => normalizeFieldLabel(field)).join(", ")}
               </p>
             </div>
           </div>
@@ -64,6 +67,12 @@ export function ReviewStep({
         </div>
       )}
 
+      <dl className="mt-5 space-y-3 rounded-md border p-3" aria-label="Your completed fields">
+        {visibleFields.map(field => <div key={field.id}>
+          <dt className="text-sm font-medium">{normalizeFieldLabel(field)}</dt>
+          <dd className="break-words text-sm text-muted-foreground">{field.field_type === "signature" && typeof values[field.id] === "string" ? <img src={values[field.id] as string} alt={`${normalizeFieldLabel(field)} preview`} className="h-16 max-w-full object-contain" /> : formatFieldValue(field, values[field.id]) || "Not provided"}</dd>
+        </div>)}
+      </dl>
       <div className="mt-5 grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label htmlFor="review-signer-name">Full legal name</Label>
@@ -79,6 +88,7 @@ export function ReviewStep({
           <Label htmlFor="review-signer-email">Email</Label>
           <Input
             id="review-signer-email"
+            type="email"
             value={signerEmail}
             onChange={(event) => onSignerEmailChange(event.target.value)}
             placeholder="jane@example.com"
@@ -91,8 +101,7 @@ export function ReviewStep({
         <div className="flex items-start gap-2">
           <Checkbox id="consent" checked={consentChecked} onCheckedChange={(checked) => onConsentChange(checked === true)} />
           <Label htmlFor="consent" className="text-sm leading-5">
-            I agree to use electronic records and signatures for this document, I can access and retain the document
-            electronically, and I intend my electronic signature to be legally binding.{" "}
+            {ELECTRONIC_SIGNATURE_CONSENT_TEXT}{" "}
             <a href="/esign-terms" target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
               Electronic signature terms
             </a>
@@ -107,7 +116,7 @@ export function ReviewStep({
         <Button
           type="button"
           className="px-5"
-          disabled={missingRequired.length > 0 || !consentChecked || !signerName.trim() || !signerEmail.trim() || isSubmitting}
+          disabled={incompleteFields.length > 0 || !consentChecked || !signerName.trim() || !signerEmail.trim() || isSubmitting}
           onClick={onSubmit}
         >
           {isSubmitting ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <PenLine className="mr-1.5 h-4 w-4" />}

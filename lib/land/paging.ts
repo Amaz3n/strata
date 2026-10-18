@@ -26,7 +26,32 @@ export interface PagedRows<Row> {
 
 export interface RangeResult<Row> {
   data: Row[] | null
-  error: { message: string } | null
+  error: { message: string; code?: string } | null
+  count?: number | null
+}
+
+/** PostgREST answers 416 / PGRST103 when a range starts past the last row. */
+const RANGE_PAST_END = "PGRST103"
+
+export function isRangePastEnd(error: { code?: string } | null | undefined): boolean {
+  return error?.code === RANGE_PAST_END
+}
+
+/**
+ * One page of a counted read. A page past the last row is an empty page, not a
+ * failure: a reader sitting on the last page when rows are removed, or a stale
+ * "show more", must see nothing rather than an error. The total is still true,
+ * read with a one-row range.
+ */
+export async function readPageOrEmpty<Row>(
+  read: (from: number, to: number) => PromiseLike<RangeResult<Row>>,
+  from: number,
+  to: number,
+): Promise<{ data: Row[]; count: number | null; error: { message: string; code?: string } | null }> {
+  const first = await read(from, to)
+  if (!isRangePastEnd(first.error)) return { data: first.data ?? [], count: first.count ?? null, error: first.error }
+  const head = await read(0, 0)
+  return { data: [], count: head.count ?? null, error: head.error }
 }
 
 /** `(from, to)` are inclusive row offsets, exactly as `PostgrestBuilder.range` takes them. */
@@ -40,6 +65,8 @@ export async function readAllRows<Row>(
   for (let from = 0; from < cap; from += pageSize) {
     const size = Math.min(pageSize, cap - from)
     const { data, error } = await read(from, from + size - 1)
+    // A full page that ended exactly on the last row leaves the next range past the end.
+    if (isRangePastEnd(error)) return { rows, truncated: false }
     if (error) throw new Error(`${label}: ${error.message}`)
     const batch = data ?? []
     for (const row of batch) rows.push(row)
@@ -48,4 +75,30 @@ export async function readAllRows<Row>(
     if (batch.length < size) return { rows, truncated: false }
   }
   return { rows, truncated: true }
+}
+
+/**
+ * Exhaust an ID-ordered UUID query. Only an empty page proves exhaustion:
+ * a provider may return fewer rows than requested because of its own row cap.
+ * Callers must reapply organization/actor/scope predicates on every page.
+ */
+export async function readAllRowsById<Row extends { id: string }>(
+  read: (afterId: string | null, limit: number) => PromiseLike<RangeResult<Row>>,
+  { cap, label, pageSize = 100 }: { cap: number; label: string; pageSize?: number },
+): Promise<Row[]> {
+  if (!Number.isSafeInteger(cap) || cap < 1 || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 1000) throw new Error(`${label}: Invalid paging bounds`)
+  const rows: Row[] = []
+  let afterId: string | null = null
+  while (true) {
+    const take = Math.min(pageSize, cap - rows.length + 1)
+    const { data, error } = await read(afterId, take)
+    if (error || !Array.isArray(data) || data.length > take) throw new Error(`${label}: ${error?.message ?? "Invalid page response"}`)
+    if (!data.length) return rows
+    for (const row of data) {
+      if (typeof row.id !== "string" || !row.id || (afterId !== null && row.id <= afterId)) throw new Error(`${label}: ID cursor did not advance`)
+      rows.push(row)
+      afterId = row.id
+      if (rows.length > cap) throw new Error(`${label}: Validation limit exceeded (${cap} rows)`)
+    }
+  }
 }

@@ -24,6 +24,7 @@ export const metadata = {
 }
 
 async function InvoicePublicPageContent({ params }: Params) {
+  await connection()
   const { token } = await params
   await connection()
   const invoice = await getInvoiceByToken(token)
@@ -113,7 +114,7 @@ async function InvoicePublicPageContent({ params }: Params) {
 
 export default function InvoicePublicPage(props: Parameters<typeof InvoicePublicPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton title="Invoice" />}>
       <InvoicePublicPageContent {...props} />
     </Suspense>
   )

@@ -8,7 +8,7 @@ import { unstable_rethrow } from "next/navigation"
 import { preserveQueryError } from "@/lib/supabase/query-error"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
-import { isPlatformAdminUser } from "@/lib/auth/platform"
+import { hasActivePlatformAccessGrant, holdsPlatformOrgAccess } from "@/lib/auth/platform"
 import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
 
 export interface OrgMembership {
@@ -253,7 +253,7 @@ export async function requireAuth(): Promise<AuthContext & { user: User }> {
 }
 
 // Request-cached per orgId argument: dedupes the membership/platform lookups
-// (and the org-cookie side effect) across the many service calls in one render.
+// across the many service calls in one render.
 export const requireOrgMembership = cache(async (
   orgId?: string,
 ): Promise<AuthContext & { user: User; orgId: string; membership: OrgMembership }> => {
@@ -264,67 +264,32 @@ export const requireOrgMembership = cache(async (
   // revocation takes effect on the next request even if the browser still has
   // an active Supabase session and a cached app shell.
   //
-  // The platform-membership probe and that membership re-read are keyed on the
-  // same already-known (user, org) pair and neither decides the other, so they
-  // travel together instead of costing two serial round trips on every
-  // authenticated request. A configured superadmin still short-circuits both:
-  // that check is a local env lookup, and neither answer would be used.
+  // Whether the caller is Arc staff matters only when they are not a member of
+  // the organization, so that probe runs only then: a member's own access never
+  // depends on reading platform roles, and staff pay the extra round trip.
   const ambientOrgId = orgId ?? context.orgId
-  const isSuperAdmin = isPlatformAdminUser(context.user)
-  const [isPlatformOperator, ambientMembership]: [boolean, OrgMembership | null] = isSuperAdmin
-    ? [true, null]
-    : await Promise.all([
-        hasActivePlatformMembership(context.user.id),
-        ambientOrgId ? fetchMembershipWithServiceRole(ambientOrgId, context.user.id) : null,
-      ])
-  const isPlatformAdmin = isSuperAdmin || isPlatformOperator
+  const ambientMembership = ambientOrgId ? await fetchMembershipWithServiceRole(ambientOrgId, context.user.id) : null
 
-  // Platform admin: allow bypassing membership, use service client, and pick any org.
-  if (isPlatformAdmin) {
-    const resolvedOrgId =
-      orgId ??
-      context.orgId ??
-      (await (async () => {
-        const cookieStore = await cookies()
-        return cookieStore.get("org_id")?.value ?? null
-      })()) ??
-      (await (async () => {
-        const svc = createServiceSupabaseClient()
-        const { data } = await svc
-          .from("orgs")
-          .select("id")
-          .order("created_at", { ascending: true })
-          .limit(1)
-        return data?.[0]?.id ?? null
-      })())
-
-    if (!resolvedOrgId) {
-      throw new Error("No organizations available for platform admin")
-    }
-
-    const cookieStore = await cookies()
-    const cookieOrgId = cookieStore.get("org_id")?.value
-    if (!cookieOrgId || cookieOrgId !== resolvedOrgId) {
-      cookieStore.set({
-        name: "org_id",
-        value: resolvedOrgId,
-        path: "/",
-        httpOnly: false,
-        sameSite: "lax",
-        maxAge: 60 * 60 * 24 * 30,
-      })
-    }
-
+  // Break-glass: Arc staff reach an organization they do not belong to only
+  // through an open, unexpired grant with a stated reason. Being staff is not
+  // access. A staff member who really belongs to the organization always acts
+  // as that membership, never as the pseudo-owner.
+  if (
+    !ambientMembership &&
+    ambientOrgId &&
+    (await holdsPlatformOrgAccess(context.user.id, context.user.email)) &&
+    (await hasActivePlatformAccessGrant(ambientOrgId, context.user.id))
+  ) {
     const svc = createServiceSupabaseClient()
     const { data: platformOrg } = await svc
       .from("orgs")
       .select("product_tier")
-      .eq("id", resolvedOrgId)
+      .eq("id", ambientOrgId)
       .maybeSingle()
 
     const pseudoMembership: OrgMembership = {
       id: "platform-admin",
-      org_id: resolvedOrgId,
+      org_id: ambientOrgId,
       role_id: "platform-admin",
       status: "active",
       role_key: "owner",
@@ -334,7 +299,7 @@ export const requireOrgMembership = cache(async (
     return {
       ...context,
       supabase: svc,
-      orgId: resolvedOrgId,
+      orgId: ambientOrgId,
       membership: pseudoMembership,
     }
   }
@@ -363,19 +328,8 @@ export const requireOrgMembership = cache(async (
     throw new Error("No active organization found for this user")
   }
 
-  // Persist org cookie when we successfully resolve membership.
-  const cookieStore = await cookies()
-  const cookieOrgId = cookieStore.get("org_id")?.value
-  if (!cookieOrgId || cookieOrgId !== resolvedOrgId) {
-    cookieStore.set({
-      name: "org_id",
-      value: resolvedOrgId,
-      path: "/",
-      httpOnly: false,
-      sameSite: "lax",
-      maxAge: 60 * 60 * 24 * 30,
-    })
-  }
+  // Organization selection is persisted by auth and switch-org actions.
+  // Membership resolution also runs during rendering, where cookies are read-only.
 
   if (membership.status === "active") {
     touchMembershipActivity(resolvedOrgId, context.user.id, membership.last_active_at)

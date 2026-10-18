@@ -1,3 +1,4 @@
+import { orFilterTerm } from "@/lib/search-picker"
 import { cacheLife } from "next/cache"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -18,8 +19,12 @@ import {
   saveBillingContractWithAmendment,
   upsertProjectFinancialSettingsFromProjectInput,
 } from "@/lib/services/project-financial-setup"
-import { getDefaultProjectPropertyType, getProjectPosture } from "@/lib/product-tier"
-import { getDivisionScopedProjectIds } from "@/lib/services/authorization"
+import { getDefaultProjectPropertyType, getProjectPosture, isProductionProjectPosture, type ProjectPosture } from "@/lib/product-tier"
+import { getDivisionAccessForUser, getDivisionScopedProjectIds, getProjectReadScopeForUser } from "@/lib/services/authorization"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { readAllRows, readPageOrEmpty } from "@/lib/land/paging"
+import { chunk } from "@/lib/utils"
+import { terminology } from "@/lib/terminology"
 
 function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed" | "cost_plus" | "time_materials" {
   if (model === "time_and_materials") return "time_materials"
@@ -217,7 +222,7 @@ async function mapProjectsWithAccounting(supabase: SupabaseClient, orgId: string
   return rows.map((row) => mapProject(row, dimensions.get(row.id)))
 }
 
-async function resolveVisibleProjectIds(input: {
+export async function resolveVisibleProjectIds(input: {
   supabase: SupabaseClient
   orgId: string
   userId: string
@@ -226,12 +231,13 @@ async function resolveVisibleProjectIds(input: {
   const divisionProjectIds = await getDivisionScopedProjectIds(input)
   if (divisionProjectIds?.length === 0) return []
 
-  const { data: scopeRows } = await input.supabase
+  const { data: scopeRows, error: scopeError } = await input.supabase
     .from("memberships")
     .select("project_scope")
     .eq("org_id", input.orgId)
     .eq("user_id", input.userId)
     .eq("status", "active")
+  if (scopeError) throw new Error("Unable to resolve project membership scope.")
   const assignedOnly = (scopeRows ?? []).some(
     (row) => (row as { project_scope?: string }).project_scope === "assigned",
   )
@@ -256,6 +262,25 @@ async function resolveVisibleProjectIds(input: {
   return (data ?? [])
     .map((row) => row.project_id as string | null)
     .filter((id): id is string => id !== null && (!divisionSet || divisionSet.has(id)))
+}
+
+export function prepareProjectAccountingDimensions(params: {
+  existingDimensions?: ProjectAccountingDimensions | null
+  classId?: string | null
+  className?: string | null
+  customerId?: string | null
+  customerName?: string | null
+}) {
+  const dimensions = { ...(params.existingDimensions ?? {}) }
+  if (params.classId !== undefined || params.className !== undefined) {
+    if (params.classId) dimensions.class = { id: params.classId, name: params.className ?? null }
+    else delete dimensions.class
+  }
+  if (params.customerId !== undefined || params.customerName !== undefined) {
+    if (params.customerId) dimensions.customer = { id: params.customerId, name: params.customerName ?? null }
+    else delete dimensions.customer
+  }
+  return dimensions
 }
 
 async function saveProjectAccountingDimensions(params: {
@@ -289,15 +314,9 @@ async function saveProjectAccountingDimensions(params: {
     connectionId = defaultMap?.connection_id ?? null
   }
   if (!connectionId) return
-  const dimensions = { ...((existing?.dimensions as ProjectAccountingDimensions | null) ?? {}) }
-  if (params.classId !== undefined || params.className !== undefined) {
-    if (params.classId) dimensions.class = { id: params.classId, name: params.className ?? null }
-    else delete dimensions.class
-  }
-  if (params.customerId !== undefined || params.customerName !== undefined) {
-    if (params.customerId) dimensions.customer = { id: params.customerId, name: params.customerName ?? null }
-    else delete dimensions.customer
-  }
+  const dimensions = prepareProjectAccountingDimensions({
+    ...params, existingDimensions: existing?.dimensions,
+  })
   const query = existing?.id
     ? params.supabase.from("accounting_entity_map").update({ dimensions }).eq("id", existing.id)
     : params.supabase.from("accounting_entity_map").insert({
@@ -357,11 +376,28 @@ export async function listBillingDeskProjects(
   return (data ?? []).map((row) => mapProject(row))
 }
 
+/** Most projects the summary list reads; a bigger org sees a visible "first N of M". */
+export const PROJECT_SUMMARY_CAP = 2_000
+const PROJECT_SUMMARY_ID_CHUNK = 100
+
+export interface ProjectSummaryPage {
+  projects: Project[]
+  /** Projects the caller may see, counted whether or not they were all read. */
+  total: number
+  truncated: boolean
+}
+
+/**
+ * Project identity rows for pickers and the schedule desk, newest first. Reads
+ * past PostgREST's row cap and stops at PROJECT_SUMMARY_CAP, reporting the cut.
+ * `projectIds` narrows to a caller-resolved scope (a community lens); it is
+ * intersected with what the caller may see, never widened.
+ */
 export async function listProjectSummaries(
   orgId?: string,
   context?: OrgServiceContext,
-  options?: { includePrecon?: boolean },
-): Promise<Project[]> {
+  options?: { includePrecon?: boolean; projectIds?: readonly string[] | null },
+): Promise<ProjectSummaryPage> {
   const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
   const includePrecon = options?.includePrecon ?? false
   const visibleProjectIds = await resolveVisibleProjectIds({
@@ -370,18 +406,53 @@ export async function listProjectSummaries(
     userId,
     includePrecon,
   })
-  if (visibleProjectIds?.length === 0) return []
+  const requested = options?.projectIds ?? null
+  let scopedIds: string[] | null = visibleProjectIds
+  if (requested) {
+    const visible = visibleProjectIds ? new Set(visibleProjectIds) : null
+    scopedIds = requested.filter((id) => !visible || visible.has(id))
+  }
+  if (scopedIds?.length === 0) return { projects: [], total: 0, truncated: false }
 
-  let query = supabase
-    .from("projects")
-    .select(PROJECT_IDENTITY_SELECT)
-    .eq("org_id", resolvedOrgId)
-    .order("created_at", { ascending: false })
-  if (!includePrecon) query = query.eq("phase", "delivery")
-  if (visibleProjectIds) query = query.in("id", visibleProjectIds)
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to list project summaries: ${error.message}`)
-  return (data ?? []).map((row) => mapProject(row))
+  const base = () => {
+    let query = supabase.from("projects").select(PROJECT_IDENTITY_SELECT).eq("org_id", resolvedOrgId)
+    if (!includePrecon) query = query.eq("phase", "delivery")
+    return query
+  }
+
+  if (scopedIds) {
+    const batches = await Promise.all(
+      chunk(scopedIds, PROJECT_SUMMARY_ID_CHUNK).map(async (ids) => {
+        const { data, error } = await base().in("id", ids).order("created_at", { ascending: false }).order("id")
+        if (error) throw new Error(`Failed to list project summaries: ${error.message}`)
+        return data ?? []
+      }),
+    )
+    const rows = batches
+      .flat()
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : a.id < b.id ? -1 : 1))
+    return {
+      projects: rows.slice(0, PROJECT_SUMMARY_CAP).map((row) => mapProject(row)),
+      total: rows.length,
+      truncated: rows.length > PROJECT_SUMMARY_CAP,
+    }
+  }
+
+  const { rows, truncated } = await readAllRows(
+    (from, to) => base().order("created_at", { ascending: false }).order("id").range(from, to),
+    { cap: PROJECT_SUMMARY_CAP, label: "Failed to list project summaries" },
+  )
+  let total = rows.length
+  if (truncated) {
+    const { count, error } = await supabase
+      .from("projects")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId)
+      .match(includePrecon ? {} : { phase: "delivery" })
+    if (error) throw new Error(`Failed to count project summaries: ${error.message}`)
+    total = count ?? rows.length
+  }
+  return { projects: rows.map((row) => mapProject(row)), total, truncated: truncated && total > rows.length }
 }
 
 export interface ProjectBillingOption {
@@ -431,6 +502,68 @@ export async function listProjectBillingOptions(
       billingModel,
     }
   })
+}
+
+export interface ProjectSearchResult {
+  id: string
+  name: string
+  /** What this project is called on its own posture: Project, Home. */
+  noun: string
+  status: string | null
+}
+
+export interface ProjectSearchPage {
+  projects: ProjectSearchResult[]
+  page: number
+  pageSize: number
+  total: number
+}
+
+/**
+ * One page of the projects the caller can open, found by name or street address.
+ * The picker for "attach this to a project" — it never holds the portfolio, so a
+ * 200-project org and a 400-lot community search the same way a small one does.
+ */
+export async function searchVisibleProjects(
+  input: { search?: string; page?: number; pageSize?: number; includePrecon?: boolean },
+  orgId?: string,
+  context?: OrgServiceContext,
+): Promise<ProjectSearchPage> {
+  const resolved = context || await requireOrgContext(orgId)
+  const page = Math.max(1, input.page ?? 1)
+  const pageSize = Math.min(Math.max(1, input.pageSize ?? 25), 50)
+  const empty = { projects: [], page, pageSize, total: 0 }
+  const visibleProjectIds = await resolveVisibleProjectIds({
+    supabase: resolved.supabase,
+    orgId: resolved.orgId,
+    userId: resolved.userId,
+    includePrecon: input.includePrecon ?? true,
+  })
+  if (visibleProjectIds?.length === 0) return empty
+
+  let query = resolved.supabase
+    .from("projects")
+    .select("id, name, status, property_type", { count: "exact" })
+    .eq("org_id", resolved.orgId)
+  if (visibleProjectIds) query = query.in("id", visibleProjectIds)
+  const term = input.search ? orFilterTerm(input.search) : ""
+  if (term) query = query.or(`name.ilike.%${term}%,location->>address.ilike.%${term}%,location->>formatted.ilike.%${term}%`)
+  const from = (page - 1) * pageSize
+  const ordered = query.order("name").order("id")
+  const { data, error, count } = await readPageOrEmpty((start, end) => ordered.range(start, end), from, from + pageSize - 1)
+  if (error) throw new Error(`Failed to search projects: ${error.message}`)
+
+  return {
+    projects: data.map((row) => ({
+      id: row.id,
+      name: row.name || "Untitled project",
+      noun: terminology(getProjectPosture(row.property_type, resolved.productTier)).project,
+      status: row.status ?? null,
+    })),
+    page,
+    pageSize,
+    total: count ?? 0,
+  }
 }
 
 export async function listProjectsWithClient(
@@ -494,26 +627,53 @@ export async function getProjectIdentity(projectId: string): Promise<Project | n
   return mapProject(data)
 }
 
+const PROJECT_NAVIGATION_SELECT = `
+  id, org_id, name, status, phase, property_type, created_at, updated_at,
+  project_financial_settings(project_id, billing_model),
+  project_module_overrides(module_key, enabled)
+`
+
+/** The switcher lists this many projects, newest first; a production org has thousands of homes. */
+export const PROJECT_NAVIGATION_LIMIT = 200
+
 export async function listProjectNavigationItemsWithClient(
   supabase: SupabaseClient,
   orgId: string,
-): Promise<ProjectNavigationItem[]> {
+): Promise<{ items: ProjectNavigationItem[]; truncated: boolean }> {
   const { data, error } = await supabase
     .from("projects")
-    .select(`
-      id, org_id, name, status, phase, property_type, created_at, updated_at,
-      project_financial_settings(project_id, billing_model),
-      project_module_overrides(module_key, enabled)
-    `)
+    .select(PROJECT_NAVIGATION_SELECT)
     .eq("org_id", orgId)
     .eq("phase", "delivery")
     .order("created_at", { ascending: false })
+    .limit(PROJECT_NAVIGATION_LIMIT + 1)
 
   if (error) {
     throw new Error(`Failed to list project navigation items: ${error.message}`)
   }
 
-  return (data ?? []).map(mapProjectNavigationItem)
+  const rows = data ?? []
+  return { items: rows.slice(0, PROJECT_NAVIGATION_LIMIT).map(mapProjectNavigationItem), truncated: rows.length > PROJECT_NAVIGATION_LIMIT }
+}
+
+/** One project's navigation facts, for the project the shell is on when it is outside the switcher's list. */
+export async function getProjectNavigationItemWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+  projectId: string,
+): Promise<ProjectNavigationItem | null> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select(PROJECT_NAVIGATION_SELECT)
+    .eq("org_id", orgId)
+    .eq("id", projectId)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`Failed to load project navigation item: ${error.message}`)
+  }
+
+  return data ? mapProjectNavigationItem(data) : null
 }
 
 // Single-project fetch using the full PROJECT_SELECT so financial_settings and billing_contract
@@ -545,20 +705,13 @@ export async function getProjectWithFinancials({
   return mapped[0] ?? null
 }
 
-export async function createProject({
-  input,
-  orgId,
-  context,
-  authorizationPermission = "project.manage",
-}: {
+/** Prepare the original project row without creating it or its financial records. */
+export function prepareProjectCreation({ input, orgId, userId, productTier }: {
   input: ProjectInput
-  orgId?: string
-  context?: OrgServiceContext
-  authorizationPermission?: string
+  orgId: string
+  userId: string
+  productTier: OrgServiceContext["productTier"]
 }) {
-  const { supabase, orgId: resolvedOrgId, userId, productTier } = context || await requireOrgContext(orgId)
-  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
-
   const propertyType = input.property_type ?? getDefaultProjectPropertyType(productTier)
   const retainagePercent =
     input.retainage_percent ?? (getProjectPosture(propertyType, productTier) === "commercial" ? 10 : 0)
@@ -569,7 +722,7 @@ export async function createProject({
   }
 
   const payload = {
-    org_id: resolvedOrgId,
+    org_id: orgId,
     name: normalizedInput.name,
     status: normalizedInput.status ?? "active",
     phase: normalizedInput.phase ?? "delivery",
@@ -586,14 +739,94 @@ export async function createProject({
     prospect_id: normalizedInput.prospect_id || null,
   }
 
-  const { data, error } = await supabase
+  return { input: normalizedInput, project: payload }
+}
+
+/**
+ * The division a new project is filed under. A member limited to some divisions
+ * may only create inside them: with one they get it, with several they choose.
+ */
+async function resolveNewProjectDivision({ supabase, orgId, requested, access }: {
+  supabase: SupabaseClient
+  orgId: string
+  requested: string | null
+  access: { assignedOnly: boolean; divisionIds: string[] }
+}): Promise<string | null> {
+  if (access.assignedOnly) {
+    if (access.divisionIds.length === 0) throw new Error("You are not assigned to any division, so you cannot create a project. Ask an admin to assign you to one.")
+    if (!requested) {
+      if (access.divisionIds.length === 1) return access.divisionIds[0]
+      throw new Error(`Choose a division for this project: you are assigned to ${access.divisionIds.length} divisions.`)
+    }
+    if (!access.divisionIds.includes(requested)) throw new Error("You can only create projects in the divisions you are assigned to.")
+  }
+  if (!requested) return null
+  const { data, error } = await supabase.from("divisions").select("id").eq("org_id", orgId).eq("id", requested).maybeSingle()
+  if (error) throw new Error(`Failed to verify the division: ${error.message}`)
+  if (!data) throw new Error("Division not found")
+  return requested
+}
+
+async function addCreatorToProject({ supabase, orgId, userId, projectId }: {
+  supabase: SupabaseClient
+  orgId: string
+  userId: string
+  projectId: string
+}) {
+  const { data: role, error: roleError } = await supabase.from("roles").select("id").eq("key", "pm").eq("scope", "project").maybeSingle()
+  if (roleError || !role) throw new Error("Project manager role is missing, so the new project could not be assigned to you.")
+  const { error } = await supabase.from("project_members").upsert(
+    { org_id: orgId, project_id: projectId, user_id: userId, role_id: role.id, status: "active" },
+    { onConflict: "project_id,user_id" },
+  )
+  if (error) throw new Error(`Failed to add you to the new project: ${error.message}`)
+}
+
+export async function createProject({
+  input,
+  orgId,
+  context,
+  authorizationPermission = "project.manage",
+}: {
+  input: ProjectInput
+  orgId?: string
+  context?: OrgServiceContext
+  authorizationPermission?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = context || await requireOrgContext(orgId)
+  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
+
+  const { input: normalizedInput, project: payload } = prepareProjectCreation({
+    input, orgId: resolvedOrgId, userId, productTier,
+  })
+
+  const [divisionAccess, readScope] = await Promise.all([
+    getDivisionAccessForUser({ orgId: resolvedOrgId, userId }),
+    getProjectReadScopeForUser({ orgId: resolvedOrgId, userId }),
+  ])
+  const divisionId = await resolveNewProjectDivision({
+    supabase, orgId: resolvedOrgId, requested: normalizedInput.division_id ?? null, access: divisionAccess,
+  })
+
+  // The database hides a division- or assignment-restricted member's own client
+  // from a project outside their scope, and a new project is outside it until
+  // its division and project_members row exist, so INSERT ... RETURNING cannot
+  // read it back. The authorization above is the gate; the write is the service
+  // client's, and the creator is made a member in the same flow.
+  const scopedCreator = divisionAccess.assignedOnly || readScope.projectMembershipRequired
+  const writer = scopedCreator ? createServiceSupabaseClient() : supabase
+  const { data, error } = await writer
     .from("projects")
-    .insert(payload)
+    .insert({ ...payload, division_id: divisionId })
     .select(PROJECT_SELECT)
     .single()
 
   if (error) {
     throw new Error(`Failed to create project: ${error.message}`)
+  }
+
+  if (readScope.projectMembershipRequired) {
+    await addCreatorToProject({ supabase: writer, orgId: resolvedOrgId, userId, projectId: data.id as string })
   }
 
   await recordEvent({
@@ -613,14 +846,25 @@ export async function createProject({
     after: data,
   })
 
-  await upsertProjectBillingContract({
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-    projectId: data.id as string,
-    projectName: data.name,
-    input: normalizedInput,
-  })
+  if (opensProjectSettingsContract(getProjectPosture(normalizedInput.property_type, productTier), input)) {
+    await upsertProjectBillingContract({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      projectId: data.id as string,
+      projectName: data.name,
+      input: normalizedInput,
+    })
+  } else {
+    await upsertProjectFinancialSettingsFromProjectInput({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      projectId: data.id as string,
+      input: normalizedInput,
+      existingContract: null,
+    })
+  }
 
   await saveProjectAccountingDimensions({
     supabase,
@@ -734,72 +978,18 @@ export async function updateProject({
   return mapped[0]
 }
 
-async function upsertProjectBillingContract({
-  supabase,
-  orgId,
-  userId,
-  projectId,
-  projectName,
-  input,
-}: {
-  supabase: SupabaseClient
+/** Preserve billing defaults and existing terms before choosing the commit boundary. */
+export function prepareProjectBillingContract({ input, existing, existingSettings, orgId, projectId, projectName }: {
+  input: Partial<ProjectInput>
+  existing?: Partial<Contract> | null
+  existingSettings?: { billing_model?: string | null } | null
   orgId: string
-  userId: string
   projectId: string
   projectName: string
-  input: Partial<ProjectInput>
 }) {
-  const billingKeys: Array<keyof ProjectInput> = [
-    "contract_type",
-    "billing_model",
-    "markup_percent",
-    "gmp_cents",
-    "contingency_cents",
-    "fixed_fee_cents",
-    "fee_presentation",
-    "savings_split_owner_pct",
-    "savings_split_builder_pct",
-    "labor_burden_multiplier",
-    "rate_schedule_id",
-    "requires_client_cost_approval",
-    "open_book",
-    "paid_costs_required",
-    "proof_required",
-    "cost_codes_enabled",
-    "retainage_percent",
-    "retainage_applies_to_fee",
-    "fixed_price_billing_basis",
-    "retainage_schedule",
-    "stored_materials_retainage_percent",
-    "total_contract_value_cents",
-  ]
-  const hasBillingInput = billingKeys.some((key) => Object.prototype.hasOwnProperty.call(input, key))
-  if (!hasBillingInput) return
-
   const ownerPct = input.savings_split_owner_pct ?? 0
   const builderPct = input.savings_split_builder_pct ?? 0
-  if (ownerPct + builderPct > 100) {
-    throw new Error("Savings split percentages cannot exceed 100%.")
-  }
-
-  const [existingResult, existingSettings] = await Promise.all([
-    supabase
-      .from("contracts")
-      .select("*")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null),
-  ])
-
-  if (existingResult.error) {
-    throw new Error(`Failed to load project billing contract: ${existingResult.error.message}`)
-  }
-
-  const existing = existingResult.data
+  if (ownerPct + builderPct > 100) throw new Error("Savings split percentages cannot exceed 100%.")
   const billingModel = billingModelForContractInput(input, existing, existingSettings)
   const contractType = input.billing_model ? contractTypeForBillingModel(billingModel) : input.contract_type ?? contractTypeForBillingModel(billingModel)
   const isFixedPrice = billingModel === "fixed_price"
@@ -809,7 +999,7 @@ async function upsertProjectBillingContract({
     normalizeFeePresentation(existing?.fee_presentation) ??
     normalizeFeePresentation(existing?.snapshot?.fee_presentation) ??
     (existing ? "embedded" : defaultFeePresentationForBillingModel(billingModel))
-  const existingSnapshot = (existing?.snapshot ?? {}) as Record<string, any>
+  const existingSnapshot = existing?.snapshot ?? {}
   const {
     billing_model: _legacySnapshotBillingModel,
     fixed_fee_cents: _legacySnapshotFixedFeeCents,
@@ -870,6 +1060,117 @@ async function upsertProjectBillingContract({
         input.retainage_applies_to_fee ?? existing?.retainage_applies_to_fee ?? existing?.snapshot?.retainage_applies_to_fee ?? false,
     },
   }
+
+  return { billingModel, contract: payload }
+}
+
+const BILLING_INPUT_KEYS: ReadonlyArray<keyof ProjectInput> = [
+  "contract_type",
+  "billing_model",
+  "markup_percent",
+  "gmp_cents",
+  "contingency_cents",
+  "fixed_fee_cents",
+  "fee_presentation",
+  "savings_split_owner_pct",
+  "savings_split_builder_pct",
+  "labor_burden_multiplier",
+  "rate_schedule_id",
+  "requires_client_cost_approval",
+  "open_book",
+  "paid_costs_required",
+  "proof_required",
+  "cost_codes_enabled",
+  "retainage_percent",
+  "retainage_applies_to_fee",
+  "fixed_price_billing_basis",
+  "retainage_schedule",
+  "stored_materials_retainage_percent",
+  "total_contract_value_cents",
+]
+
+function hasBillingInput(input: Partial<ProjectInput>) {
+  return BILLING_INPUT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(input, key))
+}
+
+/**
+ * Whether creating a project opens a project-settings billing contract.
+ *
+ * A production home earns its revenue through the purchase agreement its buyer
+ * signs, so it opens without one unless the caller sets billing terms itself:
+ * a placeholder fixed-price contract beside the agreement gives the home two
+ * primary contracts that earn differently, and Books refuses to post to it or
+ * adopt it as inventory until someone approves a policy for each. Residential
+ * and commercial jobs always open one; their contract IS the project's terms.
+ */
+function opensProjectSettingsContract(posture: ProjectPosture, callerInput: Partial<ProjectInput>) {
+  return !isProductionProjectPosture(posture) || hasBillingInput(callerInput)
+}
+
+/**
+ * The billing contract a new project opens with, or null when its posture
+ * earns revenue elsewhere. Every path that creates a home (createProject, the
+ * start desk, reservation conversion) asks here, so a production home never
+ * opens a placeholder beside its purchase agreement. `callerInput` is what the
+ * caller supplied, not the normalized input, which always carries retainage.
+ */
+export function prepareProjectOpeningContract({ callerInput, input, productTier, orgId, projectId, projectName }: {
+  callerInput: Partial<ProjectInput>
+  input: Partial<ProjectInput>
+  productTier: OrgServiceContext["productTier"]
+  orgId: string
+  projectId: string
+  projectName: string
+}) {
+  const posture = getProjectPosture(input.property_type, productTier)
+  if (!opensProjectSettingsContract(posture, callerInput)) return null
+  return prepareProjectBillingContract({ input, orgId, projectId, projectName }).contract
+}
+
+async function upsertProjectBillingContract({
+  supabase,
+  orgId,
+  userId,
+  projectId,
+  projectName,
+  input,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  userId: string
+  projectId: string
+  projectName: string
+  input: Partial<ProjectInput>
+}) {
+  if (!hasBillingInput(input)) return
+
+  const ownerPct = input.savings_split_owner_pct ?? 0
+  const builderPct = input.savings_split_builder_pct ?? 0
+  if (ownerPct + builderPct > 100) {
+    throw new Error("Savings split percentages cannot exceed 100%.")
+  }
+
+  const [existingResult, existingSettings] = await Promise.all([
+    supabase
+      .from("contracts")
+      .select("*")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null),
+  ])
+
+  if (existingResult.error) {
+    throw new Error(`Failed to load project billing contract: ${existingResult.error.message}`)
+  }
+
+  const existing = existingResult.data
+  const { billingModel, contract: payload } = prepareProjectBillingContract({
+    input, existing, existingSettings, orgId, projectId, projectName,
+  })
 
   const contractSave = await saveBillingContractWithAmendment({
     supabase,

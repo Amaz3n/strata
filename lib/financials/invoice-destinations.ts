@@ -48,7 +48,7 @@ export function invoiceHref(invoiceId: string, projectId?: string | null) {
  * still names it so it can be linked, refreshed and closed with Back.
  */
 export function newInvoiceHref(
-  projectId: string,
+  projectId?: string | null,
   options?: { duplicateOf?: string; sourceChangeOrderId?: string; customerId?: string; kind?: NewInvoiceKind },
 ) {
   const params = new URLSearchParams({ compose: "new" })
@@ -56,12 +56,12 @@ export function newInvoiceHref(
   if (options?.sourceChangeOrderId) params.set("source", `change_order:${options.sourceChangeOrderId}`)
   if (options?.customerId) params.set("customer", options.customerId)
   if (options?.kind && options.kind !== "standard") params.set("kind", options.kind)
-  return `${projectBillingBase(projectId)}?${params.toString()}`
+  return `${projectId ? projectBillingBase(projectId) : "/billing"}?${params.toString()}`
 }
 
 /** Resume an autosaved draft in the composer. */
-export function resumeInvoiceHref(projectId: string, invoiceId: string) {
-  return `${projectBillingBase(projectId)}?compose=${invoiceId}`
+export function resumeInvoiceHref(projectId: string | null | undefined, invoiceId: string) {
+  return `${projectId ? projectBillingBase(projectId) : "/billing"}?compose=${invoiceId}`
 }
 
 /** A payment always resolves through the invoice it was applied to. */

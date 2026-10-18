@@ -1,0 +1,29 @@
+{
+  "state": "Native cash P&L implemented; broader cash policies and builder acceptance unfinished.",
+  "reports": {
+    "books-profit-loss": "Accrual profit and loss.",
+    "books-cash-basis": "Operating receipts/disbursements reconciliation; does not establish taxable income or classify paid COGS/overhead.",
+    "books-cash-profit-loss": "Native cash profit and loss from reconciled frozen document, payment, refund, expense and fee evidence. Appears in Financial statements and shares the report viewer, immutable runs and CSV/PDF export definition."
+  },
+  "cash_profit_loss": {
+    "authorization": "Organization-wide books.read before one service-only MVCC snapshot. Assigned-division visibility cannot expose the entire ledger.",
+    "income": "Collect only the income share of gross principal, preserve original native account and construction dimensions, and reverse the corresponding income on actual posted customer refunds. POC deferral/recognition affects accrual books and does not create a second cash collection.",
+    "sales_tax": "Show collected tax net of refunds separately; exclude it from P&L income.",
+    "paid_costs": "Attribute supplier principal to original posted COGS, overhead and capitalized classifications. Installments/refunds telescope in exact cumulative cents; direct paid expense corrections retain actual journal cutoffs.",
+    "capitalization": "Show capitalized purchases separately from P&L costs. No automatic tax deduction or depreciation treatment is implied.",
+    "fees": "Processor/AP charges are expenses. Customer fee recoveries and supplier discounts are separate income, counted once beside gross principal.",
+    "dimensions": "Group exact cents by account, classification and business dimensions, retain source fact/document/journal evidence, and link source detail to billing/payables/expense workflows.",
+    "completeness": "Missing, stale, orphaned, duplicate or ambiguous evidence blocks publication. Scan posted history through cutoff for unhandled cash or P&L journals, including opening history; require reviewed treatment instead of silently omitting it. Noncash POC/closing exclusions require their native journal kinds and complete balanced classified lines.",
+    "provenance": "Captured time, reconciled source status and organization appear in the report/export. Native drill verifies monthly telescoping, restored report equality and a new expense posting after restore.",
+    "tax_adjustments": "Separate independently reviewed signed adjustments and explicit no-adjustment confirmations bridge exact cash-book periods without ledger postings. Preparation/review/replacement/withdrawal UI exists. Populated native source, reviewed history, service/report/CSV via a transport adapter, and schema 7 database/document recovery pass. Browser/HTTP/report-run/PDF and immutable review-time attachment evidence remain pending.",
+    "cash_reconciliation": "Require frozen classifications for every posted historical journal through cutoff. Net income plus collected sales tax less capitalized purchases must exactly equal actual posted cash/undeposited-funds movements in the period, excluding opening balances. The report displays this tie-out; a mismatch blocks publication."
+  },
+  "remaining": [
+    "Implement reviewed advance/deposit, vendor/customer credit, historical revision/retainage and fee-refund policies.",
+    "Implement card/personal reimbursement, inventory/prepaid/depreciation and other/manual income workflows with complete cash attribution.",
+    "Implement reconciled payroll imports and their cash treatment.",
+    "Complete reviewed workpaper browser/HTTP/report-run/PDF acceptance and immutable review-time attachment evidence. Populated native tax/service/report/CSV/recovery now passes.",
+    "Verify report browser/PDF/immutable-run flows and live PostgREST transport end to end.",
+    "Implement scalable snapshot/report capacity and obtain builder parallel-close and independent CPA acceptance."
+  ]
+}

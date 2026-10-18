@@ -1,13 +1,15 @@
 "use client"
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
+import { useDraftSaveScheduler } from "@/lib/hooks/use-draft-save-scheduler"
 import { addDays, format, parse } from "date-fns"
 import { AlertTriangle, CalendarIcon, Check, ChevronDown, Copy, CreditCard, Landmark, Pencil, Plus, Search, Trash2, UserRound, X } from "lucide-react"
 import NumberFlow from "@number-flow/react"
 import { toast } from "sonner"
 
 import type { Address, ChangeOrder, Contact, CostCode, Invoice, Project } from "@/lib/types"
+import { validateGeneralInvoice } from "@/lib/receivables/general-invoice"
 import { invoiceInputSchema, type InvoiceInput } from "@/lib/validation/invoices"
 import {
   createQBOIncomeAccountAction,
@@ -21,7 +23,8 @@ import {
 } from "@/app/(app)/invoices/actions"
 import type { NewInvoiceKind } from "@/lib/financials/invoice-destinations"
 import { invoicePaymentMethods, paymentMethodLabels, type ArcInvoiceDocumentData, type ArcInvoiceLine } from "./arc-invoice-document"
-import { attachFileAction, detachFileLinkAction, listAttachmentsAction, uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
+import { attachFileAction, detachFileLinkAction, listAttachmentsAction } from "@/app/(app)/documents/actions"
 import type { AttachedFile } from "@/components/files"
 import { InvoiceAttachmentsField } from "./invoice-attachments-field"
 import { isInvoiceAttachment } from "@/lib/invoices/attachment-roles"
@@ -47,13 +50,14 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
+import { resolveInvoiceInitialCustomer } from "@/lib/invoices/composer-customer"
 import { buildPartyDetailsBlock, parsePartyDetailsBlock } from "@/lib/invoices/party-details"
 import { calculateInvoiceTotals, deriveManualRetainageCents } from "@/lib/financials/invoice-totals"
 import { UnbilledCostsPicker, type CostSelection } from "@/components/invoices/unbilled-costs-picker"
 import { unwrapAction } from "@/lib/action-result"
 import { usePageTitle } from "@/components/layout/page-title-context"
 import { getProjectPosture } from "@/lib/product-tier"
-import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
+import { getReceivablesPosturePolicy, getGeneralReceivablesPolicy } from "@/lib/receivables/policy"
 import { groupCostCodesByStandard } from "@/lib/cost-code-groups"
 import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { cn } from "@/lib/utils"
@@ -465,7 +469,7 @@ function QboLineAccountPicker({ valueId, valueLabel, accounts, onSelect, onCreat
 interface InvoiceDocumentEditorProps {
   /** The persisted draft (null for a brand-new, not-yet-created invoice). */
   initialInvoice: Invoice | null
-  projectId: string
+  projectId?: string
   projects: Project[]
   builderInfo?: { name?: string | null; email?: string | null; address?: string | null; logoUrl?: string | null }
   contacts?: Contact[]
@@ -493,6 +497,7 @@ interface InvoiceDocumentEditorProps {
   onAutosave: (invoiceId: string, input: InvoiceInput) => Promise<Invoice>
   onAutosaveStateChange?: (state: AutosaveState) => void
   onSnapshotChange?: (snapshot: InvoiceEditorSnapshot) => void
+  waiverControl?: ReactNode
   recoveryKey?: string
   onRecoveredDraft?: (id: string) => void
 }
@@ -517,19 +522,18 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
   onAutosave,
   onAutosaveStateChange,
   onSnapshotChange,
+  waiverControl,
   recoveryKey,
   onRecoveredDraft,
 }, ref) {
   const { productTier } = usePageTitle()
 
   const seed = initialInvoice ?? duplicateFrom ?? null
-  const initialCustomer = !seed && initialCustomerId
-    ? contacts.find((contact) => contact.id === initialCustomerId) ?? null
-    : null
-  const project = useMemo(() => projects.find((p) => p.id === projectId) ?? projects[0] ?? null, [projects, projectId])
-  const projectName = project?.name ?? "Project"
+  const project = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId])
+  const initialCustomer = resolveInvoiceInitialCustomer(contacts, { hasSeed: Boolean(seed), explicitId: initialCustomerId, projectCustomerId: project?.client_id })
+  const projectName = project?.name ?? "Invoice"
   const productPosture = getProjectPosture(project?.property_type, productTier)
-  const receivablesPolicy = getReceivablesPosturePolicy(productPosture)
+  const receivablesPolicy = projectId ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
 
   // ── Form state (seeded once on mount) ──────────────────────────────────────
   const [invoiceNumber, setInvoiceNumber] = useState(initialInvoice?.invoice_number ?? reservation?.number ?? "")
@@ -562,7 +566,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
     buildPartyDetailsBlock({
       name: seed?.customer_name ?? String(seed?.metadata?.customer_name ?? initialCustomer?.full_name ?? ""),
       email: String(seed?.metadata?.customer_email ?? initialCustomer?.email ?? ""),
-      address: formatAddressBlock(String(seed?.metadata?.customer_address ?? initialCustomer?.address?.formatted ?? "")),
+      address: formatAddressBlock(String(seed?.metadata?.customer_address ?? contactBillingAddress(initialCustomer?.address) ?? "")),
     }),
   )
   const [fromDetails, setFromDetails] = useState(
@@ -631,7 +635,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
   const invoiceIdRef = useRef<string | null>(initialInvoice?.id ?? null)
   const reservationIdRef = useRef<string | null>(reservation?.reservationId ?? null)
   const savedSnapshotRef = useRef<string>("")
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const { schedule: scheduleDraftSave, cancel: cancelDraftSave } = useDraftSaveScheduler()
   const inFlightSaveRef = useRef<Promise<void> | null>(null)
   const dirtyRef = useRef(false)
   const revisionRef = useRef(0)
@@ -701,7 +705,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
   // Mirrors the server: retainage only applies to manual/draw/change-order invoices on
   // retainage-bearing postures — approved-cost invoices carry none on this path.
   const retainageCents =
-    receivablesPolicy.supportsRetainage && !hasCostLines
+    receivablesPolicy.supportsRetainage && invoiceKind !== "earnest_deposit" && !hasCostLines
       ? deriveManualRetainageCents(
           lines.map((line) => ({
             quantity: Number(line.quantity) || 0,
@@ -717,9 +721,10 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
 
   const showCustomerSelector = customerDetails.trim().length === 0
   const nativeBooks = accountingProvider === "arc_books"
-  const accountSelectionEnabled = nativeBooks || qboConnected
+  const supportsDepositRequests = nativeBooks || receivablesPolicy.supportsBuyerDeposits
+  const accountSelectionEnabled = (nativeBooks || qboConnected) && !(nativeBooks && invoiceKind === "earnest_deposit")
   const showQboAccountColumn = accountSelectionEnabled || contextLoading
-  const showCostCodeColumn = costCodes.length > 0
+  const showCostCodeColumn = Boolean(projectId) && costCodes.length > 0
   const showQboWarning = Boolean(
     accountSelectionEnabled && (qboIncomeAccounts.length === 0 || qboDiagnostics?.accountLoadWarning || qboDiagnostics?.connectionLastError),
   )
@@ -814,12 +819,12 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
         qbo_income_account_name: null,
         metadata: {
           invoice_kind:
-            receivablesPolicy.supportsClosingInvoices || receivablesPolicy.supportsBuyerDeposits ? invoiceKind : "standard",
+            receivablesPolicy.supportsClosingInvoices || supportsDepositRequests ? invoiceKind : "standard",
           memo: memo.trim() || null,
           payment_methods: paymentMethods,
         },
       }
-      return invoiceInputSchema.safeParse(payload).success ? payload : null
+      return !validateGeneralInvoice(payload) && invoiceInputSchema.safeParse(payload).success ? payload : null
     },
     [
       customerDetails,
@@ -840,6 +845,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
       paymentTermsDays,
       projectId,
       receivablesPolicy,
+      supportsDepositRequests,
       qboIncomeAccounts,
       selectedQboCustomer,
       sourceChangeOrderId,
@@ -923,11 +929,8 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
 
   const scheduleSave = useCallback(() => {
     dirtyRef.current = true
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(() => {
-      void flushSave()
-    }, 2000)
-  }, [flushSave])
+    scheduleDraftSave(() => { void flushSave() })
+  }, [flushSave, scheduleDraftSave])
 
   const markDirty = useCallback(() => {
     if (receivablesPolicy.approvalMode === "required_review" && approvalStatus !== "draft") {
@@ -942,7 +945,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
   // Flush pending edits on unmount so nothing is lost when the user navigates away.
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      cancelDraftSave()
       if (dirtyRef.current) void flushSave()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1119,6 +1122,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
   }
 
   const handleCostSelection = async (selection: CostSelection) => {
+    if (!projectId) return
     setApprovedCostsLoading(true)
     try {
       const result = unwrapAction(
@@ -1247,7 +1251,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
       for (const file of files) {
         const formData = new FormData()
         formData.append("file", file)
-        formData.append("projectId", projectId)
+        if (projectId) formData.append("projectId", projectId)
         formData.append("category", "financials")
         const uploaded = unwrapAction(await uploadFileAction(formData))
         unwrapAction(await attachFileAction(uploaded.id, "invoice", invoiceId, projectId, linkRole))
@@ -1277,7 +1281,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
   }
 
   const ensurePersistedDraft = async () => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    cancelDraftSave()
     await flushSave({ explicit: true })
     if (dirtyRef.current && !committedRef.current) await flushSave({ explicit: true })
     let invoiceId = invoiceIdRef.current
@@ -1379,7 +1383,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
     discard: async () => {
       committedRef.current = true
       dirtyRef.current = false
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      cancelDraftSave()
       try { await inFlightSaveRef.current } catch { /* Discard still stops failed saves. */ }
     },
     resumeSaving: () => {
@@ -1543,6 +1547,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
 
   const fieldProblems = useMemo(() => {
     const problems: Array<{ field: string; message: string }> = []
+    if (!projectId && customerId === "none" && !selectedQboCustomer) problems.push({ field: "invoice-customer", message: "Choose a customer for general billing." })
     if (!invoiceNumber.trim()) problems.push({ field: "invoice-number", message: "Add an invoice number." })
     if (title.trim().length < 3) problems.push({ field: "invoice-title", message: "Add an invoice title (at least 3 characters)." })
     lines.forEach((line, index) => {
@@ -1554,7 +1559,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
     })
     if (!dueDate) problems.push({ field: "invoice-due-date", message: "Choose a due date." })
     return problems
-  }, [invoiceNumber, title, lines, accountSelectionEnabled, qboIncomeAccounts.length, nativeBooks, dueDate])
+  }, [invoiceNumber, title, lines, accountSelectionEnabled, qboIncomeAccounts.length, nativeBooks, dueDate, projectId, customerId, selectedQboCustomer])
 
   useEffect(() => {
     onSnapshotChange?.({
@@ -1665,7 +1670,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
   const customer = parsePartyDetailsBlock(customerDetails)
   const hasCustomer = customerDetails.trim().length > 0
   const invoiceLabel =
-    invoiceKind === "earnest_deposit" && receivablesPolicy.supportsBuyerDeposits
+    invoiceKind === "earnest_deposit" && supportsDepositRequests
       ? "Deposit request"
       : invoiceKind === "closing" && receivablesPolicy.supportsClosingInvoices
         ? "Closing statement"
@@ -1695,7 +1700,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
                     : `Arc reached ${providerName} but couldn't read your income accounts.`
                   : `${providerName} is connected, but it has no income accounts to bill into.`}
             </span>
-            <Link href={nativeBooks ? "/books/chart" : "/settings/integrations"} className="font-medium underline underline-offset-2">
+            <Link href={nativeBooks ? "/settings/accounting/chart-of-accounts" : "/settings/integrations"} className="font-medium underline underline-offset-2">
               {nativeBooks ? "Review chart of accounts" : "Fix the accounting connection"}
             </Link>
           </span>
@@ -1795,37 +1800,31 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
               </PopoverContent>
             </Popover>
           ) : (
-            <Select
-              value={customerId}
-              onValueChange={(value) => {
-                if (value === "none") return
-                selectContact(value)
-              }}
-            >
-              <SelectTrigger className="h-10 w-full bg-transparent text-sm data-[placeholder]:text-muted-foreground">
-                <span className="flex items-center gap-2 truncate">
-                  <UserRound className="h-4 w-4 shrink-0 opacity-60" />
-                  <SelectValue placeholder={contextLoading && arcCustomerOptions.length === 0 ? "Loading customers…" : "Choose a customer"} />
-                </span>
-              </SelectTrigger>
-              <SelectContent>
-                {arcCustomerOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate">{option.label}</span>
-                      <span className="text-xs text-muted-foreground">{option.detail}</span>
-                    </span>
-                  </SelectItem>
-                ))}
-                {arcCustomerOptions.length === 0 && !contextLoading ? (
-                  <SelectItem value="none" disabled>
-                    No billable contacts on this project yet
-                  </SelectItem>
-                ) : null}
-              </SelectContent>
-            </Select>
+            <Popover open={customerPickerOpen} onOpenChange={setCustomerPickerOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" role="combobox" id="invoice-customer" aria-label="Customer" aria-expanded={customerPickerOpen} className="h-11 w-full justify-between bg-transparent font-normal">
+                  <span className="flex items-center gap-2"><UserRound className="size-4 text-muted-foreground" />Choose a customer</span>
+                  <ChevronDown className="size-4 text-muted-foreground" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                <Command>
+                  <CommandInput placeholder="Search name or email…" />
+                  <CommandList>
+                    <CommandEmpty>{contextLoading ? "Loading customers…" : "No matching customers. Add a customer in Directory."}</CommandEmpty>
+                    <CommandGroup>
+                      {arcCustomerOptions.map(option => <CommandItem key={option.value} value={`${option.label} ${option.detail} ${option.value}`} onSelect={() => { selectContact(option.value); setCustomerPickerOpen(false); }} className="gap-3 py-3">
+                        <span className="flex size-8 shrink-0 items-center justify-center bg-muted text-xs font-medium">{option.label?.trim().charAt(0).toUpperCase() || "?"}</span>
+                        <span className="min-w-0 flex-1"><span className="block truncate font-medium">{option.label}</span><span className="block truncate text-xs text-muted-foreground">{option.detail}</span></span>
+                        {customerId === option.value && <Check className="size-4" />}
+                      </CommandItem>)}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
           )}
-          {!hasCustomer ? (
+          {!hasCustomer && projectId ? (
             <button
               type="button"
               onClick={() => setBillingDetailsOpen((value) => !value)}
@@ -1899,7 +1898,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
           </label>
         </div>
 
-        {receivablesPolicy.supportsBuyerDeposits || receivablesPolicy.supportsClosingInvoices ? (
+        {supportsDepositRequests || receivablesPolicy.supportsClosingInvoices ? (
           <label className="block space-y-1">
             <span className={fieldLabel}>Document</span>
             <Select
@@ -1913,9 +1912,9 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="earnest_deposit">Buyer deposit</SelectItem>
-                <SelectItem value="closing">Closing invoice</SelectItem>
-                <SelectItem value="standard">Other invoice</SelectItem>
+                {supportsDepositRequests ? <SelectItem value="earnest_deposit">Customer deposit</SelectItem> : null}
+                {receivablesPolicy.supportsClosingInvoices ? <SelectItem value="closing">Closing invoice</SelectItem> : null}
+                <SelectItem value="standard">Invoice</SelectItem>
               </SelectContent>
             </Select>
           </label>
@@ -2457,6 +2456,8 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
         </div>
       </section>
 
+      {waiverControl}
+
       {/* ── Attachments (folded: most invoices carry none) ── */}
       <Accordion type="single" collapsible defaultValue={memo ? "memo" : undefined} className="border">
         <AccordionItem value="attachments" className="border-0">
@@ -2560,7 +2561,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
         </Accordion>
       </section>
 
-      <UnbilledCostsPicker open={costPickerOpen} onOpenChange={setCostPickerOpen} projectId={projectId} costCodesEnabled={showCostCodeColumn} onConfirm={handleCostSelection} />
+      {projectId ? <UnbilledCostsPicker open={costPickerOpen} onOpenChange={setCostPickerOpen} projectId={projectId} costCodesEnabled={showCostCodeColumn} onConfirm={handleCostSelection} /> : null}
 
     </div>
   )

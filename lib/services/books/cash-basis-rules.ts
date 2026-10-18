@@ -1,38 +1,15 @@
 /**
- * Accrual → cash-basis conversion. Pure, like every other money rule in Books.
+ * Operating cash reconciliation, retained separately from cash profit and loss.
  *
- * Most small builders file taxes cash-basis. Arc's ledger is accrual by design —
- * that is what WIP and percentage-of-completion require — so a builder cannot
- * leave their old system unless Arc can also state the year on a cash basis.
+ * AR/AP, retainage, contract liability, customer deposits and payroll-clearing
+ * movements explain the bridge from accrual results to operating receipts and
+ * disbursements. Actual classified cash movements, when supplied, determine the
+ * final reconciliation; the residual bridge is shown explicitly.
  *
- * The conversion is derived from Arc's own posting rules rather than guessed:
- *
- *   An invoice debits AR + retainage receivable and credits contract liabilities;
- *   recognition later moves contract liabilities into revenue. So over a period
- *       gross billings = ΔAR + ΔRetainageReceivable + cash collected
- *       gross billings = revenue + ΔContractLiabilities
- *   and therefore
- *       cash collected = revenue + ΔContractLiabilities + ΔCustomerDeposits
- *                        − ΔAR − ΔRetainageReceivable
- *
- *   A vendor bill debits cost and credits AP + retainage payable; field labor
- *   credits payroll clearing. So
- *       cost incurred = ΔAP + ΔRetainagePayable + ΔPayrollClearing + cash paid
- *   and therefore
- *       cash paid = cost incurred − ΔAP − ΔRetainagePayable − ΔPayrollClearing
- *
- * Both identities are exact for this posting model, not approximations — verified
- * against the ledger: the derived figures equal the cash that actually moved.
- *
- * **The one simplification, stated plainly:** cost of revenue and operating
- * expenses are converted together, because `2000 Accounts payable` is shared by
- * both and the ledger does not record which payable belongs to which. Splitting
- * would require apportioning AP by a ratio nobody posted, so the statement reports
- * one "cash paid for costs and expenses" figure instead of inventing two. Net
- * income is unaffected.
- *
- * This is report-grade, not filing-grade: it converts what is in the ledger, and
- * says nothing about tax elections, depreciation schedules, or §448 eligibility.
+ * These movements do not establish deductible costs or taxable income. They
+ * cannot separate paid COGS/overhead, sales tax, capitalization or every timing
+ * policy. The native cash P&L instead uses frozen document/settlement evidence
+ * in cash-profit-loss.ts and rejects unsupported historical treatment.
  */
 
 export type CashBasisMovements = {

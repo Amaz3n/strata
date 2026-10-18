@@ -1,5 +1,14 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 @import "tw-animate-css";
+
+/* Scan application sources only. Local PDF evidence, generated review HTML,
+   benchmarks and other work artifacts must not become PostCSS dependencies. */
+@source ".";
+@source "../components";
+@source "../hooks";
+@source "../lib";
+@source "../content";
+@source "../packages";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -178,7 +187,7 @@
   --secondary: oklch(0.23 0.018 264);
   --secondary-foreground: oklch(0.90 0.01 260);
   --muted: oklch(0.23 0.018 264);
-  --muted-foreground: oklch(0.55 0.012 260);
+  --muted-foreground: oklch(0.64 0.012 260); /* 4.5:1 on --muted, the darkest surface it labels */
 
   --accent: oklch(0.30 0.05 262);
   --accent-foreground: oklch(0.92 0.01 255);
@@ -569,6 +578,45 @@ html[data-ui-size="comfortable"] {
     }
     100% {
       transform: translateX(110vw);
+    }
+  }
+
+  /*
+   * The hologram scan: a beam sweeping a sheet or a 3D bay while Arc reads it.
+   * Live progress for real work only — it stops the moment the work does.
+   */
+  @keyframes arc-scan-sweep {
+    0% {
+      transform: translateY(-100%);
+    }
+    100% {
+      transform: translateY(100%);
+    }
+  }
+  @keyframes arc-scan-reveal {
+    0% {
+      transform: translateY(100%);
+      opacity: 1;
+    }
+    80% {
+      opacity: 1;
+    }
+    100% {
+      transform: translateY(-100%);
+      opacity: 0;
+    }
+  }
+  .arc-scan-beam {
+    animation: arc-scan-sweep 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+  .arc-scan-reveal {
+    animation: arc-scan-reveal 1.5s cubic-bezier(0.23, 1, 0.32, 1) forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .arc-scan-beam,
+    .arc-scan-reveal {
+      animation: none;
+      opacity: 0;
     }
   }
 
@@ -1070,5 +1118,323 @@ html[data-ui-size="comfortable"] {
     --esign-color: var(--signer-5);
     --esign-bg: var(--signer-5-bg);
     --esign-border: var(--signer-5-border);
+  }
+
+  /* ---------------------------------------------------------------------
+     Auth surface (expressive zone): a night-blue field, one hairline arc
+     with a point of light (components/auth/auth-arc.tsx), and a sign-in
+     form that changes shape between steps instead of swapping screens
+     (components/auth/login-form.tsx). Square everywhere, like the brand.
+     --------------------------------------------------------------------- */
+  .auth-surface {
+    --auth-night: oklch(0.12 0.03 268);
+    --auth-dusk: oklch(0.20 0.08 266);
+    --auth-wash: oklch(0.36 0.16 263);
+    --auth-glow: oklch(0.80 0.12 230);
+    --auth-accent: var(--primary);
+    --auth-ink: oklch(0.97 0.006 260);
+    --auth-muted: oklch(0.74 0.025 260);
+    --auth-faint: oklch(0.56 0.03 262);
+    --auth-hair: oklch(1 0 0 / 0.10);
+    --auth-hair-strong: oklch(1 0 0 / 0.20);
+    --auth-field: oklch(1 0 0 / 0.04);
+    --auth-ring: color-mix(in oklab, var(--auth-accent) 35%, transparent);
+    --auth-ease: cubic-bezier(0.22, 1, 0.36, 1);
+    --auth-ease-io: cubic-bezier(0.65, 0, 0.35, 1);
+
+    /* The sky: a night-blue wash with grain blended in once, never per frame. */
+    --auth-sky:
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.08'/></svg>"),
+      radial-gradient(120% 70% at 50% -12%, color-mix(in oklab, var(--auth-wash) 70%, transparent) 0%, transparent 62%),
+      linear-gradient(180deg, var(--auth-dusk) 0%, var(--auth-night) 72%);
+
+    color: var(--auth-ink);
+    background-color: var(--auth-night);
+  }
+
+  /* The arc. Every glowing piece is pre-drawn in its own layer and only ever
+     rotated or faded (compositor-only), so Safari never re-blurs per frame. */
+  .auth-arc {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .auth-sky {
+    position: absolute;
+    inset: 0;
+    background: var(--auth-sky);
+    background-color: var(--auth-night);
+    background-blend-mode: overlay, normal, normal;
+  }
+  .auth-arc-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .auth-arc-rotor { position: absolute; will-change: transform; }
+  .auth-arc-rotor > svg { display: block; width: 100%; height: 100%; overflow: visible; }
+
+  .auth-arc-base { fill: none; stroke: var(--auth-hair-strong); stroke-width: 1; }
+  .auth-arc-light,
+  .auth-arc-bloom,
+  .auth-arc-tail,
+  .auth-arc-glint {
+    fill: none;
+    stroke: var(--auth-glow);
+    stroke-linecap: round;
+    transition: stroke 0.6s ease;
+  }
+  .auth-arc-light { stroke-width: 1.5; }
+  .auth-arc-bloom { stroke-width: 10; }
+  .auth-arc-tail { stroke-width: 4; }
+  .auth-arc-glint { stroke-width: 1.5; }
+
+  .auth-arc-bloom-rotor { opacity: 0.35; animation: auth-breathe 6s ease-in-out infinite; }
+  .auth-arc-tail-rotor { opacity: 0; will-change: transform, opacity; }
+  .auth-arc-glint-rotor { opacity: 0; will-change: transform, opacity; }
+  .auth-arc-halo {
+    width: 560px;
+    height: 560px;
+    background: radial-gradient(circle, var(--auth-glow) 0%, color-mix(in oklab, var(--auth-glow) 35%, transparent) 30%, transparent 70%);
+    opacity: 0.14;
+    animation: auth-breathe-halo 6s ease-in-out infinite;
+  }
+  .auth-arc-full-bloom { opacity: 0; will-change: opacity; transition: opacity 1.4s ease; }
+  .auth-arc-full-bloom .auth-arc-bloom { opacity: 0.35; }
+  .auth-arc[data-complete] .auth-arc-full-bloom { opacity: 1; }
+
+  .auth-arc[data-error] .auth-arc-light,
+  .auth-arc[data-error] .auth-arc-bloom { stroke: var(--destructive); transition-duration: 0.15s; }
+  @keyframes auth-breathe { 50% { opacity: 0.5; } }
+  @keyframes auth-breathe-halo { 50% { opacity: 0.19; } }
+
+  /* The fade behind the form: the sky again, feathered to the form's box. */
+  .auth-arc-veil {
+    --veil-x1: 0px;
+    --veil-x2: 0px;
+    --veil-y1: 0px;
+    --veil-y2: 0px;
+    --veil-feather: 0px;
+    -webkit-mask-image:
+      linear-gradient(to right, transparent calc(var(--veil-x1) - var(--veil-feather)), black var(--veil-x1), black var(--veil-x2), transparent calc(var(--veil-x2) + var(--veil-feather))),
+      linear-gradient(to bottom, transparent calc(var(--veil-y1) - var(--veil-feather)), black var(--veil-y1), black var(--veil-y2), transparent calc(var(--veil-y2) + var(--veil-feather)));
+    mask-image:
+      linear-gradient(to right, transparent calc(var(--veil-x1) - var(--veil-feather)), black var(--veil-x1), black var(--veil-x2), transparent calc(var(--veil-x2) + var(--veil-feather))),
+      linear-gradient(to bottom, transparent calc(var(--veil-y1) - var(--veil-feather)), black var(--veil-y1), black var(--veil-y2), transparent calc(var(--veil-y2) + var(--veil-feather)));
+    -webkit-mask-composite: source-in;
+    mask-composite: intersect;
+  }
+
+  /* Rolling text: old letters lift away while new ones rise in, one after another */
+  /* Kerning and ligatures are off for rolling text: each animated letter is its own box, which
+     cannot kern, so the settled text must not kern either or it shifts when the animation ends. */
+  .auth-roll { position: relative; display: block; font-kerning: none; font-variant-ligatures: none; }
+  .auth-roll-in,
+  .auth-roll-out { display: block; perspective: 600px; }
+  .auth-roll-out { position: absolute; inset: 0 auto auto 0; width: 100%; pointer-events: none; }
+  .auth-roll-word { display: inline-block; white-space: nowrap; }
+  .auth-roll-char { display: inline-block; white-space: pre; will-change: transform, opacity, filter; }
+  .auth-roll-in .auth-roll-char { animation: auth-char-in 0.62s var(--auth-ease) both; }
+  .auth-roll-out .auth-roll-char { animation: auth-char-out 0.38s var(--auth-ease-io) forwards; }
+  @keyframes auth-char-in { from { opacity: 0; transform: translateY(0.55em) rotateX(-40deg); filter: blur(6px); } }
+  @keyframes auth-char-out { to { opacity: 0; transform: translateY(-0.5em) rotateX(40deg); filter: blur(5px); } }
+
+  /* Folds: rows that open and close by animating their own height */
+  .auth-fold {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition: grid-template-rows 0.5s var(--auth-ease), opacity 0.3s ease, margin-top 0.5s var(--auth-ease);
+  }
+  .auth-fold > div { min-height: 0; overflow: hidden; padding: 5px; margin: -5px; }
+  .auth-fold[data-open] {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    transition: grid-template-rows 0.5s var(--auth-ease), opacity 0.45s ease 0.08s, margin-top 0.5s var(--auth-ease);
+  }
+  .auth-fold[data-open][data-gap="lg"] { margin-top: 28px; }
+  .auth-fold[data-open][data-gap="md"] { margin-top: 12px; }
+  .auth-fold[data-open][data-gap="sm"] { margin-top: 10px; }
+
+  /* Fields */
+  .auth-field { position: relative; display: block; }
+  .auth-field::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 1px;
+    background: var(--auth-accent);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.5s var(--auth-ease), opacity 0.3s ease;
+    pointer-events: none;
+  }
+  .auth-field:focus-within::after { transform: scaleX(1); }
+  .auth-input {
+    width: 100%;
+    height: 48px;
+    padding: 0 64px 0 14px;
+    background: var(--auth-field);
+    color: var(--auth-ink);
+    border: 1px solid var(--auth-hair-strong);
+    border-radius: 0;
+    outline: none;
+    font-size: 15px;
+    transition: padding 0.55s var(--auth-ease), background 0.4s ease, border-color 0.4s ease, box-shadow 0.25s ease;
+  }
+  .auth-input::placeholder { color: var(--auth-faint); }
+  .auth-input:hover { border-color: oklch(1 0 0 / 0.32); }
+  .auth-input:focus { border-color: var(--auth-accent); box-shadow: 0 0 0 4px var(--auth-ring); }
+  .auth-input[aria-invalid="true"] {
+    border-color: var(--destructive);
+    box-shadow: 0 0 0 4px color-mix(in oklab, var(--destructive) 18%, transparent);
+  }
+  .auth-kbd {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    translate: 0 -50%;
+    padding: 1px 6px;
+    border: 1px solid var(--auth-hair-strong);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 16px;
+    color: var(--auth-faint);
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+  }
+  .auth-input:focus:not(:placeholder-shown) ~ .auth-kbd { opacity: 1; }
+  .auth-field-action {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    translate: 0 -50%;
+  }
+
+  /* The email field becomes the account row */
+  .auth-account-icon {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    translate: 0 -50%;
+    scale: 0.3;
+    opacity: 0;
+    color: var(--auth-muted);
+    transition: scale 0.55s var(--auth-ease), opacity 0.3s ease;
+    pointer-events: none;
+  }
+  .auth-change {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    translate: 10px -50%;
+    opacity: 0;
+    pointer-events: none;
+    transition: translate 0.5s var(--auth-ease), opacity 0.3s ease, color 0.15s;
+  }
+  .auth-field[data-locked] .auth-input {
+    padding-left: 28px;
+    background: transparent;
+    border-color: transparent;
+    border-bottom-color: var(--auth-hair-strong);
+    box-shadow: none;
+    font-weight: 500;
+  }
+  .auth-field[data-locked] .auth-account-icon { scale: 1; opacity: 1; transition-delay: 0.12s; }
+  .auth-field[data-locked] .auth-change { translate: 0 -50%; opacity: 1; pointer-events: auto; transition-delay: 0.18s; }
+  .auth-field[data-locked] .auth-kbd,
+  .auth-field[data-locked]::after { opacity: 0; }
+
+  .auth-shake { animation: auth-shake 0.42s cubic-bezier(0.36, 0.07, 0.19, 0.97); }
+  @keyframes auth-shake {
+    15% { transform: translateX(-7px); }
+    35% { transform: translateX(6px); }
+    55% { transform: translateX(-4px); }
+    75% { transform: translateX(2px); }
+  }
+
+  .auth-note { display: flex; gap: 8px; align-items: baseline; margin: 0; font-size: 13px; }
+  .auth-note::before { content: ""; flex: none; width: 5px; height: 5px; translate: 0 -1px; background: currentColor; }
+
+  /* 2FA digits pop in one by one */
+  .auth-otp-pop { animation: auth-pop-in 0.55s var(--auth-ease) both; }
+  @keyframes auth-pop-in { from { opacity: 0; transform: translateY(12px) scale(0.92); } }
+
+  /* The button shrinks into a loader, then draws a check */
+  .auth-btn {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: 48px;
+    border-radius: 0;
+    background: var(--auth-ink);
+    color: var(--auth-night);
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: width 0.6s var(--auth-ease), background 0.35s ease, transform 0.15s var(--auth-ease);
+  }
+  .auth-btn::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 35%, color-mix(in oklab, var(--auth-accent) 18%, transparent) 50%, transparent 65%);
+    transform: translateX(-120%);
+    transition: transform 0.75s var(--auth-ease);
+  }
+  .auth-btn:hover::before { transform: translateX(120%); }
+  .auth-btn:active { transform: scale(0.985); }
+  .auth-btn:focus-visible { outline: 1.5px solid var(--auth-accent); outline-offset: 3px; }
+  .auth-btn-label { position: relative; transition: opacity 0.22s ease, filter 0.22s ease; }
+  .auth-btn-glyph {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    pointer-events: none;
+  }
+  .auth-btn-glyph svg { width: 22px; height: 22px; overflow: visible; }
+  .auth-btn-glyph path { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: square; stroke-linejoin: miter; }
+  .auth-btn-spin { transform-origin: 50% 50%; animation: auth-spin 0.85s linear infinite; }
+  .auth-btn-check { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0; }
+  .auth-btn[data-state] { width: 48px; cursor: progress; }
+  .auth-btn[data-state] .auth-btn-label { opacity: 0; filter: blur(4px); }
+  .auth-btn[data-state] .auth-btn-glyph { opacity: 1; transition-delay: 0.18s; }
+  .auth-btn[data-state="done"] { background: var(--auth-accent); color: var(--auth-ink); }
+  .auth-btn[data-state="done"] .auth-btn-spin { opacity: 0; transition: opacity 0.15s; }
+  .auth-btn[data-state="done"] .auth-btn-check { opacity: 1; animation: auth-draw 0.45s var(--auth-ease) 0.05s forwards; }
+  @keyframes auth-spin { to { transform: rotate(360deg); } }
+  @keyframes auth-draw { to { stroke-dashoffset: 0; } }
+
+  /* First paint: the form's pieces rise in after the arc starts drawing */
+  .auth-enter { animation: auth-rise 0.9s var(--auth-ease) both; }
+  @keyframes auth-rise { from { opacity: 0; transform: translateY(10px); filter: blur(6px); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .auth-arc-bloom-rotor,
+    .auth-arc-halo,
+    .auth-roll-char,
+    .auth-shake,
+    .auth-otp-pop,
+    .auth-btn-spin,
+    .auth-enter {
+      animation: none;
+    }
+
+    .auth-fold,
+    .auth-fold[data-open],
+    .auth-input,
+    .auth-btn,
+    .auth-account-icon,
+    .auth-change {
+      transition: none;
+    }
+
+    .auth-btn[data-state="done"] .auth-btn-check {
+      animation: none;
+      stroke-dashoffset: 0;
+    }
   }
 }

@@ -8,6 +8,7 @@ import { toast } from "sonner";
 
 import {
   closeBankReconciliationAction,
+  createBankBookOffsetAction,
   loadBankReconciliationDetailAction,
 } from "@/app/(app)/books/actions";
 import { Badge } from "@/components/ui/badge";
@@ -96,6 +97,7 @@ export function BankReconciliationDetail({
           </div>
         ))}
       </div>
+      {detail.legacyTransactionEvidence ? <p className="border-b p-4 text-sm text-muted-foreground">This older close preserved totals and outstanding entries, but not transaction descriptions. Its transaction list is unavailable.</p> : null}
       <div className="border-b p-3">
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search statement transactions" className="h-9 w-full border bg-background px-3 text-sm outline-none focus:border-ring" />
       </div>
@@ -108,11 +110,62 @@ export function BankReconciliationDetail({
             <span className="font-mono tabular-nums">{row.direction === "outflow" ? "−" : ""}{formatMoneyCentsExact(row.amountCents)}</span>
           </div>
         ))}
-        {rows.length === 0 ? <p className="p-8 text-center text-sm text-muted-foreground">No statement transactions match.</p> : null}
+        {rows.length === 0 && !detail.legacyTransactionEvidence ? <p className="p-8 text-center text-sm text-muted-foreground">No statement transactions match.</p> : null}
       </div>
-      {detail.outstandingItems.length > 0 ? <div className="border-t p-4"><p className="text-sm font-medium">Outstanding book entries</p>{detail.outstandingItems.map((item) => <p key={item.journal_line_id} className="mt-2 flex justify-between gap-4 text-xs"><span className="font-mono">{item.journal_line_id}</span><span>{formatMoneyCentsExact(item.amount_cents)}</span></p>)}</div> : null}
+      {detail.outstandingItems.length > 0 ? <OutstandingEntries detail={detail} onOffset={load} /> : null}
       {detail.evidenceDigest ? <p className="break-all border-t p-4 text-xs text-muted-foreground">Closed evidence: {detail.evidenceDigest}</p> : null}
       {detail.truncated ? <p className="border-t px-4 py-3 text-xs text-destructive">More than 5,000 transactions fall in this statement period. Narrow the period before closing.</p> : null}
     </section>
+  );
+}
+
+/**
+ * Book entries the bank has not cleared. Entries that cancel each other — a
+ * check and its void — are cleared together as an offset instead of waiting
+ * on a bank transaction that will never come.
+ */
+function OutstandingEntries({ detail, onOffset }: { detail: Detail; onOffset: () => void }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [reason, setReason] = useState("");
+  const [pending, startTransition] = useTransition();
+  const open = detail.status !== "closed";
+  const selectedCents = detail.outstandingItems.filter((item) => selected.has(item.journal_line_id)).reduce((sum, item) => sum + item.amount_cents, 0);
+  const canOffset = selected.size >= 2 && selectedCents === 0 && reason.trim().length >= 10;
+  return (
+    <div className="border-t">
+      <div className="flex items-center justify-between gap-4 px-4 pt-4">
+        <p className="text-sm font-medium">Outstanding book entries</p>
+        {open && selected.size > 0 ? <p className={cn("text-xs tabular-nums", selectedCents === 0 ? "text-success" : "text-muted-foreground")}>Selected net {formatMoneyCentsExact(selectedCents)}</p> : null}
+      </div>
+      <ul className="divide-y px-4">
+        {detail.outstandingItems.map((item) => (
+          <li key={item.journal_line_id} className="grid grid-cols-[auto_90px_minmax(0,1fr)_auto] items-center gap-3 py-2.5 text-xs">
+            {open ? (
+              <input type="checkbox" aria-label={`Select ${item.memo} for an offset`} checked={selected.has(item.journal_line_id)}
+                onChange={(event) => setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(item.journal_line_id); else next.delete(item.journal_line_id); return next; })} />
+            ) : <span />}
+            <span className="tabular-nums text-muted-foreground">{item.entryDate}</span>
+            <div className="min-w-0"><p className="truncate font-medium">{item.memo}</p>{item.description ? <p className="truncate text-muted-foreground">{item.description}</p> : null}</div>
+            <span className="font-mono tabular-nums">{formatMoneyCentsExact(item.amount_cents)}</span>
+          </li>
+        ))}
+      </ul>
+      {open && selected.size >= 2 ? (
+        <form className="flex flex-wrap items-center gap-2 border-t p-4" onSubmit={(event) => {
+          event.preventDefault();
+          startTransition(async () => {
+            const result = await createBankBookOffsetAction({ bankAccountId: detail.bankAccountId, journalLineIds: Array.from(selected), reason });
+            if (!result.success) { toast.error(result.error); return; }
+            toast.success("Entries cleared as an offset");
+            setSelected(new Set()); setReason(""); onOffset();
+          });
+        }}>
+          <input value={reason} onChange={(event) => setReason(event.target.value)} aria-label="Why these entries cancel" placeholder="Why these entries cancel (for example, check 301 voided)"
+            className="h-9 min-w-0 flex-1 border bg-background px-3 text-xs outline-none focus:border-ring" />
+          <Button type="submit" size="sm" variant="outline" disabled={pending || !canOffset}>{pending ? "Clearing…" : "Clear as offsetting entries"}</Button>
+          {selectedCents !== 0 ? <p className="w-full text-xs text-muted-foreground">Selected entries must net to zero to clear each other.</p> : null}
+        </form>
+      ) : null}
+    </div>
   );
 }

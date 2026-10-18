@@ -1,3 +1,7 @@
+import { isPlanPinKeptByReview } from "@/lib/services/plan-pin-review";
+import { isElevationKeptBySale } from "@/lib/services/product-change-impact";
+import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { publishPlanDrawingCopy } from "@/lib/services/plan-drawing-copy";
 import { z } from "zod";
 
 import type { CostType } from "@/lib/cost-types";
@@ -14,18 +18,18 @@ import {
 import { recordAudit } from "@/lib/services/audit";
 import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled";
 import { getBudgetTemplate } from "@/lib/services/budget-templates";
-import { createBudget } from "@/lib/services/budgets";
+import { createBudget, createReleaseBudget } from "@/lib/services/budgets";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
 import { createInspectionFromSnapshot } from "@/lib/services/inspections";
+import { checkLotFits } from "@/lib/services/lot-fit";
+import { assertHomePlanNotPermitted } from "@/lib/services/lots";
 import { requirePermission } from "@/lib/services/permissions";
+import { isPlanOffered, offeringOverrideFor, MIN_OFFERING_OVERRIDE_REASON_LENGTH, PLAN_OFFERING_REFUSAL } from "@/lib/sales/plan-offering";
 import { applyScheduleTemplateSnapshot } from "@/lib/services/schedule";
+import { readAllRows } from "@/lib/land/paging";
 import { instantiateSelectionGroupsForProject } from "@/lib/services/selection-cutoffs";
-import {
-  buildOrgScopedPath,
-  createFilesDownloadUrl,
-  uploadFilesObject,
-} from "@/lib/storage/files-storage";
+import { deleteFilesObjects } from "@/lib/storage/files-storage";
 
 export type PriceResolver = (line: {
   costCodeId: string;
@@ -64,6 +68,14 @@ export type InstantiatePlanInput = {
    * over there, and treating that as fatal wedged the package permanently.
    */
   resume?: boolean;
+  /**
+   * Set by a release. Every artifact a step builds carries its place on the home
+   * (`metadata.release_key`, unique per home), so replaying the step builds only
+   * what is missing, and the step is NOT marked on the project ledger here:
+   * `settle_release_step` marks it in the same transaction that proves what the
+   * step left on the home and closes the release ledger.
+   */
+  releaseKeyed?: boolean;
 };
 
 export type InstantiatePlanResult = {
@@ -143,6 +155,7 @@ type InstantiationContext = Awaited<ReturnType<typeof requireOrgContext>> & {
     community_id: string;
     project_id: string | null;
     house_plan_version_id: string | null;
+    house_plan_elevation_id: string | null;
     swing: string;
   };
   version: {
@@ -177,6 +190,7 @@ const instantiateInputSchema = z.object({
     .optional(),
   dryRun: z.boolean().optional(),
   resume: z.boolean().optional(),
+  releaseKeyed: z.boolean().optional(),
 });
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -216,6 +230,54 @@ function completedSteps(
     done.set(step, typeof from === "string" ? from : null);
   }
   return done;
+}
+
+const offeringOverrideInputSchema = z.object({
+  lotId: z.string().uuid(),
+  housePlanId: z.string().uuid(),
+  reason: z.string().trim().min(MIN_OFFERING_OVERRIDE_REASON_LENGTH, "Say why this plan is being built where it is not offered.").max(1000),
+});
+
+/**
+ * Let one lot carry a plan its community does not offer. This is the only way
+ * past the offering refusal: it takes plan-release authority, needs a reason,
+ * speaks for one plan on one lot, and is audited. Instantiation and the start
+ * package's plan gate both read it back; neither accepts it silently.
+ */
+export async function recordPlanOfferingOverride(input: unknown, orgId?: string) {
+  const parsed = offeringOverrideInputSchema.parse(input);
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.release", context);
+  const { data: lot, error } = await context.supabase
+    .from("lots")
+    .select("id, metadata, updated_at")
+    .eq("org_id", context.orgId)
+    .eq("id", parsed.lotId)
+    .maybeSingle();
+  if (error || !lot) throw new Error("Lot not found");
+  const override = {
+    house_plan_id: parsed.housePlanId,
+    reason: parsed.reason,
+    by: context.userId,
+    at: new Date().toISOString(),
+  };
+  // plan.release was checked above and members cannot write lots without a lot key, so the
+  // override (metadata only) is written as the service.
+  const { data, error: updateError } = await createServiceSupabaseClient()
+    .from("lots")
+    .update({ metadata: { ...asRecord(lot.metadata), offering_override: override } })
+    .eq("org_id", context.orgId)
+    .eq("id", lot.id)
+    .eq("updated_at", lot.updated_at)
+    .select("id")
+    .maybeSingle();
+  if (updateError) throw new Error(`Failed to record the offering override: ${updateError.message}`);
+  if (!data) throw new Error("The lot changed while you were recording the override. Review it and try again.");
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot.plan_offering_overridden", entityType: "lot", entityId: lot.id, payload: { house_plan_id: parsed.housePlanId, reason: parsed.reason } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: lot.id, before: { offering_override: asRecord(lot.metadata).offering_override ?? null }, after: { offering_override: override } }),
+  ]);
+  return override;
 }
 
 export async function listPlanInstantiationOptionsForProject(
@@ -386,7 +448,7 @@ async function loadInstantiationContext(
         .maybeSingle(),
       context.supabase
         .from("lots")
-        .select("id, community_id, project_id, house_plan_version_id, swing")
+        .select("id, community_id, project_id, house_plan_version_id, house_plan_elevation_id, swing, dimensions, metadata")
         .eq("org_id", context.orgId)
         .eq("id", input.lotId)
         .maybeSingle(),
@@ -412,8 +474,14 @@ async function loadInstantiationContext(
     throw new Error("Plan version not found");
   if (lotResult.data.project_id !== input.projectId)
     throw new Error("Lot is not linked to this project");
+  // A superseded version is built only where a plan change review decided to
+  // keep this home on it (the same rule the plan gate and the release apply).
+  const keptByReview =
+    versionResult.data.status === "superseded" &&
+    (await isPlanPinKeptByReview(context.supabase, context.orgId, lotResult.data.id, versionResult.data.id));
   if (
     versionResult.data.status !== "released" &&
+    !keptByReview &&
     !(input.dryRun && versionResult.data.status === "draft")
   ) {
     throw new Error("Only released plan versions can be instantiated");
@@ -424,13 +492,15 @@ async function loadInstantiationContext(
   if (input.elevationId) {
     const { data, error } = await context.supabase
       .from("house_plan_elevations")
-      .select("id")
+      .select("id, is_active")
       .eq("org_id", context.orgId)
       .eq("house_plan_id", versionResult.data.house_plan_id)
       .eq("id", input.elevationId)
       .maybeSingle();
     if (error || !data)
       throw new Error("Elevation does not belong to this plan");
+    if (!data.is_active && !input.dryRun && !(await isElevationKeptBySale(context.supabase, context.orgId, input.projectId, input.elevationId)))
+      throw new Error("This elevation is inactive and cannot be built.");
   }
   const [takeoffResult, availabilityResult] = await Promise.all([
     context.supabase
@@ -505,19 +575,48 @@ async function loadInstantiationContext(
     version.bundle_snapshot ?? (await buildDraftSnapshot(version, context));
   const warnings: string[] = [];
   const today = input.startDate;
-  const available = (availabilityResult.data ?? []).some((row) => {
-    const elevationMatches =
-      row.elevation_id === null ||
-      row.elevation_id === (input.elevationId ?? null);
-    const dateMatches =
-      (!row.effective_start || row.effective_start <= today) &&
-      (!row.effective_end || row.effective_end >= today);
-    return row.is_available && elevationMatches && dateMatches;
+  const offered = isPlanOffered(availabilityResult.data ?? [], {
+    elevationId: input.elevationId ?? null,
+    onDate: today,
   });
-  if (!available)
-    warnings.push(
-      "Plan or elevation is not currently available in this community; operations override recorded.",
+  if (!offered) {
+    const override = offeringOverrideFor(
+      lotResult.data.metadata,
+      versionResult.data.house_plan_id,
     );
+    if (override)
+      warnings.push(
+        `Plan or elevation is not offered in this community; building under a recorded override (${override.reason}).`,
+      );
+    else if (input.dryRun)
+      warnings.push(
+        "Plan or elevation is not offered in this community; it cannot be instantiated without an offering override.",
+      );
+    else
+      throw new Error(
+        PLAN_OFFERING_REFUSAL,
+      );
+  }
+  const fit = (
+    await checkLotFits(context, [
+      {
+        key: lotResult.data.id,
+        lotId: lotResult.data.id,
+        communityId,
+        dimensions: lotResult.data.dimensions,
+        lotSwing: lotResult.data.swing ?? "either",
+        planId: versionResult.data.house_plan_id,
+        elevationId: input.elevationId ?? null,
+        swing: input.swing ?? null,
+      },
+    ])
+  ).get(lotResult.data.id);
+  if (fit?.override)
+    warnings.push(
+      `The home does not fit the lot; building under a recorded fit override (${fit.override.reason}).`,
+    );
+  else if (fit?.refusal && input.dryRun) warnings.push(fit.refusal);
+  else if (fit?.refusal) throw new Error(fit.refusal);
   const orgCostCodesDefault = await getOrgCostCodesEnabled(context.supabase, context.orgId);
   return {
     ...context,
@@ -654,6 +753,18 @@ export async function generatePlanBudget(
       line_count: lines.length,
       pricing,
     };
+  if (input.releaseKeyed) {
+    const budget = await createReleaseBudget(
+      { project_id: input.projectId, lines, plan_version_id: context.version.id },
+      context.orgId,
+    );
+    return {
+      budget_id: budget.id,
+      total_cents: budget.totalCents,
+      line_count: budget.lineCount,
+      pricing,
+    };
+  }
   const budget = await createBudget(
     { project_id: input.projectId, lines, status: "approved" },
     context.orgId,
@@ -692,6 +803,7 @@ export async function applyPlanSchedule(
     input.startDate,
     context.orgId,
     "plan.instantiate",
+    { releaseKeyed: input.releaseKeyed, releaseVersionId: context.version.id },
   );
   return {
     item_ids: created.map((item) => item.id),
@@ -700,28 +812,101 @@ export async function applyPlanSchedule(
   };
 }
 
+/** The checklists a release already put on the home, with the item positions each holds. */
+async function loadReleaseChecklists(context: InstantiationContext, projectId: string, versionId: string) {
+  const inspections = await readAllRows(
+    (from, to) =>
+      context.supabase
+        .from("inspections")
+        .select("id, metadata")
+        .eq("org_id", context.orgId)
+        .eq("project_id", projectId)
+        .ilike("metadata->>release_key", "checklist:%")
+        .order("id")
+        .range(from, to),
+    { cap: 5001, label: "Failed to read release checklists" },
+  );
+  if (inspections.truncated)
+    throw new Error("The release has more checklists than a release can account for");
+  const placed = new Map<string, { id: string; items: Set<number> }>();
+  for (const row of inspections.rows) {
+    if (asRecord(row.metadata).release_version !== versionId)
+      throw new Error("A release checklist was begun from a different plan version; cancel the release and decide what to do with it.");
+    placed.set(String(asRecord(row.metadata).release_key), { id: row.id, items: new Set() });
+  }
+  const ids = Array.from(placed.values(), (entry) => entry.id);
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const slice = ids.slice(offset, offset + 100);
+    const items = await readAllRows(
+      (from, to) =>
+        context.supabase
+          .from("inspection_items")
+          .select("inspection_id, sort_order")
+          .eq("org_id", context.orgId)
+          .in("inspection_id", slice)
+          .order("id")
+          .range(from, to),
+      { cap: 50001, label: "Failed to read release checklist items" },
+    );
+    if (items.truncated)
+      throw new Error("The release checklists have more items than a release can account for");
+    for (const entry of placed.values())
+      for (const item of items.rows)
+        if (item.inspection_id === entry.id) entry.items.add(Number(item.sort_order));
+  }
+  return placed;
+}
+
 export async function seedPlanChecklists(
   input: InstantiatePlanInput,
   context: InstantiationContext,
 ) {
   if (input.dryRun) return { inspection_ids: [] };
-  const inspections = [];
-  for (const checklist of context.snapshot.checklists) {
-    inspections.push(
-      await createInspectionFromSnapshot(
-        {
-          projectId: input.projectId,
-          kind: checklist.kind,
-          title: checklist.name,
-          sourceTemplateId: checklist.id ?? null,
-          items: checklist.items ?? [],
-        },
-        context.orgId,
-        "plan.instantiate",
-      ),
+  const placed = input.releaseKeyed
+    ? await loadReleaseChecklists(context, input.projectId, context.version.id)
+    : new Map<string, { id: string; items: Set<number> }>();
+  const inspectionIds: string[] = [];
+  for (const [index, checklist] of context.snapshot.checklists.entries()) {
+    const releaseKey = `checklist:${index}`;
+    const items = checklist.items ?? [];
+    const present = placed.get(releaseKey);
+    if (present) {
+      // A crash between the inspection and its items leaves the inspection
+      // without some of them; add only the ones it lacks.
+      const missing = items.flatMap((item, position) => {
+        const sortOrder = item.sort_order ?? position;
+        return present.items.has(sortOrder) ? [] : [{
+          org_id: context.orgId,
+          inspection_id: present.id,
+          section: item.section ?? null,
+          prompt: item.prompt,
+          response_type: item.response_type ?? "pass_fail",
+          sort_order: sortOrder,
+        }];
+      });
+      if (missing.length > 0) {
+        const { error } = await context.supabase.from("inspection_items").insert(missing);
+        if (error)
+          throw new Error(`Failed to complete checklist ${checklist.name}: ${error.message}`);
+      }
+      inspectionIds.push(present.id);
+      continue;
+    }
+    const inspection = await createInspectionFromSnapshot(
+      {
+        projectId: input.projectId,
+        kind: checklist.kind,
+        title: checklist.name,
+        sourceTemplateId: checklist.id ?? null,
+        ...(input.releaseKeyed ? { releaseKey, releaseVersionId: context.version.id } : {}),
+        items,
+      },
+      context.orgId,
+      "plan.instantiate",
     );
+    inspectionIds.push(inspection.id);
   }
-  return { inspection_ids: inspections.map((inspection) => inspection.id) };
+  return { inspection_ids: inspectionIds };
 }
 
 export async function queuePlanDrawings(
@@ -740,150 +925,49 @@ export async function queuePlanDrawings(
   if (sourceError || !source)
     throw new Error("Plan-set source file was not found");
   if (input.dryRun) return { drawing_set_id: "dry-run", queued: false };
-  const destinationPath = buildOrgScopedPath(
-    context.orgId,
-    "projects",
-    input.projectId,
-    "plans",
-    context.version.id,
-    source.file_name,
-  );
-  const download = await createFilesDownloadUrl({
-    supabase: context.supabase,
-    orgId: context.orgId,
-    path: source.storage_path,
-    fileName: source.file_name,
-  });
-  const response = await fetch(download.downloadUrl);
-  if (!response.ok)
-    throw new Error(`Failed to copy plan PDF (${response.status})`);
-  await uploadFilesObject({
-    supabase: context.supabase,
-    orgId: context.orgId,
-    path: destinationPath,
-    bytes: Buffer.from(await response.arrayBuffer()),
-    contentType: source.mime_type ?? "application/pdf",
-  });
-  const { data: projectFile, error: fileError } = await context.supabase
-    .from("files")
-    .insert({
-      org_id: context.orgId,
-      project_id: input.projectId,
-      file_name: source.file_name,
-      storage_path: destinationPath,
-      mime_type: source.mime_type,
-      size_bytes: source.size_bytes,
-      checksum: source.checksum,
-      visibility: "private",
-      category: "plans",
-      folder_path: "/plans",
-      source: "generated",
-      uploaded_by: context.userId,
-      metadata: {
-        source_plan_version_id: context.version.id,
-        source_file_id: source.id,
-      },
-    })
-    .select("id")
-    .single();
-  if (fileError || !projectFile)
-    throw new Error(
-      `Failed to create project plan file: ${fileError?.message ?? "unknown error"}`,
-    );
-  const { data: pending } = await context.supabase
-    .from("drawing_revisions")
-    .select("id")
-    .eq("org_id", context.orgId)
-    .eq("project_id", input.projectId)
-    .in("status", ["processing", "draft"])
-    .limit(1);
-  if ((pending ?? []).length > 0)
-    throw new Error(
-      "A drawing revision is already pending review for this project",
-    );
-  const { data: existingSet, error: setLookupError } = await context.supabase
-    .from("drawing_sets")
-    .select("id")
-    .eq("org_id", context.orgId)
-    .eq("project_id", input.projectId)
-    .order("created_at")
-    .limit(1)
-    .maybeSingle();
-  if (setLookupError)
-    throw new Error(
-      `Failed to load canonical drawing set: ${setLookupError.message}`,
-    );
-  let drawingSetId = existingSet?.id;
-  if (drawingSetId) {
-    const { error } = await context.supabase
-      .from("drawing_sets")
-      .update({
-        source_file_id: projectFile.id,
-        status: "ready",
-        processing_stage: "ready",
-      })
-      .eq("org_id", context.orgId)
-      .eq("id", drawingSetId);
-    if (error)
-      throw new Error(
-        `Failed to prepare canonical drawing set: ${error.message}`,
-      );
-  } else {
-    const { data, error } = await context.supabase
-      .from("drawing_sets")
-      .insert({
-        org_id: context.orgId,
-        project_id: input.projectId,
-        title: "Construction Drawings",
-        source_file_id: projectFile.id,
-        status: "ready",
-        processing_stage: "ready",
-        created_by: context.userId,
-      })
-      .select("id")
-      .single();
-    if (error || !data)
-      throw new Error(
-        `Failed to create canonical drawing set: ${error?.message ?? "unknown error"}`,
-      );
-    drawingSetId = data.id;
+  return publishPlanDrawingCopy({ orgId: context.orgId, projectId: input.projectId, planVersionId: context.version.id, actorId: context.userId, source });
+}
+
+const abandonedDrawingCopySchema = z.object({
+  org_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  attempt_id: z.string().uuid(),
+  storage_path: z.string().min(1),
+});
+
+/**
+ * Removes plan-drawing copies whose reservation was never published: a worker
+ * reserved an attempt-unique path, may have copied the PDF there, and was lost
+ * before publication. SQL claims only reservations a day old, with no live
+ * release on the home and no file row naming the path, and marks them
+ * abandoned so nothing can start using that path again; the object is deleted;
+ * then SQL clears the manifest after re-checking, under the home lock, that no
+ * file references it. A crash in between is claimed again by the next sweep.
+ * SQL hands out only paths the home's own reservation could have built, oldest
+ * reservation first.
+ */
+export async function cleanupAbandonedPlanDrawingCopies(limit = 25) {
+  const supabase = createServiceSupabaseClient();
+  const { data, error } = await supabase.rpc("claim_abandoned_plan_drawing_copies", { p_limit: limit });
+  if (error) throw new Error(`Failed to claim abandoned drawing copies: ${error.message}`);
+  const copies = z.array(abandonedDrawingCopySchema).parse(data ?? []);
+  let cleared = 0;
+  const failed: Array<{ projectId: string; attemptId: string; message: string }> = [];
+  // Each copy stands alone: a storage error on one leaves its manifest
+  // `abandoned` for the next sweep and never keeps the others from clearing.
+  for (const copy of copies) {
+    try {
+      await deleteFilesObjects({ supabase, orgId: copy.org_id, paths: [copy.storage_path] });
+      const { data: done, error: clearError } = await supabase.rpc("clear_abandoned_plan_drawing_copy", {
+        p_org_id: copy.org_id, p_project_id: copy.project_id, p_attempt_id: copy.attempt_id,
+      });
+      if (clearError) throw new Error(`Failed to clear abandoned drawing copy: ${clearError.message}`);
+      if (done === true) cleared += 1;
+    } catch (failure) {
+      failed.push({ projectId: copy.project_id, attemptId: copy.attempt_id, message: failure instanceof Error ? failure.message : String(failure) });
+    }
   }
-  const { data: revision, error: revisionError } = await context.supabase
-    .from("drawing_revisions")
-    .insert({
-      org_id: context.orgId,
-      project_id: input.projectId,
-      drawing_set_id: drawingSetId,
-      revision_label: `Plan v${context.version.version_number}`,
-      issuance_type: "revision",
-      status: "processing",
-      processing_stage: "queued",
-      issued_date: new Date().toISOString(),
-      source_file_id: projectFile.id,
-      created_by: context.userId,
-    })
-    .select("id")
-    .single();
-  if (revisionError || !revision)
-    throw new Error(
-      `Failed to create drawing revision: ${revisionError?.message ?? "unknown error"}`,
-    );
-  const { error: queueError } = await context.supabase.from("outbox").insert({
-    org_id: context.orgId,
-    job_type: "process_drawing_set",
-    payload: {
-      drawingSetId,
-      projectId: input.projectId,
-      sourceFileId: projectFile.id,
-      storagePath: destinationPath,
-      draftRevisionId: revision.id,
-      orgId: context.orgId,
-    },
-    run_at: new Date().toISOString(),
-  });
-  if (queueError)
-    throw new Error(`Failed to queue plan drawings: ${queueError.message}`);
-  return { drawing_set_id: drawingSetId, queued: true };
+  return { claimed: copies.length, cleared, failed };
 }
 
 const MARK_STEP_ATTEMPTS = 5;
@@ -903,8 +987,11 @@ async function markStep(
   context: InstantiationContext,
   step: PlanInstantiationStep,
 ) {
+  // The ledger is server-owned: the caller's permission was checked when the
+  // instantiation began, and a member's own client may not write the key.
+  const supabase = createServiceSupabaseClient();
   for (let attempt = 0; attempt < MARK_STEP_ATTEMPTS; attempt += 1) {
-    const { data, error } = await context.supabase
+    const { data, error } = await supabase
       .from("projects")
       .select("metadata")
       .eq("org_id", context.orgId)
@@ -932,7 +1019,7 @@ async function markStep(
         at,
       },
     };
-    let update = context.supabase
+    let update = supabase
       .from("projects")
       .update({ metadata: nextMetadata })
       .eq("org_id", context.orgId)
@@ -980,13 +1067,21 @@ export async function instantiatePlanForProject(
     errors: [],
   };
   if (!parsed.dryRun) {
+    if (
+      context.lot.house_plan_version_id !== context.version.id ||
+      context.lot.house_plan_elevation_id !== (parsed.elevationId ?? null)
+    ) {
+      await assertHomePlanNotPermitted(context, context.lot.project_id);
+    }
     const lotPatch: Record<string, unknown> = {
       house_plan_id: context.version.house_plan_id,
       house_plan_version_id: context.version.id,
       house_plan_elevation_id: parsed.elevationId ?? null,
     };
     if (parsed.swing) lotPatch.swing = parsed.swing;
-    const { error } = await context.supabase
+    // plan.instantiate was checked on load; members cannot rewrite a lot's plan
+    // pin directly, so the pin is written as the service.
+    const { error } = await createServiceSupabaseClient()
       .from("lots")
       .update(lotPatch)
       .eq("org_id", context.orgId)
@@ -1013,20 +1108,23 @@ export async function instantiatePlanForProject(
   };
   for (const step of requestedSteps) {
     if (completed.has(step)) {
-      const from = completed.get(step);
-      const message =
-        from && from !== context.version.id
-          ? `${step} was already generated for this project from a different plan version; re-running it would duplicate the work`
-          : `${step} was already instantiated for this project`;
+      const otherVersion = completed.get(step) !== context.version.id;
+      const message = otherVersion
+        ? `${step} was already generated for this project from a different plan version; re-running it would duplicate the work`
+        : `${step} was already instantiated for this project`;
+      // A worker replaying a release treats its own version's work as done.
+      // Work from another (or an unrecorded) version is not this release's
+      // receipt, and re-running it would cut a second copy onto the house, so
+      // that stays fatal on resume: the release parks for a person to decide
+      // rather than reporting a house it never built as complete.
       result.skipped.push(step);
-      // A worker replaying a release must treat this as done, not as fatal.
-      if (explicitlyRequested && !parsed.resume) result.errors.push(message);
+      if (explicitlyRequested && (!parsed.resume || otherVersion)) result.errors.push(message);
       else result.warnings.push(`${message}; skipped.`);
       continue;
     }
     try {
       await handlers[step]();
-      if (!parsed.dryRun) await markStep(context, step);
+      if (!parsed.dryRun && !parsed.releaseKeyed) await markStep(context, step);
     } catch (error) {
       result.errors.push(
         `${step}: ${error instanceof Error ? error.message : String(error)}`,

@@ -1,14 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
-import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { normalizeInternalReturnPath } from "@/lib/auth/return-path"
-import {
-  MFA_GATE_COOKIE,
-  MFA_GATE_TTL_SECONDS,
-  signMfaGateCookie,
-  verifyMfaGateCookie,
-} from "@/lib/auth/mfa-gate-cookie"
+import { MFA_GATE_COOKIE, MFA_GATE_TTL_SECONDS, ORG_MFA_POLICY_COOKIE } from "@/lib/auth/mfa-gate-cookie"
+import { resolveOrgEnrollmentGate, resolveStepUpGate } from "@/lib/auth/session-mfa-gates"
 
 const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/auth/accept-invite"]
 const PUBLIC_ROUTES = ["/proposal", "/e/", "/i/", "/p/", "/s/", "/r/", "/b/", "/d/", "/f/", "/access", "/terms", "/privacy", "/esign-terms"]
@@ -23,6 +18,9 @@ const PUBLIC_API_ROUTES = [
   // Resend inbound-email webhook (emailed vendor bills) — self-authenticates
   // via the svix signature (RESEND_INBOUND_WEBHOOK_SECRET).
   "/api/webhooks/resend-inbound",
+  // Website lead deliveries — no session; each request self-authenticates by
+  // the source's HMAC signature (x-arc-timestamp / x-arc-signature).
+  "/api/leads/intake/",
   // Accounting infra routes — no user session; they self-authenticate via
   // CRON_SECRET. Without these, the proxy redirects them to /auth/signin (307)
   // and they never run.
@@ -53,6 +51,7 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/warranty-sla-sweep",
   "/api/jobs/lot-hold-sweep",
   "/api/jobs/takedown-reminders",
+  "/api/jobs/permit-reminders",
   "/api/jobs/warranty-courtesy-inspections",
   // Recurring invoice generator — cron only, self-authenticates via CRON_SECRET.
   "/api/jobs/invoice-schedules",
@@ -85,6 +84,8 @@ const PUBLIC_API_ROUTES = [
   "/api/portal/s/",
   "/api/portal/b/",
   "/api/webhooks/plaid",
+  // Lender/title milestone updates — server to server, self-authenticated by the feed's HMAC signature.
+  "/api/inbound/v1/agreement-milestones",
 ]
 const PUBLIC_FILE_EXTENSIONS = [
   ".svg",
@@ -124,6 +125,24 @@ function isBlockedHiddenPath(pathname: string) {
     .some((segment, index) => segment.startsWith(".") && !(index === 1 && segment === ".well-known"))
 }
 
+/**
+ * A file served from `public/`: read with GET or HEAD, outside `/api/`, at the
+ * root or under `/models/` (the only folder `public/` has). An extension alone
+ * is not enough: `/projects/x.js` matches a page route and a server action can
+ * be POSTed to it, and an API route can answer with an image.
+ */
+function isPublicFileRequest(method: string, pathname: string) {
+  if (method !== "GET" && method !== "HEAD") return false
+  if (pathname.startsWith("/api/")) return false
+  if (!PUBLIC_FILE_EXTENSIONS.some((extension) => pathname.endsWith(extension))) return false
+  return pathname.lastIndexOf("/") === 0 || pathname.startsWith("/models/")
+}
+
+/** A route prefix ending in "/" covers what is under it; otherwise the route itself and its sub-paths. */
+function matchesRoute(pathname: string, route: string) {
+  return route.endsWith("/") ? pathname.startsWith(route) : pathname === route || pathname.startsWith(`${route}/`)
+}
+
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname
 
@@ -141,10 +160,7 @@ export async function proxy(request: NextRequest) {
   // webhook signatures, portal path tokens, mobile bearer tokens) never read the
   // session cookie. Leaving before the client is built stops them paying for a
   // Supabase construction and a claims verification they then ignore.
-  if (
-    PUBLIC_FILE_EXTENSIONS.some((extension) => pathname.endsWith(extension)) ||
-    PUBLIC_API_ROUTES.some((route) => pathname.startsWith(route))
-  ) {
+  if (isPublicFileRequest(request.method, pathname) || PUBLIC_API_ROUTES.some((route) => pathname.startsWith(route))) {
     return NextResponse.next()
   }
 
@@ -203,7 +219,7 @@ export async function proxy(request: NextRequest) {
   const claims = claimsData?.claims ?? null
 
   const isAuthRoute = pathname.startsWith("/auth")
-  const isPublicRoute = PUBLIC_ROUTES.some(route => pathname.startsWith(route))
+  const isPublicRoute = PUBLIC_ROUTES.some((route) => matchesRoute(pathname, route))
 
   // Basic authentication checks only - keep proxy lightweight
   if (!claims && !isAuthRoute && !isPublicRoute) {
@@ -213,9 +229,37 @@ export async function proxy(request: NextRequest) {
   }
 
   if (claims && !isAuthRoute && !isPublicRoute && claims.aal !== "aal2") {
-    const gate = await resolveMfaGate(request, supabase, claims)
-    if (gate.stepUp) {
+    const gate = await resolveStepUpGate(supabase, claims, request.cookies.get(MFA_GATE_COOKIE)?.value)
+    if (gate.kind === "unavailable") return withSupabaseCookies(response, securityCheckUnavailable(pathname))
+    if (gate.kind === "required") {
       return withSupabaseCookies(response, NextResponse.redirect(new URL("/auth/mfa", request.url)))
+    }
+    // No verified factor on this session. If one of the user's organizations
+    // requires two-factor, they enroll before using the app.
+    const policy = await resolveOrgEnrollmentGate(supabase, claims, request.cookies.get(ORG_MFA_POLICY_COOKIE)?.value)
+    if (policy.kind === "unavailable") return withSupabaseCookies(response, securityCheckUnavailable(pathname))
+    if (policy.kind === "required") {
+      if (pathname.startsWith("/api/")) {
+        return withSupabaseCookies(
+          response,
+          NextResponse.json(
+            { error: "Your organization requires two-factor authentication.", code: "mfa_enrollment_required" },
+            { status: 403 },
+          ),
+        )
+      }
+      return withSupabaseCookies(response, NextResponse.redirect(new URL("/auth/mfa/enroll", request.url)))
+    }
+    if (policy.proof) {
+      response.cookies.set({
+        name: ORG_MFA_POLICY_COOKIE,
+        value: policy.proof,
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        path: "/",
+        maxAge: MFA_GATE_TTL_SECONDS,
+      })
     }
     // Read `response` here, not before the await: a token refresh during the
     // lookup above rebinds it, and a cookie set on the old object never ships.
@@ -244,47 +288,16 @@ export async function proxy(request: NextRequest) {
 
 
 /**
- * Decide whether this aal1 session must step up to aal2.
- *
- * Supabase's assurance-level helper reads `getSession().user.factors`, which is
- * client-controlled cookie storage — trusting it would let anyone strip their
- * factors and skip the challenge. The Auth server is the only authority, so the
- * first request in a window pays that round-trip and returns `proof`: a signed
- * "this user has no verified factor" the caller stores. Later navigations verify
- * that signature locally instead of asking again, which is what stops a non-MFA
- * user — permanently aal1, so permanently taking this branch — from paying a
- * GoTrue call on every single request.
- *
- * Returns the proof rather than writing it, because the caller's response object
- * can be rebound by a token refresh while this runs.
+ * Two-factor could not be checked (the Auth server or the policy read failed).
+ * The request is refused rather than let through unchallenged; a retry usually
+ * succeeds within seconds.
  */
-async function resolveMfaGate(
-  request: NextRequest,
-  supabase: SupabaseClient,
-  claims: { sub?: unknown; session_id?: unknown },
-): Promise<{ stepUp: boolean; proof?: string }> {
-  const sub = typeof claims.sub === "string" ? claims.sub : null
-  const sessionId = typeof claims.session_id === "string" ? claims.session_id : null
-  const identity = sub && sessionId ? { sub, sessionId } : null
-
-  if (identity && (await verifyMfaGateCookie(request.cookies.get(MFA_GATE_COOKIE)?.value, identity))) {
-    return { stepUp: false }
+function securityCheckUnavailable(pathname: string) {
+  const message = "We couldn't confirm your sign-in security just now. Try again in a moment."
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.json({ error: message, code: "mfa_check_unavailable" }, { status: 503, headers: { "Retry-After": "5" } })
   }
-
-  const {
-    data: { user: verifiedUser },
-    error: verifiedUserError,
-  } = await supabase.auth.getUser()
-
-  // A failed lookup is not proof of absence — leave the session alone rather
-  // than either challenging or exempting it on a network error.
-  if (verifiedUserError) return { stepUp: false }
-
-  if ((verifiedUser?.factors ?? []).some((factor) => factor.status === "verified")) {
-    return { stepUp: true }
-  }
-
-  return { stepUp: false, proof: identity ? (await signMfaGateCookie(identity)) ?? undefined : undefined }
+  return new NextResponse(message, { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8", "Retry-After": "5" } })
 }
 
 function requireEnv(value: string | undefined, name: string) {

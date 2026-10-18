@@ -11,6 +11,7 @@ export interface SigningField {
   y: number
   w: number
   h: number
+  metadata?: { fontSize?: string; fontFamily?: string; dateFormat?: string; signatureStyle?: string; validation?: "none" | "email" | "number" }
 }
 
 export const FIELD_LABELS: Record<SigningFieldType, string> = {
@@ -38,7 +39,10 @@ export function isFieldComplete(field: SigningField, values: Record<string, unkn
   const value = values[field.id]
   if (field.field_type === "checkbox") return value === true
   if (field.field_type === "signature") return typeof value === "string" && value.length > 0
-  return typeof value === "string" && value.trim().length > 0
+  if (typeof value !== "string" || !value.trim()) return false
+  if (field.field_type === "text" && field.metadata?.validation === "email") return /^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(value.trim())
+  if (field.field_type === "text" && field.metadata?.validation === "number") return /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(value.trim()) && Number.isFinite(Number(value))
+  return true
 }
 
 export function formatFieldValue(field: SigningField, value: unknown) {
@@ -49,7 +53,13 @@ export function formatFieldValue(field: SigningField, value: unknown) {
   if (field.field_type === "date" && typeof value === "string") {
     const parsed = new Date(`${value}T00:00:00`)
     if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toLocaleDateString()
+      const year = value.slice(0, 4), month = value.slice(5, 7), day = value.slice(8, 10)
+      switch (field.metadata?.dateFormat) {
+        case "YYYY-MM-DD": return value
+        case "DD/MM/YYYY": return `${day}/${month}/${year}`
+        case "MMM D, YYYY": return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+        default: return `${month}/${day}/${year}`
+      }
     }
   }
 

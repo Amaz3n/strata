@@ -1,7 +1,26 @@
 "use server"
 
+import { addOptionConfigurationRule, removeOptionConfigurationRule, listOptionConfigurationRules, searchConfigurationTargets } from "@/lib/services/configuration-rules"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
+import { discoverCatalogGroupCategories } from "@/lib/services/catalog-group-categories"
+import { reviewCatalogGroupCategories } from "@/lib/services/catalog-group-publication"
+import { catalogCategorySchema, catalogOptionSchema, cutoffOverrideSchema, packageSchema, postCutoffChangeSchema, revertCutoffSchema, selectionGroupSchema } from "@/lib/validation/selections"
+import {
+  appointmentOutcomeSchema,
+  bookAppointmentSchema,
+  cancelAppointmentSchema,
+  consultantHoursSchema,
+  inPersonSelectionApprovalSchema,
+  resendSelectionApprovalSchema,
+  openSlotsSchema,
+  rescheduleAppointmentSchema,
+  sendSelectionApprovalSchema,
+  signedCopyUploadSchema,
+  studioLocationSchema,
+  studioRoomsSchema,
+  voidSelectionApprovalSchema,
+} from "@/lib/validation/design-studio"
 
 import { createHash } from "node:crypto"
 
@@ -12,20 +31,38 @@ import {
   archiveCatalogEntity,
   cloneOrgGroupsToCommunity,
   findCatalogImageByChecksum,
-  setCatalogPrice,
-  upsertAppointment,
+  listModelOptions,
   upsertCategory,
   upsertOption,
   upsertPackage,
+  publishCatalogPrices,
   upsertSelectionGroup,
   CATALOG_IMAGE_FOLDER,
   type CatalogImage,
+  type ModelOptionList,
 } from "@/lib/services/option-catalog"
 import { recomputeCommunityCutoffs, overrideGroupCutoff, revertCutoffToSchedule } from "@/lib/services/selection-cutoffs"
 import { createPostCutoffSelectionChangeOrder } from "@/lib/services/selection-change-orders"
-import { confirmSelectionGroup, selectProjectOption, selectProjectPackage } from "@/lib/services/selections"
+import { selectProjectOption, selectProjectPackage } from "@/lib/services/selections"
+import {
+  bookAppointment,
+  cancelAppointment,
+  listOpenSlots,
+  recordAppointmentOutcome,
+  rescheduleAppointment,
+  saveConsultantHours,
+  saveStudioLocation,
+  saveStudioRooms,
+} from "@/lib/services/design-studio-appointments"
+import { recordInPersonSelectionApproval, resendSelectionApprovalRequest, sendSelectionApproval, uploadSelectionSignedCopy, voidSelectionApproval } from "@/lib/services/selection-approvals"
 import { requireOrgContext } from "@/lib/services/context"
+import { getAmbientDeskContext } from "@/lib/services/desk-context"
+import { listBookableHomes } from "@/lib/services/design-studio"
 import { requirePermission } from "@/lib/services/permissions"
+import { getProductChangeImpact, type ProductChangeImpactDto } from "@/lib/services/product-change-impact"
+import { discoverCatalogPackageMembers } from "@/lib/services/catalog-package-members"
+import { listArchivedCatalogPackages, listPendingCatalogPublications, listCatalogPublicationHistory, recoverCatalogPublicationRequest } from "@/lib/services/catalog-publication-history"
+import { acknowledgeCatalogPublication, cancelCatalogPublication, inspectCatalogPublication } from "@/lib/services/catalog-publication-reconciliation"
 
 async function run<T>(operation: () => Promise<T>, paths: string[] = []): Promise<ActionResult<T>> {
   try {
@@ -39,24 +76,50 @@ async function run<T>(operation: () => Promise<T>, paths: string[] = []): Promis
 }
 
 export async function upsertCategoryAction(input: unknown) {
-  return run(() => upsertCategory(input as Parameters<typeof upsertCategory>[0]), ["/design-studio/catalog"])
+  return run(() => upsertCategory(catalogCategorySchema.parse(input)), ["/design-studio/catalog"])
 }
 
 export async function upsertOptionAction(input: unknown) {
-  return run(() => upsertOption(input as Parameters<typeof upsertOption>[0]), ["/design-studio/catalog"])
+  return run(() => upsertOption(catalogOptionSchema.parse(input)), ["/design-studio/catalog"])
+}
+
+/** Which homes an edit to this option reaches, read before it is saved. Read-only, so nothing is revalidated. */
+export async function getOptionChangeImpactAction(optionId: string): Promise<ActionResult<ProductChangeImpactDto>> {
+  try {
+    return { success: true, data: await getProductChangeImpact({ entity: "option", id: z.string().uuid().parse(optionId) }) }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+/** Catalogue options the project's 3D model can apply, for the drawings workspace. Read-only, so nothing is revalidated. */
+export async function loadModelOptionsAction(projectId: string): Promise<ActionResult<ModelOptionList>> {
+  try {
+    return { success: true, data: await listModelOptions(projectId) }
+  } catch (error) {
+    return actionError(error)
+  }
 }
 
 export async function upsertPackageAction(input: unknown) {
-  return run(() => upsertPackage(input as Parameters<typeof upsertPackage>[0]), ["/design-studio/catalog"])
+  return run(() => upsertPackage(packageSchema.parse(input)), ["/design-studio/catalog"])
 }
 
-export async function setCatalogPriceAction(input: unknown) {
-  return run(() => setCatalogPrice(input as Parameters<typeof setCatalogPrice>[0]), ["/design-studio/catalog"])
+export async function publishCatalogPricesAction(input: unknown) {
+  return run(() => publishCatalogPrices(input), ["/design-studio/catalog"])
+}
+
+export async function inspectCatalogPublicationAction(input: unknown) {
+  return run(() => inspectCatalogPublication(input))
+}
+
+export async function acknowledgeCatalogPublicationAction(input: unknown) {
+  return run(() => acknowledgeCatalogPublication(input), ["/design-studio/catalog", "/design-studio/rules"])
 }
 
 export async function upsertSelectionGroupAction(input: unknown) {
   return run(async () => {
-    const saved = await upsertSelectionGroup(input as Parameters<typeof upsertSelectionGroup>[0])
+    const saved = await upsertSelectionGroup(selectionGroupSchema.extend({ expectedOrgId: z.string().uuid(), expectedActorId: z.string().uuid() }).parse(input))
     if (saved.community_id) {
       const { orgId } = await requireOrgContext()
       await recomputeCommunityCutoffs(saved.community_id, orgId)
@@ -65,8 +128,58 @@ export async function upsertSelectionGroupAction(input: unknown) {
   }, ["/design-studio/rules"])
 }
 
-export async function upsertAppointmentAction(input: unknown) {
-  return run(() => upsertAppointment(input as Parameters<typeof upsertAppointment>[0]))
+/** Design studio sessions. Booking, moving and closing out live on this desk; every rule is the service's and the database's. */
+export async function bookAppointmentAction(input: unknown) {
+  return run(() => bookAppointment(bookAppointmentSchema.parse(input)))
+}
+
+export async function rescheduleAppointmentAction(input: unknown) {
+  return run(() => rescheduleAppointment(rescheduleAppointmentSchema.parse(input)))
+}
+
+export async function cancelAppointmentAction(input: unknown) {
+  return run(() => cancelAppointment(cancelAppointmentSchema.parse(input)))
+}
+
+export async function recordAppointmentOutcomeAction(input: unknown) {
+  return run(() => recordAppointmentOutcome(appointmentOutcomeSchema.parse(input)))
+}
+
+/** Read-only, for the booking dialog's slot picker; nothing is revalidated. */
+export async function listOpenSlotsAction(input: unknown): Promise<ActionResult<Awaited<ReturnType<typeof listOpenSlots>>>> {
+  try {
+    return { success: true, data: await listOpenSlots(openSlotsSchema.parse(input)) }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function saveStudioLocationAction(input: unknown) {
+  return run(() => saveStudioLocation(studioLocationSchema.parse(input)), ["/design-studio/studios"])
+}
+
+export async function saveStudioRoomsAction(input: unknown) {
+  return run(() => saveStudioRooms(studioRoomsSchema.parse(input)), ["/design-studio/studios"])
+}
+
+export async function saveConsultantHoursAction(input: unknown) {
+  return run(() => saveConsultantHours(consultantHoursSchema.parse(input)), ["/design-studio/studios"])
+}
+
+const bookableHomesSchema = z.object({
+  communityId: z.string().uuid().optional(),
+  search: z.string().max(60).optional(),
+})
+
+/** Read-only, server-searched picker for the booking dialog; nothing is revalidated. */
+export async function searchBookableHomesAction(input: unknown): Promise<ActionResult<Awaited<ReturnType<typeof listBookableHomes>>>> {
+  try {
+    const parsed = bookableHomesSchema.parse(input)
+    const ambient = await getAmbientDeskContext()
+    return { success: true, data: await listBookableHomes({ ...parsed, divisionId: ambient.divisionId }) }
+  } catch (error) {
+    return actionError(error)
+  }
 }
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -115,16 +228,16 @@ export async function cloneOrgGroupsAction(communityId: string) {
 }
 
 export async function overrideGroupCutoffAction(input: unknown) {
-  return run(() => overrideGroupCutoff(input as Parameters<typeof overrideGroupCutoff>[0]))
+  return run(() => overrideGroupCutoff(cutoffOverrideSchema.parse(input)))
 }
 
 export async function revertGroupCutoffAction(input: unknown) {
-  const parsed = z.object({ projectId: z.string().uuid(), groupId: z.string().uuid() }).parse(input)
+  const parsed = revertCutoffSchema.parse(input)
   return run(() => revertCutoffToSchedule(parsed))
 }
 
 export async function createPostCutoffChangeOrderAction(input: unknown) {
-  return run(() => createPostCutoffSelectionChangeOrder(input as Parameters<typeof createPostCutoffSelectionChangeOrder>[0]))
+  return run(() => createPostCutoffSelectionChangeOrder(postCutoffChangeSchema.parse(input)))
 }
 
 const sheetSelectionSchema = z.object({
@@ -155,11 +268,94 @@ export async function applyPackageAction(input: unknown) {
   }, [`/design-studio/sheet/${parsed.projectId}`, `/projects/${parsed.projectId}/selections`])
 }
 
-export async function confirmGroupAction(input: unknown) {
-  const parsed = z.object({ projectId: z.string().uuid(), groupId: z.string().uuid() }).parse(input)
-  return run(async () => {
-    const context = await requireOrgContext()
-    await requirePermission("design_studio.manage", context)
-    return confirmSelectionGroup({ orgId: context.orgId, ...parsed })
-  }, [`/design-studio/sheet/${parsed.projectId}`, `/projects/${parsed.projectId}/selections`, "/starts"])
+const approvalPaths = (projectId: string | null) =>
+  projectId ? [`/design-studio/sheet/${projectId}`, `/projects/${projectId}/selections`, "/starts"] : ["/starts"]
+
+/** The page to revalidate, read without validating: a malformed input still reaches run() and fails there as a result. */
+function approvalProjectId(input: unknown): string | null {
+  const parsed = z.object({ projectId: z.string().uuid() }).safeParse(input)
+  return parsed.success ? parsed.data.projectId : null
+}
+
+/**
+ * Buyer approval of a group's selections. The workbench and the selection
+ * sheet both send, void and record through these; the terms hash the page
+ * showed travels with every one, so nothing is sent or approved that the
+ * coordinator did not see.
+ */
+export async function sendSelectionApprovalAction(input: unknown) {
+  const projectId = approvalProjectId(input)
+  return run(() => sendSelectionApproval(sendSelectionApprovalSchema.parse(input)), approvalPaths(projectId))
+}
+
+export async function voidSelectionApprovalAction(input: unknown) {
+  const projectId = approvalProjectId(input)
+  return run(() => {
+    const parsed = voidSelectionApprovalSchema.extend({ projectId: z.string().uuid() }).parse(input)
+    return voidSelectionApproval({ approvalId: parsed.approvalId, reason: parsed.reason })
+  }, approvalPaths(projectId))
+}
+
+export async function resendSelectionApprovalRequestAction(input: unknown) {
+  const projectId = approvalProjectId(input)
+  return run(() => {
+    const parsed = resendSelectionApprovalSchema.extend({ projectId: z.string().uuid() }).parse(input)
+    return resendSelectionApprovalRequest({ approvalId: parsed.approvalId })
+  }, approvalPaths(projectId))
+}
+
+/** The signed paper copy goes up on the coordinator's own permission; recording it is the next call. */
+export async function uploadSelectionSignedCopyAction(formData: FormData) {
+  const projectId = formData.get("projectId")
+  return run(() => uploadSelectionSignedCopy(signedCopyUploadSchema.parse({ projectId, file: formData.get("file") })))
+}
+
+export async function recordInPersonSelectionApprovalAction(input: unknown) {
+  const projectId = approvalProjectId(input)
+  return run(() => recordInPersonSelectionApproval(inPersonSelectionApprovalSchema.parse(input)), approvalPaths(projectId))
+}
+
+export async function listOptionConfigurationRulesAction(optionId: string) {
+  try { return { success: true as const, data: await listOptionConfigurationRules(optionId) } } catch (error) { return actionError(error) }
+}
+export async function searchConfigurationTargetsAction(input: unknown) {
+  try { return { success: true as const, data: await searchConfigurationTargets(input) } } catch (error) { return actionError(error) }
+}
+export async function addOptionConfigurationRuleAction(input: unknown) {
+  return run(() => addOptionConfigurationRule(input), ["/design-studio/catalog"])
+}
+export async function removeOptionConfigurationRuleAction(input: unknown) {
+  return run(() => removeOptionConfigurationRule(input), ["/design-studio/catalog"])
+}
+
+export async function cancelCatalogPublicationAction(input: unknown) {
+  return run(() => cancelCatalogPublication(input), ["/design-studio/catalog", "/design-studio/rules"])
+}
+
+export async function listCatalogPublicationHistoryAction(input: unknown) {
+  return run(() => listCatalogPublicationHistory(input))
+}
+
+export async function recoverCatalogPublicationRequestAction(input: unknown) {
+  return run(() => recoverCatalogPublicationRequest(input))
+}
+
+export async function listPendingCatalogPublicationsAction(input: unknown) {
+  return run(() => listPendingCatalogPublications(input))
+}
+
+export async function listArchivedCatalogPackagesAction(input: unknown) {
+  return run(() => listArchivedCatalogPackages(input))
+}
+
+export async function discoverCatalogPackageMembersAction(input: unknown) {
+  return run(() => discoverCatalogPackageMembers(input))
+}
+
+export async function reviewCatalogGroupCategoriesAction(input: unknown) {
+  return run(() => reviewCatalogGroupCategories(input))
+}
+
+export async function discoverCatalogGroupCategoriesAction(input: unknown) {
+  return run(() => discoverCatalogGroupCategories(input))
 }

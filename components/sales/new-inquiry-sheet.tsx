@@ -3,11 +3,12 @@
 import { useRouter } from "next/navigation"
 import { useEffect, useState, useTransition } from "react"
 
-import { registerInquiryAction } from "@/app/(app)/sales/actions"
+import { registerInquiryAction, searchBuyersAction } from "@/app/(app)/sales/actions"
 import { Plus } from "@/components/icons"
 import { Field, Picker, Section, labelOptions } from "@/components/sales/registration-fields"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-picker"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
@@ -34,6 +35,15 @@ interface NewInquirySheetProps {
   defaultCommunityId?: string
 }
 
+/** A website delivery that could not be filed, entered by hand from what it carried. */
+export interface InquiryFromLead {
+  receiptId: string
+  name: string | null
+  email: string | null
+  phone: string | null
+  communityId: string | null
+}
+
 function localDay(): string {
   const now = new Date()
   const offset = now.getTimezoneOffset() * 60_000
@@ -46,12 +56,35 @@ function localDay(): string {
  * the arrival itself moves the community's traffic count for the day, so the
  * Monday traffic number stays honest without anyone doing double entry.
  */
-export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }: NewInquirySheetProps) {
+export function NewInquirySheet(props: NewInquirySheetProps) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <Button size="sm" className="rounded-none" onClick={() => setOpen(true)}>
+        <Plus className="size-3.5" />
+        New inquiry
+      </Button>
+      <InquiryRegistrationSheet {...props} open={open} onOpenChange={setOpen} lead={null} />
+    </>
+  )
+}
+
+/**
+ * The registration card itself. Opened from a failed website delivery it starts
+ * from what the form sent, and registering files that delivery: the deal it
+ * lands on keeps the delivery's campaign and the delivery leaves the desk.
+ */
+export function InquiryRegistrationSheet({ communities, teamMembers, defaultCommunityId, open, onOpenChange: setOpen, lead }: NewInquirySheetProps & {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  lead: InquiryFromLead | null
+}) {
   const router = useRouter()
   const { toast } = useToast()
-  const [open, setOpen] = useState(false)
   const [pending, startTransition] = useTransition()
 
+  const [existingBuyer, setExistingBuyer] = useState<SearchPickerItem | null>(null)
+  const [findingBuyer, setFindingBuyer] = useState(false)
   const [buyerName, setBuyerName] = useState("")
   const [phone, setPhone] = useState("")
   const [email, setEmail] = useState("")
@@ -67,12 +100,14 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
   const [notes, setNotes] = useState("")
 
   useEffect(() => {
-    if (open) return
-    setBuyerName("")
-    setPhone("")
-    setEmail("")
-    setChannel("walk_in")
-    setCommunityId(defaultCommunityId ?? "")
+    if (open && !lead) return
+    setExistingBuyer(null)
+    setFindingBuyer(false)
+    setBuyerName(lead?.name ?? "")
+    setPhone(lead?.phone ?? "")
+    setEmail(lead?.email ?? "")
+    setChannel(lead ? "web" : "walk_in")
+    setCommunityId(lead?.communityId ?? defaultCommunityId ?? "")
     setOwnerId("")
     setSource("")
     setPlanInterest("")
@@ -81,10 +116,11 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
     setCoopAgentName("")
     setCoopBrokerage("")
     setNotes("")
-  }, [open, defaultCommunityId])
+  }, [open, defaultCommunityId, lead])
 
   const submit = () => {
-    if (buyerName.trim().length < 2) {
+    const name = existingBuyer?.name ?? buyerName.trim()
+    if (name.length < 2) {
       toast({ title: "Buyer name is required" })
       return
     }
@@ -92,9 +128,10 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
       try {
         unwrapAction(
           await registerInquiryAction({
-            buyerName: buyerName.trim(),
-            phone: phone.trim() || null,
-            email: email.trim() || null,
+            buyerName: name,
+            existingContactId: existingBuyer?.id ?? null,
+            phone: existingBuyer ? null : phone.trim() || null,
+            email: existingBuyer ? null : email.trim() || null,
             communityId: communityId || null,
             ownerUserId: ownerId || null,
             channel,
@@ -106,10 +143,11 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
             coopBrokerage: coopBrokerage.trim() || null,
             notes: notes.trim() || null,
             loggedDate: localDay(),
+            leadReceiptId: lead?.receiptId ?? null,
           }),
         )
         toast({
-          title: `${buyerName.trim()} registered`,
+          title: `${name} registered`,
           description: communityId
             ? `Added to the board and counted in today's traffic.`
             : "Added to the board.",
@@ -123,176 +161,195 @@ export function NewInquirySheet({ communities, teamMembers, defaultCommunityId }
   }
 
   return (
-    <>
-      <Button size="sm" className="rounded-none" onClick={() => setOpen(true)}>
-        <Plus className="size-3.5" />
-        New inquiry
-      </Button>
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetContent side="right" mobileFullscreen className="flex w-full flex-col gap-0 rounded-none p-0 sm:max-w-md">
+        <SheetHeader className="space-y-1 border-b px-5 py-4 text-left">
+          <SheetTitle className="text-base font-semibold">{lead ? "File a website lead by hand" : "Registration card"}</SheetTitle>
+          <SheetDescription className="text-xs">
+            {lead
+              ? "Started from what the website form sent. Registering files the delivery and keeps its campaign on the deal."
+              : <>What the clipboard captures. Walk-ins and appointments also move today&apos;s traffic count.</>}
+          </SheetDescription>
+        </SheetHeader>
 
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" mobileFullscreen className="flex w-full flex-col gap-0 rounded-none p-0 sm:max-w-md">
-          <SheetHeader className="space-y-1 border-b px-5 py-4 text-left">
-            <SheetTitle className="text-base font-semibold">Registration card</SheetTitle>
-            <SheetDescription className="text-xs">
-              What the clipboard captures. Walk-ins and appointments also move today&apos;s traffic count.
-            </SheetDescription>
-          </SheetHeader>
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="divide-y">
+            <Section title="Buyer">
+              {existingBuyer || findingBuyer ? (
+                <>
+                  <SearchPicker
+                    label="Returning buyer"
+                    noun="buyers"
+                    placeholder="Search by name, email or phone"
+                    value={existingBuyer}
+                    onChange={setExistingBuyer}
+                    search={searchBuyersAction}
+                    disabled={pending}
+                  />
+                  {existingBuyer ? null : (
+                    <Button type="button" variant="ghost" size="sm" className="rounded-none" onClick={() => setFindingBuyer(false)}>
+                      Enter a new buyer instead
+                    </Button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Button type="button" variant="outline" size="sm" className="w-full justify-start rounded-none" onClick={() => setFindingBuyer(true)}>
+                    Returning buyer? Find them
+                  </Button>
+                  <Field label="Name" htmlFor="inquiry-name" required>
+                    <Input
+                      id="inquiry-name"
+                      autoFocus
+                      value={buyerName}
+                      onChange={(event) => setBuyerName(event.target.value)}
+                      placeholder="First and last name"
+                      className="h-9 rounded-none"
+                    />
+                  </Field>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="Phone" htmlFor="inquiry-phone">
+                      <Input
+                        id="inquiry-phone"
+                        type="tel"
+                        value={phone}
+                        onChange={(event) => setPhone(event.target.value)}
+                        className="h-9 rounded-none tabular-nums"
+                      />
+                    </Field>
+                    <Field label="Email" htmlFor="inquiry-email">
+                      <Input
+                        id="inquiry-email"
+                        type="email"
+                        value={email}
+                        onChange={(event) => setEmail(event.target.value)}
+                        className="h-9 rounded-none"
+                      />
+                    </Field>
+                  </div>
+                </>
+              )}
+            </Section>
 
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="divide-y">
-              <Section title="Buyer">
-                <Field label="Name" htmlFor="inquiry-name" required>
+            <Section title="Visit">
+              <Field label="How they arrived">
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  value={channel}
+                  onValueChange={(value) => isInquiryChannel(value) && setChannel(value)}
+                  className="w-full rounded-none"
+                >
+                  {INQUIRY_CHANNELS.map((value) => (
+                    <ToggleGroupItem key={value} value={value} className="h-9 rounded-none text-xs">
+                      {INQUIRY_CHANNEL_LABELS[value]}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Community">
+                  <Picker
+                    value={communityId}
+                    onChange={setCommunityId}
+                    placeholder="Not set"
+                    options={communities.map(({ id, name }) => ({ value: id, label: name }))}
+                  />
+                </Field>
+                <Field label="How they heard">
+                  <Picker
+                    value={source}
+                    onChange={setSource}
+                    placeholder="Not set"
+                    options={labelOptions(HEARD_ABOUT)}
+                  />
+                </Field>
+              </div>
+            </Section>
+
+            <Section title="What they want">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Plan of interest" htmlFor="inquiry-plan">
                   <Input
-                    id="inquiry-name"
-                    autoFocus
-                    value={buyerName}
-                    onChange={(event) => setBuyerName(event.target.value)}
-                    placeholder="First and last name"
+                    id="inquiry-plan"
+                    value={planInterest}
+                    onChange={(event) => setPlanInterest(event.target.value)}
+                    placeholder="e.g. Sycamore B"
                     className="h-9 rounded-none"
                   />
                 </Field>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="Phone" htmlFor="inquiry-phone">
-                    <Input
-                      id="inquiry-phone"
-                      type="tel"
-                      value={phone}
-                      onChange={(event) => setPhone(event.target.value)}
-                      className="h-9 rounded-none tabular-nums"
-                    />
-                  </Field>
-                  <Field label="Email" htmlFor="inquiry-email">
-                    <Input
-                      id="inquiry-email"
-                      type="email"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      className="h-9 rounded-none"
-                    />
-                  </Field>
-                </div>
-              </Section>
-
-              <Section title="Visit">
-                <Field label="How they arrived">
-                  <ToggleGroup
-                    type="single"
-                    variant="outline"
-                    value={channel}
-                    onValueChange={(value) => isInquiryChannel(value) && setChannel(value)}
-                    className="w-full rounded-none"
-                  >
-                    {INQUIRY_CHANNELS.map((value) => (
-                      <ToggleGroupItem key={value} value={value} className="h-9 rounded-none text-xs">
-                        {INQUIRY_CHANNEL_LABELS[value]}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                </Field>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="Community">
-                    <Picker
-                      value={communityId}
-                      onChange={setCommunityId}
-                      placeholder="Not set"
-                      options={communities.map(({ id, name }) => ({ value: id, label: name }))}
-                    />
-                  </Field>
-                  <Field label="How they heard">
-                    <Picker
-                      value={source}
-                      onChange={setSource}
-                      placeholder="Not set"
-                      options={labelOptions(HEARD_ABOUT)}
-                    />
-                  </Field>
-                </div>
-              </Section>
-
-              <Section title="What they want">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="Plan of interest" htmlFor="inquiry-plan">
-                    <Input
-                      id="inquiry-plan"
-                      value={planInterest}
-                      onChange={(event) => setPlanInterest(event.target.value)}
-                      placeholder="e.g. Sycamore B"
-                      className="h-9 rounded-none"
-                    />
-                  </Field>
-                  <Field label="Price range">
-                    <Picker
-                      value={priceRange}
-                      onChange={setPriceRange}
-                      placeholder="Not set"
-                      options={labelOptions(PRICE_RANGES)}
-                    />
-                  </Field>
-                </div>
-                <Field label="Timeframe">
+                <Field label="Price range">
                   <Picker
-                    value={timeframe}
-                    onChange={setTimeframe}
+                    value={priceRange}
+                    onChange={setPriceRange}
                     placeholder="Not set"
-                    options={labelOptions(TIMEFRAMES)}
+                    options={labelOptions(PRICE_RANGES)}
                   />
                 </Field>
-              </Section>
+              </div>
+              <Field label="Timeframe">
+                <Picker
+                  value={timeframe}
+                  onChange={setTimeframe}
+                  placeholder="Not set"
+                  options={labelOptions(TIMEFRAMES)}
+                />
+              </Field>
+            </Section>
 
-              <Section title="Co-op agent" hint="Left blank for an unrepresented buyer.">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="Agent" htmlFor="inquiry-agent">
-                    <Input
-                      id="inquiry-agent"
-                      value={coopAgentName}
-                      onChange={(event) => setCoopAgentName(event.target.value)}
-                      className="h-9 rounded-none"
-                    />
-                  </Field>
-                  <Field label="Brokerage" htmlFor="inquiry-brokerage">
-                    <Input
-                      id="inquiry-brokerage"
-                      value={coopBrokerage}
-                      onChange={(event) => setCoopBrokerage(event.target.value)}
-                      className="h-9 rounded-none"
-                    />
-                  </Field>
-                </div>
-              </Section>
-
-              <Section title="Notes">
-                <Field label="Owner">
-                  <Picker
-                    value={ownerId}
-                    onChange={setOwnerId}
-                    placeholder="Me"
-                    options={teamMembers.map(({ id, name }) => ({ value: id, label: name }))}
+            <Section title="Co-op agent" hint="Left blank for an unrepresented buyer.">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Agent" htmlFor="inquiry-agent">
+                  <Input
+                    id="inquiry-agent"
+                    value={coopAgentName}
+                    onChange={(event) => setCoopAgentName(event.target.value)}
+                    className="h-9 rounded-none"
                   />
                 </Field>
-                <Field label="Anything worth remembering" htmlFor="inquiry-notes">
-                  <Textarea
-                    id="inquiry-notes"
-                    rows={3}
-                    value={notes}
-                    onChange={(event) => setNotes(event.target.value)}
-                    placeholder="Wants a corner lot, relocating in June…"
-                    className="resize-none rounded-none text-[13px]"
+                <Field label="Brokerage" htmlFor="inquiry-brokerage">
+                  <Input
+                    id="inquiry-brokerage"
+                    value={coopBrokerage}
+                    onChange={(event) => setCoopBrokerage(event.target.value)}
+                    className="h-9 rounded-none"
                   />
                 </Field>
-              </Section>
-            </div>
-          </ScrollArea>
+              </div>
+            </Section>
 
-          <SheetFooter className="flex-row justify-end gap-2 border-t px-5 py-3">
-            <Button variant="outline" size="sm" className="rounded-none" onClick={() => setOpen(false)} disabled={pending}>
-              Cancel
-            </Button>
-            <Button size="sm" className="rounded-none" onClick={submit} disabled={pending || buyerName.trim().length < 2}>
-              {pending ? "Registering…" : "Register"}
-            </Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
-    </>
+            <Section title="Notes">
+              <Field label="Owner">
+                <Picker
+                  value={ownerId}
+                  onChange={setOwnerId}
+                  placeholder="Me"
+                  options={teamMembers.map(({ id, name }) => ({ value: id, label: name }))}
+                />
+              </Field>
+              <Field label="Anything worth remembering" htmlFor="inquiry-notes">
+                <Textarea
+                  id="inquiry-notes"
+                  rows={3}
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  placeholder="Wants a corner lot, relocating in June…"
+                  className="resize-none rounded-none text-[13px]"
+                />
+              </Field>
+            </Section>
+          </div>
+        </ScrollArea>
+
+        <SheetFooter className="flex-row justify-end gap-2 border-t px-5 py-3">
+          <Button variant="outline" size="sm" className="rounded-none" onClick={() => setOpen(false)} disabled={pending}>
+            Cancel
+          </Button>
+          <Button size="sm" className="rounded-none" onClick={submit} disabled={pending || (!existingBuyer && buyerName.trim().length < 2)}>
+            {pending ? "Registering…" : "Register"}
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   )
 }

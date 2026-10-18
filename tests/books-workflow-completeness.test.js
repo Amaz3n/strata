@@ -39,16 +39,16 @@ test("Banking owns feed work and the old Transactions URL is only a redirect", (
   const redirect = read("app/(app)/books/transactions/page.tsx")
   const ledger = read("components/books/books-journals.tsx")
   assert.doesNotMatch(client, /key: "transactions"/)
-  assert.match(client, /<BankReviewTray/)
-  assert.match(client, /<BankTransactionRegister/)
+  assert.match(client, /<BankingWorkspace/)
+  assert.doesNotMatch(client, /key: "banking", label: "Banking"/)
   assert.match(redirect, /redirect\("\/books\/banking"\)/)
-  assert.match(ledger, /Memo, source, account, project, or entity/)
+  assert.match(ledger, /aria-label="Search general ledger"/)
 })
 
 test("the accounting product remains Books", () => {
-  const client = read("app/(app)/books/books-client.tsx")
-  assert.match(client, /Arc Books/)
-  assert.doesNotMatch(client, /Mainframe|Arc Ledger|Basis/)
+  const settings = read("components/settings/accounting-settings-panel.tsx")
+  assert.match(settings, /Arc Books/)
+  assert.doesNotMatch(settings, /Mainframe|Arc Ledger|Basis/)
 })
 
 test("company account keeps vendor-ledger runtime values out of the client graph", () => {

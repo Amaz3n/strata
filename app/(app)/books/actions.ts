@@ -1,8 +1,30 @@
 "use server";
+import { STATEMENT_DIMENSIONS, type StatementDimension } from "@/lib/services/books/statements";
 
-import { getBooksFundingWorkspace, saveBooksFundingAccount } from "@/lib/services/books/funding";
-import { getClearingSupportWorkspace, reviewClearingSupport } from "@/lib/services/books/clearing-support";
-import { getPayrollSettlementAccounts, recordPayrollSettlement } from "@/lib/services/books/payroll-settlement";
+import {
+  getBooksFundingWorkspace,
+  saveBooksFundingAccount,
+} from "@/lib/services/books/funding";
+import {
+  getWipReviewWorkspace,
+  reviewWipSnapshots,
+  prepareWipSnapshot,
+  carryForwardWipSnapshot,
+  allocateWipRevenue,
+  recordWipCostAllocation,
+} from "@/lib/services/books/wip-review";
+import { assignInvoiceContract } from "@/lib/services/invoices";
+import { proposeRevenuePolicy, reviewRevenuePolicy } from "@/lib/services/books/revenue-policies";
+import { proposeCostAllocation, reviewCostAllocation } from "@/lib/services/books/cost-allocations";
+import { createLegalEntity, renameLegalEntity, sellLotToAffiliate, setLegalEntityOwner } from "@/lib/services/books/legal-entities";
+import {
+  getClearingSupportWorkspace,
+  reviewClearingSupport,
+} from "@/lib/services/books/clearing-support";
+import {
+  getPayrollSettlementAccounts,
+  recordPayrollSettlement,
+} from "@/lib/services/books/payroll-settlement";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
@@ -43,6 +65,14 @@ import {
   setBankRuleActive,
 } from "@/lib/services/books/bank-rules";
 import {
+  createBankManualRule,
+  deleteBankManualRule,
+  listBankManualRules,
+  setBankManualRuleActive,
+  updateBankManualRule,
+  type BankManualRuleInput,
+} from "@/lib/services/books/bank-manual-rules";
+import {
   approveBooksComparisonRun,
   createBooksComparisonRun,
   explainBooksComparisonItem,
@@ -54,7 +84,7 @@ import {
   approveBooksCutover,
   rollbackBooksCutover,
 } from "@/lib/services/books/cutover";
-import { createCompleteBooksExport } from "@/lib/services/books/exports";
+import { requestBooksExport } from "@/lib/services/books/exports";
 import {
   getExternalAccountMappingWorkspace,
   mirrorPeriodSummary,
@@ -124,17 +154,44 @@ import {
   createDepositBatch,
   getDepositBatchWorkspace,
 } from "@/lib/services/books/deposit-batches";
-import { getOverheadBudgetWorkspace, saveOverheadBudget } from "@/lib/services/books/overhead-budgets";
+import {
+  getOverheadBudgetWorkspace,
+  saveOverheadBudget,
+} from "@/lib/services/books/overhead-budgets";
 
 export async function loadOverheadBudgetAction(fiscalYear: number) {
-  return read(() => getOverheadBudgetWorkspace({ fiscalYear: z.number().int().min(2000).max(2200).parse(fiscalYear) }));
+  return read(() =>
+    getOverheadBudgetWorkspace({
+      fiscalYear: z.number().int().min(2000).max(2200).parse(fiscalYear),
+    }),
+  );
 }
 
-export async function saveOverheadBudgetAction(input: Parameters<typeof saveOverheadBudget>[0]) {
-  return run(() => saveOverheadBudget(z.object({
-    budgetId: z.string().uuid().nullable().optional(), fiscalYear: z.number().int().min(2000).max(2200), name: z.string().trim().min(2).max(100), status: z.enum(["draft", "active", "archived"]), notes: z.string().trim().max(500).nullable().optional(),
-    lines: z.array(z.object({ accountId: z.string().uuid(), month: z.number().int().min(0).max(11), budgetCents: z.number().int().min(0) })).max(1200),
-  }).parse(input)));
+export async function saveOverheadBudgetAction(
+  input: Parameters<typeof saveOverheadBudget>[0],
+) {
+  return run(() =>
+    saveOverheadBudget(
+      z
+        .object({
+          budgetId: z.string().uuid().nullable().optional(),
+          fiscalYear: z.number().int().min(2000).max(2200),
+          name: z.string().trim().min(2).max(100),
+          status: z.enum(["draft", "active", "archived"]),
+          notes: z.string().trim().max(500).nullable().optional(),
+          lines: z
+            .array(
+              z.object({
+                accountId: z.string().uuid(),
+                month: z.number().int().min(0).max(11),
+                budgetCents: z.number().int().min(0),
+              }),
+            )
+            .max(1200),
+        })
+        .parse(input),
+    ),
+  );
 }
 
 export async function loadDepositBatchWorkspaceAction() {
@@ -144,20 +201,34 @@ export async function loadDepositBatchWorkspaceAction() {
 export async function createDepositBatchAction(input: {
   bankTransactionId: string;
   paymentIds: string[];
+  feeCents?: number;
   reference?: string | null;
 }) {
-  return run(() => createDepositBatch(z.object({
-    bankTransactionId: z.string().uuid(),
-    paymentIds: z.array(z.string().uuid()).min(1),
-    reference: z.string().trim().max(120).nullable().optional(),
-  }).parse(input)));
+  return run(() =>
+    createDepositBatch(
+      z
+        .object({
+          bankTransactionId: z.string().uuid(),
+          paymentIds: z.array(z.string().uuid()).min(1),
+          feeCents: z.number().int().nonnegative().safe().optional(),
+          reference: z.string().trim().max(120).nullable().optional(),
+        })
+        .parse(input),
+    ),
+  );
 }
 
 async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   try {
     await requireBooksWorkspaceEnabled();
     const result = await operation();
-    revalidatePath("/books");
+    revalidatePath("/books", "layout");
+    revalidatePath("/billing");
+    revalidatePath("/billing/deposits");
+    revalidatePath("/warranty");
+    revalidatePath("/warranty/accounting");
+    revalidatePath("/settings/accounting", "layout");
+    revalidatePath("/settings");
     return { success: true, data: result };
   } catch (error) {
     return actionError(error);
@@ -165,7 +236,7 @@ async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
 }
 
 export async function loadCustomerDepositsAction() {
-  return run(() => getCustomerDepositWorkspace());
+  return read(() => getCustomerDepositWorkspace());
 }
 
 export async function applyCustomerDepositAction(input: {
@@ -177,7 +248,7 @@ export async function applyCustomerDepositAction(input: {
 }
 
 export async function loadBooksRegistersAction() {
-  return run(() => getBooksRegisters());
+  return read(() => getBooksRegisters());
 }
 
 export async function createDebtInstrumentAction(
@@ -210,7 +281,7 @@ export async function disposeFixedAssetAction(
 }
 
 export async function getGreenfieldReadinessAction() {
-  return run(() => getGreenfieldReadiness());
+  return read(() => getGreenfieldReadiness());
 }
 
 export async function launchGreenfieldBooksAction(
@@ -220,7 +291,7 @@ export async function launchGreenfieldBooksAction(
 }
 
 export async function loadTaxRegisterAction() {
-  return run(() => getTaxRegister());
+  return read(() => getTaxRegister());
 }
 export async function createTaxJurisdictionAction(
   input: Parameters<typeof createTaxJurisdiction>[0],
@@ -289,12 +360,15 @@ export async function loadStatementsAction(input: {
 }
 
 export async function loadBankReviewTrayAction(
-  input: { bankAccountId?: string | null } = {},
+  input: { bankAccountId?: string | null; transactionIds?: string[] } = {},
 ) {
   return read(() =>
     reviewUnmatchedBankTransactions(
       z
-        .object({ bankAccountId: z.string().uuid().nullable().optional() })
+        .object({
+          bankAccountId: z.string().uuid().nullable().optional(),
+          transactionIds: z.array(z.string().uuid()).max(50).optional(),
+        })
         .parse(input),
     ),
   );
@@ -420,6 +494,54 @@ export async function setBankRuleActiveAction(input: {
   );
 }
 
+const bankManualRuleActionSchema = z.object({
+  matchKind: z.enum(["merchant_exact", "description_contains"]),
+  matchValue: z.string().trim().min(2).max(160),
+  direction: z.enum(["inflow", "outflow"]).nullable(),
+  bankAccountId: z.string().uuid().nullable(),
+  glAccountId: z.string().uuid(),
+  vendorId: z.string().uuid().nullable(),
+});
+
+export async function listBankManualRulesAction() {
+  return read(() => listBankManualRules());
+}
+
+export async function createBankManualRuleAction(input: BankManualRuleInput) {
+  return run(() =>
+    createBankManualRule(bankManualRuleActionSchema.parse(input)),
+  );
+}
+
+export async function updateBankManualRuleAction(
+  input: BankManualRuleInput & { ruleId: string },
+) {
+  return run(() =>
+    updateBankManualRule(
+      bankManualRuleActionSchema
+        .extend({ ruleId: z.string().uuid() })
+        .parse(input),
+    ),
+  );
+}
+
+export async function setBankManualRuleActiveAction(input: {
+  ruleId: string;
+  active: boolean;
+}) {
+  return run(() =>
+    setBankManualRuleActive(
+      z.object({ ruleId: z.string().uuid(), active: z.boolean() }).parse(input),
+    ),
+  );
+}
+
+export async function deleteBankManualRuleAction(input: { ruleId: string }) {
+  return run(() =>
+    deleteBankManualRule(z.object({ ruleId: z.string().uuid() }).parse(input)),
+  );
+}
+
 export async function listJournalEntriesAction(input: {
   entryKinds?: string[];
   startDate?: string;
@@ -429,6 +551,7 @@ export async function listJournalEntriesAction(input: {
   projectId?: string;
   minAmountCents?: number;
   maxAmountCents?: number;
+  entryId?: string;
 }) {
   return read(() =>
     listJournalEntries(
@@ -442,6 +565,7 @@ export async function listJournalEntriesAction(input: {
           projectId: z.string().uuid().optional(),
           minAmountCents: z.number().int().min(0).optional(),
           maxAmountCents: z.number().int().min(0).optional(),
+          entryId: z.string().uuid().optional(),
         })
         .parse(input),
     ),
@@ -497,19 +621,25 @@ export async function setRecurringTemplateStatusAction(input: {
 }
 
 export async function loadAccountActivityAction(input: {
+  operatingOnly?: boolean;
+  unassignedOnly?: boolean;
   accountId: string;
   startDate: string;
   endDate: string;
   projectId?: string | null;
+  dimension?: { key: StatementDimension; value: string | null };
 }) {
   return read(() =>
     getAccountActivity(
       z
         .object({
+          operatingOnly: z.boolean().optional(),
+          unassignedOnly: z.boolean().optional(),
           accountId: z.string().uuid(),
           startDate: isoDate,
           endDate: isoDate,
           projectId: z.string().uuid().nullable().optional(),
+          dimension: z.object({ key: z.enum(STATEMENT_DIMENSIONS), value: z.string().max(200).nullable() }).optional(),
         })
         .parse(input),
     ),
@@ -555,7 +685,7 @@ export async function reopenAccountingPeriodAction(
 export async function createBooksExportAction(
   exportType: "complete" | "accountant" | "cutover" | "period" = "complete",
 ) {
-  return run(() => createCompleteBooksExport({ exportType }));
+  return run(() => requestBooksExport({ exportType }));
 }
 export async function runReconciliationNowAction() {
   return run(() => runReconciliationNow());
@@ -851,8 +981,10 @@ export async function proposeAdjustingJournalAction(
   return run(() => proposeAdjustingJournal(input));
 }
 
-export async function listJournalProposalsAction() {
-  return run(() => listJournalProposals());
+export async function listJournalProposalsAction(
+  cursor?: import("@/lib/services/books/journal-proposal-review").JournalProposalCursor,
+) {
+  return read(() => listJournalProposals(undefined, cursor));
 }
 
 export async function reviewJournalProposalAction(
@@ -869,6 +1001,11 @@ export async function createGlAccountAction(formData: FormData) {
       accountType: z.string().parse(formData.get("accountType")),
       subtype: z.string().parse(formData.get("subtype")),
       normalBalance: z.string().parse(formData.get("normalBalance")),
+      parentId: z
+        .string()
+        .uuid()
+        .nullable()
+        .parse(formData.get("parentId") || null),
       cashFlowCategory: z
         .string()
         .optional()
@@ -919,6 +1056,8 @@ const openingLineSchema = z.object({
       "deposit",
       "equity",
       "other",
+      "land",
+      "home_inventory",
     ])
     .optional(),
   sourceEntityType: z.string().optional(),
@@ -937,11 +1076,13 @@ export async function importOpeningBalancesAction(input: {
   /** What the person actually pasted, kept verbatim as the batch's provenance. */
   sourceContent: string;
   lines: Array<z.infer<typeof openingLineSchema>>;
+  legalEntityId?: string | null;
 }) {
   return run(() => {
     const parsed = z
       .object({
         cutoverDate: isoDate,
+        legalEntityId: z.string().uuid().nullable().optional(),
         sourceFilename: z.string().max(200).nullable().optional(),
         sourceContent: z.string().min(2),
         lines: z
@@ -954,6 +1095,7 @@ export async function importOpeningBalancesAction(input: {
       sourceFilename: parsed.sourceFilename ?? undefined,
       sourceContent: parsed.sourceContent,
       lines: parsed.lines,
+      legalEntityId: parsed.legalEntityId ?? null,
     });
   });
 }
@@ -1079,44 +1221,376 @@ export async function getBooksExportDownloadAction(exportId: string) {
   });
 }
 
-export async function loadBooksFundingAction() { return read(() => getBooksFundingWorkspace()); }
-export async function saveBooksFundingAction(input: { fundingSourceId: string; accountId: string }) { return run(() => saveBooksFundingAccount(input)); }
+export async function loadBooksFundingAction() {
+  return read(() => getBooksFundingWorkspace());
+}
+export async function saveBooksFundingAction(input: {
+  fundingSourceId: string;
+  accountId: string;
+}) {
+  return run(() => saveBooksFundingAccount(input));
+}
 
 export async function loadClearingSupportAction(periodId: string) {
   return read(() => getClearingSupportWorkspace(periodId));
 }
-export async function saveClearingSupportAction(input: Parameters<typeof reviewClearingSupport>[0]) {
-  return run(async () => { await reviewClearingSupport(input); return runBooksCloseChecklist(input.periodId); });
+export async function saveClearingSupportAction(
+  input: Parameters<typeof reviewClearingSupport>[0],
+) {
+  return run(async () => {
+    await reviewClearingSupport(input);
+    return runBooksCloseChecklist(input.periodId);
+  });
 }
 
-export async function loadBankCostCodingOptionsAction() { return read(() => getBankCostCodingOptions()); }
+export async function loadBankCostCodingOptionsAction() {
+  return read(() => getBankCostCodingOptions());
+}
 
-export async function loadPayrollSettlementAccountsAction() { return read(() => getPayrollSettlementAccounts()); }
-export async function recordPayrollSettlementAction(input: Parameters<typeof recordPayrollSettlement>[0]) { return run(() => recordPayrollSettlement(input)); }
+export async function loadPayrollSettlementAccountsAction() {
+  return read(() => getPayrollSettlementAccounts());
+}
+export async function recordPayrollSettlementAction(
+  input: Parameters<typeof recordPayrollSettlement>[0],
+) {
+  return run(() => recordPayrollSettlement(input));
+}
 
 export async function loadInventoryWorkspaceAction() {
-  return read(async () => (await import("@/lib/services/books/inventory")).getInventoryWorkspace());
+  return read(async () =>
+    (await import("@/lib/services/books/inventory")).getInventoryWorkspace(),
+  );
 }
-export async function enableProjectInventoryAction(input: { projectId: string; effectiveOn: string; evidenceUrl: string }) {
-  return run(async () => (await import("@/lib/services/books/inventory")).enableProjectInventory(input));
+export async function enableProjectInventoryAction(input: {
+  projectId: string;
+  effectiveOn: string;
+  evidenceUrl: string;
+}) {
+  return run(async () =>
+    (await import("@/lib/services/books/inventory")).enableProjectInventory(
+      input,
+    ),
+  );
 }
-export async function completeProjectInventoryAction(input: { projectId: string; date: string; evidenceUrl: string }) {
-  return run(async () => (await import("@/lib/services/books/inventory")).completeProjectInventory(input));
+export async function completeProjectInventoryAction(input: {
+  projectId: string;
+  date: string;
+  evidenceUrl: string;
+}) {
+  return run(async () =>
+    (await import("@/lib/services/books/inventory")).completeProjectInventory(
+      input,
+    ),
+  );
 }
 
-export async function loadLandAcquisitionWorkspaceAction() { return read(async () => (await import("@/lib/services/books/inventory")).getLandAcquisitionWorkspace()); }
-export async function acquireLandInventoryAction(input: Parameters<typeof import("@/lib/services/books/inventory").acquireLandInventory>[0]) { return run(async () => (await import("@/lib/services/books/inventory")).acquireLandInventory(input)); }
+export async function loadLandAcquisitionWorkspaceAction() {
+  return read(async () =>
+    (
+      await import("@/lib/services/books/inventory")
+    ).getLandAcquisitionWorkspace(),
+  );
+}
+export async function acquireLandInventoryAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/inventory").acquireLandInventory
+  >[0],
+) {
+  return run(async () =>
+    (await import("@/lib/services/books/inventory")).acquireLandInventory(
+      input,
+    ),
+  );
+}
 
-export async function loadInventoryAllocationWorkspaceAction() { return read(async () => (await import("@/lib/services/books/inventory")).getInventoryAllocationWorkspace()); }
-export async function allocateDevelopmentInventoryAction(input: Parameters<typeof import("@/lib/services/books/inventory").allocateDevelopmentInventory>[0]) { return run(async () => (await import("@/lib/services/books/inventory")).allocateDevelopmentInventory(input)); }
-export async function capitalizeInventoryInterestAction(input: Parameters<typeof import("@/lib/services/books/inventory").capitalizeInventoryInterest>[0]) { return run(async () => (await import("@/lib/services/books/inventory")).capitalizeInventoryInterest(input)); }
+export async function reverseLandAcquisitionAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/inventory").reverseLandAcquisition
+  >[0],
+) {
+  return run(async () =>
+    (await import("@/lib/services/books/inventory")).reverseLandAcquisition(
+      input,
+    ),
+  );
+}
+export async function correctLandStartTransferAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/inventory").correctLandStartTransfer
+  >[0],
+) {
+  return run(async () =>
+    (await import("@/lib/services/books/inventory")).correctLandStartTransfer(
+      input,
+    ),
+  );
+}
 
-export async function loadWarrantyAccountingAction(projectId?: string) { return read(async () => (await import("@/lib/services/books/warranty-accounting")).getWarrantyAccountingWorkspace(projectId)); }
-export async function loadWarrantyCostSourcesAction(visitId: string) { return read(async () => (await import("@/lib/services/books/warranty-accounting")).getWarrantyCostSources(visitId)); }
-export async function approveWarrantyAccountingAction(input: Parameters<typeof import("@/lib/services/books/warranty-accounting").approveWarrantyAccounting>[0]) { return run(async () => (await import("@/lib/services/books/warranty-accounting")).approveWarrantyAccounting(input)); }
-export async function reverseWarrantyAccountingAction(input: Parameters<typeof import("@/lib/services/books/warranty-accounting").reverseWarrantyAccounting>[0]) { return run(async () => (await import("@/lib/services/books/warranty-accounting")).reverseWarrantyAccounting(input)); }
-export async function setWarrantyReserveEstimateAction(input: Parameters<typeof import("@/lib/services/books/warranty-accounting").setWarrantyReserveEstimate>[0]) { return run(async () => (await import("@/lib/services/books/warranty-accounting")).setWarrantyReserveEstimate(input)); }
+export async function loadInventoryAllocationWorkspaceAction(projectId: string) {
+  return read(async () =>
+    (
+      await import("@/lib/services/books/inventory")
+    ).getInventoryAllocationWorkspace(projectId),
+  );
+}
+export async function proposeDevelopmentAllocationAction(
+  input: Parameters<typeof import("@/lib/services/books/inventory").proposeDevelopmentAllocation>[0],
+) {
+  return run(async () => (await import("@/lib/services/books/inventory")).proposeDevelopmentAllocation(input));
+}
+export async function reviewDevelopmentAllocationAction(
+  input: Parameters<typeof import("@/lib/services/books/inventory").reviewDevelopmentAllocation>[0],
+) {
+  return run(async () => (await import("@/lib/services/books/inventory")).reviewDevelopmentAllocation(input));
+}
+export async function loadInventoryImpairmentWorkspaceAction(projectId: string) {
+  return read(async () => (await import("@/lib/services/books/inventory")).getInventoryImpairmentWorkspace(projectId));
+}
+export async function proposeInventoryImpairmentAction(
+  input: Parameters<typeof import("@/lib/services/books/inventory").proposeInventoryImpairment>[0],
+) {
+  return run(async () => (await import("@/lib/services/books/inventory")).proposeInventoryImpairment(input));
+}
+export async function reviewInventoryImpairmentAction(
+  input: Parameters<typeof import("@/lib/services/books/inventory").reviewInventoryImpairment>[0],
+) {
+  return run(async () => (await import("@/lib/services/books/inventory")).reviewInventoryImpairment(input));
+}
+export async function capitalizeInventoryInterestAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/inventory").capitalizeInventoryInterest
+  >[0],
+) {
+  return run(async () =>
+    (
+      await import("@/lib/services/books/inventory")
+    ).capitalizeInventoryInterest(input),
+  );
+}
 
-export async function reopenBankReconciliationAction(input: { reconciliationId: string; reason: string }) {
-  return run(async () => { const { reopenBankReconciliation } = await import("@/lib/services/books/bank-reconciliation"); return reopenBankReconciliation(input); });
+export async function loadWarrantyAccountingAction(projectId?: string) {
+  return read(async () =>
+    (
+      await import("@/lib/services/books/warranty-accounting")
+    ).getWarrantyAccountingWorkspace(projectId),
+  );
+}
+export async function loadWarrantyCostSourcesAction(visitId: string) {
+  return read(async () =>
+    (
+      await import("@/lib/services/books/warranty-accounting")
+    ).getWarrantyCostSources(visitId),
+  );
+}
+export async function approveWarrantyAccountingAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/warranty-accounting").approveWarrantyAccounting
+  >[0],
+) {
+  return run(async () =>
+    (
+      await import("@/lib/services/books/warranty-accounting")
+    ).approveWarrantyAccounting(input),
+  );
+}
+export async function reverseWarrantyAccountingAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/warranty-accounting").reverseWarrantyAccounting
+  >[0],
+) {
+  return run(async () =>
+    (
+      await import("@/lib/services/books/warranty-accounting")
+    ).reverseWarrantyAccounting(input),
+  );
+}
+export async function setWarrantyReserveEstimateAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/warranty-accounting").setWarrantyReserveEstimate
+  >[0],
+) {
+  return run(async () =>
+    (
+      await import("@/lib/services/books/warranty-accounting")
+    ).setWarrantyReserveEstimate(input),
+  );
+}
+
+export async function createBankBookOffsetAction(input: {
+  bankAccountId: string;
+  journalLineIds: string[];
+  reason: string;
+}) {
+  return run(async () => {
+    const { createBankBookOffset } = await import("@/lib/services/books/bank-reconciliation");
+    return createBankBookOffset(input);
+  });
+}
+
+export async function reopenBankReconciliationAction(input: {
+  reconciliationId: string;
+  reason: string;
+}) {
+  return run(async () => {
+    const { reopenBankReconciliation } =
+      await import("@/lib/services/books/bank-reconciliation");
+    return reopenBankReconciliation(input);
+  });
+}
+
+export async function loadWipReviewAction(periodId: string) {
+  return read(() => getWipReviewWorkspace(periodId));
+}
+export async function saveWipReviewAction(
+  input: Parameters<typeof reviewWipSnapshots>[0],
+) {
+  return run(async () => {
+    await reviewWipSnapshots(input);
+    return runBooksCloseChecklist(input.periodId);
+  });
+}
+
+export async function prepareWipSnapshotAction(
+  input: Parameters<typeof prepareWipSnapshot>[0],
+) {
+  return run(() => prepareWipSnapshot(input));
+}
+
+export async function carryForwardWipSnapshotAction(
+  input: Parameters<typeof carryForwardWipSnapshot>[0],
+) {
+  return run(() => carryForwardWipSnapshot(input));
+}
+
+export async function allocateWipRevenueAction(
+  input: Parameters<typeof allocateWipRevenue>[0],
+) {
+  return run(() => allocateWipRevenue(input));
+}
+
+export async function recordWipCostAllocationAction(
+  input: Parameters<typeof recordWipCostAllocation>[0],
+) {
+  return run(() => recordWipCostAllocation(input));
+}
+
+export async function proposeRevenuePolicyAction(input: Parameters<typeof proposeRevenuePolicy>[0]) {
+  return run(() => proposeRevenuePolicy(input));
+}
+
+export async function reviewRevenuePolicyAction(input: Parameters<typeof reviewRevenuePolicy>[0]) {
+  return run(() => reviewRevenuePolicy(input));
+}
+
+export async function assignInvoiceContractAction(input: { invoiceId: string; contractId: string }) {
+  return run(() => assignInvoiceContract(z.object({ invoiceId: z.string().uuid(), contractId: z.string().uuid() }).parse(input)));
+}
+
+export async function prepareTaxWorkpaperAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/tax-adjustments").prepareTaxWorkpaper
+  >[0],
+) {
+  return run(async () =>
+    (await import("@/lib/services/books/tax-adjustments")).prepareTaxWorkpaper(
+      input,
+    ),
+  );
+}
+export async function reviewTaxWorkpaperAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/tax-adjustments").reviewTaxWorkpaper
+  >[0],
+) {
+  return run(async () =>
+    (await import("@/lib/services/books/tax-adjustments")).reviewTaxWorkpaper(
+      input,
+    ),
+  );
+}
+export async function loadTaxWorkpaperWorkspaceAction(
+  startDate: string,
+  endDate: string,
+) {
+  return read(async () =>
+    (
+      await import("@/lib/services/books/tax-adjustments")
+    ).getTaxWorkpaperWorkspace(startDate, endDate),
+  );
+}
+export async function withdrawTaxWorkpaperAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/tax-adjustments").withdrawTaxWorkpaper
+  >[0],
+) {
+  return run(async () =>
+    (await import("@/lib/services/books/tax-adjustments")).withdrawTaxWorkpaper(
+      input,
+    ),
+  );
+}
+
+const vendor1099 = () => import("@/lib/services/books/vendor-1099-packages")
+export async function loadVendor1099PackagesAction(taxYear: number) {
+  return read(async () => (await vendor1099()).getVendor1099Packages(taxYear))
+}
+export async function setPayerTaxIdentityAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["setPayerTaxIdentity"]>[0]) {
+  return run(async () => (await vendor1099()).setPayerTaxIdentity(input))
+}
+export async function prepare1099PackageAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["prepare1099Package"]>[0]) {
+  return run(async () => (await vendor1099()).prepare1099Package(input))
+}
+export async function approve1099PackageAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["approve1099Package"]>[0]) {
+  return run(async () => (await vendor1099()).approve1099Package(input))
+}
+export async function withdraw1099PackageAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["withdraw1099Package"]>[0]) {
+  return run(async () => (await vendor1099()).withdraw1099Package(input))
+}
+export async function record1099SubmissionAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["record1099Submission"]>[0]) {
+  return run(async () => (await vendor1099()).record1099Submission(input))
+}
+export async function submit1099PackageToTaxBanditsAction(id: string) {
+  return run(async () => (await vendor1099()).submit1099PackageToTaxBandits(id))
+}
+export async function refresh1099PackageFromTaxBanditsAction(id: string) {
+  return run(async () => (await vendor1099()).refresh1099PackageFromTaxBandits(id))
+}
+export async function record1099OutcomeAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["record1099Outcome"]>[0]) {
+  return run(async () => (await vendor1099()).record1099Outcome(input))
+}
+
+export async function resolveJournalRecoveryAction(
+  input: Parameters<
+    typeof import("@/lib/services/books/bookkeeping").resolveJournalRecovery
+  >[0],
+) {
+  return run(async () => {
+    const { resolveJournalRecovery } =
+      await import("@/lib/services/books/bookkeeping");
+    return resolveJournalRecovery(input);
+  });
+}
+
+export async function proposeCostAllocationAction(input: Parameters<typeof proposeCostAllocation>[0]) {
+  return run(() => proposeCostAllocation(input));
+}
+
+export async function reviewCostAllocationAction(input: Parameters<typeof reviewCostAllocation>[0]) {
+  return run(() => reviewCostAllocation(input));
+}
+
+export async function createLegalEntityAction(input: Parameters<typeof createLegalEntity>[0]) {
+  return run(() => createLegalEntity(input));
+}
+
+export async function renameLegalEntityAction(input: Parameters<typeof renameLegalEntity>[0]) {
+  return run(() => renameLegalEntity(input));
+}
+
+export async function setLegalEntityOwnerAction(input: Parameters<typeof setLegalEntityOwner>[0]) {
+  return run(() => setLegalEntityOwner(input));
+}
+
+export async function sellLotToAffiliateAction(input: Parameters<typeof sellLotToAffiliate>[0]) {
+  return run(() => sellLotToAffiliate(input));
 }

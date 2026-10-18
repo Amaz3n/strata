@@ -1,7 +1,10 @@
-import { COOP_AGENT_ROLE } from "@/lib/sales/activity"
-import { promotePersonToDirectoryWithClient } from "@/lib/services/party-promotion"
-import { serializeLostReason } from "@/lib/sales/lost-reasons"
+import { z } from "zod";
+import { assertCanWriteDeals, assertProspectWriteAccess, assertProspectOwner } from "@/lib/services/prospect-write-access";
+import { COOP_AGENT_ROLE } from "@/lib/sales/activity";
+import { promotePersonToDirectoryWithClient } from "@/lib/services/party-promotion";
+import { serializeLostReason } from "@/lib/sales/lost-reasons";
 import {
+  assertManualProspectStatus,
   createProspectInputSchema,
   logProspectContactInputSchema,
   markProspectLostInputSchema,
@@ -19,86 +22,89 @@ import {
   type UpdateDealDetailsInput,
   type UpdateProspectContactInput,
   type UpdateProspectInput,
-} from "@/lib/validation/prospects"
-import { recordAudit } from "@/lib/services/audit"
-import { recordLeadTraffic } from "@/lib/services/community-traffic"
-import { requireOrgContext } from "@/lib/services/context"
-import { recordEvent } from "@/lib/services/events"
-import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+} from "@/lib/validation/prospects";
+import { recordAudit } from "@/lib/services/audit";
+import { recordLeadTraffic } from "@/lib/services/community-traffic";
+import { requireOrgContext } from "@/lib/services/context";
+import { recordEvent } from "@/lib/services/events";
+import {
+  requireAnyPermission,
+  requirePermission,
+} from "@/lib/services/permissions";
 
 export interface ProspectContact {
-  id: string
-  org_id: string
-  prospect_id: string
-  contact_id?: string | null
-  full_name: string
-  email?: string | null
-  phone?: string | null
-  role?: string | null
-  company_name?: string | null
-  is_primary: boolean
-  promoted_contact_id?: string | null
-  metadata: Record<string, unknown>
-  created_at: string
-  updated_at?: string | null
+  id: string;
+  org_id: string;
+  prospect_id: string;
+  contact_id?: string | null;
+  full_name: string;
+  email?: string | null;
+  phone?: string | null;
+  role?: string | null;
+  company_name?: string | null;
+  is_primary: boolean;
+  promoted_contact_id?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at?: string | null;
 }
 
 export interface Prospect {
-  id: string
-  org_id: string
-  name: string
-  status: ProspectStatus
-  owner_user_id?: string | null
-  community_id?: string | null
-  community_name?: string | null
-  source?: string | null
+  id: string;
+  org_id: string;
+  name: string;
+  status: ProspectStatus;
+  owner_user_id?: string | null;
+  community_id?: string | null;
+  community_name?: string | null;
+  source?: string | null;
   jobsite_location?: {
-    street?: string
-    city?: string
-    state?: string
-    postal_code?: string
-  } | null
-  project_type?: string | null
-  budget_range?: string | null
-  timeline_preference?: string | null
-  tags: string[]
-  notes?: string | null
-  lost_reason?: string | null
-  next_follow_up_at?: string | null
-  won_at?: string | null
-  lost_at?: string | null
-  created_by?: string | null
-  created_at: string
-  updated_at?: string | null
-  contacts?: ProspectContact[]
-  primary_contact?: ProspectContact | null
-  estimate_count?: number
-  estimate_value_cents?: number
-  has_estimate?: boolean
-  project_id?: string | null
+    street?: string;
+    city?: string;
+    state?: string;
+    postal_code?: string;
+  } | null;
+  project_type?: string | null;
+  budget_range?: string | null;
+  timeline_preference?: string | null;
+  tags: string[];
+  notes?: string | null;
+  lost_reason?: string | null;
+  next_follow_up_at?: string | null;
+  won_at?: string | null;
+  lost_at?: string | null;
+  created_by?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+  contacts?: ProspectContact[];
+  primary_contact?: ProspectContact | null;
+  estimate_count?: number;
+  estimate_value_cents?: number;
+  has_estimate?: boolean;
+  project_id?: string | null;
   // Phase of the linked project: "precon" while pricing, "delivery" once won.
-  project_phase?: "precon" | "delivery" | null
+  project_phase?: "precon" | "delivery" | null;
 }
 
 const prospectSelect = `
   id, org_id, name, status, owner_user_id, community_id, source, jobsite_location, project_type,
   budget_range, timeline_preference, tags, notes, lost_reason, next_follow_up_at, won_at, lost_at,
   created_by, created_at, updated_at, community:communities(name)
-`
+`;
 
 const prospectContactSelect = `
   id, org_id, prospect_id, contact_id, full_name, email, phone, role, company_name,
   is_primary, promoted_contact_id, metadata, created_at, updated_at
-`
+`;
 
 function mapProspect(
   row: any,
   contacts?: ProspectContact[],
   extras: {
-    estimateCount?: number
-    estimateValueCents?: number
-    projectId?: string | null
-    projectPhase?: "precon" | "delivery" | null
+    estimateCount?: number;
+    estimateValueCents?: number;
+    projectId?: string | null;
+    projectPhase?: "precon" | "delivery" | null;
   } = {},
 ): Prospect {
   return {
@@ -108,7 +114,10 @@ function mapProspect(
     status: row.status,
     owner_user_id: row.owner_user_id ?? null,
     community_id: row.community_id ?? null,
-    community_name: (Array.isArray(row.community) ? row.community[0]?.name : row.community?.name) ?? null,
+    community_name:
+      (Array.isArray(row.community)
+        ? row.community[0]?.name
+        : row.community?.name) ?? null,
     source: row.source ?? null,
     jobsite_location: row.jobsite_location ?? null,
     project_type: row.project_type ?? null,
@@ -124,13 +133,14 @@ function mapProspect(
     created_at: row.created_at,
     updated_at: row.updated_at ?? null,
     contacts,
-    primary_contact: contacts?.find((contact) => contact.is_primary) ?? contacts?.[0] ?? null,
+    primary_contact:
+      contacts?.find((contact) => contact.is_primary) ?? contacts?.[0] ?? null,
     estimate_count: extras.estimateCount ?? 0,
     estimate_value_cents: extras.estimateValueCents ?? 0,
     has_estimate: (extras.estimateCount ?? 0) > 0,
     project_id: extras.projectId ?? null,
     project_phase: extras.projectPhase ?? null,
-  }
+  };
 }
 
 function mapProspectContact(row: any): ProspectContact {
@@ -149,7 +159,7 @@ function mapProspectContact(row: any): ProspectContact {
     metadata: row.metadata ?? {},
     created_at: row.created_at,
     updated_at: row.updated_at ?? null,
-  }
+  };
 }
 
 function applyTerminalStatusDates(
@@ -158,27 +168,27 @@ function applyTerminalStatusDates(
   currentStatus?: ProspectStatus,
 ) {
   if (!nextStatus || nextStatus === currentStatus) {
-    return
+    return;
   }
 
   if (nextStatus === "won") {
-    updates.won_at = new Date().toISOString()
-    updates.lost_at = null
-    updates.lost_reason = null
-    return
+    updates.won_at = new Date().toISOString();
+    updates.lost_at = null;
+    updates.lost_reason = null;
+    return;
   }
 
   if (nextStatus === "lost") {
-    updates.lost_at = new Date().toISOString()
-    updates.won_at = null
-    return
+    updates.lost_at = new Date().toISOString();
+    updates.won_at = null;
+    return;
   }
 
   if (currentStatus === "won") {
-    updates.won_at = null
+    updates.won_at = null;
   }
   if (currentStatus === "lost") {
-    updates.lost_at = null
+    updates.lost_at = null;
   }
 }
 
@@ -189,14 +199,14 @@ async function setPrimaryContactIfNeeded({
   contactId,
   isPrimary,
 }: {
-  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
-  orgId: string
-  prospectId: string
-  contactId?: string
-  isPrimary?: boolean
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"];
+  orgId: string;
+  prospectId: string;
+  contactId?: string;
+  isPrimary?: boolean;
 }) {
   if (!isPrimary) {
-    return
+    return;
   }
 
   let query = supabase
@@ -204,113 +214,144 @@ async function setPrimaryContactIfNeeded({
     .update({ is_primary: false, updated_at: new Date().toISOString() })
     .eq("org_id", orgId)
     .eq("prospect_id", prospectId)
-    .eq("is_primary", true)
+    .eq("is_primary", true);
 
   if (contactId) {
-    query = query.neq("id", contactId)
+    query = query.neq("id", contactId);
   }
 
-  const { error } = await query
+  const { error } = await query;
   if (error) {
-    throw new Error(`Failed to update primary prospect contact: ${error.message}`)
+    throw new Error(
+      `Failed to update primary prospect contact: ${error.message}`,
+    );
   }
 }
 
-export async function listProspects(orgId?: string, filters?: ProspectFilters): Promise<Prospect[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+export async function listProspects(
+  orgId?: string,
+  filters?: ProspectFilters,
+): Promise<Prospect[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireAnyPermission(["org.member", "org.read"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
-  const parsedFilters = prospectFiltersSchema.parse(filters ?? undefined) ?? {}
+  const parsedFilters = prospectFiltersSchema.parse(filters ?? undefined) ?? {};
 
   let query = supabase
     .from("prospects")
     .select(prospectSelect)
     .eq("org_id", resolvedOrgId)
-    .order("created_at", { ascending: false })
+    .order("created_at", { ascending: false });
 
   if (parsedFilters.status) {
-    query = query.eq("status", parsedFilters.status)
+    query = query.eq("status", parsedFilters.status);
   }
   if (parsedFilters.owner_user_id) {
-    query = query.eq("owner_user_id", parsedFilters.owner_user_id)
+    query = query.eq("owner_user_id", parsedFilters.owner_user_id);
   }
   if (parsedFilters.community_id) {
-    query = query.eq("community_id", parsedFilters.community_id)
+    query = query.eq("community_id", parsedFilters.community_id);
   }
   if (parsedFilters.search) {
-    query = query.ilike("name", `%${parsedFilters.search}%`)
+    query = query.ilike("name", `%${parsedFilters.search}%`);
   }
 
-  const { data, error } = await query
+  const { data, error } = await query;
   if (error) {
-    throw new Error(`Failed to list prospects: ${error.message}`)
+    throw new Error(`Failed to list prospects: ${error.message}`);
   }
 
-  const rows = data ?? []
-  const prospectIds = rows.map((row: any) => row.id as string)
+  const rows = data ?? [];
+  const prospectIds = rows.map((row: any) => row.id as string);
 
-  const contactsByProspect = new Map<string, ProspectContact[]>()
-  const estimateCountsByProspect = new Map<string, number>()
-  const estimateValueByProspect = new Map<string, number>()
-  const projectByProspect = new Map<string, { id: string; phase: "precon" | "delivery" | null }>()
+  const contactsByProspect = new Map<string, ProspectContact[]>();
+  const estimateCountsByProspect = new Map<string, number>();
+  const estimateValueByProspect = new Map<string, number>();
+  const projectByProspect = new Map<
+    string,
+    { id: string; phase: "precon" | "delivery" | null }
+  >();
 
   if (prospectIds.length > 0) {
-    const [contactsResult, estimatesResult, projectsResult] = await Promise.all([
-      supabase
-        .from("prospect_contacts")
-        .select(prospectContactSelect)
-        .eq("org_id", resolvedOrgId)
-        .in("prospect_id", prospectIds)
-        .order("is_primary", { ascending: false })
-        .order("created_at", { ascending: true }),
-      supabase
-        .from("estimates")
-        .select("prospect_id, total_cents, is_current_version")
-        .eq("org_id", resolvedOrgId)
-        .in("prospect_id", prospectIds),
-      supabase
-        .from("projects")
-        .select("id, prospect_id, phase")
-        .eq("org_id", resolvedOrgId)
-        .in("prospect_id", prospectIds),
-    ])
+    const [contactsResult, estimatesResult, projectsResult] = await Promise.all(
+      [
+        supabase
+          .from("prospect_contacts")
+          .select(prospectContactSelect)
+          .eq("org_id", resolvedOrgId)
+          .in("prospect_id", prospectIds)
+          .order("is_primary", { ascending: false })
+          .order("created_at", { ascending: true }),
+        supabase
+          .from("estimates")
+          .select("prospect_id, total_cents, is_current_version")
+          .eq("org_id", resolvedOrgId)
+          .in("prospect_id", prospectIds),
+        supabase
+          .from("projects")
+          .select("id, prospect_id, phase")
+          .eq("org_id", resolvedOrgId)
+          .in("prospect_id", prospectIds),
+      ],
+    );
 
     if (contactsResult.error) {
-      throw new Error(`Failed to list prospect contacts: ${contactsResult.error.message}`)
+      throw new Error(
+        `Failed to list prospect contacts: ${contactsResult.error.message}`,
+      );
     }
     if (estimatesResult.error) {
-      throw new Error(`Failed to count prospect estimates: ${estimatesResult.error.message}`)
+      throw new Error(
+        `Failed to count prospect estimates: ${estimatesResult.error.message}`,
+      );
     }
     if (projectsResult.error) {
-      throw new Error(`Failed to list prospect projects: ${projectsResult.error.message}`)
+      throw new Error(
+        `Failed to list prospect projects: ${projectsResult.error.message}`,
+      );
     }
 
     for (const row of contactsResult.data ?? []) {
-      const contact = mapProspectContact(row)
-      contactsByProspect.set(contact.prospect_id, [...(contactsByProspect.get(contact.prospect_id) ?? []), contact])
+      const contact = mapProspectContact(row);
+      contactsByProspect.set(contact.prospect_id, [
+        ...(contactsByProspect.get(contact.prospect_id) ?? []),
+        contact,
+      ]);
     }
 
     for (const estimate of estimatesResult.data ?? []) {
-      const prospectId = estimate.prospect_id as string | null
+      const prospectId = estimate.prospect_id as string | null;
       if (prospectId) {
-        estimateCountsByProspect.set(prospectId, (estimateCountsByProspect.get(prospectId) ?? 0) + 1)
+        estimateCountsByProspect.set(
+          prospectId,
+          (estimateCountsByProspect.get(prospectId) ?? 0) + 1,
+        );
         // Only current versions contribute to pipeline value so superseded drafts don't double-count.
         if (estimate.is_current_version) {
           estimateValueByProspect.set(
             prospectId,
-            (estimateValueByProspect.get(prospectId) ?? 0) + (estimate.total_cents ?? 0),
-          )
+            (estimateValueByProspect.get(prospectId) ?? 0) +
+              (estimate.total_cents ?? 0),
+          );
         }
       }
     }
 
     for (const project of projectsResult.data ?? []) {
-      const prospectId = project.prospect_id as string | null
+      const prospectId = project.prospect_id as string | null;
       if (prospectId) {
         projectByProspect.set(prospectId, {
           id: project.id as string,
           phase: (project.phase as "precon" | "delivery" | null) ?? "delivery",
-        })
+        });
       }
     }
   }
@@ -322,48 +363,54 @@ export async function listProspects(orgId?: string, filters?: ProspectFilters): 
       projectId: projectByProspect.get(row.id)?.id ?? null,
       projectPhase: projectByProspect.get(row.id)?.phase ?? null,
     }),
-  )
+  );
 }
 
 export interface ProspectActivity {
-  id: string
-  event_type: string
-  payload: Record<string, unknown> | null
-  created_at: string
+  id: string;
+  event_type: string;
+  payload: Record<string, unknown> | null;
+  created_at: string;
 }
 
 /** Prospect-scoped event timeline, shown in the detail sheet (replaces the old org-wide CRM feed). */
-export async function listProspectActivity(prospectId: string, orgId?: string, limit = 12): Promise<ProspectActivity[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+export async function listProspectActivity(
+  prospectId: string,
+  orgId?: string,
+  limit = 12,
+): Promise<ProspectActivity[]> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId);
 
   // Fetch estimates associated with this prospect
-  const { data: estimates } = await supabase
+  const { data: estimates, error: estimatesError } = await supabase
     .from("estimates")
     .select("id")
     .eq("org_id", resolvedOrgId)
-    .eq("prospect_id", prospectId)
+    .eq("prospect_id", prospectId);
 
-  const estimateIds = (estimates ?? []).map((e) => e.id)
+  if (estimatesError) throw new Error(`Failed to load prospect activity sources: ${estimatesError.message}`);
+  const estimateIds = (estimates ?? []).map((e) => e.id);
 
   let query = supabase
     .from("events")
     .select("id, event_type, payload, created_at")
-    .eq("org_id", resolvedOrgId)
+    .eq("org_id", resolvedOrgId);
 
   if (estimateIds.length > 0) {
     // Query events where entity is this prospect OR any of this prospect's estimates
-    const orFilter = `and(entity_type.eq.prospect,entity_id.eq.${prospectId}),and(entity_type.eq.estimate,entity_id.in.(${estimateIds.join(",")}))`
-    query = query.or(orFilter)
+    const orFilter = `and(entity_type.eq.prospect,entity_id.eq.${prospectId}),and(entity_type.eq.estimate,entity_id.in.(${estimateIds.join(",")}))`;
+    query = query.or(orFilter);
   } else {
-    query = query.eq("entity_type", "prospect").eq("entity_id", prospectId)
+    query = query.eq("entity_type", "prospect").eq("entity_id", prospectId);
   }
 
   const { data, error } = await query
     .order("created_at", { ascending: false })
-    .limit(limit)
+    .order("id", { ascending: false })
+    .limit(limit);
 
   if (error) {
-    throw new Error(`Failed to load prospect activity: ${error.message}`)
+    throw new Error(`Failed to load prospect activity: ${error.message}`);
   }
 
   return (data ?? []).map((row: any) => ({
@@ -371,22 +418,33 @@ export async function listProspectActivity(prospectId: string, orgId?: string, l
     event_type: row.event_type as string,
     payload: (row.payload ?? null) as Record<string, unknown> | null,
     created_at: row.created_at as string,
-  }))
+  }));
 }
 
-export async function getProspect(prospectId: string, orgId?: string): Promise<Prospect> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+export async function getProspect(
+  prospectId: string,
+  orgId?: string,
+): Promise<Prospect> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireAnyPermission(["org.member", "org.read"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data, error } = await supabase
     .from("prospects")
     .select(prospectSelect)
     .eq("org_id", resolvedOrgId)
     .eq("id", prospectId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (error || !data) {
-    throw new Error("Prospect not found")
+    throw new Error("Prospect not found");
   }
 
   const [contacts, estimatesResult, projectResult] = await Promise.all([
@@ -402,34 +460,52 @@ export async function getProspect(prospectId: string, orgId?: string): Promise<P
       .eq("org_id", resolvedOrgId)
       .eq("prospect_id", prospectId)
       .maybeSingle(),
-  ])
+  ]);
 
-  const estimates = estimatesResult.data ?? []
+  if (estimatesResult.error || projectResult.error) throw new Error("Failed to load the prospect’s linked estimates or home.");
+  const estimates = estimatesResult.data ?? [];
   const estimateValueCents = estimates.reduce(
-    (sum, estimate) => sum + (estimate.is_current_version ? (estimate.total_cents ?? 0) : 0),
+    (sum, estimate) =>
+      sum + (estimate.is_current_version ? (estimate.total_cents ?? 0) : 0),
     0,
-  )
+  );
 
   return mapProspect(data, contacts, {
     estimateCount: estimates.length,
     estimateValueCents,
     projectId: (projectResult.data?.id as string | undefined) ?? null,
     projectPhase: projectResult.data
-      ? ((projectResult.data.phase as "precon" | "delivery" | null) ?? "delivery")
+      ? ((projectResult.data.phase as "precon" | "delivery" | null) ??
+        "delivery")
       : null,
-  })
+  });
 }
 
 export async function createProspect({
   input,
   orgId,
+  traffic,
 }: {
-  input: CreateProspectInput
-  orgId?: string
+  input: CreateProspectInput;
+  orgId?: string;
+  /**
+   * How the lead counts against its community's daily traffic. Omitted, it
+   * counts today in the bucket its source implies; a caller that knows the
+   * arrival channel and visit date (registering an inquiry) says so here, and
+   * `null` keeps a lead that is not footfall (a phone call) out of the tally.
+   * This is the ONE place a new lead moves the count.
+   */
+  traffic?: { source: string | null; occurredOn?: string } | null;
 }): Promise<Prospect> {
-  const parsed = createProspectInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const parsed = createProspectInputSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await assertCanWriteDeals({ supabase, orgId: resolvedOrgId, userId });
+
+  await assertProspectOwner(resolvedOrgId, parsed.owner_user_id ?? userId);
 
   const insert: Record<string, unknown> = {
     org_id: resolvedOrgId,
@@ -445,16 +521,20 @@ export async function createProspect({
     tags: parsed.tags ?? [],
     notes: parsed.notes ?? null,
     created_by: userId,
-  }
-  applyTerminalStatusDates(insert, parsed.status)
+  };
+  applyTerminalStatusDates(insert, parsed.status);
 
-  const { data, error } = await supabase.from("prospects").insert(insert).select(prospectSelect).single()
+  const { data, error } = await supabase
+    .from("prospects")
+    .insert(insert)
+    .select(prospectSelect)
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create prospect: ${error?.message}`)
+    throw new Error(`Failed to create prospect: ${error?.message}`);
   }
 
-  let contacts: ProspectContact[] = []
+  let contacts: ProspectContact[] = [];
   if (parsed.primary_contact) {
     contacts = [
       await createProspectContact({
@@ -462,11 +542,15 @@ export async function createProspect({
         input: { ...parsed.primary_contact, is_primary: true },
         orgId: resolvedOrgId,
       }),
-    ]
+    ];
   }
 
-  if (parsed.community_id) {
-    await recordLeadTraffic({ supabase, orgId: resolvedOrgId, userId }, { communityId: parsed.community_id, source: parsed.source ?? null })
+  const trafficHint = traffic === undefined ? { source: parsed.source ?? null } : traffic;
+  if (parsed.community_id && trafficHint) {
+    await recordLeadTraffic(
+      { supabase, orgId: resolvedOrgId, userId },
+      { communityId: parsed.community_id, ...trafficHint },
+    );
   }
 
   await recordEvent({
@@ -478,7 +562,7 @@ export async function createProspect({
       name: data.name,
       status: data.status,
     },
-  })
+  });
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -487,9 +571,9 @@ export async function createProspect({
     entityType: "prospect",
     entityId: data.id as string,
     after: data,
-  })
+  });
 
-  return mapProspect(data, contacts)
+  return mapProspect(data, contacts);
 }
 
 /**
@@ -501,12 +585,21 @@ export async function setProspectFollowUp({
   nextFollowUpAt,
   orgId,
 }: {
-  prospectId: string
-  nextFollowUpAt: string | null
-  orgId?: string
+  prospectId: string;
+  nextFollowUpAt: string | null;
+  orgId?: string;
 }): Promise<Prospect> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("org.member", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
+  await assertProspectWriteAccess({ supabase, orgId: resolvedOrgId, userId }, prospectId);
 
   const { data, error } = await supabase
     .from("prospects")
@@ -519,22 +612,24 @@ export async function setProspectFollowUp({
     .eq("org_id", resolvedOrgId)
     .eq("id", prospectId)
     .select(prospectSelect)
-    .single()
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to update follow-up: ${error?.message}`)
+    throw new Error(`Failed to update follow-up: ${error?.message}`);
   }
 
   await recordEvent({
     orgId: resolvedOrgId,
-    eventType: nextFollowUpAt ? "prospect_follow_up_set" : "prospect_follow_up_cleared",
+    eventType: nextFollowUpAt
+      ? "prospect_follow_up_set"
+      : "prospect_follow_up_cleared",
     entityType: "prospect",
     entityId: prospectId,
     payload: nextFollowUpAt ? { next_follow_up_at: nextFollowUpAt } : {},
-  })
+  });
 
-  const contacts = await listProspectContacts(prospectId, resolvedOrgId)
-  return mapProspect(data, contacts)
+  const contacts = await listProspectContacts(prospectId, resolvedOrgId);
+  return mapProspect(data, contacts);
 }
 
 /**
@@ -547,29 +642,38 @@ export async function logProspectContact({
   input,
   orgId,
 }: {
-  prospectId: string
-  input: LogProspectContactInput
-  orgId?: string
+  prospectId: string;
+  input: LogProspectContactInput;
+  orgId?: string;
 }): Promise<void> {
-  const parsed = logProspectContactInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const parsed = logProspectContactInputSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("org.member", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
+  await assertProspectWriteAccess({ supabase, orgId: resolvedOrgId, userId }, prospectId);
 
   const { data: prospect, error } = await supabase
     .from("prospects")
     .select("id, status")
     .eq("org_id", resolvedOrgId)
     .eq("id", prospectId)
-    .maybeSingle()
-  if (error || !prospect) throw new Error("Prospect not found")
+    .maybeSingle();
+  if (error || !prospect) throw new Error("Prospect not found");
 
   // Talking to a new inquiry IS the inquiry → working transition, so the touch
   // makes it. Nothing else on the Sales desk moves a prospect off `new`, and a
   // stage observed from state must be moved by the act that changed the state —
   // otherwise you call a buyer three times and they stay a "New inquiry"
   // forever while the New inquiries chip never drains.
-  const advanced = prospect.status === "new" && parsed.kind !== "note"
-  const { error: updateError } = await supabase
+  const advanced = prospect.status === "new" && parsed.kind !== "note";
+  const { data: updated, error: updateError } = await supabase
     .from("prospects")
     .update({
       updated_at: new Date().toISOString(),
@@ -577,8 +681,12 @@ export async function logProspectContact({
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", prospectId)
-
-  if (updateError) throw new Error(`Failed to log contact: ${updateError.message}`)
+    .eq("status", prospect.status)
+    .select("id")
+    .maybeSingle();
+  if (updateError || !updated) {
+    throw new Error(updateError?.message ?? "The deal changed. Refresh and record the activity again.");
+  }
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -586,8 +694,12 @@ export async function logProspectContact({
     eventType: "prospect_contact_logged",
     entityType: "prospect",
     entityId: prospectId,
-    payload: { kind: parsed.kind, note: parsed.note ?? null, occurred_at: parsed.occurredAt ?? null },
-  })
+    payload: {
+      kind: parsed.kind,
+      note: parsed.note ?? null,
+      occurred_at: parsed.occurredAt ?? null,
+    },
+  });
 
   // Emitted separately so the deal file's log shows the stage move as its own
   // line, the way every other observed transition appears.
@@ -599,7 +711,7 @@ export async function logProspectContact({
       entityType: "prospect",
       entityId: prospectId,
       payload: { from: "new", to: "contacted", reason: "contact_logged" },
-    })
+    });
   }
 }
 
@@ -616,59 +728,80 @@ export async function updateDealDetails({
   input,
   orgId,
 }: {
-  prospectId: string
-  input: UpdateDealDetailsInput
-  orgId?: string
+  prospectId: string;
+  input: UpdateDealDetailsInput;
+  orgId?: string;
 }): Promise<Prospect> {
-  const parsed = updateDealDetailsInputSchema.parse(input)
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const parsed = updateDealDetailsInputSchema.parse(input);
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId);
 
-  const email = parsed.email?.trim() || null
-  const phone = parsed.phone?.trim() || null
-  const contacts = await listProspectContacts(prospectId, resolvedOrgId)
-  const primary = contacts.find((contact) => contact.is_primary) ?? contacts[0] ?? null
+  await assertProspectOwner(resolvedOrgId, parsed.ownerUserId);
+
+  const email = parsed.email?.trim() || null;
+  const phone = parsed.phone?.trim() || null;
+  const contacts = await listProspectContacts(prospectId, resolvedOrgId);
+  const primary =
+    contacts.find((contact) => contact.is_primary) ?? contacts[0] ?? null;
 
   if (primary) {
     await updateProspectContact({
       contactId: primary.id,
       input: { full_name: parsed.fullName, phone, email, is_primary: true },
       orgId: resolvedOrgId,
-    })
+    });
     if (primary.promoted_contact_id) {
-      const { updateContact } = await import("@/lib/services/contacts")
+      const { updateContact } = await import("@/lib/services/contacts");
       await updateContact({
         contactId: primary.promoted_contact_id,
-        input: { full_name: parsed.fullName, phone: phone ?? undefined, email: email ?? undefined },
+        input: {
+          full_name: parsed.fullName,
+          phone: phone ?? undefined,
+          email: email ?? undefined,
+        },
         orgId: resolvedOrgId,
-      })
+      });
     }
   } else {
     await createProspectContact({
       prospectId,
       input: { full_name: parsed.fullName, phone, email, is_primary: true },
       orgId: resolvedOrgId,
-    })
+    });
   }
 
   // The co-op agent is one secondary contact, reconciled rather than appended —
   // otherwise correcting a brokerage's spelling leaves two brokers on the deal.
-  const coopName = parsed.coopAgentName?.trim() || null
-  const coopBrokerage = parsed.coopBrokerage?.trim() || null
-  const existingCoop = contacts.find((contact) => !contact.is_primary && contact.role === COOP_AGENT_ROLE)
+  const coopName = parsed.coopAgentName?.trim() || null;
+  const coopBrokerage = parsed.coopBrokerage?.trim() || null;
+  const existingCoop = contacts.find(
+    (contact) => !contact.is_primary && contact.role === COOP_AGENT_ROLE,
+  );
   if (coopName && existingCoop) {
     await updateProspectContact({
       contactId: existingCoop.id,
-      input: { full_name: coopName, company_name: coopBrokerage, role: COOP_AGENT_ROLE },
+      input: {
+        full_name: coopName,
+        company_name: coopBrokerage,
+        role: COOP_AGENT_ROLE,
+      },
       orgId: resolvedOrgId,
-    })
+    });
   } else if (coopName) {
     await createProspectContact({
       prospectId,
-      input: { full_name: coopName, company_name: coopBrokerage, role: COOP_AGENT_ROLE, is_primary: false },
+      input: {
+        full_name: coopName,
+        company_name: coopBrokerage,
+        role: COOP_AGENT_ROLE,
+        is_primary: false,
+      },
       orgId: resolvedOrgId,
-    })
+    });
   } else if (existingCoop) {
-    await deleteProspectContact({ contactId: existingCoop.id, orgId: resolvedOrgId })
+    await deleteProspectContact({
+      contactId: existingCoop.id,
+      orgId: resolvedOrgId,
+    });
   }
 
   return updateProspect({
@@ -684,7 +817,7 @@ export async function updateDealDetails({
       notes: parsed.notes ?? null,
     },
     orgId: resolvedOrgId,
-  })
+  });
 }
 
 /**
@@ -697,12 +830,12 @@ export async function completeProspectFollowUp({
   input,
   orgId,
 }: {
-  prospectId: string
-  input: LogProspectContactInput
-  orgId?: string
+  prospectId: string;
+  input: LogProspectContactInput;
+  orgId?: string;
 }): Promise<Prospect> {
-  await logProspectContact({ prospectId, input, orgId })
-  return setProspectFollowUp({ prospectId, nextFollowUpAt: null, orgId })
+  await logProspectContact({ prospectId, input, orgId });
+  return setProspectFollowUp({ prospectId, nextFollowUpAt: null, orgId });
 }
 
 /**
@@ -714,11 +847,11 @@ export async function markProspectLost({
   input,
   orgId,
 }: {
-  prospectId: string
-  input: MarkProspectLostInput
-  orgId?: string
+  prospectId: string;
+  input: MarkProspectLostInput;
+  orgId?: string;
 }): Promise<Prospect> {
-  const parsed = markProspectLostInputSchema.parse(input)
+  const parsed = markProspectLostInputSchema.parse(input);
   return updateProspect({
     prospectId,
     input: {
@@ -727,7 +860,7 @@ export async function markProspectLost({
       next_follow_up_at: null,
     },
     orgId,
-  })
+  });
 }
 
 /** Puts a lost deal back in the book — buyers come back, and financing gets fixed. */
@@ -735,62 +868,98 @@ export async function reopenProspect({
   prospectId,
   orgId,
 }: {
-  prospectId: string
-  orgId?: string
+  prospectId: string;
+  orgId?: string;
 }): Promise<Prospect> {
-  return updateProspect({ prospectId, input: { status: "contacted", lost_reason: null }, orgId })
+  return updateProspect({
+    prospectId,
+    input: { status: "contacted", lost_reason: null },
+    reopen: true,
+    orgId,
+  });
 }
 
 export async function updateProspect({
   prospectId,
   input,
   orgId,
+  reopen = false,
 }: {
-  prospectId: string
-  input: UpdateProspectInput
-  orgId?: string
+  prospectId: string;
+  input: UpdateProspectInput;
+  orgId?: string;
+  reopen?: boolean;
 }): Promise<Prospect> {
-  const parsed = updateProspectInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const parsed = updateProspectInputSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("org.member", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data: existing, error: existingError } = await supabase
     .from("prospects")
     .select(prospectSelect)
     .eq("org_id", resolvedOrgId)
     .eq("id", prospectId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (existingError || !existing) {
-    throw new Error("Prospect not found")
+    throw new Error("Prospect not found");
   }
 
-  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (parsed.name !== undefined) updates.name = parsed.name
-  if (parsed.status !== undefined) updates.status = parsed.status
-  if (parsed.owner_user_id !== undefined) updates.owner_user_id = parsed.owner_user_id
-  if (parsed.community_id !== undefined) updates.community_id = parsed.community_id
-  if (parsed.source !== undefined) updates.source = parsed.source
-  if (parsed.jobsite_location !== undefined) updates.jobsite_location = parsed.jobsite_location
-  if (parsed.project_type !== undefined) updates.project_type = parsed.project_type
-  if (parsed.budget_range !== undefined) updates.budget_range = parsed.budget_range
-  if (parsed.timeline_preference !== undefined) updates.timeline_preference = parsed.timeline_preference
-  if (parsed.tags !== undefined) updates.tags = parsed.tags
-  if (parsed.notes !== undefined) updates.notes = parsed.notes
-  if (parsed.lost_reason !== undefined) updates.lost_reason = parsed.lost_reason
-  if (parsed.next_follow_up_at !== undefined) updates.next_follow_up_at = parsed.next_follow_up_at
-  applyTerminalStatusDates(updates, parsed.status, existing.status as ProspectStatus)
+  await assertProspectWriteAccess({ supabase, orgId: resolvedOrgId, userId }, prospectId, { reopen });
+  if (reopen && (parsed.status !== "contacted" || Object.keys(parsed).some((key) => !["status", "lost_reason"].includes(key)))) throw new Error("Invalid reopen transition.");
+  if (parsed.owner_user_id !== existing.owner_user_id) await assertProspectOwner(resolvedOrgId, parsed.owner_user_id);
+  if (parsed.expected_updated_at !== undefined && parsed.expected_updated_at !== existing.updated_at) throw new Error("This deal changed while you were editing. Your changes are still here; reload the latest deal before saving.");
+  if (parsed.status && parsed.status !== existing.status && parsed.status !== "lost" && !reopen && !["new", "contacted", "qualified"].includes(existing.status)) throw new Error("This stage is managed by the document workflow.");
+  assertManualProspectStatus(parsed.status, existing.status as ProspectStatus);
+  const updates: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  };
+  if (parsed.name !== undefined) updates.name = parsed.name;
+  if (parsed.status !== undefined) updates.status = parsed.status;
+  if (parsed.owner_user_id !== undefined)
+    updates.owner_user_id = parsed.owner_user_id;
+  if (parsed.community_id !== undefined)
+    updates.community_id = parsed.community_id;
+  if (parsed.source !== undefined) updates.source = parsed.source;
+  if (parsed.jobsite_location !== undefined)
+    updates.jobsite_location = parsed.jobsite_location;
+  if (parsed.project_type !== undefined)
+    updates.project_type = parsed.project_type;
+  if (parsed.budget_range !== undefined)
+    updates.budget_range = parsed.budget_range;
+  if (parsed.timeline_preference !== undefined)
+    updates.timeline_preference = parsed.timeline_preference;
+  if (parsed.tags !== undefined) updates.tags = parsed.tags;
+  if (parsed.notes !== undefined) updates.notes = parsed.notes;
+  if (parsed.lost_reason !== undefined)
+    updates.lost_reason = parsed.lost_reason;
+  if (parsed.next_follow_up_at !== undefined)
+    updates.next_follow_up_at = parsed.next_follow_up_at;
+  applyTerminalStatusDates(
+    updates,
+    parsed.status,
+    existing.status as ProspectStatus,
+  );
 
   const { data, error } = await supabase
     .from("prospects")
     .update(updates)
     .eq("org_id", resolvedOrgId)
     .eq("id", prospectId)
+    .eq("updated_at", existing.updated_at)
     .select(prospectSelect)
-    .maybeSingle()
+    .maybeSingle();
 
   if (error || !data) {
-    throw new Error(`Failed to update prospect: ${error?.message}`)
+    throw new Error(error?.message ?? "This deal changed while you were editing. Your changes are still here; reload the latest deal before saving.");
   }
 
   if (parsed.status && parsed.status !== existing.status) {
@@ -803,7 +972,7 @@ export async function updateProspect({
         from: existing.status,
         to: parsed.status,
       },
-    })
+    });
   }
 
   await recordAudit({
@@ -814,31 +983,40 @@ export async function updateProspect({
     entityId: data.id as string,
     before: existing,
     after: data,
-  })
+  });
 
-  const contacts = await listProspectContacts(prospectId, resolvedOrgId)
-  return mapProspect(data, contacts)
+  const contacts = await listProspectContacts(prospectId, resolvedOrgId);
+  return mapProspect(data, contacts);
 }
 
 export async function deleteProspect({
   prospectId,
   orgId,
 }: {
-  prospectId: string
-  orgId?: string
+  prospectId: string;
+  orgId?: string;
 }): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("org.member", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
+  await assertProspectWriteAccess({ supabase, orgId: resolvedOrgId, userId }, prospectId);
 
   const { data: existing, error: existingError } = await supabase
     .from("prospects")
     .select(prospectSelect)
     .eq("org_id", resolvedOrgId)
     .eq("id", prospectId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (existingError || !existing) {
-    throw new Error("Prospect not found")
+    throw new Error("Prospect not found");
   }
 
   const { data: project } = await supabase
@@ -846,10 +1024,12 @@ export async function deleteProspect({
     .select("id")
     .eq("org_id", resolvedOrgId)
     .eq("prospect_id", prospectId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (project) {
-    throw new Error("This prospect has a project. Delete or unlink the project first.")
+    throw new Error(
+      "This prospect has a project. Delete or unlink the project first.",
+    );
   }
 
   // prospect_contacts cascade via FK; estimates/bid_packages/files set prospect_id null.
@@ -857,10 +1037,10 @@ export async function deleteProspect({
     .from("prospects")
     .delete()
     .eq("org_id", resolvedOrgId)
-    .eq("id", prospectId)
+    .eq("id", prospectId);
 
   if (error) {
-    throw new Error(`Failed to delete prospect: ${error.message}`)
+    throw new Error(`Failed to delete prospect: ${error.message}`);
   }
 
   await recordEvent({
@@ -869,7 +1049,7 @@ export async function deleteProspect({
     entityType: "prospect",
     entityId: prospectId,
     payload: { name: existing.name },
-  })
+  });
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -878,12 +1058,23 @@ export async function deleteProspect({
     entityType: "prospect",
     entityId: prospectId,
     before: existing,
-  })
+  });
 }
 
-export async function listProspectContacts(prospectId: string, orgId?: string): Promise<ProspectContact[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+export async function listProspectContacts(
+  prospectId: string,
+  orgId?: string,
+): Promise<ProspectContact[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireAnyPermission(["org.member", "org.read"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data, error } = await supabase
     .from("prospect_contacts")
@@ -891,13 +1082,13 @@ export async function listProspectContacts(prospectId: string, orgId?: string): 
     .eq("org_id", resolvedOrgId)
     .eq("prospect_id", prospectId)
     .order("is_primary", { ascending: false })
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: true });
 
   if (error) {
-    throw new Error(`Failed to list prospect contacts: ${error.message}`)
+    throw new Error(`Failed to list prospect contacts: ${error.message}`);
   }
 
-  return (data ?? []).map(mapProspectContact)
+  return (data ?? []).map(mapProspectContact);
 }
 
 export async function createProspectContact({
@@ -905,23 +1096,32 @@ export async function createProspectContact({
   input,
   orgId,
 }: {
-  prospectId: string
-  input: ProspectContactInput
-  orgId?: string
+  prospectId: string;
+  input: ProspectContactInput;
+  orgId?: string;
 }): Promise<ProspectContact> {
-  const parsed = prospectContactInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const parsed = prospectContactInputSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("org.member", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
+  await assertProspectWriteAccess({ supabase, orgId: resolvedOrgId, userId }, prospectId);
 
   const { data: prospect, error: prospectError } = await supabase
     .from("prospects")
     .select("id")
     .eq("org_id", resolvedOrgId)
     .eq("id", prospectId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (prospectError || !prospect) {
-    throw new Error("Prospect not found")
+    throw new Error("Prospect not found");
   }
 
   await setPrimaryContactIfNeeded({
@@ -929,21 +1129,30 @@ export async function createProspectContact({
     orgId: resolvedOrgId,
     prospectId,
     isPrimary: parsed.is_primary,
-  })
+  });
 
   // The directory learns about this person now, not at hold time. Everyone on
   // a prospect gets promoted — co-buyers and co-op agents included — so an
   // active prospect is findable in the directory instead of existing only as
   // denormalized text on a sales row.
-  const promoted = await promotePersonToDirectoryWithClient(supabase, resolvedOrgId, userId, {
-    fullName: parsed.full_name,
-    email: parsed.email ?? null,
-    phone: parsed.phone ?? null,
-    roleKey: parsed.role === COOP_AGENT_ROLE ? "agent" : "prospect",
-    roleStatus: parsed.role === COOP_AGENT_ROLE ? "active" : "inquiry",
-    companyName: parsed.company_name ?? null,
-    title: parsed.role ?? null,
-  }).catch(() => null)
+  const promotion = promotePersonToDirectoryWithClient(
+    supabase,
+    resolvedOrgId,
+    userId,
+    {
+      contactId: parsed.contact_id ?? null,
+      fullName: parsed.full_name,
+      email: parsed.email ?? null,
+      phone: parsed.phone ?? null,
+      roleKey: parsed.role === COOP_AGENT_ROLE ? "agent" : "prospect",
+      roleStatus: parsed.role === COOP_AGENT_ROLE ? "active" : "inquiry",
+      companyName: parsed.company_name ?? null,
+      title: parsed.role ?? null,
+    },
+  );
+  // A contact the user picked must exist and be attached; a failed lookup for a
+  // typed-in name is only the directory not learning about them yet.
+  const promoted = parsed.contact_id ? await promotion : await promotion.catch(() => null);
 
   const { data, error } = await supabase
     .from("prospect_contacts")
@@ -960,10 +1169,10 @@ export async function createProspectContact({
       metadata: parsed.metadata ?? {},
     })
     .select(prospectContactSelect)
-    .single()
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create prospect contact: ${error?.message}`)
+    throw new Error(`Failed to create prospect contact: ${error?.message}`);
   }
 
   await recordAudit({
@@ -973,9 +1182,9 @@ export async function createProspectContact({
     entityType: "prospect_contact",
     entityId: data.id as string,
     after: data,
-  })
+  });
 
-  return mapProspectContact(data)
+  return mapProspectContact(data);
 }
 
 export async function updateProspectContact({
@@ -983,24 +1192,35 @@ export async function updateProspectContact({
   input,
   orgId,
 }: {
-  contactId: string
-  input: UpdateProspectContactInput
-  orgId?: string
+  contactId: string;
+  input: UpdateProspectContactInput;
+  orgId?: string;
 }): Promise<ProspectContact> {
-  const parsed = updateProspectContactInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const parsed = updateProspectContactInputSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("org.member", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data: existing, error: existingError } = await supabase
     .from("prospect_contacts")
     .select(prospectContactSelect)
     .eq("org_id", resolvedOrgId)
     .eq("id", contactId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (existingError || !existing) {
-    throw new Error("Prospect contact not found")
+    throw new Error("Prospect contact not found");
   }
+  await assertProspectWriteAccess({ supabase, orgId: resolvedOrgId, userId }, existing.prospect_id as string);
+
+  if (parsed.expected_updated_at !== undefined && parsed.expected_updated_at !== existing.updated_at) throw new Error("This contact changed while you were editing. Reload the latest deal before saving.");
 
   await setPrimaryContactIfNeeded({
     supabase,
@@ -1008,29 +1228,34 @@ export async function updateProspectContact({
     prospectId: existing.prospect_id as string,
     contactId,
     isPrimary: parsed.is_primary,
-  })
+  });
 
-  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (parsed.full_name !== undefined) updates.full_name = parsed.full_name
-  if (parsed.email !== undefined) updates.email = parsed.email
-  if (parsed.phone !== undefined) updates.phone = parsed.phone
-  if (parsed.role !== undefined) updates.role = parsed.role
-  if (parsed.company_name !== undefined) updates.company_name = parsed.company_name
-  if (parsed.is_primary !== undefined) updates.is_primary = parsed.is_primary
-  if (parsed.metadata !== undefined) updates.metadata = parsed.metadata
-  if (parsed.contact_id !== undefined) updates.contact_id = parsed.contact_id
-  if (parsed.promoted_contact_id !== undefined) updates.promoted_contact_id = parsed.promoted_contact_id
+  const updates: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  };
+  if (parsed.full_name !== undefined) updates.full_name = parsed.full_name;
+  if (parsed.email !== undefined) updates.email = parsed.email;
+  if (parsed.phone !== undefined) updates.phone = parsed.phone;
+  if (parsed.role !== undefined) updates.role = parsed.role;
+  if (parsed.company_name !== undefined)
+    updates.company_name = parsed.company_name;
+  if (parsed.is_primary !== undefined) updates.is_primary = parsed.is_primary;
+  if (parsed.metadata !== undefined) updates.metadata = parsed.metadata;
+  if (parsed.contact_id !== undefined) updates.contact_id = parsed.contact_id;
+  if (parsed.promoted_contact_id !== undefined)
+    updates.promoted_contact_id = parsed.promoted_contact_id;
 
   const { data, error } = await supabase
     .from("prospect_contacts")
     .update(updates)
     .eq("org_id", resolvedOrgId)
     .eq("id", contactId)
+    .eq("updated_at", existing.updated_at)
     .select(prospectContactSelect)
-    .maybeSingle()
+    .maybeSingle();
 
   if (error || !data) {
-    throw new Error(`Failed to update prospect contact: ${error?.message}`)
+    throw new Error(error?.message ?? "This contact changed while you were editing. Your changes are still here; reload the latest deal before saving.");
   }
 
   await recordAudit({
@@ -1041,9 +1266,9 @@ export async function updateProspectContact({
     entityId: data.id as string,
     before: existing,
     after: data,
-  })
+  });
 
-  return mapProspectContact(data)
+  return mapProspectContact(data);
 }
 
 /**
@@ -1059,34 +1284,45 @@ export async function deleteProspectContact({
   contactId,
   orgId,
 }: {
-  contactId: string
-  orgId?: string
+  contactId: string;
+  orgId?: string;
 }): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("org.member", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data: existing, error: existingError } = await supabase
     .from("prospect_contacts")
     .select(prospectContactSelect)
     .eq("org_id", resolvedOrgId)
     .eq("id", contactId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (existingError || !existing) {
-    throw new Error("Prospect contact not found")
+    throw new Error("Prospect contact not found");
   }
+  await assertProspectWriteAccess({ supabase, orgId: resolvedOrgId, userId }, existing.prospect_id as string);
   if (existing.is_primary) {
-    throw new Error("The primary contact cannot be removed — edit the buyer instead")
+    throw new Error(
+      "The primary contact cannot be removed — edit the buyer instead",
+    );
   }
 
   const { error } = await supabase
     .from("prospect_contacts")
     .delete()
     .eq("org_id", resolvedOrgId)
-    .eq("id", contactId)
+    .eq("id", contactId);
 
   if (error) {
-    throw new Error(`Failed to delete prospect contact: ${error.message}`)
+    throw new Error(`Failed to delete prospect contact: ${error.message}`);
   }
 
   await recordAudit({
@@ -1096,5 +1332,124 @@ export async function deleteProspectContact({
     entityType: "prospect_contact",
     entityId: contactId,
     before: existing,
-  })
+  });
+}
+
+export interface ProspectAttribution {
+  id: string;
+  touch: number;
+  channel: "walk_in" | "appointment" | "web" | "phone" | "import";
+  sourceLabel: string | null;
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmTerm: string | null;
+  utmContent: string | null;
+  referrerUrl: string | null;
+  landingUrl: string | null;
+  communityName: string | null;
+  occurredAt: string;
+}
+
+export interface ProspectAttributionHistory {
+  touches: ProspectAttribution[];
+  /** The earlier deal this buyer was won or lost on, when they came back. */
+  returningFrom: { prospectId: string; status: string; closedAt: string | null } | null;
+  /** Another buyer's open deal with the same phone and a different email, until someone reviews it. */
+  possibleDuplicateOf: { prospectId: string; name: string | null } | null;
+  truncated: boolean;
+}
+
+const ATTRIBUTION_CAP = 50;
+
+const attributionRowSchema = z.object({
+  id: z.string(),
+  touch: z.number(),
+  channel: z.enum(["walk_in", "appointment", "web", "phone", "import"]),
+  source_label: z.string().nullable(),
+  utm_source: z.string().nullable(),
+  utm_medium: z.string().nullable(),
+  utm_campaign: z.string().nullable(),
+  utm_term: z.string().nullable(),
+  utm_content: z.string().nullable(),
+  referrer_url: z.string().nullable(),
+  landing_url: z.string().nullable(),
+  occurred_at: z.string(),
+});
+
+/**
+ * Every touch that brought this buyer in, first touch first: the source,
+ * campaign and landing page of each submission, kept when later ones merged
+ * into the same deal. Written only by `file_lead()`.
+ */
+export async function listProspectAttributions(
+  prospectId: string,
+  orgId?: string,
+): Promise<ProspectAttributionHistory> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId });
+
+  const [touches, returning, duplicate] = await Promise.all([
+    supabase
+      .from("prospect_attributions")
+      .select("id, touch, channel, source_label, utm_source, utm_medium, utm_campaign, utm_term, utm_content, referrer_url, landing_url, occurred_at, community:communities(name)")
+      .eq("org_id", resolvedOrgId)
+      .eq("prospect_id", prospectId)
+      .order("touch", { ascending: true })
+      .limit(ATTRIBUTION_CAP + 1),
+    supabase
+      .from("lead_intake_receipts")
+      .select("prior_prospect_id, prior:prospects!lead_intake_receipts_prior_prospect_fkey(status, won_at, lost_at)")
+      .eq("org_id", resolvedOrgId)
+      .eq("prospect_id", prospectId)
+      .not("prior_prospect_id", "is", null)
+      .order("received_at", { ascending: true })
+      .limit(1),
+    supabase
+      .from("lead_intake_receipts")
+      .select("possible_duplicate_prospect_id, duplicate:prospects!lead_intake_receipts_possible_duplicate_fkey(name)")
+      .eq("org_id", resolvedOrgId)
+      .eq("prospect_id", prospectId)
+      .not("possible_duplicate_prospect_id", "is", null)
+      .is("resolved_at", null)
+      .order("received_at", { ascending: true })
+      .limit(1),
+  ]);
+  if (touches.error) throw new Error(`Failed to load lead attribution: ${touches.error.message}`);
+  if (returning.error) throw new Error(`Failed to load the buyer's earlier deal: ${returning.error.message}`);
+  if (duplicate.error) throw new Error(`Failed to load a possible duplicate deal: ${duplicate.error.message}`);
+
+  const named = z.object({ name: z.string() }).nullable();
+  const rows = z.array(attributionRowSchema.extend({ community: named })).parse(touches.data ?? []);
+  const prior = z
+    .array(z.object({
+      prior_prospect_id: z.string(),
+      prior: z.object({ status: z.string(), won_at: z.string().nullable(), lost_at: z.string().nullable() }).nullable(),
+    }))
+    .parse(returning.data ?? [])[0] ?? null;
+  const twin = z
+    .array(z.object({ possible_duplicate_prospect_id: z.string(), duplicate: z.object({ name: z.string().nullable() }).nullable() }))
+    .parse(duplicate.data ?? [])[0] ?? null;
+  return {
+    touches: rows.slice(0, ATTRIBUTION_CAP).map((row) => ({
+      id: row.id,
+      touch: row.touch,
+      channel: row.channel,
+      sourceLabel: row.source_label,
+      utmSource: row.utm_source,
+      utmMedium: row.utm_medium,
+      utmCampaign: row.utm_campaign,
+      utmTerm: row.utm_term,
+      utmContent: row.utm_content,
+      referrerUrl: row.referrer_url,
+      landingUrl: row.landing_url,
+      communityName: row.community?.name ?? null,
+      occurredAt: row.occurred_at,
+    })),
+    returningFrom: prior
+      ? { prospectId: prior.prior_prospect_id, status: prior.prior?.status ?? "lost", closedAt: prior.prior?.won_at ?? prior.prior?.lost_at ?? null }
+      : null,
+    possibleDuplicateOf: twin ? { prospectId: twin.possible_duplicate_prospect_id, name: twin.duplicate?.name ?? null } : null,
+    truncated: rows.length > ATTRIBUTION_CAP,
+  };
 }

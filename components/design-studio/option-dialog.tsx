@@ -1,10 +1,14 @@
 "use client"
 
+import { OptionConfigurationRules } from "./option-configuration-rules"
 import { useEffect, useState, useTransition } from "react"
 import { toast } from "sonner"
 
-import { upsertOptionAction } from "@/app/(app)/design-studio/actions"
+import { getOptionChangeImpactAction, upsertOptionAction } from "@/app/(app)/design-studio/actions"
 import type { CatalogOptionDto } from "@/lib/services/option-catalog"
+import type { ProductChangeImpactDto } from "@/lib/services/product-change-impact"
+import type { CatalogOptionInput } from "@/lib/validation/selections"
+import { ProductChangeImpactConfirm } from "@/components/plans/product-change-impact"
 import { unwrapAction } from "@/lib/action-result"
 import { Button } from "@/components/ui/button"
 import {
@@ -20,6 +24,12 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { OptionImageField, type OptionImage } from "@/components/design-studio/option-image-field"
+import {
+  OptionModelChanges,
+  modelChangeDrafts,
+  modelChangesFromDrafts,
+  type ModelChangeDraft,
+} from "@/components/design-studio/option-model-changes"
 
 interface Props {
   open: boolean
@@ -49,10 +59,14 @@ export function OptionDialog({
   const [isAvailable, setIsAvailable] = useState(true)
   const [scope, setScope] = useState<"design_studio" | "structural">("design_studio")
   const [image, setImage] = useState<OptionImage>({ fileId: null, url: null, fileName: null })
+  const [modelChanges, setModelChanges] = useState<ModelChangeDraft[]>([])
   const [pending, startTransition] = useTransition()
+  /** An edit waiting on its confirm step, with the homes it reaches. */
+  const [confirming, setConfirming] = useState<{ payload: CatalogOptionInput; impact: ProductChangeImpactDto } | null>(null)
 
   useEffect(() => {
     if (!open) return
+    setConfirming(null)
     setIsStandard(option?.is_default ?? false)
     setIsAvailable(option?.is_available ?? true)
     setScope(option?.option_scope ?? "design_studio")
@@ -61,34 +75,14 @@ export function OptionDialog({
       url: option?.image_url ?? null,
       fileName: option?.image_url ? option.name : null,
     })
+    setModelChanges(modelChangeDrafts(option?.model_changes ?? []))
   }, [open, option])
 
-  function save(formData: FormData) {
-    const priceValue = Number(formData.get("price") ?? 0)
-    const costValue = Number(formData.get("cost") ?? 0)
-    const leadValue = String(formData.get("leadTimeDays") ?? "")
+  function persist(payload: CatalogOptionInput) {
     startTransition(async () => {
       try {
-        unwrapAction(
-          await upsertOptionAction({
-            id: option?.id ?? null,
-            categoryId,
-            communityId: communityId ?? null,
-            name: String(formData.get("name") ?? ""),
-            description: String(formData.get("description") ?? "") || null,
-            optionScope: scope,
-            sku: String(formData.get("sku") ?? "") || null,
-            vendor: String(formData.get("vendor") ?? "") || null,
-            imageUrl: image.url,
-            fileId: image.fileId,
-            leadTimeDays: leadValue === "" ? null : Math.round(Number(leadValue)),
-            priceCents: Math.round(priceValue * 100),
-            costCents: canReadMargin ? Math.round(costValue * 100) : null,
-            sortOrder: option?.sort_order ?? sortOrder,
-            isAvailable,
-            isStandard,
-          }),
-        )
+        unwrapAction(await upsertOptionAction(payload))
+        setConfirming(null)
         onOpenChange(false)
         toast.success(option ? "Option updated" : "Option added")
         onSaved()
@@ -100,9 +94,58 @@ export function OptionDialog({
     })
   }
 
+  function save(formData: FormData) {
+    const priceValue = Number(formData.get("price") ?? 0)
+    const costValue = Number(formData.get("cost") ?? 0)
+    const leadValue = String(formData.get("leadTimeDays") ?? "")
+    const changes = modelChangesFromDrafts(modelChanges)
+    // Sent only when there is something to store or clear, so an option with no
+    // model changes saves exactly as it did before the column existed.
+    const sendModelChanges = changes.length > 0 || (option?.model_changes.length ?? 0) > 0
+    const payload: CatalogOptionInput = {
+      id: option?.id ?? null,
+      categoryId,
+      communityId: communityId ?? null,
+      name: String(formData.get("name") ?? ""),
+      description: String(formData.get("description") ?? "") || null,
+      optionScope: scope,
+      sku: String(formData.get("sku") ?? "") || null,
+      vendor: String(formData.get("vendor") ?? "") || null,
+      imageUrl: image.url,
+      fileId: image.fileId,
+      leadTimeDays: leadValue === "" ? null : Math.round(Number(leadValue)),
+      priceCents: Math.round(priceValue * 100),
+      costCents: canReadMargin ? Math.round(costValue * 100) : null,
+      sortOrder: option?.sort_order ?? sortOrder,
+      isAvailable,
+      isStandard,
+      ...(sendModelChanges ? { modelChanges: changes } : {}),
+    }
+    if (!option) {
+      persist(payload)
+      return
+    }
+    // An edit reaches every home that chose or was sold this option, so the
+    // homes it reaches are shown before it saves.
+    const optionId = option.id
+    startTransition(async () => {
+      let impact: ProductChangeImpactDto
+      try {
+        impact = unwrapAction(await getOptionChangeImpactAction(optionId))
+      } catch (error) {
+        toast.error("Could not check which homes this option reaches", {
+          description: error instanceof Error ? error.message : undefined,
+        })
+        return
+      }
+      if (impact.homes.length === 0 && !impact.truncated && impact.homesElsewhere === 0) persist(payload)
+      else setConfirming({ payload, impact })
+    })
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto rounded-none sm:max-w-lg">
+      <DialogContent className="max-h-[85vh] overflow-y-auto rounded-none sm:max-w-xl">
         <form action={save}>
           <DialogHeader>
             <DialogTitle>{option ? `Edit ${option.name}` : `Add an option to ${categoryName}`}</DialogTitle>
@@ -208,11 +251,27 @@ export function OptionDialog({
               <Switch id="option-available" checked={isAvailable} onCheckedChange={setIsAvailable} />
             </div>
           </div>
-          <DialogFooter>
-            <Button type="submit" disabled={pending} className="rounded-none">
-              {option ? "Save option" : "Add option"}
-            </Button>
-          </DialogFooter>
+          <OptionModelChanges value={modelChanges} onChange={setModelChanges} disabled={pending} />
+          {option && <OptionConfigurationRules key={option.id} optionId={option.id} />}
+          {confirming ? (
+            <ProductChangeImpactConfirm
+              impact={confirming.impact}
+              note={
+                option?.is_available && !confirming.payload.isAvailable
+                  ? "Retiring it: homes that already chose it keep it; no new home can choose it."
+                  : null
+              }
+              pending={pending}
+              onConfirm={() => persist(confirming.payload)}
+              onCancel={() => setConfirming(null)}
+            />
+          ) : (
+            <DialogFooter>
+              <Button type="submit" disabled={pending} className="rounded-none">
+                {pending ? "Checking homes…" : option ? "Save option" : "Add option"}
+              </Button>
+            </DialogFooter>
+          )}
         </form>
       </DialogContent>
     </Dialog>

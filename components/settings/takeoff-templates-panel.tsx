@@ -103,9 +103,10 @@ export function TakeoffTemplatesPanel({
   const atCap = total >= cap
 
   const handleDelete = (template: ConditionTemplate) => {
+    if (!canManage || deleting) return
     startDelete(async () => {
       try {
-        unwrapAction(await deleteConditionTemplateAction(template.id))
+        unwrapAction(await deleteConditionTemplateAction(template.id, template.updated_at))
         setConfirmDelete(null)
         toast.success(`Removed "${template.name}" from the library`)
         router.refresh()
@@ -201,7 +202,7 @@ export function TakeoffTemplatesPanel({
                     event.preventDefault()
                     handleDelete(confirmDelete)
                   }}
-                  disabled={deleting}
+                  disabled={!canManage || deleting}
                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 >
                   {deleting ? "Deleting…" : "Delete"}

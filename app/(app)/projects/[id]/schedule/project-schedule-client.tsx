@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import { useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 
@@ -10,6 +10,7 @@ import {
   createProjectScheduleItemAction,
   updateProjectScheduleItemAction,
   bulkUpdateProjectScheduleItemsAction,
+  previewProjectScheduleRescheduleAction,
   deleteProjectScheduleItemAction,
   createProjectDependencyAction,
   updateProjectDependencyAction,
@@ -22,15 +23,18 @@ interface ProjectScheduleClientProps {
   projectId: string
   initialItems: ScheduleItem[]
   initialDependencies: ScheduleDependency[]
+  /** Server-rendered notice above the schedule (delivery advisories). */
+  banner?: ReactNode
 }
 
-export function ProjectScheduleClient({ projectId, initialItems, initialDependencies }: ProjectScheduleClientProps) {
+export function ProjectScheduleClient({ projectId, initialItems, initialDependencies, banner }: ProjectScheduleClientProps) {
   const [items, setItems] = useState<ScheduleItem[]>(initialItems)
   const [dependencies, setDependencies] = useState<ScheduleDependency[]>(initialDependencies)
   const focusItemId = useSearchParams().get("item")
 
   return (
     <div className="h-[calc(100vh-56px)] -mt-6 -mx-4 -mb-4 flex flex-col bg-background border-t border-border">
+      {banner}
       <ScheduleView
         className="flex-1"
         projectId={projectId}
@@ -48,8 +52,14 @@ export function ProjectScheduleClient({ projectId, initialItems, initialDependen
           setItems((prev) => prev.map((item) => (item.id === id ? updated : item)))
           return updated
         }}
-        onItemsBulkUpdate={async (updates) => {
-          const updatedItems = unwrapAction(await bulkUpdateProjectScheduleItemsAction(projectId, { items: updates }))
+        onPreviewReschedule={async (moves) =>
+          unwrapAction(await previewProjectScheduleRescheduleAction(projectId, { items: moves }))}
+        onItemsBulkUpdate={async (updates, approval) => {
+          const updatedItems = unwrapAction(await bulkUpdateProjectScheduleItemsAction(projectId, {
+            items: updates,
+            acknowledge_close_impacts: approval?.acknowledgeCloseImpacts,
+            reason: approval?.reason,
+          }))
           if (updatedItems.length > 0) {
             const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
             setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))

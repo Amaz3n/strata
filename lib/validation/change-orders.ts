@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 export const changeOrderLineInputSchema = z.object({
+  id: z.string().uuid().optional(),
   cost_code_id: z.string().uuid().optional(),
   budget_line_id: z.string().uuid().optional(),
   description: z.string().min(2, "Description is required"),

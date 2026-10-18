@@ -1,0 +1,18 @@
+{
+  "checkedAt": "2026-10-08",
+  "method": "Read-only SELECTs against production (Supabase MCP), one object per file that the file itself creates or changes.",
+  "verdict": "The ten pre-October files db:pending lists are genuinely not applied. The 29 others without a ledger name match are applied: they are in the object-verified map of supabase/scripts/repair-migration-ledger.sql (re-verified 2026-09-03) and need only the ledger repair.",
+  "notApplied": {
+    "20260731150000_desk_rollup_counts": "table desk_rollup_counts absent",
+    "20260813030000_payment_reconciliation_run_idempotency": "both unique indexes absent",
+    "20260813030100_payment_ledger_balance_error_detail": "post_payment_ledger_transaction_atomic lacks the 'cannot mix currencies' message",
+    "20260818170000_prequalification_waiver": "prequalifications_status_check has no 'waived'",
+    "20260829120000_billing_lifecycle_and_command_permissions": "invoices_status_check still allows 'saved'; 6 invoices hold it",
+    "20260902141500_compliance_autopilot_deficient_reminders": "compliance_autopilot_deliveries_reminder_kind_check has no 'deficient'",
+    "20260919235924_unified_reporting_access": "report_schedules has none of delivery_claimed_until, last_error, delivery_payload",
+    "20260921123155_customer_billing_refunds": "function record_manual_customer_refund_atomic absent",
+    "20260924230342_accounting_d2_compatibility_mirror": "functions accounting_d2_mirror_coding and accounting_d2_refresh_archive absent",
+    "20260929011236_takeoff_estimating_continuity": "function apply_change_order_measurements absent"
+  },
+  "appliedSinceSeptember5": ["20260724120000_warranty_completion_coverage", "20260813040000_remove_dead_vendor_identity_lockout_columns", "20260827121000_project_optional_vendor_bills", "20260901120100_payment_money_widening_and_fk_indexes"]
+}

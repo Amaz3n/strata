@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Download,
   Eye,
-  FileWarning,
   History,
   LayoutGrid,
   MoreHorizontal,
@@ -27,6 +26,7 @@ import {
 } from "@/lib/utils/drawing-utils"
 import { prefetchTilesCookie } from "@/lib/drawings/tiles-cookie-client"
 import { cn } from "@/lib/utils"
+import { SheetThumbnail } from "@/components/drawings/sheet-thumbnail"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -67,6 +67,7 @@ export interface DisciplineGroup {
 }
 
 interface SheetRegisterProps {
+  preconstruction?: boolean
   /** Sheets after the caller's name filter has been applied. */
   sheets: DrawingSheet[]
   /** How many sheets exist in total for this project, ignoring the render cap. */
@@ -151,7 +152,7 @@ function SheetActivity({ sheet }: { sheet: DrawingSheet }) {
           className="inline-flex items-center gap-1 text-warning"
           title={`${openPins} open ${openPins === 1 ? "item" : "items"} on this sheet`}
         >
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+          <span className="inline-block h-1.5 w-1.5 rounded-none bg-current" />
           {openPins}
         </span>
       )}
@@ -161,30 +162,6 @@ function SheetActivity({ sheet }: { sheet: DrawingSheet }) {
         </span>
       )}
     </span>
-  )
-}
-
-function SheetThumbnail({ sheet, className }: { sheet: DrawingSheet; className?: string }) {
-  const url = sheet.image_thumbnail_url
-  if (!url) {
-    return (
-      <div
-        className={cn(
-          "flex items-center justify-center border bg-muted text-muted-foreground",
-          className
-        )}
-      >
-        <FileWarning className="h-3 w-3" />
-      </div>
-    )
-  }
-  return (
-    <img
-      src={url}
-      alt=""
-      loading="lazy"
-      className={cn("border bg-background object-cover object-top", className)}
-    />
   )
 }
 
@@ -295,6 +272,7 @@ function SheetRowMenu({
 }
 
 function SheetRow({
+  preconstruction,
   sheet,
   search,
   selected,
@@ -307,6 +285,7 @@ function SheetRow({
   onDisciplineChange,
   indented,
 }: {
+  preconstruction: boolean
   sheet: DrawingSheet
   search: string
   selected: boolean
@@ -321,8 +300,15 @@ function SheetRow({
 }) {
   return (
     <TableRow
-      className="group cursor-pointer border-t border-border/40 hover:bg-muted/20"
+      className={cn("group cursor-pointer border-t border-border/40 hover:bg-muted/20", preconstruction && "h-16 [&>td]:py-3")}
       onClick={onOpen}
+      tabIndex={preconstruction ? 0 : undefined}
+      onKeyDown={preconstruction ? (event) => {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault()
+          onOpen()
+        }
+      } : undefined}
       data-state={selected ? "selected" : undefined}
     >
       <TableCell className="w-10 pl-4" onClick={(event) => event.stopPropagation()}>
@@ -334,7 +320,7 @@ function SheetRow({
       </TableCell>
       <TableCell className={cn("w-[120px]", indented && "pl-6")}>
         <div className="flex items-center gap-2">
-          <SheetThumbnail sheet={sheet} className="h-8 w-6 shrink-0" />
+          <SheetThumbnail sheet={sheet} className={cn("h-8 w-6 shrink-0", preconstruction && "h-10 w-8 rounded-none")} />
           <span className="truncate font-mono text-xs font-medium tabular-nums">
             <Highlighted text={sheet.sheet_number || "—"} highlight={search} />
           </span>
@@ -375,12 +361,14 @@ function SheetRow({
 }
 
 function SheetCard({
+  preconstruction,
   sheet,
   search,
   selected,
   onSelectedChange,
   onOpen,
 }: {
+  preconstruction: boolean
   sheet: DrawingSheet
   search: string
   selected: boolean
@@ -393,6 +381,7 @@ function SheetCard({
       onClick={onOpen}
       className={cn(
         "group relative flex flex-col border text-left transition-colors hover:bg-muted/30",
+        preconstruction && "overflow-hidden rounded-none border-border/60 bg-card shadow-sm",
         selected && "ring-1 ring-primary"
       )}
     >
@@ -426,6 +415,7 @@ function SheetCard({
 }
 
 export function SheetRegister({
+  preconstruction = false,
   sheets,
   totalSheetCount,
   loadedSheetCount,
@@ -565,6 +555,7 @@ export function SheetRegister({
 
   const renderSheetRow = (sheet: DrawingSheet, indented: boolean) => (
     <SheetRow
+      preconstruction={preconstruction}
       key={sheet.id}
       sheet={sheet}
       search={search}
@@ -587,7 +578,7 @@ export function SheetRegister({
       onFocusCapture={warmTilesAccess}
     >
       {tilesOrigin && <link rel="preconnect" href={tilesOrigin} crossOrigin="use-credentials" />}
-      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
+      <div className={cn("flex flex-wrap items-center gap-2 border-b px-4 py-2", preconstruction && "gap-3 border-border/60 px-5 py-3")}>
         {selectedList.length > 0 ? (
           <>
             <span className="text-xs font-medium tabular-nums">
@@ -600,6 +591,7 @@ export function SheetRegister({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-56">
+                {!preconstruction && <>
                 <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
                   Sharing
                 </DropdownMenuLabel>
@@ -620,6 +612,7 @@ export function SheetRegister({
                   Unshare from subs
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
+                </>}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>Change discipline</DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-52">
@@ -650,12 +643,12 @@ export function SheetRegister({
           </>
         ) : (
           <>
-            <span className="text-xs text-muted-foreground">Sort</span>
+            <span className="text-xs text-muted-foreground">{preconstruction ? "Arrange by" : "Sort"}</span>
             <Select
               value={sortKey}
               onValueChange={(value) => setSortKey(value as RegisterSortKey)}
             >
-              <SelectTrigger className="h-8 w-[180px]">
+              <SelectTrigger aria-label="Arrange drawing sheets" className={cn("h-8 w-[180px]", preconstruction && "rounded-none border-transparent bg-muted/40 shadow-none")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -680,6 +673,7 @@ export function SheetRegister({
             }}
             variant="outline"
             size="sm"
+            className={cn(preconstruction && "rounded-none bg-muted/40 p-1 [&>button]:rounded-none [&>button]:border-0 [&>button]:shadow-none")}
           >
             <ToggleGroupItem value="list" aria-label="List view">
               <Rows3 className="h-4 w-4" />
@@ -700,6 +694,7 @@ export function SheetRegister({
           {(sortKey === "number" ? groups.flatMap((group) => group.sheets) : flatSheets).map(
             (sheet) => (
               <SheetCard
+                preconstruction={preconstruction}
                 key={sheet.id}
                 sheet={sheet}
                 search={search}
@@ -713,7 +708,7 @@ export function SheetRegister({
       ) : (
         <Table className="table-fixed sm:min-w-[980px]">
           <TableHeader>
-            <TableRow className="bg-muted/40 hover:bg-muted/40">
+            <TableRow className={cn("bg-muted/40 hover:bg-muted/40", preconstruction && "bg-muted/20 hover:bg-muted/20")}>
               <TableHead className="w-10 pl-4">
                 <Checkbox
                   checked={allVisibleSelected}
@@ -750,9 +745,18 @@ export function SheetRegister({
                       <TableRow
                         className={cn(
                           "group cursor-pointer border-t bg-background hover:bg-muted/30",
+                          preconstruction && "h-14 border-border/60 bg-muted/15",
                           expanded && "bg-muted/20"
                         )}
                         onClick={() => onToggleDiscipline(group.code)}
+                        tabIndex={preconstruction ? 0 : undefined}
+                        aria-expanded={expanded}
+                        onKeyDown={preconstruction ? (event) => {
+                          if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                            event.preventDefault()
+                            onToggleDiscipline(group.code)
+                          }
+                        } : undefined}
                       >
                         <TableCell className="w-10 pl-4">
                           <ChevronRight
@@ -767,7 +771,7 @@ export function SheetRegister({
                             <span
                               className={cn(
                                 "inline-flex h-8 w-8 shrink-0 items-center justify-center border",
-                                disciplineGradientClass(group.code)
+                                preconstruction ? "rounded-none border-border/60 bg-muted/40 text-muted-foreground" : disciplineGradientClass(group.code)
                               )}
                             >
                               <Icon className="h-4 w-4" />

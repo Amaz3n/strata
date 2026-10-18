@@ -30,4 +30,9 @@ module.exports = [
     },
   },
   ...legacyConfig.overrides.map(({ files, rules }) => ({ files, rules })),
+  {
+    files: ["app/**/*.{ts,tsx}", "components/**/*.{ts,tsx}", "hooks/**/*.{ts,tsx}"],
+    // Audited application hooks must compute memoized values without side effects.
+    rules: { "react-hooks/use-memo": "error" },
+  },
 ]

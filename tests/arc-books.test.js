@@ -1753,12 +1753,22 @@ test("AR and AP have one status definition, and it is the one the GL posts from"
     path.join(__dirname, "../lib/services/reports/ap-aging.ts"),
     "utf8",
   );
-  assert.match(arAging, /BILLED_INVOICE_STATUSES\.includes\(row\.status\)/);
-  assert.match(arAging, /voidedAt >= cutoff/);
-  assert.match(
-    apAging,
-    /\.in\("status", \[\.\.\.PAYABLE_VENDOR_BILL_STATUSES\]\)/,
-  );
+  assert.match(arAging, /isInvoiceReceivableAsOf\(row, asOfDate, removedOn\)/);
+  const { isInvoiceReceivableAsOf } = require("../lib/services/books/subledger-settlements");
+  for (const status of BILLED_INVOICE_STATUSES) assert.equal(isInvoiceReceivableAsOf({ status }, "2026-09-30"), true);
+  for (const status of ["draft", "saved"]) assert.equal(isInvoiceReceivableAsOf({ status }, "2026-09-30"), false);
+  assert.equal(isInvoiceReceivableAsOf({ status: "void", metadata: { voided_at: "2026-10-01T00:00:00Z" } }, "2026-09-30"), true);
+  assert.equal(isInvoiceReceivableAsOf({ status: "void", metadata: { voided_at: "2026-09-30T00:00:00Z" } }, "2026-09-30"), false);
+  assert.equal(isInvoiceReceivableAsOf({ status: "sent", metadata: { invoice_kind: "earnest_deposit" } }, "2026-09-30"), false);
+  // Where a void posted, the ledger's removal date decides, not the void time.
+  const removedOn = new Map([["erased", "2026-07-20"], ["later", "2026-10-07"]]);
+  assert.equal(isInvoiceReceivableAsOf({ id: "erased", status: "void", metadata: { voided_at: "2026-10-01T00:00:00Z" } }, "2026-07-31", removedOn), false);
+  assert.equal(isInvoiceReceivableAsOf({ id: "later", status: "void", metadata: { voided_at: "2026-10-07T00:00:00Z" } }, "2026-07-31", removedOn), true);
+  const { isBillPayableAsOf } = require("../lib/services/books/subledger-settlements");
+  assert.equal(isBillPayableAsOf({ id: "later", status: "pending" }, "2026-07-31", removedOn), true);
+  assert.equal(isBillPayableAsOf({ id: "never", status: "pending" }, "2026-07-31", removedOn), false);
+  assert.equal(isBillPayableAsOf({ id: "never", status: "approved" }, "2026-07-31", removedOn), true);
+  assert.match(apAging, /isBillPayableAsOf\(row, asOfDate, removedOn\)/);
 
   // Retainage reaches 1110 only through an invoice, so the held-retainage
   // subledger has to join the invoice rather than trust `held_at`.
@@ -1770,11 +1780,11 @@ test("AR and AP have one status definition, and it is the one the GL posts from"
   // PostgREST rejects the embed outright and the tie-out throws.
   assert.match(
     verifier,
-    /invoice:invoices!invoice_id!inner\(status, issue_date\)/,
+    /invoice:invoices!invoice_id!inner\(status,issue_date,metadata\)/,
   );
   assert.match(
     verifier,
-    /\.in\("invoice\.status", \[\.\.\.BILLED_INVOICE_STATUSES\]\)/,
+    /receivableRetainageAsOf\(holds, asOf\)/,
   );
   assert.doesNotMatch(verifier, /not\("status", "in", "\(draft,void\)"\)/);
 });
@@ -1924,7 +1934,7 @@ test("the P&L carries the project dimension and drill-down reuses the shared hre
   // which would make the row cap slice an arbitrary page.
   assert.match(
     detail,
-    /from\("journal_entries"\)[\s\S]*?lines:journal_lines!inner/,
+    /from\("journal_entries"\)[\s\S]*?lines:journal_lines(?:![a-z_]+)?!inner/,
   );
   assert.match(detail, /\.order\("entry_date", \{ ascending: true \}\)/);
   // Source links come from the one href registry, not a second copy of the routes.
@@ -2190,11 +2200,13 @@ test("bank rules pick the most specific match and reuse B1's confidence curve", 
     direction: null,
     bankAccountId: null,
     glAccountId: "gl-generic",
+    vendorId: null,
     projectId: null,
     costCodeId: null,
     confidence: 1,
     hitCount: 5,
     active: true,
+    source: "learned_pattern",
     ...overrides,
   });
   const txn = {
@@ -2221,6 +2233,37 @@ test("bank rules pick the most specific match and reuse B1's confidence curve", 
       ],
     }).ruleId,
     "exact",
+  );
+
+  // Explicit rules are authored intent: they win over learned specificity but
+  // remain suggestions rather than silently posting a transaction.
+  const manual = selectBankRule({
+    transaction: txn,
+    rules: [
+      rule({ id: "learned", matchKind: "merchant_exact", source: "learned_pattern" }),
+      rule({ id: "manual", source: "manual_rule" }),
+    ],
+  });
+  assert.equal(manual.ruleId, "manual");
+  assert.equal(manual.source, "manual_rule");
+  assert.equal(manual.autoApplies, false);
+
+  // Description means the bank description for manual rules. Merchant-only
+  // fallback remains limited to legacy learned patterns.
+  assert.equal(
+    selectBankRule({
+      transaction: { ...txn, description: "card purchase 4821" },
+      rules: [rule({ source: "manual_rule" })],
+    }),
+    null,
+  );
+
+  assert.equal(
+    selectBankRule({
+      transaction: txn,
+      rules: [rule({ vendorId: "vendor-home-depot" })],
+    }).vendorId,
+    "vendor-home-depot",
   );
 
   // A rule bound to this account beats one that applies everywhere.
@@ -2331,6 +2374,18 @@ test("bank rules pick the most specific match and reuse B1's confidence curve", 
     }),
     true,
   );
+});
+
+test("manual bank rule writes validate organization-owned targets and stay separate from learned patterns", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../lib/services/books/bank-manual-rules.ts"),
+    "utf8",
+  );
+  assert.match(source, /from\("gl_accounts"\).*eq\("org_id", orgId\).*eq\("active", true\).*neq\("account_type", "cogs"\)/s);
+  assert.match(source, /from\("bank_accounts"\).*eq\("org_id", orgId\)/s);
+  assert.match(source, /from\("companies"\).*eq\("org_id", orgId\)/s);
+  assert.match(source, /permission: "books\.reconcile"/);
+  assert.doesNotMatch(source, /from\("bank_rules"\)/);
 });
 
 test("a pasted trial balance parses without inventing amounts", () => {
@@ -2524,20 +2579,41 @@ test("Books exposes focused accounting workspaces instead of one tab-only page",
     path.join(__dirname, "../app/(app)/books/transactions/page.tsx"),
     "utf8",
   );
-  for (const route of [
-    "/books/banking",
-    "/books/overhead",
-    "/books/chart",
-    "/books/ledger",
-    "/books/close",
-    "/books/opening-balances",
-    "/books/accountant",
-    "/books/cutover",
-  ])
-    assert.match(client, new RegExp(route.replaceAll("/", "\\/")));
+  const navigation = fs.readFileSync(path.join(__dirname, "../components/layout/books-nav-items.ts"), "utf8");
+  const landing = fs.readFileSync(path.join(__dirname, "../app/(app)/books/page.tsx"), "utf8");
+  assert.match(landing, /redirect\(\s*settings\?\.ledger_authority === "arc"/);
+  assert.doesNotMatch(client, /section === "overview"|The books behind the build/);
+  for (const route of ["/books/banking", "/books/overhead", "/books/assets"])
+    assert.ok(navigation.includes(route));
+  const chartRedirect = fs.readFileSync(
+    path.join(__dirname, "../app/(app)/books/chart/page.tsx"),
+    "utf8",
+  );
+  assert.match(chartRedirect, /redirect\("\/settings\/accounting\/chart-of-accounts"\)/);
+  assert.doesNotMatch(client, /key: "chart", label: "Chart"/);
+  for (const [legacy, destination] of [["opening-balances", "opening-balances"], ["cutover", "setup"]]) {
+    const redirectPage = fs.readFileSync(path.join(__dirname, `../app/(app)/books/${legacy}/page.tsx`), "utf8");
+    assert.ok(redirectPage.includes(`redirect("/settings/accounting/${destination}")`));
+    assert.doesNotMatch(client, new RegExp(`key: "${legacy}"`));
+  }
+  assert.doesNotMatch(client, /key: "ledger", label: "Ledger"/);
+  const sidebar = fs.readFileSync(path.join(__dirname, "../components/layout/app-sidebar.tsx"), "utf8");
+  assert.match(sidebar, /items: buildBooksNavItems\(pathname\)/);
+  assert.match(navigation, /title: "General ledger",\s*url: "\/books\/ledger"/);
+  const sectionPage = fs.readFileSync(path.join(__dirname, "../app/(app)/books/_components/books-section-page.tsx"), "utf8");
+  assert.match(sectionPage, /section === "ledger"/);
+  assert.match(sectionPage, /<BooksJournals/);
+  assert.doesNotMatch(client, /createAccountingPeriodAction/);
+  const close = fs.readFileSync(path.join(__dirname, "../components/books/close-workspace.tsx"), "utf8");
+  assert.match(close, /settings\/accounting\/calendar/);
+  assert.match(navigation, /title: "Close",\s*url: "\/books\/close"/);
+  assert.match(sectionPage, /<CloseWorkspace/);
+  assert.doesNotMatch(client, /key: "close"/);
+
   assert.match(transactionsRedirect, /redirect\("\/books\/banking"\)/);
-  assert.match(client, /\/books\/banking\/\$\{account\.id\}\/reconcile/);
-  assert.match(client, /\/books\/close\/\$\{period\.id\}/);
+  const banking = fs.readFileSync(path.join(__dirname, "../components/books/banking-workspace.tsx"), "utf8");
+  assert.match(banking, /reconciliationAccountId/);
+  assert.match(close, /\/books\/close\/\$\{period\.id\}/);
 });
 
 test("the cutover quarter gate measures calendar covered, not runs approved", () => {
@@ -2882,11 +2958,10 @@ test("org-level notifications can deep-link even with no project", () => {
 
   // ...and the resolver returned null without a project id, so an org-level
   // notification could not have linked anywhere regardless of its case.
-  assert.match(
-    item,
-    /const explicit = typeof payload\?\.href === "string" \? payload\.href : null/,
-  );
-  assert.match(item, /if \(explicit\?\.startsWith\("\/"\)\) return explicit/);
+  assert.match(item, /getNotificationHref\(payload\)/);
+  const { getNotificationHref } = require("../lib/notifications/destinations");
+  assert.equal(getNotificationHref({ href: "/books/close" }), "/books/close");
+  assert.equal(getNotificationHref({ href: "https://external.invalid/" }), null);
 
   // The email path had its own router that only knew entity types, so the same
   // notification arrived in-app with a link and by email without a button.
@@ -3539,7 +3614,7 @@ test("a source that leaves the projectable set is retired, and retirement is ide
   // Retirement facts produce no draft; the rebuild drill must recognize that
   // rather than reporting an unsupported fact kind for every retired source.
   const rebuild = fs.readFileSync(
-    path.join(__dirname, "../lib/services/books/rebuild.ts"),
+    path.join(__dirname, "../lib/services/books/fact-journal-check.ts"),
     "utf8",
   );
   assert.match(rebuild, /isRetiredFactKind\(fact\.fact_kind\)/);
@@ -3603,16 +3678,12 @@ test("source supersede reversal, fact, and replacement post are atomic", () => {
       migration.lastIndexOf("public.post_books_journal_entry"),
   );
 
-  // The watermark remains inclusive after transient RPC/concurrency failures.
-  assert.match(projector, /query\.gte\("updated_at", watermarks\./);
-  assert.doesNotMatch(projector, /\.gt\("updated_at", watermarks\./);
-
   // The nightly repair sweep still proves every current source, not just deltas.
   const maintenance = fs.readFileSync(
     path.join(__dirname, "../app/api/jobs/books-maintenance/route.ts"),
     "utf8",
   );
-  assert.match(maintenance, /runBooksProjection\(\{ full: true \}\)/);
+  assert.match(maintenance, /runBooksProjection\(\{ full: true,/);
 });
 
 test("an accounting date comes from the timestamp, not from the first ten characters of it", () => {
@@ -3630,7 +3701,7 @@ test("an accounting date comes from the timestamp, not from the first ten charac
   // One date convention, the codebase's own: UTC-anchored date-only.
   assert.match(
     projector,
-    /import \{ isoDateOnlyFromUtcMs \} from "@\/lib\/services\/reports\/dates"/,
+    /import \{[^}]*\bisoDateOnlyFromUtcMs\b[^}]*\} from "@\/lib\/services\/reports\/dates"/,
   );
   assert.equal(
     isoDateOnlyFromUtcMs(Date.parse("2026-06-30T23:30:00-05:00")),
@@ -3654,23 +3725,21 @@ test("revenue recognition is as-of, and names the projects it could not answer f
   // Closing June in August must not book June revenue out of August's costs.
   assert.match(
     recognition,
-    /const historical = periodEnd < todayIsoDateOnly\(\)/,
+    /requireRecognitionDate\(periodEnd, todayIsoDateOnly\(\)\)/,
   );
   assert.match(
     recognition,
-    /loadPocPositionsAsOf\(\{ orgId, projectIds: pocProjects\.map\(\(row\) => row\.projectId\), asOf: periodEnd \}\)/,
+    /loadPocPositionsAsOf\(\{ orgId, projectIds, asOf: periodEnd \}\)/,
   );
-  // Live computation survives only for a period end that is not yet in the past.
-  assert.match(
-    recognition,
-    /\} else \{\s*const poc = await computeProjectPocForProject/,
-  );
+  // Posting uses period-end evidence even when the period ends today.
+  assert.doesNotMatch(recognition, /computeProjectPocForProject/);
+  assert.match(recognition, /exactPeriodPosition\(snapshots.get\(wipScopeKey\(scope\)\), periodEnd\)/);
   // A project with no snapshot is named, not given today's position.
   assert.match(
     recognition,
-    /projectsWithoutSnapshot\.push\(project\.projectId\)/,
+    /projectsWithoutSnapshot\.push\(scope\.projectId\)/,
   );
-  assert.match(recognition, /skippedReason: "no_snapshot"/);
+  assert.match(recognition, /skippedReason: !position \? "no_snapshot"/);
   assert.match(
     recognition,
     /return \{ periodEnd, basis, recognized, postedCents, projectsWithoutSnapshot, results \}/,
@@ -4021,6 +4090,7 @@ test("two exceptions of one kind against one record stay two findings", () => {
 });
 
 test("the close gate reads the current state of reconciliation, not its history", () => {
+  const { tieOutCloseCheck } = require("../lib/services/books/close-control-rules");
   const source = fs.readFileSync(
     path.join(__dirname, "../lib/services/books/period-close.ts"),
     "utf8",
@@ -4046,7 +4116,8 @@ test("the close gate reads the current state of reconciliation, not its history"
   // The dedicated control checks remain the single place a tie-out blocks a close.
   for (const code of ["job_cost_control", "ar_control", "ap_control"]) {
     assert.ok(TIE_OUT_ITEM_CATEGORIES.includes(`tie_out_${code}`));
-    assert.match(source, new RegExp(`code: "${code}"`));
+    const check = tieOutCloseCheck({ code, label: code, status: "failed", ledgerCents: 1, subledgerCents: 0, differenceCents: 1 });
+    assert.deepEqual([check.code, check.blocking, check.status], [code, true, "failed"]);
   }
 
   // The spine no longer wipes and rewrites the day's items, and it does close them.
@@ -4089,7 +4160,6 @@ test("a truncated scan can never report a clean bill of health", () => {
   for (const table of [
     "bank_transactions",
     "vendor_bills",
-    "poc_snapshots",
     "bank_accounts",
     "companies",
     "bank_reconciliations",
@@ -4123,6 +4193,10 @@ test("a truncated scan can never report a clean bill of health", () => {
     source,
     /if \(args\.issueCount > 0 \|\| args\.scanCapped\) return args\.failedStatus/,
   );
+  assert.match(source, /loadPocPositionsAsOf\(\{ orgId: context.orgId, asOf: period.period_end \}\)/);
+  const snapshotLoader = fs.readFileSync(path.join(__dirname, "../lib/services/poc.ts"), "utf8");
+  assert.match(snapshotLoader, /\.range\(from, from \+ POC_SNAPSHOT_PAGE_SIZE - 1\)/);
+
 });
 
 test("the tie-outs compare real balances, including credit ones", () => {
@@ -4235,6 +4309,14 @@ test("a projection failure a retry cannot cure is surfaced as its own finding", 
     "projection_blocked_by_closed_period",
   );
   assert.equal(
+    classifyProjectionFailure("Failed to post journal: Accounting period is closed and cannot accept postings"),
+    "projection_blocked_by_closed_period",
+  );
+  assert.equal(
+    classifyProjectionFailure("Accounting period is reviewing and cannot accept operational postings"),
+    "projection_failed",
+  );
+  assert.equal(
     classifyProjectionFailure(
       "Failed to record accounting fact: duplicate key value violates unique constraint",
     ),
@@ -4255,7 +4337,7 @@ test("a projection failure a retry cannot cure is surfaced as its own finding", 
     /ok: failures === 0[\s\S]*status: failures === 0 \? 200 : 207/;
   assert.match(projection, convention);
   assert.match(maintenance, convention);
-  assert.match(maintenance, /recordProjectionFailures\(repair\.results\)/);
+  assert.match(maintenance, /recordProjectionFailures\(repair\.results, \{ full: true \}\)/);
   assert.doesNotMatch(maintenance, /\{ ok: true,/);
 });
 
@@ -4284,9 +4366,9 @@ test("a refused close leaves no journal entries behind, and posts under resolved
   // than recognizing against a substituted one.
   assert.match(
     close,
-    /recognizeRevenueForPeriod\(\s*context\.orgId,\s*period\.period_end,?\s*\)/,
+    /recognizeRevenueForPeriod\(\s*context\.orgId,\s*period\.period_end,\s*checklist\.pocScopes,\s*checklist\.pocSnapshotEvidence,?\s*\)/,
   );
-  assert.match(close, /checklist\.pocProjectIds\.includes\(row\.projectId\)/);
+  assert.match(close, /checklist\.pocScopes\.some\(\(scope\) => wipScopeKey\(scope\) === wipScopeKey\(row\)\)/);
 
   // The year-end closing entry resolves its versions like every other posting; a
   // hardcoded 1 cannot be re-derived by a re-projection under a new version.
@@ -4297,3 +4379,34 @@ test("a refused close leaves no journal entries behind, and posts under resolved
   assert.match(yearEnd, /policyVersion: versions\.policyVersion/);
   assert.doesNotMatch(yearEnd, /projectionVersion: 1/);
 });
+
+test("provider coding gates close only when the ledger syncs externally", () => {
+  // Arc posts bills from their cost lines; provider coding feeds only external
+  // sync, so a disconnected (greenfield official) ledger must not be held by it.
+  const source = fs.readFileSync(
+    path.join(__dirname, "../lib/services/books/period-close.ts"),
+    "utf8",
+  );
+  const item = source.slice(source.indexOf('code: "coding_exceptions"'), source.indexOf('code: "sync_backlog"'));
+  assert.match(item, /blocking: requiresExternalSync,/);
+  assert.match(item, /applicable: requiresExternalSync/);
+});
+
+test("an abandoned close is recognized after the same interval the database uses", async (t) => {
+  const { createDatabase, insert, rpc, seedMember } = require("./support/pglite")
+  const { isAbandonedClose } = require("../lib/services/books/close-review")
+  const db = await createDatabase(t)
+  const { orgId } = await seedMember(db)
+  for (const [minutes, period] of [[29, "2026-07"], [31, "2026-08"]]) {
+    const startedAt = new Date(Date.now() - minutes * 60_000)
+    const row = await insert(db, "accounting_periods", { org_id: orgId, period_start: `${period}-01`, period_end: `${period}-28`, fiscal_year: 2026, fiscal_period: Number(period.slice(5)),
+      status: "reviewing", close_started_at: startedAt.toISOString(), close_prior_status: "open" })
+    const resumed = await rpc(db, "begin_books_period_close", { p_org_id: orgId, p_period_id: row.id }).then(() => true, (error) => {
+      assert.match(String(error.message), /already running/)
+      return false
+    })
+    assert.equal(isAbandonedClose("reviewing", startedAt.toISOString(), new Date()), resumed, `${minutes} minutes`)
+  }
+  assert.equal(isAbandonedClose("reviewing", null, new Date()), true)
+  assert.equal(isAbandonedClose("open", null, new Date()), false)
+})

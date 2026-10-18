@@ -83,7 +83,7 @@ export async function getSettlementStatementReport(
   if (!pricing) throw new Error("Purchase agreement pricing snapshot is missing")
 
   const closingInvoiceId = text(closing.closing_invoice_id)
-  const [{ data: project }, { data: org }, paymentResult] = await Promise.all([
+  const [projectResult, orgResult, paymentResult] = await Promise.all([
     context.supabase
       .from("projects")
       .select("location, client:contacts(full_name, email, phone)")
@@ -100,9 +100,13 @@ export async function getSettlementStatementReport(
           .eq("provider_payment_id", `closing:${closingId}`)
           .in("status", ["succeeded", "completed"])
           .maybeSingle()
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, error: null }),
   ])
 
+  if (projectResult.error || !projectResult.data) throw new Error("Unable to read settlement property and buyer information")
+  if (orgResult.error || !orgResult.data) throw new Error("Unable to read settlement builder information")
+  if (paymentResult.error) throw new Error(`Unable to read settlement payment evidence: ${paymentResult.error.message}`)
+  const project = projectResult.data, org = orgResult.data
   const client = relationRecord(record(project).client)
   const lot = relationRecord(closing.lot)
   const plan = relationRecord(lot.plan)

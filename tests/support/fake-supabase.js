@@ -13,6 +13,8 @@
  * the lease and claim tests pass for the wrong reason.
  */
 
+const { randomUUID } = require("node:crypto")
+
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 }
@@ -36,6 +38,17 @@ function looseEqual(actual, expected) {
   return String(actual) === String(expected)
 }
 
+function jsonContains(actual, expected) {
+  if (Array.isArray(expected)) {
+    return Array.isArray(actual) && expected.every((entry) => actual.some((candidate) => jsonContains(candidate, entry)))
+  }
+  if (expected && typeof expected === "object") {
+    if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false
+    return Object.entries(expected).every(([key, entry]) => jsonContains(actual[key], entry))
+  }
+  return looseEqual(actual, expected)
+}
+
 function applyOperator(actual, operator, value) {
   switch (operator) {
     case "eq": return looseEqual(actual, value)
@@ -46,8 +59,18 @@ function applyOperator(actual, operator, value) {
     case "lte": return actual !== null && actual !== undefined && actual <= value
     case "gt": return actual !== null && actual !== undefined && actual > value
     case "gte": return actual !== null && actual !== undefined && actual >= value
+    case "ilike": return actual !== null && actual !== undefined && likeMatcher(value).test(String(actual))
     default: throw new Error(`fake-supabase: unsupported operator "${operator}"`)
   }
+}
+
+/** `%` and `_` wildcards, case-insensitive, as Postgres ILIKE. */
+function likeMatcher(pattern) {
+  const source = String(pattern)
+    .split("")
+    .map((char) => (char === "%" ? ".*" : char === "_" ? "." : char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+    .join("")
+  return new RegExp(`^${source}$`, "is")
 }
 
 function parseList(value) {
@@ -90,7 +113,8 @@ function matchesExpression(row, expression) {
 }
 
 class Query {
-  constructor(store, table) {
+  constructor(store, table, newId) {
+    this.newId = newId
     this.store = store
     this.table = table
     this.filters = []
@@ -130,6 +154,7 @@ class Query {
   upsert(payload, options = {}) { this.action = "upsert"; this.payload = payload; this.upsertOptions = options; return this }
 
   eq(column, value) { return this.addFilter((row) => applyOperator(readPath(row, column), "eq", value)) }
+  ilike(column, pattern) { return this.addFilter((row) => applyOperator(readPath(row, column), "ilike", pattern)) }
   neq(column, value) { return this.addFilter((row) => applyOperator(readPath(row, column), "neq", value)) }
   is(column, value) { return this.addFilter((row) => applyOperator(readPath(row, column), "is", value)) }
   in(column, values) { return this.addFilter((row) => applyOperator(readPath(row, column), "in", values)) }
@@ -143,12 +168,9 @@ class Query {
   or(expression) {
     return this.addFilter((row) => splitTopLevel(expression).some((term) => matchesExpression(row, term)))
   }
+  /** Postgres `@>`: every key of an object, and every element of an array, is contained in the column. */
   contains(column, value) {
-    return this.addFilter((row) => {
-      const actual = readPath(row, column)
-      if (!actual || typeof actual !== "object") return false
-      return Object.entries(value).every(([key, entry]) => looseEqual(actual[key], entry))
-    })
+    return this.addFilter((row) => jsonContains(readPath(row, column), value))
   }
 
   order(column, options = {}) { this.orderings.push({ column, ascending: options.ascending !== false }); return this }
@@ -156,6 +178,10 @@ class Query {
   range(from, to) { this.rangeValue = [from, to]; return this }
   single() { this.cardinality = "single"; return this }
   maybeSingle() { this.cardinality = "maybe"; return this }
+  /** Like PostgREST: an error rejects instead of resolving `{ error }`. */
+  throwOnError() { this.throwing = true; return this }
+  /** A type-only cast in PostgREST. */
+  returns() { return this }
 
   matched() {
     return this.rows().filter((row) => this.filters.every((predicate) => predicate(row)))
@@ -173,9 +199,15 @@ class Query {
           : undefined
         if (existing && this.upsertOptions?.ignoreDuplicates) { written.push(existing); continue }
         if (existing) { Object.assign(existing, clone(entry)); written.push(existing); continue }
-        const created = { id: entry.id ?? `${this.table}-${rows.length + 1}`, ...clone(entry) }
+        const created = { id: entry.id ?? this.newId(this.table, rows.length + 1), ...clone(entry) }
         rows.push(created)
         written.push(created)
+      }
+      if (this.returning && this.cardinality) {
+        if (written.length > 1 || (this.cardinality === "single" && written.length !== 1)) {
+          return { data: null, error: { message: "expected exactly one written row" } }
+        }
+        return { data: clone(written[0] ?? null), error: null }
       }
       return { data: this.returning ? clone(written) : null, error: null }
     }
@@ -200,7 +232,13 @@ class Query {
         return ordering.ascending ? direction : -direction
       })
     }
-    if (this.rangeValue) result = result.slice(this.rangeValue[0], this.rangeValue[1] + 1)
+    if (this.rangeValue) {
+      // PostgREST refuses a range that starts past the last row (416).
+      if (this.store.__strictRanges && this.rangeValue[0] > 0 && result.length <= this.rangeValue[0]) {
+        return { data: null, count: null, error: { code: "PGRST103", message: "Requested range not satisfiable" } }
+      }
+      result = result.slice(this.rangeValue[0], this.rangeValue[1] + 1)
+    }
     if (this.limitValue !== null) result = result.slice(0, this.limitValue)
     if (this.cardinality === "single") {
       if (result.length !== 1) return { data: null, error: { message: "expected exactly one row" }, count }
@@ -216,18 +254,53 @@ class Query {
   then(resolve, reject) {
     // Every operation yields first, so two workers driving the same store
     // interleave exactly where real awaits would let them.
-    return Promise.resolve().then(() => this.run()).then(resolve, reject)
+    return Promise.resolve()
+      .then(() => this.run())
+      .then((result) => {
+        if (this.throwing && result.error) throw Object.assign(new Error(result.error.message), result.error)
+        return result
+      })
+      .then(resolve, reject)
   }
 }
 
-function createFakeSupabase(tables = {}, rpcHandlers = {}) {
+/**
+ * `options.uuidIds` gives inserted rows real UUIDs, like a database default,
+ * for services that validate the ids they read back. `options.strictRanges`
+ * answers a `.range()` that starts past the last row with PostgREST's 416
+ * (`PGRST103`) instead of an empty page.
+ */
+function createFakeSupabase(tables = {}, rpcHandlers = {}, options = {}) {
+  const newId = options.uuidIds ? () => randomUUID() : (table, ordinal) => `${table}-${ordinal}`
   const store = clone(tables)
+  // Opt-in, because a test that pages through `tamper` serves its own ranges.
+  if (options.strictRanges) Object.defineProperty(store, "__strictRanges", { value: true, enumerable: false })
+  // The throttle every bulk mutation records itself against (lib/services/auth-rate-limit.ts), counted per fake
+  // database like the real table; a test that exercises the limit passes its own handler.
+  const throttle = new Map()
+  const builtIn = {
+    increment_auth_rate_limit: ({ action_input, identifier_input, window_start_input }) => {
+      const key = `${action_input}|${identifier_input}|${window_start_input}`
+      throttle.set(key, (throttle.get(key) ?? 0) + 1)
+      return { data: throttle.get(key), error: null }
+    },
+    // Every permission decision asks whether the caller is staff inside an open support grant
+    // (lib/auth/platform.ts); mirrors the SQL function over the fake's own `platform_access_grants`.
+    active_platform_access_grants: ({ p_operator_user_id, p_org_id }, rows) => ({
+      data: (rows.platform_access_grants ?? [])
+        .filter((grant) => grant.operator_user_id === p_operator_user_id)
+        .filter((grant) => p_org_id == null || grant.org_id === p_org_id)
+        .filter((grant) => grant.ended_at == null && new Date(grant.expires_at).getTime() > Date.now())
+        .sort((a, b) => new Date(b.expires_at).getTime() - new Date(a.expires_at).getTime()),
+      error: null,
+    }),
+  }
   return {
     store,
-    from(table) { return new Query(store, table) },
+    from(table) { return new Query(store, table, newId) },
     async rpc(name, args) {
       await Promise.resolve()
-      const handler = rpcHandlers[name]
+      const handler = rpcHandlers[name] ?? builtIn[name]
       if (!handler) throw new Error(`fake-supabase: no handler for rpc "${name}"`)
       return handler(args, store)
     },

@@ -1,6 +1,10 @@
+import { connection } from "next/server"
+import { ensureFrozenSigningSource } from "@/lib/services/esign-execution"
+import { hasSigningAccess } from "@/lib/esign/access-code"
+import { UnlockSigningClient } from "./components/unlock-signing"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
-import { createHmac } from "crypto"
+import { resolveSigningRequestToken } from "@/lib/esign/signing-tokens"
 import { type ReactNode } from "react"
 import { notFound } from "next/navigation"
 
@@ -74,19 +78,15 @@ function StatusPanel({
 }
 
 async function DocumentSigningPageContent({ params }: Params) {
+  await connection()
   const { token } = await params
   const secret = process.env.DOCUMENT_SIGNING_SECRET
   if (!secret) {
     throw new Error("Missing DOCUMENT_SIGNING_SECRET environment variable")
   }
 
-  const tokenHash = createHmac("sha256", secret).update(token).digest("hex")
   const supabase = createServiceSupabaseClient()
-
-  const { data: signingRequest, error } = await supabase
-    .from("document_signing_requests")
-    .select(
-      `
+  const { data: signingRequest, error } = await resolveSigningRequestToken(supabase, token, `
         *,
         document:documents(
           id,
@@ -101,10 +101,7 @@ async function DocumentSigningPageContent({ params }: Params) {
           source_entity_id,
           metadata
         )
-      `,
-    )
-    .eq("token_hash", tokenHash)
-    .maybeSingle()
+      `)
 
   if (error) {
     throw new Error(`Failed to load signing request: ${error.message}`)
@@ -113,6 +110,8 @@ async function DocumentSigningPageContent({ params }: Params) {
   if (!signingRequest || !signingRequest.document) {
     notFound()
   }
+
+  if (!(await hasSigningAccess(signingRequest))) return <UnlockSigningClient token={token} />
 
   const now = new Date()
   if (signingRequest.expires_at && new Date(signingRequest.expires_at) < now) {
@@ -127,7 +126,7 @@ async function DocumentSigningPageContent({ params }: Params) {
     )
   }
 
-  if (signingRequest.status === "voided") {
+  if (signingRequest.status === "voided" || signingRequest.document.status === "voided") {
     return (
       <StatusPanel
         tone="warning"
@@ -139,7 +138,7 @@ async function DocumentSigningPageContent({ params }: Params) {
     )
   }
 
-  if (signingRequest.status === "expired") {
+  if (signingRequest.status === "expired" || signingRequest.document.status === "expired") {
     return (
       <StatusPanel
         tone="warning"
@@ -151,7 +150,7 @@ async function DocumentSigningPageContent({ params }: Params) {
     )
   }
 
-  if (signingRequest.status === "signed") {
+  if (signingRequest.status === "signed" || signingRequest.document.status === "signed") {
     const executedFileId = signingRequest.document.executed_file_id as string | null | undefined
     const downloadUrl = executedFileId
       ? buildExecutedDocumentUrl(createExecutedFileAccessToken(executedFileId))
@@ -160,8 +159,8 @@ async function DocumentSigningPageContent({ params }: Params) {
     return (
       <StatusPanel
         tone="success"
-        title="You're all set"
-        description="This document has been signed successfully. No further action is required."
+        title={downloadUrl ? "You're all set" : "Your signature is recorded"}
+        description={downloadUrl ? "The completed document is ready to download." : "Your signature is safely recorded. The document is awaiting other signers or being prepared. Refresh this page to check for the completed copy."}
         documentTitle={signingRequest.document.title}
         icon={<CheckCircle2 className="h-7 w-7 text-success" />}
         action={
@@ -225,6 +224,8 @@ async function DocumentSigningPageContent({ params }: Params) {
         status: signingRequest.status === "signed" ? "signed" : "viewed",
       })
       .eq("id", signingRequest.id)
+      .in("status", ["draft", "sent", "viewed"])
+      .is("viewed_at", null)
 
     if (viewedUpdateError) {
       throw new Error(`Failed to update signing request view state: ${viewedUpdateError.message}`)
@@ -243,6 +244,16 @@ async function DocumentSigningPageContent({ params }: Params) {
     })
   }
 
+  // Legacy source bytes are frozen before any signing preview is presented.
+  // Already accepted historical links returned their receipt above.
+  try {
+    await ensureFrozenSigningSource(signingRequest.org_id, signingRequest.document_id)
+  } catch (error) {
+    return <StatusPanel tone="warning" title="The sender needs to update this request"
+      description={error instanceof Error ? error.message : "This document cannot be signed yet. Please contact the sender."}
+      documentTitle={signingRequest.document.title} icon={<AlertTriangle className="h-7 w-7 text-warning-foreground" />} />
+  }
+
   if (estimateId) {
     const estimate = await loadEstimateByIdForPortal({
       supabase,
@@ -258,7 +269,7 @@ async function DocumentSigningPageContent({ params }: Params) {
         token={token}
         estimate={estimate}
         signerEmail={signingRequest.sent_to_email}
-        pdfUrl={`/estimates/${estimate.id}/export`}
+        pdfUrl={`/d/${token}/file`}
       />
     )
   }
@@ -276,7 +287,7 @@ async function DocumentSigningPageContent({ params }: Params) {
 
   if (signingRequest.document.metadata?.waiver_signing_experience === "review" && signingRequest.document.metadata?.invoice_lien_waiver_id) {
     const recipients = signingRequest.document.metadata?.draft_recipients ?? []
-    return <WaiverSigningClient token={token} title={signingRequest.document.title}
+    return <WaiverSigningClient token={token} title={signingRequest.document.title} signerRole={signerRole}
       signerEmail={signingRequest.sent_to_email ?? ""}
       signerName={recipients.find((recipient: { email?: string }) => recipient.email === signingRequest.sent_to_email)?.name ?? ""}
       fields={(fields ?? []).filter(field => !field.signer_role || field.signer_role === signerRole)}/>
@@ -322,7 +333,7 @@ async function DocumentSigningPageContent({ params }: Params) {
 
 export default function DocumentSigningPage(props: Parameters<typeof DocumentSigningPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton title="Document signing" />}>
       <DocumentSigningPageContent {...props} />
     </Suspense>
   )

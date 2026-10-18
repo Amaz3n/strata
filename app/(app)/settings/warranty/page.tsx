@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -9,6 +10,7 @@ import { WarrantySettingsClient } from "./warranty-settings-client"
 
 
 async function WarrantySettingsPageContent() {
+  await connection()
   const [programs, targets, productTier] = await Promise.all([
     listWarrantyPrograms(),
     listWarrantySlaTargets(),
@@ -28,7 +30,7 @@ async function WarrantySettingsPageContent() {
 
 export default function WarrantySettingsPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout fullBleed title="Warranty" breadcrumbs={[{ label: "Settings", href: "/settings" }, { label: "Warranty" }]}><PageLoadingSkeleton /></PageLayout>}>
       <WarrantySettingsPageContent />
     </Suspense>
   )

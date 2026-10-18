@@ -1,3 +1,5 @@
+import { assertLiveSnapshotDate, wipScopeKey } from "@/lib/services/books/wip-period-rules"
+import { pocRevenueAllocationSchema, type PocRevenueAllocation } from "@/lib/services/books/poc-revenue-allocations"
 import { z } from "zod"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -7,7 +9,10 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { getBudgetWithActuals, getBudgetWithActualsForService, type BudgetWithActuals } from "@/lib/services/budgets"
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
+import { primaryContractsInForce } from "@/lib/financials/project-revenue-basis"
 import {
+  projectBillingContract,
+  type PocBillingContract,
   resolveBilledCents,
   resolveEacCents,
   resolveOriginalContractCents,
@@ -19,9 +24,23 @@ import { computeProjectPoc } from "@/lib/financials/poc-rules"
 const projectSnapshotSchema = z.object({
   id: z.string().uuid(),
   org_id: z.string().uuid(),
-  billing_contract: z.record(z.unknown()).nullable(),
   total_contract_value_cents: z.number().nullable(),
 })
+
+/**
+ * Each project's live billing contract: its primary contract in force, or the
+ * sum of several (`projectBillingContract`). Never the first row a query returns.
+ */
+export async function loadProjectBillingContracts(client: SupabaseClient, orgId: string, projectIds: string[], asOf = new Date().toISOString().slice(0, 10)) {
+  const byProject = new Map<string, PocBillingContract>()
+  if (projectIds.length === 0) return byProject
+  const { data, error } = await client.from("contracts")
+    .select("id, project_id, status, parent_contract_id, effective_date, total_cents, snapshot")
+    .eq("org_id", orgId).in("project_id", projectIds).is("parent_contract_id", null).order("id")
+  if (error) throw new Error(`Failed to load project contracts: ${error.message}`)
+  for (const projectId of projectIds) byProject.set(projectId, projectBillingContract(primaryContractsInForce(projectId, data ?? [], asOf)))
+  return byProject
+}
 
 /**
  * The single resolver for percentage-of-completion inputs.
@@ -43,13 +62,14 @@ async function resolvePocInputs(
   orgId: string,
   budgetPromise: Promise<BudgetWithActuals | null>,
 ) {
-  const [projectResult, changeOrdersResult, invoicesResult, budget] = await Promise.all([
+  const [projectResult, billingContracts, changeOrdersResult, invoicesResult, budget] = await Promise.all([
     client
       .from("projects")
-      .select("id, org_id, billing_contract, total_contract_value_cents")
+      .select("id, org_id, total_contract_value_cents")
       .eq("org_id", orgId)
       .eq("id", projectId)
       .single(),
+    loadProjectBillingContracts(client, orgId, [projectId]),
     client
       .from("change_orders")
       .select("total_cents")
@@ -76,11 +96,11 @@ async function resolvePocInputs(
   )
   const billedCents = resolveBilledCents((invoicesResult.data ?? []).map((row) => row.total_cents))
   const revisedContractCents = resolveRevisedContractCents({
-    billingContract: project.billing_contract,
+    billingContract: billingContracts.get(projectId) ?? null,
     totalContractValueCents: project.total_contract_value_cents,
   })
   const originalContractCents = resolveOriginalContractCents({
-    billingContract: project.billing_contract,
+    billingContract: billingContracts.get(projectId) ?? null,
     revisedContractCents,
     approvedChangeOrdersCents,
   })
@@ -157,17 +177,25 @@ export async function getProjectPocPosition(projectId: string, orgId?: string) {
 }
 
 const pocSnapshotPositionSchema = z.object({
+  id: z.string().uuid(),
+  inputs_hash: z.string().min(1),
   project_id: z.string().uuid(),
+  contract_id: z.string().uuid().nullable(),
   as_of: z.string(),
-  earned_revenue_cents: z.number().int().nullable(),
+  earned_revenue_cents: z.number().int(),
+  revenue_allocations: z.array(pocRevenueAllocationSchema).optional().default([]),
   warnings: z.unknown(),
 })
 
 export type PocPositionAsOf = {
+  snapshotId: string
+  inputsHash: string
   projectId: string
+  contractId: string | null
   asOf: string
   earnedRevenueCents: number
   warnings: string[]
+  revenueAllocations?: PocRevenueAllocation[]
 }
 
 const POC_SNAPSHOT_PAGE_SIZE = 1000
@@ -193,7 +221,9 @@ export function orderPocSnapshotsLatestFirst<T extends PocSnapshotOrderable<T>>(
 }
 
 /**
- * Each project's percentage-of-completion position as it stood on a date.
+ * Each WIP scope's percentage-of-completion position as it stood on a date,
+ * keyed by `wipScopeKey`: the project, or the project and contract when the
+ * project has more than one contract in force.
  *
  * `resolveProjectPocInputs` reads CURRENT budgets, invoices and change orders
  * and has no as-of. That is right for a live surface and wrong for anything
@@ -209,30 +239,33 @@ export function orderPocSnapshotsLatestFirst<T extends PocSnapshotOrderable<T>>(
  */
 export async function loadPocPositionsAsOf(args: {
   orgId: string
-  projectIds: string[]
+  projectIds?: string[]
   asOf: string
 }): Promise<Map<string, PocPositionAsOf>> {
-  if (args.projectIds.length === 0) return new Map()
+  if (args.projectIds?.length === 0) return new Map()
   const service = createServiceSupabaseClient()
   const latest = new Map<string, PocPositionAsOf>()
   for (let from = 0; ; from += POC_SNAPSHOT_PAGE_SIZE) {
     // Newest first, so the first row seen for a project is its position.
-    const { data, error } = await orderPocSnapshotsLatestFirst(
-      service
-        .from("poc_snapshots")
-        .select("project_id, as_of, earned_revenue_cents, warnings")
-        .eq("org_id", args.orgId)
-        .in("project_id", args.projectIds)
-        .lte("as_of", args.asOf),
-    ).range(from, from + POC_SNAPSHOT_PAGE_SIZE - 1)
+    let query = service.from("poc_snapshots")
+      .select("id, inputs_hash, project_id, contract_id, as_of, earned_revenue_cents, warnings, revenue_allocations")
+      .eq("org_id", args.orgId).lte("as_of", args.asOf)
+    if (args.projectIds) query = query.in("project_id", args.projectIds)
+    const { data, error } = await orderPocSnapshotsLatestFirst(query)
+      .range(from, from + POC_SNAPSHOT_PAGE_SIZE - 1)
     if (error) throw new Error(`Failed to load POC snapshots: ${error.message}`)
     const page = z.array(pocSnapshotPositionSchema).parse(data ?? [])
     for (const row of page) {
-      if (latest.has(row.project_id)) continue
-      latest.set(row.project_id, {
+      const key = wipScopeKey({ projectId: row.project_id, contractId: row.contract_id })
+      if (latest.has(key)) continue
+      latest.set(key, {
+        snapshotId: row.id,
+        inputsHash: row.inputs_hash,
         projectId: row.project_id,
+        contractId: row.contract_id,
         asOf: row.as_of,
-        earnedRevenueCents: row.earned_revenue_cents ?? 0,
+        earnedRevenueCents: row.earned_revenue_cents,
+        revenueAllocations: row.revenue_allocations,
         warnings: Array.isArray(row.warnings) ? row.warnings.map(String) : [],
       })
     }
@@ -242,11 +275,13 @@ export async function loadPocPositionsAsOf(args: {
 }
 
 export async function captureProjectPocSnapshot(projectId: string, orgId: string, asOf?: string) {
+  const today = new Date().toISOString().slice(0, 10)
+  const snapshotDate = asOf ?? today
+  assertLiveSnapshotDate(snapshotDate, today)
   const service = createServiceSupabaseClient()
   const inputs = await resolveProjectPocInputs(projectId, orgId)
   if (!inputs) return null
   const poc = computeProjectPoc(inputs)
-  const snapshotDate = asOf ?? new Date().toISOString().slice(0, 10)
   const { data, error } = await service.from("poc_snapshots").upsert({
     org_id: orgId,
     project_id: projectId,
@@ -263,7 +298,7 @@ export async function captureProjectPocSnapshot(projectId: string, orgId: string
     forecast_gross_profit_cents: poc.forecastGrossProfitCents,
     inputs_hash: poc.inputsHash,
     warnings: poc.warnings,
-  }, { onConflict: "org_id,project_id,as_of,inputs_hash", ignoreDuplicates: true }).select("id").maybeSingle()
+  }, { onConflict: "org_id,project_id,contract_id,as_of,inputs_hash", ignoreDuplicates: true }).select("id").maybeSingle()
   if (error) throw new Error(`Failed to capture POC snapshot: ${error.message}`)
   return data ?? { inputs_hash: poc.inputsHash }
 }

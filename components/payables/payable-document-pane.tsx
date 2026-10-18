@@ -132,7 +132,7 @@ export function PayableDocumentPane({
       try {
         const { Document, Page, pdfjs } = await import("react-pdf")
         if (cancelled) return
-        configurePdfWorker()
+        configurePdfWorker(pdfjs)
         setPdfComponents({ Document, Page })
       } catch (error) {
         console.error("Failed to load PDF components", error)

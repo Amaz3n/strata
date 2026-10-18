@@ -60,6 +60,11 @@ struct MyHousesView: View {
         .background(ArcAmbientBackground())
         .navigationTitle("My Houses")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            NavigationLink {
+                ServiceVisitsView()
+            } label: { Label("My Service Visits", systemImage: "wrench.and.screwdriver") }
+        }
         .refreshable { await refresh() }
         .task { await load() }
         .sheet(item: $varianceHouse) { house in

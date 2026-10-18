@@ -4,11 +4,10 @@
  * "View in 3D" wherever a plan is being sold.
  *
  * The model document is fetched only when the dialog opens, and Three.js only
- * after that — a price sheet with twelve plans on it pays nothing for having
+ * once the viewer mounts — a price sheet with twelve plans on it pays nothing for having
  * the button on every row.
  */
 
-import dynamic from "next/dynamic"
 import { useCallback, useState } from "react"
 import { toast } from "sonner"
 
@@ -17,20 +16,8 @@ import { Box, Loader2 } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { unwrapAction } from "@/lib/action-result"
+import { ModelStage } from "@/components/plans/model-viewer/model-stage"
 import type { FloorplanModel } from "@/lib/drawings/floorplan-model"
-
-const Plan3dViewer = dynamic(
-  () => import("@/components/plans/plan-3d-viewer").then((module) => module.Plan3dViewer),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        Loading the viewer…
-      </div>
-    ),
-  },
-)
 
 export function Plan3dDialog({
   planId,
@@ -89,7 +76,7 @@ export function Plan3dDialog({
           </DialogHeader>
           <div className="min-h-0 flex-1">
             {model ? (
-              <Plan3dViewer model={model} caption={planLabel} />
+              <ModelStage model={model} title={planLabel} />
             ) : (
               <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />

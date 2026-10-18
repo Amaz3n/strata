@@ -1,0 +1,23 @@
+const { migrationSql } = require("./support/migration-sql")
+const test=require('node:test');const assert=require('node:assert/strict');const {PGlite}=require('@electric-sql/pglite');
+test('bank statements enforce account scope, contiguous dates, opening balances and nonoverlap',async t=>{
+ const db=new PGlite();t.after(()=>db.close());
+ await db.exec(`create role anon;create role authenticated;create table bank_accounts(id uuid primary key,org_id uuid);
+ create table bank_reconciliations(id uuid primary key,org_id uuid,bank_account_id uuid,statement_start date,statement_end date,beginning_balance_cents bigint,ending_balance_cents bigint,status text default 'draft');`);
+ await db.exec(migrationSql("20261003020833_books_bank_statement_sequence"));
+ const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;const org=id(1),bank=id(2);
+ await db.query('insert into bank_accounts values($1,$2)',[bank,org]);
+ const insert=(n,start,end,opening=10000,ending=12000,scope=org)=>db.query('insert into bank_reconciliations values($1,$2,$3,$4,$5,$6,$7,\'draft\')',[id(n),scope,bank,start,end,opening,ending]);
+ await assert.rejects(insert(3,'2026-09-01','2026-09-30',10000,12000,id(9)),/not found in organization/);
+ await assert.rejects(insert(3,'2026-09-30','2026-09-01'),/end must/);
+ await insert(3,'2026-09-01','2026-09-30');
+ await assert.rejects(insert(4,'2026-09-30','2026-10-31'),/overlap/);
+ await assert.rejects(insert(4,'2026-10-01','2026-10-31',12000),/existing open/);
+ await db.query("update bank_reconciliations set status='closed' where id=$1",[id(3)]);
+ await assert.rejects(insert(4,'2026-10-02','2026-10-31',12000),/continue the previous/);
+ await assert.rejects(insert(4,'2026-10-01','2026-10-31',10000),/continue the previous/);
+ await assert.rejects(db.query('update bank_reconciliations set ending_balance_cents=13000 where id=$1',[id(3)]),/Reopen/);
+ await insert(4,'2026-10-01','2026-10-31',12000,11000);
+ await assert.rejects(db.query('update bank_reconciliations set org_id=$1 where id=$2',[id(9),id(4)]),/cannot be reassigned/);
+ await assert.rejects(db.query('update bank_reconciliations set ending_balance_cents=9007199254740992 where id=$1',[id(4)]),/safe integer/);
+});

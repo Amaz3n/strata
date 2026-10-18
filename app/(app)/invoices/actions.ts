@@ -21,13 +21,14 @@ import {
   reviseInvoice,
   updateInvoice,
   voidInvoice,
+  recordInvoiceVoidDate,
   type ListInvoicesOptions,
 } from "@/lib/services/invoices"
 import { isIssuedInvoiceStatus } from "@/lib/financials/invoice-lifecycle"
-import type { InvoiceDelivery } from "@/lib/types"
+import type { InvoiceDelivery, Contact } from "@/lib/types"
 import { PROJECT_BILLING_SEGMENT } from "@/lib/financials/invoice-destinations"
 import { listProjects } from "@/lib/services/projects"
-import { listBillableContacts } from "@/lib/services/contacts"
+import { getContact, listBillableContacts } from "@/lib/services/contacts"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
 import { getOrgBilling } from "@/lib/services/orgs"
@@ -36,11 +37,11 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
-import { invoiceInputSchema } from "@/lib/validation/invoices"
+import { invoiceInputSchema, invoiceVoidDateSchema } from "@/lib/validation/invoices"
 import { sendReminderEmail } from "@/lib/services/mailer"
 import { listChangeOrders } from "@/lib/services/change-orders"
 import { getProjectFinancialFeatureConfig, isCostDrivenBillingModel } from "@/lib/financials/billing-model"
-import { listCostPlusTabData, getProjectCostContract, resolveMarkupPercent, calculateMarkupCents } from "@/lib/services/cost-plus"
+import { listCostPlusTabData, getProjectCostContract, resolveMarkupPercent, calculateMarkupCents, decideBillingCorrection } from "@/lib/services/cost-plus"
 import { renderInvoicePdf } from "@/lib/pdfs/invoice"
 import { buildInvoicePdfData } from "@/lib/pdfs/invoice-data"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
@@ -138,6 +139,8 @@ export async function issueInvoiceAction(invoiceId: string, recipients?: string[
     if (!invoiceId) throw new Error("Invoice id is required")
     const invoice = await issueInvoice({ invoiceId, recipients })
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     if (invoice.project_id) revalidatePath(`/projects/${invoice.project_id}/${PROJECT_BILLING_SEGMENT}`)
     return invoice
   })
@@ -164,6 +167,8 @@ export async function createInvoiceAction(input: unknown) {
       }
     }
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     return invoice
   })
 }
@@ -208,6 +213,8 @@ export async function updateInvoiceAction(invoiceId: string, input: unknown) {
       }
     }
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     return invoice
   })
 }
@@ -217,6 +224,8 @@ export async function requestInvoiceApprovalAction(invoiceId: string, note?: str
     if (!invoiceId) throw new Error("Invoice id is required")
     const invoice = await requestInvoiceApproval({ invoiceId, note })
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     return invoice
   })
 }
@@ -230,6 +239,8 @@ export async function decideInvoiceApprovalAction(
     if (!invoiceId) throw new Error("Invoice id is required")
     const invoice = await decideInvoiceApproval({ invoiceId, decision, note })
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     return invoice
   })
 }
@@ -239,10 +250,22 @@ export async function voidInvoiceAction(invoiceId: string) {
     if (!invoiceId) throw new Error("Invoice id is required")
     const invoice = await voidInvoice({ invoiceId })
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     if (invoice.project_id) {
       revalidatePath(`/projects/${invoice.project_id}/financials/billing`)
     }
     return invoice
+  })
+}
+
+export async function recordInvoiceVoidDateAction(input: { invoiceId: string; voidedOn: string; basis: string }) {
+  return run(async () => {
+    const result = await recordInvoiceVoidDate(invoiceVoidDateSchema.parse(input))
+    revalidatePath("/invoices")
+    revalidatePath("/billing")
+    if (result.projectId) revalidatePath(`/projects/${result.projectId}/financials/billing`)
+    return result
   })
 }
 
@@ -251,6 +274,8 @@ export async function reviseInvoiceAction(invoiceId: string) {
     if (!invoiceId) throw new Error("Invoice id is required")
     const invoice = await reviseInvoice({ invoiceId })
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     if (invoice.project_id) {
       revalidatePath(`/projects/${invoice.project_id}/financials/billing`)
     }
@@ -262,6 +287,8 @@ export async function createReceivableAdjustmentAction(input: CreateReceivableAd
   return run(async () => {
     const adjustment = await createReceivableAdjustment(input)
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     return adjustment
   })
 }
@@ -270,6 +297,8 @@ export async function voidReceivableAdjustmentAction(adjustmentId: string) {
   return run(async () => {
     const adjustment = await voidReceivableAdjustment(adjustmentId)
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     return adjustment
   })
 }
@@ -279,6 +308,8 @@ export async function deleteInvoiceAction(invoiceId: string) {
     if (!invoiceId) throw new Error("Invoice id is required")
     const result = await deleteInvoice({ invoiceId })
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     if (result.projectId) {
       revalidatePath(`/projects/${result.projectId}/financials/billing`)
     }
@@ -298,6 +329,8 @@ export async function moveInvoiceToProjectAction(invoiceId: string, targetProjec
     if (!targetProjectId) throw new Error("A destination project is required")
     const result = await moveInvoiceToProject({ invoiceId, targetProjectId })
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     if (result.fromProjectId) {
       revalidatePath(`/projects/${result.fromProjectId}/financials/billing`)
     }
@@ -541,7 +574,7 @@ export async function updateInvoiceNotesAction(invoiceId: string, notes: string)
     const { supabase, orgId, userId } = await requireOrgContext()
     const { data: invoice } = await supabase
       .from("invoices")
-      .select("id, project_id")
+      .select("id, project_id, metadata, updated_at")
       .eq("org_id", orgId)
       .eq("id", invoiceId)
       .maybeSingle()
@@ -559,9 +592,11 @@ export async function updateInvoiceNotesAction(invoiceId: string, notes: string)
     const trimmed = notes.trim()
     const { error } = await receivablesWriter()
       .from("invoices")
-      .update({ notes: trimmed.length > 0 ? trimmed : null })
+      .update({ metadata: { ...invoice.metadata, memo: trimmed } })
       .eq("org_id", orgId)
       .eq("id", invoiceId)
+      .eq("updated_at", invoice.updated_at)
+      .select("id").single()
     if (error) {
       throw new Error(`Failed to save notes: ${error.message}`)
     }
@@ -734,23 +769,35 @@ async function sendInvoiceReminder(invoiceId: string) {
  * number the person may not use.
  */
 export async function loadInvoiceComposerBootstrapAction(input: {
-  projectId: string
+  projectId?: string
   draftId?: string | null
   duplicateId?: string | null
 }) {
   return run(async () => {
     const context = await requireOrgContext()
-    const [contacts, costCodes, composerContext, draft, duplicate, orgBilling] = await Promise.all([
-      listBillableContacts(context.orgId).catch(() => []),
+    const [contacts, costCodes, composerContext, draft, duplicate, orgBilling, projectCustomer] = await Promise.all([
+      listBillableContacts(context.orgId).catch((): Contact[] => []),
       listCostCodes(context.orgId).catch(() => []),
       loadInvoiceComposerContext(input.projectId),
       input.draftId ? getInvoiceWithLines(input.draftId, context.orgId) : Promise.resolve(null),
       input.duplicateId ? getInvoiceWithLines(input.duplicateId, context.orgId) : Promise.resolve(null),
       getOrgBilling().catch(() => null),
+      input.projectId ? context.supabase.from("projects").select("client_id").eq("org_id", context.orgId).eq("id", input.projectId).maybeSingle() : Promise.resolve({ data: null }),
     ])
+    const defaultCustomerId = projectCustomer.data?.client_id ?? null
+    if (defaultCustomerId && !contacts.some(contact => contact.id === defaultCustomerId)) {
+      const contact = await getContact(defaultCustomerId, context.orgId).catch(() => null)
+      if (contact) contacts.push(contact)
+    }
     if (input.draftId && !draft) throw new Error("That draft no longer exists")
+    for (const invoice of [draft, duplicate]) {
+      if (invoice && (invoice.project_id ?? null) !== (input.projectId ?? null)) {
+        throw new Error("Open this invoice from its own billing page")
+      }
+    }
     return {
       recoveryScope: `${context.orgId}:${context.userId}`,
+      defaultCustomerId,
       contacts,
       costCodes,
       context: composerContext,
@@ -1058,6 +1105,14 @@ export async function createQboCustomerAction(input: {
  * Unbilled, billable costs for a cost-plus / T&M project — feeds the invoice composer's
  * "Add from → Unbilled costs" picker. Only status "open", billable, and not yet on an invoice.
  */
+export async function decideBillingCorrectionAction(input: { billableCostId: string; decision: "credit_customer" | "absorb"; note: string }) {
+  return run(async () => {
+    const result = await decideBillingCorrection(input)
+    revalidatePath(`/projects/${result.projectId}/financials/billing`)
+    return result
+  })
+}
+
 export async function listUnbilledCostsAction(projectId: string) {
   return run(() => loadUnbilledCosts(projectId))
 }
@@ -1076,7 +1131,9 @@ async function loadUnbilledCosts(projectId: string) {
     let resolvedMarkupCents = cost.markup_cents
     let resolvedBillableCents = cost.billable_cents
 
-    if (contract) {
+    // A snapshot markup (a line override, a T&M rate, or a credit reversing a
+    // billed cost) is billed as recorded; everything else is priced by today's rules.
+    if (contract && !cost.correction_of && cost.metadata?.markup_source !== "line" && cost.metadata?.billing_method !== "time_and_materials_rate") {
       const markup = await resolveMarkupPercent({
         supabase,
         orgId,
@@ -1101,6 +1158,8 @@ async function loadUnbilledCosts(projectId: string) {
       markupCents: resolvedMarkupCents,
       markupPercent: resolvedMarkupPercent,
       billableCents: resolvedBillableCents,
+      correctionOf: cost.correction_of ?? null,
+      billingDecision: cost.billing_decision ?? null,
     })
   }
   return { costs }

@@ -1,4 +1,7 @@
 import { notFound, redirect } from "next/navigation"
+import { Suspense } from "react"
+import { connection } from "next/server"
+import { PortalPageSkeleton } from "@/components/portal/shell/portal-skeleton"
 
 import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
@@ -26,19 +29,29 @@ const CLOSED_COPY = {
   },
 } as const
 
-export default async function VendorPaymentsPage({
-  params,
-  searchParams,
-}: {
+type Props = {
   params: Promise<{ token: string }>
   searchParams: Promise<{ payments?: string; entity?: string; verified?: string }>
-}) {
+}
+
+export default function VendorPaymentsPage(props: Props) {
+  return (
+    <Suspense fallback={<PortalPageSkeleton title="Get paid through Arc" />}>
+      <VendorPaymentsContent {...props} />
+    </Suspense>
+  )
+}
+
+async function VendorPaymentsContent({
+  params,
+  searchParams,
+}: Props) {
+  await connection()
   // `payments=refresh` is Stripe returning an expired onboarding link. It is not
   // an error the vendor caused and there is nothing to reconcile — the account
   // exists, the link simply timed out — so the page says that plainly and leaves
   // the same start button in place.
-  const { token } = await params
-  const query = await searchParams
+  const [{ token }, query] = await Promise.all([params, searchParams])
   const access = await validatePortalToken(token)
   if (!access || access.portal_type !== "sub" || !access.company_id) notFound()
   if (!(await isVendorPayoutSetupOpen(access.org_id))) notFound()

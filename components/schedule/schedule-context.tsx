@@ -1,8 +1,9 @@
 "use client"
 
-import { createContext, useContext, useState, useCallback, useMemo, useEffect, type ReactNode } from "react"
+import { createContext, useContext, useState, useCallback, useMemo, useEffect, type ReactNode, type SetStateAction } from "react"
 import { startOfDay } from "date-fns"
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
+import type { ScheduleReschedulePreview } from "@/lib/services/schedule"
 import type {
   ScheduleContextValue,
   ScheduleViewState,
@@ -10,6 +11,8 @@ import type {
   GanttZoomLevel,
   GroupByOption,
   ScheduleBulkItemUpdate,
+  ScheduleBulkApproval,
+  ScheduleDateMove,
 } from "./types"
 import { addDays, parseDate } from "./types"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -50,6 +53,23 @@ const defaultViewState: ScheduleViewState = {
 }
 
 const ScheduleContext = createContext<ScheduleContextValue | null>(null)
+const emptyDependencies: ScheduleDependency[] = []
+const emptyAssignments: ScheduleAssignment[] = []
+const emptyBaselines: ScheduleBaseline[] = []
+
+// Keep optimistic rows until their server source changes. A callback from an
+// older source cannot overwrite the rows delivered by a later server refresh.
+function useScheduleState<T>(source: unknown, initialValue: T) {
+  const [state, setState] = useState({ source, value: initialValue })
+  if (state.source !== source) setState({ source, value: initialValue })
+  const updateState = useCallback((update: SetStateAction<T>) => {
+    setState(current => {
+      if (current.source !== source) return current
+      return { source, value: typeof update === "function" ? (update as (previous: T) => T)(current.value) : update }
+    })
+  }, [source])
+  return [state.value, updateState] as const
+}
 
 export function useSchedule() {
   const context = useContext(ScheduleContext)
@@ -66,7 +86,8 @@ interface ScheduleProviderProps {
   initialAssignments?: ScheduleAssignment[]
   initialBaselines?: ScheduleBaseline[]
   onItemUpdate?: (id: string, updates: Partial<ScheduleItem>) => Promise<ScheduleItem>
-  onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
+  onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[], approval?: ScheduleBulkApproval) => Promise<ScheduleItem[]>
+  onPreviewReschedule?: (moves: ScheduleDateMove[]) => Promise<ScheduleReschedulePreview>
   onItemCreate?: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete?: (id: string) => Promise<void>
   onDependencyCreate?: (from: string, to: string, type?: ScheduleDependency["dependency_type"], lagDays?: number) => Promise<ScheduleDependency>
@@ -77,11 +98,12 @@ interface ScheduleProviderProps {
 export function ScheduleProvider({
   children,
   initialItems,
-  initialDependencies = [],
-  initialAssignments = [],
-  initialBaselines = [],
+  initialDependencies = emptyDependencies,
+  initialAssignments = emptyAssignments,
+  initialBaselines = emptyBaselines,
   onItemUpdate,
   onItemsBulkUpdate,
+  onPreviewReschedule,
   onItemCreate,
   onItemDelete,
   onDependencyCreate,
@@ -89,18 +111,20 @@ export function ScheduleProvider({
   onDependencyDelete,
 }: ScheduleProviderProps) {
   const isMobile = useIsMobile()
-  const [items, setItems] = useState<ScheduleItem[]>(initialItems)
-  const [dependencies, setDependencies] = useState<ScheduleDependency[]>(initialDependencies)
-  const [assignments] = useState<ScheduleAssignment[]>(initialAssignments)
-  const [baselines] = useState<ScheduleBaseline[]>(initialBaselines)
+  const [items, setItems] = useScheduleState(initialItems, initialItems)
+  const [dependencies, setDependencies] = useScheduleState(initialDependencies, initialDependencies)
+  const assignments = initialAssignments
+  const baselines = initialBaselines
   const [viewStateInternal, setViewStateInternal] = useState<ScheduleViewState>(defaultViewState)
   // The visible timeline range. `null` means "follow the schedule" — derive it
   // from item dates (computeContentBounds). Once the user pans/zooms/jumps, we
   // store their explicit window here and stop auto-following, so adding an item
   // elsewhere never yanks their viewport. "Fit to schedule" clears it back to null.
   const [userRange, setUserRange] = useState<{ start: Date; end: Date } | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const mutationSource = useMemo(() => ({ items: initialItems, dependencies: initialDependencies }), [initialItems, initialDependencies])
+  const [pendingWrites, setPendingWrites] = useScheduleState(mutationSource, 0)
+  const [error, setError] = useScheduleState<string | null>(mutationSource, null)
+  const isLoading = pendingWrites > 0
   const [scrollToTodayTrigger, setScrollToTodayTrigger] = useState(0)
 
   // Natural span of the schedule, recomputed only when items change.
@@ -132,13 +156,6 @@ export function ScheduleProvider({
   const fitToSchedule = useCallback(() => {
     setUserRange(null)
   }, [])
-
-  // Keep local items aligned with parent-provided items (e.g. filter/project
-  // changes). The visible range follows automatically via contentBounds unless
-  // the user has taken manual control — no range bookkeeping needed here.
-  useEffect(() => {
-    setItems(initialItems)
-  }, [initialItems])
 
   // Active baseline
   const activeBaseline = useMemo(() => {
@@ -174,7 +191,7 @@ export function ScheduleProvider({
     // Optimistic update
     setItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...updates } : item)))
 
-    setIsLoading(true)
+    setPendingWrites(count => count + 1)
     setError(null)
     try {
       if (onItemUpdate) {
@@ -193,12 +210,12 @@ export function ScheduleProvider({
       setError(err instanceof Error ? err.message : "Failed to update item")
       throw err
     } finally {
-      setIsLoading(false)
+      setPendingWrites(count => Math.max(0, count - 1))
     }
-  }, [items, onItemUpdate])
+  }, [items, onItemUpdate, setItems, setPendingWrites, setError])
 
   // Handle bulk item updates
-  const handleItemsBulkUpdate = useCallback(async (updates: ScheduleBulkItemUpdate[]) => {
+  const handleItemsBulkUpdate = useCallback(async (updates: ScheduleBulkItemUpdate[], approval?: ScheduleBulkApproval) => {
     if (updates.length === 0) return []
 
     const originalItems = items
@@ -212,11 +229,11 @@ export function ScheduleProvider({
       })
     )
 
-    setIsLoading(true)
+    setPendingWrites(count => count + 1)
     setError(null)
     try {
       if (onItemsBulkUpdate) {
-        const updatedItems = await onItemsBulkUpdate(updates)
+        const updatedItems = await onItemsBulkUpdate(updates, approval)
         if (updatedItems.length > 0) {
           const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
           setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))
@@ -248,13 +265,13 @@ export function ScheduleProvider({
       setError(err instanceof Error ? err.message : "Failed to update items")
       throw err
     } finally {
-      setIsLoading(false)
+      setPendingWrites(count => Math.max(0, count - 1))
     }
-  }, [items, onItemsBulkUpdate, onItemUpdate])
+  }, [items, onItemsBulkUpdate, onItemUpdate, setItems, setPendingWrites, setError])
 
   // Handle item create
   const handleItemCreate = useCallback(async (item: Partial<ScheduleItem>) => {
-    setIsLoading(true)
+    setPendingWrites(count => count + 1)
     setError(null)
     try {
       if (onItemCreate) {
@@ -267,13 +284,13 @@ export function ScheduleProvider({
       setError(err instanceof Error ? err.message : "Failed to create item")
       throw err
     } finally {
-      setIsLoading(false)
+      setPendingWrites(count => Math.max(0, count - 1))
     }
-  }, [onItemCreate])
+  }, [onItemCreate, setItems, setPendingWrites, setError])
 
   // Handle item delete
   const handleItemDelete = useCallback(async (id: string) => {
-    setIsLoading(true)
+    setPendingWrites(count => count + 1)
     setError(null)
     try {
       if (onItemDelete) {
@@ -286,13 +303,13 @@ export function ScheduleProvider({
       setError(err instanceof Error ? err.message : "Failed to delete item")
       throw err
     } finally {
-      setIsLoading(false)
+      setPendingWrites(count => Math.max(0, count - 1))
     }
-  }, [onItemDelete])
+  }, [onItemDelete, setItems, setDependencies, setPendingWrites, setError])
 
   // Handle dependency create
   const handleDependencyCreate = useCallback(async (from: string, to: string, type: ScheduleDependency["dependency_type"] = "FS", lagDays = 0) => {
-    setIsLoading(true)
+    setPendingWrites(count => count + 1)
     setError(null)
     try {
       if (onDependencyCreate) {
@@ -303,12 +320,12 @@ export function ScheduleProvider({
       setError(err instanceof Error ? err.message : "Failed to create dependency")
       throw err
     } finally {
-      setIsLoading(false)
+      setPendingWrites(count => Math.max(0, count - 1))
     }
-  }, [onDependencyCreate])
+  }, [onDependencyCreate, setDependencies, setPendingWrites, setError])
 
   const handleDependencyUpdate = useCallback(async (id: string, type: ScheduleDependency["dependency_type"], lagDays: number) => {
-    setIsLoading(true)
+    setPendingWrites(count => count + 1)
     setError(null)
     try {
       if (!onDependencyUpdate) throw new Error("Dependency editing is not configured")
@@ -318,12 +335,12 @@ export function ScheduleProvider({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update dependency")
       throw err
-    } finally { setIsLoading(false) }
-  }, [onDependencyUpdate])
+    } finally { setPendingWrites(count => Math.max(0, count - 1)) }
+  }, [onDependencyUpdate, setDependencies, setPendingWrites, setError])
 
   // Handle dependency delete
   const handleDependencyDelete = useCallback(async (id: string) => {
-    setIsLoading(true)
+    setPendingWrites(count => count + 1)
     setError(null)
     try {
       if (onDependencyDelete) {
@@ -334,9 +351,9 @@ export function ScheduleProvider({
       setError(err instanceof Error ? err.message : "Failed to delete dependency")
       throw err
     } finally {
-      setIsLoading(false)
+      setPendingWrites(count => Math.max(0, count - 1))
     }
-  }, [onDependencyDelete])
+  }, [onDependencyDelete, setDependencies, setPendingWrites, setError])
 
   const value: ScheduleContextValue = useMemo(() => ({
     items,
@@ -350,6 +367,7 @@ export function ScheduleProvider({
     setSelectedItem,
     onItemUpdate: handleItemUpdate,
     onItemsBulkUpdate: handleItemsBulkUpdate,
+    onPreviewReschedule,
     onItemCreate: handleItemCreate,
     onItemDelete: handleItemDelete,
     onDependencyCreate: handleDependencyCreate,

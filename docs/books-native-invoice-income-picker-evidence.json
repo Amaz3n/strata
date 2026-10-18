@@ -1,0 +1,66 @@
+{
+  "recorded_at": "2026-10-05T10:54:58.109147+00:00",
+  "scope": "Actual React invoice Accounting component, real browser adapters/Web Locks/WebCrypto/localStorage, fixture action transport and scoped SQL migrations; not full Next.js auth/RLS or application CSS acceptance",
+  "sources": [
+    {
+      "path": "components/books/native-invoice-accounting.tsx",
+      "sha256": "ace0935207a7ff327981a146040a0c4247affa67052502a00ef6bd985cbda61e"
+    },
+    {
+      "path": "lib/services/books/native-invoice-income-recovery-client.ts",
+      "sha256": "a764d0d0b6981f95e96288ace5196399b462170f0ec85038a6b577892bd0930b"
+    },
+    {
+      "path": "scripts/serve-books-native-invoice-recovery-fixture.cjs",
+      "sha256": "7b7b26932b1af3f39f696dc7f0aa445e6bdebf88ff9b755da6f2a109addab8d9"
+    }
+  ],
+  "fixture": "node scripts/serve-books-native-invoice-recovery-fixture.cjs NEW_TEMP_DIRECTORY PORT --workbench",
+  "scenarios": [
+    {
+      "name": "committed coding and money lost responses",
+      "coding_request_id": "e2e653b9-4867-4f4c-bfe6-76a31ba0762a",
+      "posting_request_id": "592ca0c0-2276-4641-9c80-cf62c1117d02",
+      "journal_id": "f79b39c7-e022-407b-81db-bc0511d7f041",
+      "observed": "Each original request survives refresh and verified exact recovery clears pending state; picker displays saved 4900 Other revenue; original journal ID survives reload",
+      "final_counts": {
+        "postingCount": 1,
+        "codingCount": 1,
+        "codingCancellationCount": 0
+      },
+      "screenshot": {
+        "path": "/Users/agustinzenuto/.codex/visualizations/2026/10/03/01a0ff13-c07c-7fd2-8488-200bfc787322/books-income-picker-journal-verified.jpg",
+        "sha256": "bd822592f71a4d1d29b888352dc1098bbc2e6c9a510273378508583d332b69e7"
+      },
+      "source_scope_note": "First disposable fixture uses initial picker rendering; later changes identify line quantity/rate and chart default without changing transport"
+    },
+    {
+      "name": "unsaved choices, uncommitted coding and lost cancellation",
+      "cancelled_request_id": "fe37c510-e9c6-47c7-8442-5a507919dca2",
+      "posting_enabled_with_unsaved_choice": false,
+      "observed": "Failed transport before SQL retains original request; resolver cancellation response loss retains original decision; refresh and recovery yield one cancellation and no coding/money; a fresh selection then succeeds and its reviewed 4900 account appears after a new preview",
+      "final_counts": {
+        "postingCount": 0,
+        "codingCount": 1,
+        "codingCancellationCount": 1
+      },
+      "screenshot": {
+        "path": "/Users/agustinzenuto/.codex/visualizations/2026/10/03/01a0ff13-c07c-7fd2-8488-200bfc787322/books-income-picker-verified.jpg",
+        "sha256": "d3c6f6e69e75b6a3121ab8988b1471471102f059c2d4a22ca0361bf565053eb1"
+      },
+      "dom": {
+        "path": "/tmp/books-income-picker-verified-dom.txt",
+        "sha256": "652591855a3ae3f909132d7d9e5c0012f12c81ddf1045d3a459ad95b6c1d3cf2"
+      }
+    }
+  ],
+  "browser_console_errors": [],
+  "native_ledger_activated": false,
+  "production_database_modified": false,
+  "limits": [
+    "Purpose-built action aliases bypass the full Next.js application/authentication runtime",
+    "Actual component styles are not loaded by the fixture; full application/mobile visual acceptance remains required",
+    "Native SQL fixtures are PGlite subsets; Docker current-schema/pgTAP/multi-session acceptance remains required",
+    "No full-company golden, activation or release acceptance claimed"
+  ]
+}

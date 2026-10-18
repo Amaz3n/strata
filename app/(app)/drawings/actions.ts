@@ -1,8 +1,9 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { deleteDrawings } from "@/lib/services/drawing-storage-cleanup"
+import { reserveDrawingUpload, getDrawingUploadOperation, cancelDrawingUpload, renewDrawingUpload, finalizeDrawingUpload, type DrawingUploadIntent, type DrawingUploadInput } from "@/lib/services/drawing-upload-operations"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
-import { ensureOrgScopedPath } from "@/lib/storage/files-storage"
 import { getDrawingPdfSignedUrl } from "@/lib/storage/drawings-pdfs-storage"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -33,6 +34,7 @@ import {
   getRevisionDiff,
   publishRevision,
   discardRevision,
+  retryDraftRevision,
   getDraftRevisionStatus,
   getPendingDraftRevision,
   getSheetCalibration,
@@ -112,7 +114,7 @@ import type {
   CreatePhotoFromDrawingInput,
 } from "@/lib/validation/drawings"
 import { createPhotoFromDrawingInputSchema } from "@/lib/validation/drawings"
-import { createFileRecord, buildInternalFileUrl } from "@/lib/services/files"
+import { buildInternalFileUrl } from "@/lib/services/files"
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
 import {
   buildRevisionChangeReport,
@@ -132,6 +134,7 @@ import { createRfi } from "@/lib/services/rfis"
 import { createProjectTaskAction } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { createProjectPunchItem } from "@/lib/services/punch-lists"
 import type { DraftRevisionSheetPreview, UploadReviewSheet } from "./types"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
@@ -144,12 +147,7 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
-type TargetDrawingSheet = {
-  id: string
-  sheet_number: string
-  sheet_title: string | null
-  discipline: DrawingDiscipline | null
-}
+
 
 // ============================================================================
 // PROCESSING PRIORITY
@@ -251,7 +249,9 @@ export async function prioritizeSheetProcessingAction(
       .maybeSingle()
     if (!version) return
 
-    await supabase
+    // Drawing jobs are server-owned (members cannot write them), and the sheet
+    // above was read through the member's own client, so it is theirs to open.
+    await createServiceSupabaseClient()
       .from("outbox")
       .update({ priority: 100, run_at: new Date().toISOString() })
       .eq("org_id", orgId)
@@ -347,233 +347,23 @@ export async function deleteDrawingSetAction(setId: string): Promise<ActionResul
  * Create a drawing set from an already uploaded file
  * This creates the database records after client-side upload
  */
-export async function createDrawingSetFromUpload(input: {
-  projectId: string
-  title?: string
-  setType?: string
-  fileName: string
-  storagePath: string
-  fileSize: number
-  mimeType: string
-  issuanceLabel?: string
-  issuanceType?: DrawingIssuanceType
-  issuedDate?: string
-  issuedBy?: string
-  receivedFrom?: string
-  notes?: string
-  targetSheetId?: string
-}): Promise<ActionResult<{ set: DrawingSet; draftRevisionId: string }>> {
+export async function reserveDrawingUploadAction(input: DrawingUploadIntent & {operationId:string}) {
+  return run(() => reserveDrawingUpload(input))
+}
+export async function getDrawingUploadOperationAction(operationId:string,projectId:string) {
+  return run(() => getDrawingUploadOperation(operationId,projectId))
+}
+export async function cancelDrawingUploadAction(operationId:string,projectId:string) {
+  return run(() => cancelDrawingUpload(operationId,projectId))
+}
+export async function renewDrawingUploadAction(operationId:string,projectId:string,generation:string) {
+  return run(() => renewDrawingUpload(operationId,projectId,generation))
+}
+export async function createDrawingSetFromUpload(input: DrawingUploadInput): Promise<ActionResult<{set:DrawingSet;draftRevisionId:string}>> {
   return run(async () => {
-      const { supabase, orgId } = await requireOrgContext()
-      await requireAnyPermission(["drawing.upload", "org.admin"])
-      const { data: project, error: projectError } = await supabase
-        .from("projects")
-        .select("id, name")
-        .eq("org_id", orgId)
-        .eq("id", input.projectId)
-        .maybeSingle()
-
-      if (projectError || !project) {
-        throw new Error("Invalid project scope for drawing upload")
-      }
-
-      const normalizedStoragePath = ensureOrgScopedPath(orgId, input.storagePath)
-      const allowedPrefixes = [
-        `${orgId}/${input.projectId}/drawings/uploads/`,
-        `${orgId}/${input.projectId}/drawings/sets/`,
-      ]
-
-      if (!allowedPrefixes.some((prefix) => normalizedStoragePath.startsWith(prefix))) {
-        throw new Error("Invalid drawing upload path for project scope")
-      }
-
-      let targetSheet: TargetDrawingSheet | null = null
-      if (input.targetSheetId) {
-        const { data, error } = await supabase
-          .from("drawing_sheets")
-          .select("id, sheet_number, sheet_title, discipline")
-          .eq("org_id", orgId)
-          .eq("project_id", input.projectId)
-          .eq("id", input.targetSheetId)
-          .maybeSingle()
-
-        if (error || !data) {
-          throw new Error("Invalid target sheet for drawing revision")
-        }
-        targetSheet = data as TargetDrawingSheet
-      }
-
-      // Create file record for the uploaded PDF
-      const fileRecord = await createFileRecord({
-        project_id: input.projectId,
-        file_name: input.fileName,
-        storage_path: normalizedStoragePath,
-        mime_type: input.mimeType,
-        size_bytes: input.fileSize,
-        visibility: "private",
-        category: "plans",
-        source: "upload",
-      })
-
-      // Single register per project: reuse the project's canonical (oldest) set.
-      // An upload processes into a DRAFT revision and never mutates the live set or
-      // its sheets — nothing changes until the user publishes. So the live set stays
-      // 'ready' the whole time; draft progress is tracked on the revision row.
-      const { data: existingSets, error: existingSetsError } = await supabase
-        .from("drawing_sets")
-        .select("id")
-        .eq("org_id", orgId)
-        .eq("project_id", input.projectId)
-        .order("created_at", { ascending: true })
-        .limit(1)
-
-      if (existingSetsError) {
-        throw new Error(`Failed to load existing drawing sets: ${existingSetsError.message}`)
-      }
-
-      // Only one in-flight draft per project: require publishing/discarding first.
-      const { data: pendingDrafts, error: pendingError } = await supabase
-        .from("drawing_revisions")
-        .select("id")
-        .eq("org_id", orgId)
-        .eq("project_id", input.projectId)
-        .in("status", ["processing", "draft"])
-        .limit(1)
-
-      if (pendingError) {
-        throw new Error(`Failed to check pending revisions: ${pendingError.message}`)
-      }
-      if (pendingDrafts && pendingDrafts.length > 0) {
-        throw new Error("A revision is already pending review. Publish or discard it before uploading another.")
-      }
-
-      let drawingSet: DrawingSet
-
-      if (existingSets && existingSets.length > 0) {
-        const canonicalSetId = existingSets[0].id as string
-        const { error: updateError } = await supabase
-          .from("drawing_sets")
-          .update({ source_file_id: fileRecord.id, status: "ready", processing_stage: "ready" })
-          .eq("org_id", orgId)
-          .eq("id", canonicalSetId)
-
-        if (updateError) {
-          throw new Error(`Failed to prepare drawing set: ${updateError.message}`)
-        }
-
-        const reusedSet = await getDrawingSet(canonicalSetId)
-        if (!reusedSet) {
-          throw new Error("Prepared drawing set could not be loaded")
-        }
-        drawingSet = reusedSet
-      } else {
-        drawingSet = await createDrawingSet({
-          project_id: input.projectId,
-          title: input.title || `${project.name} Drawings`,
-          set_type: input.setType as any,
-          source_file_id: fileRecord.id,
-        })
-
-        const { error: stageError } = await supabase
-          .from("drawing_sets")
-          .update({ status: "ready", processing_stage: "ready" })
-          .eq("org_id", orgId)
-          .eq("id", drawingSet.id)
-
-        if (stageError) {
-          console.warn("Failed to set initial set status:", stageError.message)
-        }
-      }
-
-      // Create the draft revision the worker will process into. Default label is a
-      // sensible issuance name the user can rename at publish time.
-      const { count: publishedCount } = await supabase
-        .from("drawing_revisions")
-        .select("*", { count: "exact", head: true })
-        .eq("org_id", orgId)
-        .eq("project_id", input.projectId)
-        .eq("status", "published")
-
-      const defaultLabel = !publishedCount ? "Initial Set" : `Revision ${publishedCount + 1}`
-      const cleanLabel = input.issuanceLabel?.trim() || defaultLabel
-
-      const { data: draftRevision, error: draftError } = await supabase
-        .from("drawing_revisions")
-        .insert({
-          org_id: orgId,
-          project_id: input.projectId,
-          drawing_set_id: drawingSet.id,
-          revision_label: cleanLabel,
-          issuance_type: input.issuanceType ?? "revision",
-          status: "processing",
-          processing_stage: "queued",
-          issued_date: input.issuedDate || new Date().toISOString(),
-          issued_by: input.issuedBy?.trim() || null,
-          received_from: input.receivedFrom?.trim() || null,
-          notes: input.notes?.trim() || null,
-          source_file_id: fileRecord.id,
-        })
-        .select("id")
-        .single()
-
-      if (draftError || !draftRevision) {
-        // The one-pending-draft-per-project unique index can fire on a
-        // concurrent-upload race that slips past the pre-check above; surface
-        // the same friendly message the pre-check uses.
-        if (draftError?.code === "23505") {
-          throw new Error("A revision is already pending review. Publish or discard it before uploading another.")
-        }
-        throw new Error(`Failed to create draft revision: ${draftError?.message}`)
-      }
-
-      const draftRevisionId = draftRevision.id as string
-      // Trigger processing via outbox system
-      try {
-        console.log(`[Upload] Queueing processing jobs for drawing set: ${drawingSet.id}`)
-
-        // Queue a job to process the drawing set and create individual sheets
-        const { error: jobError } = await supabase
-          .from("outbox")
-          .insert({
-            org_id: orgId,
-            job_type: "process_drawing_set",
-            payload: {
-              drawingSetId: drawingSet.id,
-              projectId: input.projectId,
-              sourceFileId: fileRecord.id,
-              storagePath: fileRecord.storage_path,
-              draftRevisionId,
-              orgId: orgId,
-              targetSheetId: targetSheet?.id,
-            },
-            run_at: new Date().toISOString(),
-          })
-
-        if (jobError) {
-          console.error("Failed to queue processing job:", jobError)
-          // Mark the draft revision failed so the review UI can react.
-          await supabase
-            .from("drawing_revisions")
-            .update({ processing_stage: "failed", error_message: "Failed to queue processing job" })
-            .eq("org_id", orgId)
-            .eq("id", draftRevisionId)
-        } else {
-          console.log(`[Upload] Successfully queued processing job for drawing set: ${drawingSet.id}`)
-          // Best-effort fast path; the process-outbox cron drains the queue if
-          // this kick fails, so the job is never lost.
-          const trigger = await triggerDrawingsPipeline()
-          if (!trigger.triggered) {
-            console.warn("[Upload] Drawings pipeline kick failed (cron will pick up):", trigger.error)
-          }
-        }
-      } catch (error) {
-        console.error("Failed to queue processing job:", error)
-        // The draft revision stays in "processing" - the cron retries it.
-      }
-
-      revalidatePath(`/projects/${input.projectId}`)
-
-      return { set: drawingSet, draftRevisionId }
+    const result=await finalizeDrawingUpload(input)
+    revalidatePath(`/projects/${input.projectId}`)
+    return result
   })
 }
 
@@ -584,74 +374,8 @@ export async function createDrawingSetFromUpload(input: {
  */
 export async function retryDraftRevisionAction(revisionId: string): Promise<ActionResult<void>> {
   return run(async () => {
-      const { supabase, orgId } = await requireOrgContext()
-      await requireAnyPermission(["drawing.upload", "org.admin"])
-
-      const { data: revision, error } = await supabase
-        .from("drawing_revisions")
-        .select("id, project_id, drawing_set_id, status, processing_stage, source_file_id")
-        .eq("org_id", orgId)
-        .eq("id", revisionId)
-        .maybeSingle()
-      if (error || !revision) {
-        throw new Error("Revision not found")
-      }
-      if (revision.status === "published") {
-        throw new Error("Revision is already published")
-      }
-
-      if (!revision.source_file_id) {
-        throw new Error("Revision has no source file to reprocess")
-      }
-
-      const { data: fileData } = await supabase
-        .from("files")
-        .select("storage_path")
-        .eq("id", revision.source_file_id)
-        .single()
-      if (!fileData?.storage_path) {
-        throw new Error("Source file not found")
-      }
-
-      await supabase
-        .from("drawing_revisions")
-        .update({ status: "processing", processing_stage: "queued", error_message: null })
-        .eq("org_id", orgId)
-        .eq("id", revisionId)
-
-      // Clear any stuck jobs for this revision, then requeue the split job. The
-      // pipeline skips pages that already have versions, so this is safe.
-      await supabase
-        .from("outbox")
-        .update({ status: "completed", last_error: "Superseded by manual retry" })
-        .in("job_type", [
-          "process_drawing_set",
-          "process_drawing_page",
-          "split_drawing_chunk",
-          "enrich_drawing_metadata",
-        ])
-        .in("status", ["pending", "failed"])
-        .contains("payload", { draftRevisionId: revisionId })
-
-      const { error: jobError } = await supabase.from("outbox").insert({
-        org_id: orgId,
-        job_type: "process_drawing_set",
-        payload: {
-          drawingSetId: revision.drawing_set_id,
-          orgId,
-          projectId: revision.project_id,
-          sourceFileId: revision.source_file_id,
-          storagePath: fileData.storage_path,
-          draftRevisionId: revisionId,
-        },
-        run_at: new Date().toISOString(),
-      })
-      if (jobError) {
-        throw new Error(`Failed to requeue processing: ${jobError.message}`)
-      }
-
-      await triggerDrawingsPipeline()
-      revalidatePath(`/projects/${revision.project_id}`)
+    const projectId = await retryDraftRevision(revisionId)
+    revalidatePath(`/projects/${projectId}`)
   })
 }
 
@@ -725,7 +449,8 @@ export async function retryProcessingAction(setId: string): Promise<ActionResult
 
       // Queue processing again (worker path supports R2-backed uploads)
       try {
-        const { error: jobError } = await supabase
+        // Drawing jobs are server-owned; the permission and the set were checked above.
+        const { error: jobError } = await createServiceSupabaseClient()
           .from("outbox")
           .insert({
             org_id: orgId,
@@ -1116,8 +841,8 @@ export async function listSheetVersionsWithUrlsAction(
  */
 export async function getSheetCalibrationAction(
   sheetId: string
-): Promise<SheetCalibration | null> {
-      return getSheetCalibration(sheetId)
+): Promise<ActionResult<SheetCalibration | null>> {
+  return run(() => getSheetCalibration(sheetId))
 }
 
 /**
@@ -1161,21 +886,6 @@ export async function createSheetVersionAction(
 // ============================================================================
 // HELPER ACTIONS
 // ============================================================================
-
-/**
- * Refresh the drawing sheets list materialized view
- */
-export async function refreshDrawingSheetsListAction(): Promise<ActionResult<void>> {
-  return run(async () => {
-      await requireOrgContext()
-      const supabase = createServiceSupabaseClient()
-
-      const { error } = await supabase.rpc("refresh_drawing_sheets_list")
-      if (error) {
-        throw new Error(`Failed to refresh drawing sheets list: ${error.message}`)
-      }
-  })
-}
 
 /**
  * Get drawing set processing status
@@ -1637,61 +1347,31 @@ export async function createPunchItemFromDrawingAction(input: {
   attachmentFileId?: string | null
 }) {
   return run(async () => {
-      const { supabase, orgId, userId } = await requireOrgContext()
-
-      const payload = {
-        org_id: orgId,
-        project_id: input.projectId,
+      // The punch service owns authorization (punch.write on the project), validation,
+      // event and audit; the drawing snapshot rides file_links like any attachment.
+      const item = await createProjectPunchItem(input.projectId, {
         title: input.title,
         description: input.description ?? null,
         location: input.location ?? null,
         severity: input.severity ?? null,
-        status: "open",
-      }
+      })
 
-      const { data, error } = await supabase
-        .from("punch_items")
-        .insert(payload)
-        .select("id, org_id, project_id, title, description, status, due_date, severity, location, resolved_at")
-        .single()
-
-      if (error || !data) {
-        throw new Error(`Failed to create punch item: ${error?.message}`)
-      }
-
-      // Punch items have no first-class attachment column, so the drawing
-      // snapshot rides the normal file_links path like any other attachment.
       if (input.attachmentFileId) {
-        await supabase.from("file_links").insert({
+        const { supabase, orgId } = await requireOrgContext()
+        const { error } = await supabase.from("file_links").insert({
           org_id: orgId,
           file_id: input.attachmentFileId,
           project_id: input.projectId,
           entity_type: "punch_item",
-          entity_id: data.id,
+          entity_id: item.id,
           link_role: "drawing_snapshot",
         })
+        if (error) throw new Error(`Punch item created, but attaching the drawing snapshot failed: ${error.message}`)
       }
-
-      await recordEvent({
-        orgId,
-        eventType: "punch_item_created",
-        entityType: "punch_item",
-        entityId: data.id,
-        payload: { title: input.title, project_id: input.projectId },
-      })
-
-      await recordAudit({
-        orgId,
-        actorId: userId,
-        action: "insert",
-        entityType: "punch_item",
-        entityId: data.id,
-        after: payload as any,
-      })
 
       revalidatePath(`/projects/${input.projectId}`)
 
-      return data
+      return item
   })
 }
 
@@ -1856,4 +1536,18 @@ export async function getSheetStatusCountsAction(
   sheetIds: string[]
 ): Promise<Record<string, SheetStatusCounts>> {
       return getSheetStatusCounts({ sheetIds })
+}
+
+/** Reuse the existing library file; no second upload or file record. */
+export async function createDrawingSetFromDocument(projectId: string, fileId: string) {
+  return createDrawingSetFromUpload({ projectId, sourceFileId: fileId, fileName: "", storagePath: "", fileSize: 0, mimeType: "application/pdf" });
+}
+
+/** One transaction and durable cleanup receipt for a whole selected trade or group. */
+export async function deleteDrawingSheetsAction(input:{operationId:string;projectId:string;sheetIds:string[]}) {
+ return run(async()=>{
+  const receipt=await deleteDrawings({operationId:input.operationId,projectId:input.projectId,kind:"sheets",targetIds:input.sheetIds})
+  revalidatePath(`/projects/${receipt.project_id}`)
+  return receipt
+ })
 }

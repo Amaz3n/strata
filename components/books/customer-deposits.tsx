@@ -3,6 +3,9 @@
 import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
 
+import Link from "next/link";
+import { newInvoiceHref, invoiceHref } from "@/lib/financials/invoice-destinations";
+import { RecordCustomerRefund } from "@/components/payments/record-customer-refund";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -49,13 +52,13 @@ export function CustomerDeposits() {
       <div className="border-b px-5 py-4">
         <p className="text-sm font-semibold">Customer deposits</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Earnest money remains a liability until it is applied to a receivable
-          or refunded.
+          Track customer advances, apply them to invoices, or record a refund.
         </p>
+        <Button asChild variant="outline" size="sm" className="mt-3"><Link href={newInvoiceHref(undefined, { kind: "earnest_deposit" })}>Request deposit</Link></Button>
       </div>
       {pending && !workspace ? (
         <p className="px-5 py-8 text-sm text-muted-foreground">
-          Loading deposit subledger…
+          Loading deposits…
         </p>
       ) : null}
       {error ? (
@@ -73,7 +76,8 @@ export function CustomerDeposits() {
             .map((deposit) => {
               const targets = workspace.targetInvoices.filter(
                 (invoice: any) =>
-                  invoice.id !== deposit.invoiceId &&
+                  invoice.id !== deposit.invoiceId && invoice.metadata?.invoice_kind !== "earnest_deposit" &&
+                  (!deposit.projectId || invoice.project_id === deposit.projectId) &&
                   (!deposit.customerId ||
                     invoice.customer_id === deposit.customerId),
               );
@@ -101,12 +105,13 @@ export function CustomerDeposits() {
                 >
                   <div>
                     <p className="text-sm font-medium">
-                      {deposit.invoiceNumber} · {deposit.title}
+                      <Link href={invoiceHref(deposit.invoiceId, deposit.projectId)} className="hover:underline">{deposit.invoiceNumber} · {deposit.title}</Link>
                     </p>
                     <p className="mt-1 font-mono text-xs text-muted-foreground">
                       Available {money.format(deposit.availableCents / 100)} of{" "}
                       {money.format(deposit.receivedCents / 100)}
                     </p>
+                    {deposit.provider === "manual" ? <RecordCustomerRefund paymentId={deposit.paymentId} availableCents={deposit.availableCents} onRecorded={load} /> : null}
                   </div>
                   <Select name="targetInvoiceId" required>
                     <SelectTrigger>
@@ -118,7 +123,7 @@ export function CustomerDeposits() {
                           {invoice.invoice_number} ·{" "}
                           {money.format(
                             Number(
-                              invoice.balance_cents ?? invoice.total_cents,
+                              invoice.balance_due_cents ?? invoice.total_cents,
                             ) / 100,
                           )}
                         </SelectItem>

@@ -1,9 +1,11 @@
 "use client"
 
+import Link from "next/link"
 import { useState, useTransition } from "react"
 
 import type { WarrantyRequest } from "@/lib/types"
 import type { ProjectWarrantyCoverageDTO, WarrantyServiceVisitDTO } from "@/lib/services/warranty"
+import { formatWarrantyVisitWindow, resolveWarrantyTimeZone } from "@/lib/services/warranty/visit-time"
 import { createWarrantyRequestPortalAction, signOffWarrantyVisitPortalAction } from "./actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -35,7 +37,11 @@ function statusBadge(status?: string) {
   return <Badge variant="outline">Open</Badge>
 }
 
-export function WarrantyPortalClient({
+export function WarrantyPortalClient(props: Parameters<typeof WarrantyPortalWorkspace>[0]) {
+  return <WarrantyPortalWorkspace key={props.token} {...props} />
+}
+
+function WarrantyPortalWorkspace({
   token,
   requests: initialRequests,
   coverage,
@@ -59,6 +65,17 @@ export function WarrantyPortalClient({
     coverageTermKey: coverage?.terms[0]?.key ?? "",
   })
   const [photo, setPhoto] = useState<File | null>(null)
+  const [requestSource, setRequestSource] = useState(initialRequests)
+  const [visitSource, setVisitSource] = useState(initialVisits)
+  if (requestSource !== initialRequests) {
+    setRequestSource(initialRequests)
+    setRequests(initialRequests)
+  }
+  if (visitSource !== initialVisits) {
+    setVisitSource(initialVisits)
+    setVisits(initialVisits)
+  }
+
 
   const handleSubmit = () => {
     if (!form.title.trim()) {
@@ -150,7 +167,7 @@ export function WarrantyPortalClient({
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-base">Service appointments</CardTitle></CardHeader>
         <CardContent className="divide-y">
-          {visits.length === 0 ? <p className="text-sm text-muted-foreground">No appointments scheduled.</p> : visits.map((visit) => <div key={visit.id} className="py-3"><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium">Visit {visit.visit_number}</p><p className="text-xs text-muted-foreground">{new Date(visit.window_start).toLocaleString()} – {new Date(visit.window_end).toLocaleTimeString()}</p>{visit.assigned_user_name || visit.assigned_company_name ? <p className="text-xs text-muted-foreground">{visit.assigned_user_name ?? visit.assigned_company_name}</p> : null}</div><Badge variant="outline">{visit.status.replaceAll("_", " ")}</Badge></div>{visit.status === "completed" && !visit.buyer_signoff_at ? <form className="mt-3 flex gap-2" action={(formData) => startTransition(async () => { try { const signed = await signOffWarrantyVisitPortalAction(token, formData); setVisits((rows) => rows.map((row) => row.id === signed.id ? signed : row)); toast({ title: "Service visit signed off" }) } catch (error) { toast({ title: "Unable to sign off", description: error instanceof Error ? error.message : "Try again" }) } })}><input type="hidden" name="visit_id" value={visit.id}/><Input name="name" placeholder="Your name" required/><Button size="sm" type="submit" disabled={isPending}>Sign off</Button></form> : null}</div>)}
+          {visits.length === 0 ? <p className="text-sm text-muted-foreground">No appointments scheduled.</p> : visits.map((visit) => <div key={visit.id} className="py-3"><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium">Visit {visit.visit_number}</p><p className="text-xs text-muted-foreground">{formatWarrantyVisitWindow(visit.window_start, visit.window_end, resolveWarrantyTimeZone(visit.time_zone))}</p>{visit.assigned_user_name || visit.assigned_company_name ? <p className="text-xs text-muted-foreground">{visit.assigned_user_name ?? visit.assigned_company_name}</p> : null}</div><div className="flex flex-col items-end gap-1"><Badge variant="outline">{visit.buyer_confirmed_at ? "confirmed by you" : visit.status.replaceAll("_", " ")}</Badge>{["scheduled", "confirmed"].includes(visit.status) ? <Link href={`/p/${token}/warranty/visits/${visit.id}`} className="text-xs underline underline-offset-2">{visit.buyer_confirmed_at ? "Review" : "Confirm or change"}</Link> : null}</div></div>{visit.status === "completed" && !visit.buyer_signoff_at ? <form className="mt-3 flex gap-2" action={(formData) => startTransition(async () => { try { const signed = await signOffWarrantyVisitPortalAction(token, formData); setVisits((rows) => rows.map((row) => row.id === signed.id ? signed : row)); toast({ title: "Service visit signed off" }) } catch (error) { toast({ title: "Unable to sign off", description: error instanceof Error ? error.message : "Try again" }) } })}><input type="hidden" name="visit_id" value={visit.id}/><Input name="name" placeholder="Your name" required/><Button size="sm" type="submit" disabled={isPending}>Sign off</Button></form> : null}</div>)}
         </CardContent>
       </Card>
 

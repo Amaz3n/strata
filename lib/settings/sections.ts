@@ -5,6 +5,7 @@ import {
   CreditCard,
   FileSpreadsheet,
   FileText,
+  Inbox,
   KeyRound,
   Layers,
   Link2,
@@ -16,7 +17,6 @@ import {
   Users,
   Wallet,
 } from "@/components/icons"
-import type { ProductTier } from "@/lib/product-tier"
 import type { LucideIcon } from "@/components/icons"
 
 export interface SettingsItem {
@@ -24,7 +24,6 @@ export interface SettingsItem {
   url: string
   icon: LucideIcon
   requiredAny?: string[]
-  productTiers?: readonly ProductTier[]
 }
 export interface SettingsSection {
   label: string
@@ -50,7 +49,7 @@ export const settingsSections: SettingsSection[] = [
         icon: KeyRound,
         requiredAny: ["project.manage"],
       },
-      { title: "Divisions", url: "/settings/divisions", icon: Layers, productTiers: ["production"] },
+      { title: "Divisions", url: "/settings/divisions", icon: Layers },
       { title: "Billing", url: "/settings?tab=billing", icon: CreditCard },
     ],
   },
@@ -65,7 +64,7 @@ export const settingsSections: SettingsSection[] = [
         title: "Vendor payments",
         url: "/settings?tab=payments",
         icon: Wallet,
-        requiredAny: ["payment.release"],
+        requiredAny: ["payment.release", "payment.approve_run", "payment.manage_rail"],
       },
       {
         title: "Payment reconciliation",
@@ -86,6 +85,24 @@ export const settingsSections: SettingsSection[] = [
         url: "/settings/warranty",
         icon: ClipboardCheck,
         requiredAny: ["warranty.manage"],
+      },
+      {
+        title: "Purchasing",
+        url: "/settings/purchasing",
+        icon: Wallet,
+        requiredAny: ["purchasing_settings.write"],
+      },
+      {
+        title: "Lead intake",
+        url: "/settings/lead-intake",
+        icon: Inbox,
+        requiredAny: ["lead_intake.manage"],
+      },
+      {
+        title: "Lender and title feeds",
+        url: "/settings/milestone-feeds",
+        icon: Link2,
+        requiredAny: ["org.admin"],
       },
       {
         title: "Data imports",
@@ -127,12 +144,12 @@ export function canViewSettingsItem(item: SettingsItem, permissions: readonly st
     item.requiredAny.some((key) => permissions.includes(key))
   )
 }
-export function visibleSettingsSections(permissions: readonly string[], productTier: ProductTier) {
+export function visibleSettingsSections(permissions: readonly string[]) {
   return settingsSections
     .map((section) => ({
       ...section,
       items: section.items.filter((item) =>
-        canViewSettingsItem(item, permissions) && (!item.productTiers || item.productTiers.includes(productTier)),
+        canViewSettingsItem(item, permissions),
       ),
     }))
     .filter((section) => section.items.length > 0)

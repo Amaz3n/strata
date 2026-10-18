@@ -1,0 +1,10 @@
+begin;
+select plan(6);
+select ok(not has_table_privilege('anon', 'public.report_runs', 'select'), 'anonymous clients cannot read report evidence');
+select ok(not has_table_privilege('authenticated', 'public.report_runs', 'select'), 'snapshots require server report and project authorization');
+select ok(not has_table_privilege('authenticated', 'public.saved_report_configs', 'select'), 'shared configurations require server visibility checks');
+select ok(not has_table_privilege('authenticated', 'public.report_schedules', 'insert'), 'schedules require server ownership checks');
+select ok(has_table_privilege('service_role', 'public.report_runs', 'insert'), 'authorized server can capture snapshots');
+select ok(has_table_privilege('service_role', 'public.saved_report_configs', 'update'), 'authorized server can save reports');
+select * from finish();
+rollback;

@@ -1,7 +1,7 @@
 "use client";
 
 import { PresetTemplateWorkspace } from "@/components/settings/preset-template-workspace";
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { unwrapAction } from "@/lib/action-result";
@@ -70,8 +70,12 @@ function itemsToText(items: Array<{ section: string | null; prompt: string }>) {
 
 export function ChecklistsClient({
   templates,
+  canManage = false,
+  canSeed = false,
 }: {
   templates: ChecklistTemplate[];
+  canManage?: boolean;
+  canSeed?: boolean;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -82,17 +86,47 @@ export function ChecklistsClient({
   const [previewDescription, setPreviewDescription] = useState("");
   const [previewTrade, setPreviewTrade] = useState("");
   const [previewKind, setPreviewKind] = useState("quality");
+  const [loadingTemplate, setLoadingTemplate] = useState<ChecklistTemplate | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [loadingItems, setLoadingItems] = useState(false);
+  const mounted = useRef(false);
+  const writing = useRef(false);
+  const readVersion = useRef(0);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      readVersion.current++;
+    };
+  }, []);
 
-  const submit = (work: () => Promise<void>) =>
+  const submit = (work: () => Promise<void>, allowed = canManage) => {
+    if (!allowed || !mounted.current || writing.current) return;
+    writing.current = true;
+    readVersion.current++;
+    setLoadingTemplate(null);
+    setLoadingItems(false);
+    setLoadError("");
     startTransition(async () => {
-      await work().catch((error) =>
+      try {
+        await work();
+      } catch (error) {
+        if (!mounted.current) return;
         toast.error(
           error instanceof Error ? error.message : "Something went wrong",
-        ),
-      );
+        );
+      } finally {
+        writing.current = false;
+      }
     });
+  };
 
   const openNew = () => {
+    if (!canManage || !mounted.current || writing.current) return;
+    readVersion.current++;
+    setLoadingTemplate(null);
+    setLoadingItems(false);
+    setLoadError("");
     setEditing(null);
     setPreviewName("");
     setPreviewDescription("");
@@ -102,20 +136,36 @@ export function ChecklistsClient({
     setEditorOpen(true);
   };
 
+  const loadItems = async (template: ChecklistTemplate) => {
+    if (!mounted.current || writing.current) return;
+    const version = ++readVersion.current;
+    setLoadingTemplate(template);
+    setLoadingItems(true);
+    setLoadError("");
+    try {
+      const items = unwrapAction(await listChecklistTemplateItemsAction(template.id));
+      if (!mounted.current || version !== readVersion.current) return;
+      setItemsText(itemsToText(items));
+      setLoadingTemplate(null);
+      setEditorOpen(true);
+    } catch (error) {
+      if (!mounted.current || version !== readVersion.current) return;
+      setLoadError(error instanceof Error ? error.message : "Could not load checklist items");
+    } finally {
+      if (mounted.current && version === readVersion.current) setLoadingItems(false);
+    }
+  };
+
   const openEdit = (template: ChecklistTemplate) => {
+    if (!mounted.current || writing.current) return;
     setEditing(template);
     setPreviewName(template.name);
     setPreviewDescription(template.description ?? "");
     setPreviewTrade(template.trade ?? "");
     setPreviewKind(template.kind);
     setItemsText("");
-    setEditorOpen(true);
-    submit(async () => {
-      const items = unwrapAction(
-        await listChecklistTemplateItemsAction(template.id),
-      );
-      setItemsText(itemsToText(items));
-    });
+    setEditorOpen(false);
+    void loadItems(template);
   };
 
   return (
@@ -128,29 +178,47 @@ export function ChecklistsClient({
           {templates.length === 0 ? (
             <Button
               variant="outline"
-              disabled={pending}
+              disabled={!canSeed || pending}
               onClick={() =>
                 submit(async () => {
                   const seeded = unwrapAction(
                     await seedChecklistTemplatesAction(),
                   );
+                  if (!mounted.current) return;
                   toast.success(
                     seeded > 0
                       ? `Seeded ${seeded} starter templates`
                       : "Templates already exist",
                   );
                   router.refresh();
-                })
+                }, canSeed)
               }
             >
               Seed starter templates
             </Button>
           ) : null}
-          <Button onClick={openNew} disabled={pending}>
+          <Button onClick={openNew} disabled={!canManage || pending}>
             New template
           </Button>
         </div>
       </div>
+
+      {loadingTemplate ? (
+        <div className="space-y-2">
+          {loadingItems ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              Loading items for {loadingTemplate.name}…
+            </p>
+          ) : loadError ? (
+            <>
+              <p role="alert" className="text-sm text-destructive">{loadError}</p>
+              <Button variant="outline" onClick={() => void loadItems(loadingTemplate)}>
+                Retry loading items
+              </Button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="border">
         <Table>
@@ -173,7 +241,12 @@ export function ChecklistsClient({
                   onClick={() => openEdit(template)}
                 >
                   <TableCell>
-                    <span className="font-medium">{template.name}</span>
+                    <button
+                      type="button"
+                      className="font-medium text-left hover:underline"
+                      disabled={pending}
+                      onClick={(event) => { event.stopPropagation(); openEdit(template); }}
+                    >{template.name}</button>
                     {template.description ? (
                       <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                         {template.description}
@@ -200,7 +273,7 @@ export function ChecklistsClient({
                     <Button
                       size="sm"
                       variant="ghost"
-                      disabled={pending}
+                      disabled={!canManage || pending}
                       onClick={() =>
                         submit(async () => {
                           unwrapAction(
@@ -209,6 +282,7 @@ export function ChecklistsClient({
                               !template.is_active,
                             ),
                           );
+                          if (!mounted.current) return;
                           router.refresh();
                         })
                       }
@@ -224,8 +298,7 @@ export function ChecklistsClient({
                   colSpan={6}
                   className="h-24 text-center text-muted-foreground"
                 >
-                  No checklist templates yet. Seed the starter library or create
-                  one.
+                  No checklist templates yet.{canManage || canSeed ? " Seed the starter library or create one." : ""}
                 </TableCell>
               </TableRow>
             )}
@@ -255,12 +328,14 @@ export function ChecklistsClient({
           onClose={() => setEditorOpen(false)}
           saveForm="checklist-template-form"
           busy={pending}
+          readOnly={!canManage}
         >
           <form
             id="checklist-template-form"
             className="flex min-h-0 flex-1 flex-col"
             onSubmit={(event) => {
               event.preventDefault();
+              if (!canManage || !mounted.current || writing.current) return;
               const form = new FormData(event.currentTarget);
               const items = parseItems(itemsText);
               if (items.length === 0) {
@@ -279,9 +354,11 @@ export function ChecklistsClient({
                   unwrapAction(
                     await updateChecklistTemplateAction(editing.id, input),
                   );
+                  if (!mounted.current) return;
                   toast.success("Template updated");
                 } else {
                   unwrapAction(await createChecklistTemplateAction(input));
+                  if (!mounted.current) return;
                   toast.success("Template created");
                 }
                 setEditorOpen(false);
@@ -309,7 +386,7 @@ export function ChecklistsClient({
                     value={previewKind}
                     onValueChange={setPreviewKind}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger aria-label="Template type">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>

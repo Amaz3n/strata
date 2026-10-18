@@ -1,8 +1,9 @@
 import "server-only"
 
 import { cacheLife } from "next/cache"
-import { connection } from "next/server"
 
+import { getBusinessProfile } from "@/lib/services/business-profile"
+import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import type { ProductTier } from "@/lib/product-tier"
 import type { ProjectNavigationItem, User } from "@/lib/types"
 import { getOrgAccessState, type OrgAccessState } from "@/lib/services/access"
@@ -12,22 +13,28 @@ import { getCurrentPlatformAccess, type PlatformAccessState } from "@/lib/servic
 import { getPlatformSessionState, type PlatformSessionState } from "@/lib/services/platform-session"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { orgHasPriceAgreements } from "@/lib/services/price-book"
-import { orgHasProductionProjects } from "@/lib/services/production-desk-scope"
+import { orgHasActiveCommercialProjects, orgHasActiveNonProductionProjects, orgHasProductionProjects } from "@/lib/services/production-desk-scope"
 import { listProjectNavigationItemsWithClient } from "@/lib/services/projects"
 import { getAuthContext } from "@/lib/auth/context"
 import { getCurrentUserProfile } from "@/lib/services/users"
 import { isBooksWorkspaceEnabled } from "@/lib/services/books/module"
 
 export interface AppChromeContext {
+  orgId: string | null
   user: User | null
   permissions: string[]
   access: OrgAccessState
   platformAccess: PlatformAccessState
   platformSessionState: PlatformSessionState
   productTier: ProductTier
+  businessProfile: BusinessProfile
   ambientContext: AmbientDeskContext
   projects: ProjectNavigationItem[]
+  /** The switcher's list stopped at PROJECT_NAVIGATION_LIMIT. */
+  projectsTruncated: boolean
   hasProductionProjects: boolean
+  hasActiveNonProductionProjects: boolean
+  hasActiveCommercialProjects: boolean
   hasPriceAgreements: boolean
   booksEnabled: boolean
 }
@@ -74,27 +81,26 @@ const EMPTY_AMBIENT: AmbientDeskContext = {
  * switchOrgAction and setDeskScopeAction.
  */
 export async function getAppChromeContext(): Promise<AppChromeContext> {
-  // This is the single uncached entry point for authenticated app chrome.
-  // Supabase checks session expiry with Date.now(), so establish request time
-  // before the shared auth helper constructs or uses a live cookie client.
-  // Never move this boundary into getAuthContext(): that helper is also called
-  // by private project and directory caches, where connection() is forbidden.
-  await connection()
-  const { user } = await getAuthContext()
-  if (!user) return SIGNED_OUT_CHROME
+  // Keep the session check inside the private cache. An uncached connection()
+  // here suspends the entire layout, including its children, during prefetch.
   return loadAppChromeContext()
 }
 
 const SIGNED_OUT_CHROME: AppChromeContext = {
+  orgId: null,
   user: null,
   permissions: [],
   access: { status: "unknown", locked: false },
   platformAccess: { canAccessPlatform: false, roles: [], isEnvSuperadmin: false },
   platformSessionState: NO_PLATFORM_SESSION,
   productTier: "residential",
+  businessProfile: BUILDER_PROFILE,
   ambientContext: EMPTY_AMBIENT,
   projects: [],
+  projectsTruncated: false,
   hasProductionProjects: false,
+  hasActiveNonProductionProjects: false,
+  hasActiveCommercialProjects: false,
   hasPriceAgreements: false,
   booksEnabled: false,
 }
@@ -102,6 +108,14 @@ const SIGNED_OUT_CHROME: AppChromeContext = {
 async function loadAppChromeContext(): Promise<AppChromeContext> {
   "use cache: private"
   cacheLife("session")
+
+  const { user: authenticatedUser } = await getAuthContext()
+  if (!authenticatedUser) return SIGNED_OUT_CHROME
+
+  // No organization is a real state, not only for the signed-out: Arc staff
+  // outside any organization (no membership, no open support grant) still get
+  // the chrome around the platform console.
+  const contextPromise = requireOrgContext().catch(() => null)
 
   const [
     user,
@@ -112,8 +126,11 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     context,
     ambientContext,
     hasProductionProjects,
+    hasActiveNonProductionProjects,
+    hasActiveCommercialProjects,
     hasPriceAgreements,
     booksEnabled,
+    businessProfile,
   ] = await Promise.all([
     getCurrentUserProfile().catch(() => null),
     getCurrentUserPermissions().catch(() => ({ permissions: [] as string[] })),
@@ -122,30 +139,38 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
       (): PlatformAccessState => ({ canAccessPlatform: false, roles: [], isEnvSuperadmin: false }),
     ),
     getPlatformSessionState().catch(() => NO_PLATFORM_SESSION),
-    requireOrgContext().catch(() => null),
+    contextPromise,
     getAmbientDeskContext().catch(() => EMPTY_AMBIENT),
     orgHasProductionProjects().catch(() => false),
+    orgHasActiveNonProductionProjects().catch(() => false),
+    orgHasActiveCommercialProjects().catch(() => false),
     orgHasPriceAgreements().catch(() => false),
     isBooksWorkspaceEnabled().catch(() => false),
+    contextPromise.then((resolved) => (resolved ? getBusinessProfile() : BUILDER_PROFILE)),
   ])
 
   // The switcher's project list used to be a client fetch to /api/projects on
   // mount — a round trip that could not start until hydration finished, and
   // could not be prefetched at all. Loading it here puts it in the App Shell.
-  const projects = context
-    ? await listProjectNavigationItemsWithClient(context.supabase, context.orgId).catch(() => [])
-    : []
+  const { items: projects, truncated: projectsTruncated } = context
+    ? await listProjectNavigationItemsWithClient(context.supabase, context.orgId).catch(() => ({ items: [], truncated: false }))
+    : { items: [], truncated: false }
 
   return {
+    orgId: context?.orgId ?? null,
     user,
     permissions: permissionResult.permissions,
     access,
     platformAccess,
     platformSessionState,
     productTier: context?.productTier ?? "residential",
+    businessProfile,
     ambientContext,
     projects,
+    projectsTruncated,
     hasProductionProjects,
+    hasActiveNonProductionProjects,
+    hasActiveCommercialProjects,
     hasPriceAgreements,
     booksEnabled,
   }

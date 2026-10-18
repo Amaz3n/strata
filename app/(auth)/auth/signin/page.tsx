@@ -1,8 +1,8 @@
 import { Suspense } from "react"
 import { LoginForm } from "@/components/auth/login-form"
 import { InviteHashHandler } from "@/components/auth/invite-hash-handler"
+import { AuthFormSkeleton } from "@/components/auth/auth-form-skeleton"
 import { normalizeInternalReturnPath } from "@/lib/auth/return-path"
-import { Skeleton } from "@/components/ui/skeleton"
 
 interface SignInPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
@@ -14,7 +14,7 @@ export default function SignInPage({ searchParams }: SignInPageProps) {
       <Suspense>
         <InviteHashHandler />
       </Suspense>
-      <Suspense fallback={<SignInShell />}>
+      <Suspense fallback={<AuthFormSkeleton />}>
         <SignInRouteContent searchParams={searchParams} />
       </Suspense>
     </>
@@ -34,20 +34,5 @@ async function SignInRouteContent({ searchParams }: SignInPageProps) {
       routeMessage={message}
       returnTo={next}
     />
-  )
-}
-
-function SignInShell() {
-  return (
-    <div className="mx-auto grid w-full max-w-sm gap-6" aria-busy="true">
-      <div className="grid gap-2 text-center">
-        <Skeleton className="mx-auto h-8 w-48" />
-        <Skeleton className="mx-auto h-4 w-64" />
-      </div>
-      <div className="grid gap-4">
-        <Skeleton className="h-11 w-full" />
-        <Skeleton className="h-11 w-full" />
-      </div>
-    </div>
   )
 }

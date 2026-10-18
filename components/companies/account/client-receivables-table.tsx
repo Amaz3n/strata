@@ -34,7 +34,7 @@ export function ClientReceivablesTable({
           shown.
         </div>
       ) : null}
-      {rows.length > 0 ? (
+      {rows.length > 0 || (summary?.general_billing.invoice_count ?? 0) > 0 ? (
         <div className="overflow-x-auto">
           <Table className={cn("min-w-[760px]", TABLE_EDGE)}>
             <TableHeader>
@@ -85,6 +85,15 @@ export function ClientReceivablesTable({
                   </TableCell>
                 </TableRow>
               ))}
+              {summary && summary.general_billing.invoice_count > 0 ? <TableRow>
+                <TableCell className="font-medium">General billing</TableCell>
+                <TableCell className="text-right text-muted-foreground">—</TableCell>
+                <TableCell className="text-right font-mono">{formatMoneyFromCents(summary.general_billing.invoiced_cents)}</TableCell>
+                <TableCell className="text-right font-mono">{formatMoneyFromCents(summary.general_billing.collected_cents)}</TableCell>
+                <TableCell className="text-right font-mono font-medium">{formatMoneyFromCents(summary.general_billing.outstanding_cents)}</TableCell>
+                <TableCell className="text-right text-muted-foreground">—</TableCell>
+                <TableCell className="text-right"><Button asChild size="sm" variant="ghost"><Link href={newInvoiceHref(null, { customerId: summary.party_type === "contact" ? summary.party_id : undefined })}>New invoice</Link></Button></TableCell>
+              </TableRow> : null}
             </TableBody>
           </Table>
         </div>

@@ -7,12 +7,13 @@ import {
   listScheduleItems,
   updateScheduleItem,
   deleteScheduleItem,
-  bulkUpdateScheduleItems,
   listDependenciesByProject,
+  applyScheduleChangeOrderImpact,
 } from "@/lib/services/schedule"
-import { scheduleItemInputSchema, scheduleItemUpdateSchema, scheduleBulkUpdateSchema } from "@/lib/validation/schedule"
+import { scheduleItemInputSchema, scheduleItemUpdateSchema } from "@/lib/validation/schedule"
 import type { ScheduleDependency } from "@/lib/types"
 
+import { z } from "zod"
 import { actionError, type ActionResult } from "@/lib/action-result"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
@@ -23,8 +24,8 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
-export async function listScheduleItemsAction(projectIds?: string[]) {
-      return listScheduleItems(undefined, projectIds)
+export async function listScheduleItemsAction(projectIds?: string[], options?: { excludeCancelled?: boolean; includeDependencies?: boolean }) {
+      return listScheduleItems(undefined, projectIds, options)
 }
 
 export async function listDependenciesForProjectsAction(projectIds: string[]): Promise<ScheduleDependency[]> {
@@ -56,19 +57,19 @@ export async function updateScheduleItemAction(itemId: string, input: unknown) {
   })
 }
 
-export async function bulkUpdateScheduleItemsAction(input: unknown) {
-  return run(async () => {
-      const parsed = scheduleBulkUpdateSchema.parse(input)
-      const items = await bulkUpdateScheduleItems(parsed)
-      revalidatePath("/schedule")
-      return items
-  })
-}
-
 export async function deleteScheduleItemAction(itemId: string) {
   return run(async () => {
       await deleteScheduleItem(itemId)
       revalidatePath("/schedule")
       revalidatePath("/")
+  })
+}
+
+/** The superintendent applies a change order's pending schedule impact to its task. */
+export async function applyScheduleChangeOrderImpactAction(impactId: unknown) {
+  return run(async () => {
+    const applied = await applyScheduleChangeOrderImpact(z.string().uuid().parse(impactId))
+    revalidatePath(`/projects/${applied.projectId}/schedule`)
+    return applied
   })
 }

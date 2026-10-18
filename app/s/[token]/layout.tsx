@@ -7,7 +7,6 @@ import { buildSubPortalNav } from "@/components/portal/shell/portal-nav-items"
 import { resolvePortalGate } from "@/lib/portal/gate"
 import { loadSubPortalShellContext } from "@/lib/services/portal-access"
 import { isVendorPaymentSectionOpen } from "@/lib/services/payment-rail-setup"
-import { isPortalPayOnPoEnabled } from "@/lib/services/po-completions"
 import { SubPortalSetupRequired } from "./sub-portal-setup-required"
 
 interface SubPortalLayoutProps {
@@ -68,14 +67,13 @@ async function SubPortalLayoutContent({ children, params }: SubPortalLayoutProps
     notFound()
   }
 
-  const [context, showPurchaseOrders, showPayments] = await Promise.all([
+  const [context, showPayments] = await Promise.all([
     loadSubPortalShellContext({
       orgId: access.org_id,
       projectId: access.project_id,
       companyId: access.company_id,
       permissions: access.permissions,
     }),
-    isPortalPayOnPoEnabled(access),
     // Gated on this vendor's own access, not just the org's rail: a vendor
     // whose payment access was withdrawn should not be shown the tab at all.
     isVendorPaymentSectionOpen({ orgId: access.org_id, companyId: access.company_id }),
@@ -85,7 +83,9 @@ async function SubPortalLayoutContent({ children, params }: SubPortalLayoutProps
     permissions: access.permissions,
     counts: context.counts,
     hasProject: access.project_id !== null,
-    showPurchaseOrders,
+    // Issued purchase orders are the vendor's to see and answer, in a pay-on-PO
+    // community or not, on a home's link or the vendor-account link.
+    showPurchaseOrders: access.permissions.can_view_purchase_orders === true,
     showPayments,
   })
 

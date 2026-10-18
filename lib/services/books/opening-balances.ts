@@ -20,7 +20,9 @@ export type OpeningBalanceLineInput = {
     | "fixed_asset"
     | "deposit"
     | "equity"
-    | "other";
+    | "other"
+    | "land"
+    | "home_inventory";
   sourceEntityType?: string;
   sourceEntityId?: string;
   projectId?: string;
@@ -48,64 +50,77 @@ async function requireOpeningPermission(
   return context;
 }
 
-function validateLines(lines: OpeningBalanceLineInput[]) {
-  if (lines.length < 2)
-    throw new Error("Opening balances require at least two lines");
+/**
+ * Every problem with an opening batch, as a list of fixes: an opening that is
+ * missing evidence is refused with all of it named at once, never a first error
+ * that hides the rest, and never made up.
+ */
+function validateLines(lines: OpeningBalanceLineInput[], cutoverDate: string) {
+  const issues: string[] = [];
+  if (lines.length < 2) issues.push("Add at least two lines; an opening journal needs a debit and a credit.");
   let debitTotalCents = 0;
   let creditTotalCents = 0;
+  const requiredSubledger: Record<string, OpeningBalanceLineInput["subledgerType"]> = {
+    "1000": "bank", "1100": "ar", "1110": "ar", "2010": "ap", "2300": "deposit", "2000": "ap", "2100": "credit_card", "2400": "loan", "2500": "loan",
+    "1120": "land",
+  };
   for (const [index, line] of lines.entries()) {
-    if (
-      !Number.isSafeInteger(line.debitCents) ||
-      !Number.isSafeInteger(line.creditCents)
-    ) {
-      throw new Error(`Opening line ${index + 1} must use integer cents`);
+    const at = `Line ${index + 1}`;
+    if (!Number.isSafeInteger(line.debitCents) || !Number.isSafeInteger(line.creditCents)) {
+      issues.push(`${at}: enter amounts in whole cents.`);
+      continue;
     }
-    const valid =
-      (line.debitCents > 0 && line.creditCents === 0) ||
-      (line.creditCents > 0 && line.debitCents === 0);
-    if (!valid)
-      throw new Error(
-        `Opening line ${index + 1} requires exactly one positive debit or credit`,
-      );
-    const requiredSubledger: Record<
-      string,
-      OpeningBalanceLineInput["subledgerType"]
-    > = {
-      "1000": "bank",
-      "1100": "ar",
-      "1110": "ar",
-      "2010": "ap",
-      "2300": "deposit",
-      "2000": "ap",
-      "2100": "credit_card",
-      "2400": "loan",
-      "2500": "loan",
-    };
+    if (!((line.debitCents > 0 && line.creditCents === 0) || (line.creditCents > 0 && line.debitCents === 0)))
+      issues.push(`${at}: enter one positive debit or credit, not both.`);
     const expected = requiredSubledger[line.accountCode];
-    if (expected && line.subledgerType !== expected) {
-      throw new Error(
-        `Opening line ${index + 1} for account ${line.accountCode} requires subledgerType "${expected}"`,
-      );
+    if (expected && line.subledgerType !== expected)
+      issues.push(`${at}: account ${line.accountCode} is a ${expected} control account; mark the line as ${expected}.`);
+    if (expected && !line.sourceEntityType && !line.sourceEntityId && !line.companyId && !line.projectId &&
+      !line.details?.existing_entity_id && !line.details?.customer_id && !line.details?.cash_account_id && !line.details?.lot_id)
+      issues.push(`${at}: say which customer, vendor, account or document this control-account balance belongs to.`);
+    // An open invoice, bill or deposit comes over as the document it is: its own
+    // number, date and party. A missing due date stays missing.
+    if (["ar", "ap", "deposit"].includes(line.subledgerType ?? "") && !line.details?.existing_entity_id) {
+      const party = line.subledgerType === "ap" ? "vendor" : "customer";
+      if (!(typeof line.details?.document_number === "string" && line.details.document_number.trim()) && !line.sourceEntityId)
+        issues.push(`${at}: give the original ${line.subledgerType === "ap" ? "bill" : "invoice"} number.`);
+      const documentDate = line.details?.document_date;
+      if (typeof documentDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(documentDate)) issues.push(`${at}: give the original document date.`);
+      else if (documentDate > cutoverDate) issues.push(`${at}: the document is dated after cutover; it belongs after the opening.`);
+      if (line.subledgerType === "ap" ? !line.companyId : !line.details?.customer_id) issues.push(`${at}: name the ${party}.`);
+      if (line.subledgerType === "ap" && !line.projectId) issues.push(`${at}: name the job this bill belongs to.`);
     }
-    if (
-      expected &&
-      !line.sourceEntityType &&
-      !line.sourceEntityId &&
-      !line.companyId &&
-      !line.projectId &&
-      !line.details?.existing_entity_id &&
-      !line.details?.customer_id &&
-      !line.details?.cash_account_id
-    ) {
-      throw new Error(
-        `Opening line ${index + 1} for control account ${line.accountCode} requires source detail`,
-      );
+    // Land opens per lot and a spec home per job, so the lot's basis and the
+    // home's job cost agree with the books from cutover.
+    if (["1160", "1170"].includes(line.accountCode) && line.projectId && line.subledgerType !== "home_inventory")
+      issues.push(`${at}: a home's inventory on ${line.accountCode} opens as home_inventory on its job.`);
+    if (line.subledgerType === "land" && typeof line.details?.lot_id !== "string")
+      issues.push(`${at}: name the lot this land is.`);
+    if (line.subledgerType === "home_inventory") {
+      if (!["1160", "1170"].includes(line.accountCode)) issues.push(`${at}: home inventory opens on 1160 (under construction) or 1170 (completed).`);
+      if (!line.projectId) issues.push(`${at}: name the home's job.`);
+      const completedOn = line.details?.completed_on;
+      if (line.accountCode === "1170" && (typeof completedOn !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(completedOn) || completedOn > cutoverDate))
+        issues.push(`${at}: give the completed home its completion date, on or before cutover.`);
+    }
+    // A check or deposit the bank had not cleared at cutover is its own opening
+    // line, so the first statements can clear exactly that item.
+    if (line.details?.bank_opening_role !== undefined) {
+      const { bank_opening_role: role, reference, document_date: documentDate } = line.details;
+      if (role !== "outstanding_item" || (line.subledgerType !== "bank" && line.subledgerType !== "credit_card"))
+        issues.push(`${at}: only bank and card accounts carry outstanding items.`);
+      if (typeof reference !== "string" || reference.trim().length === 0)
+        issues.push(`${at}: give the outstanding check or deposit its reference.`);
+      if (typeof documentDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(documentDate) || documentDate > cutoverDate)
+        issues.push(`${at}: give the outstanding item its original date, on or before cutover.`);
     }
     debitTotalCents += line.debitCents;
     creditTotalCents += line.creditCents;
   }
   if (debitTotalCents !== creditTotalCents)
-    throw new Error("Opening balance batch does not balance");
+    issues.push(`The batch does not balance: debits ${debitTotalCents} cents, credits ${creditTotalCents} cents.`);
+  if (issues.length)
+    throw new Error(`The opening balances need ${issues.length === 1 ? "this fix" : `these ${issues.length} fixes`} before they can be saved:\n${issues.map((issue) => `• ${issue}`).join("\n")}`);
   return { debitTotalCents, creditTotalCents };
 }
 
@@ -116,17 +131,27 @@ export async function createOpeningBalanceBatch(input: {
   sourceContent: string;
   sourceMetadata?: Record<string, unknown>;
   lines: OpeningBalanceLineInput[];
+  /** The company this opening position belongs to; omitted, the primary company. */
+  legalEntityId?: string | null;
   orgId?: string;
 }) {
   const context = await requireOpeningPermission("books.manage", input.orgId);
-  const totals = validateLines(input.lines);
+  const totals = validateLines(input.lines, input.cutoverDate);
   const service = createServiceSupabaseClient();
+  const legalEntityId = input.legalEntityId ? z.string().uuid().parse(input.legalEntityId) : null;
+  if (legalEntityId) {
+    const { data: company, error: companyError } = await service.from("books_legal_entities").select("id")
+      .eq("org_id", context.orgId).eq("id", legalEntityId).eq("status", "active").maybeSingle();
+    if (companyError) throw new Error(`Failed to read the company: ${companyError.message}`);
+    if (!company) throw new Error("Company not found");
+  }
   const sourceContentHash = booksDigest(input.sourceContent);
   const digest = booksDigest({
     orgId: context.orgId,
     cutoverDate: input.cutoverDate,
     sourceContentHash,
     lines: input.lines,
+    ...(legalEntityId ? { legalEntityId } : {}),
   });
   const codes = Array.from(
     new Set(input.lines.map((line) => line.accountCode)),
@@ -166,6 +191,7 @@ export async function createOpeningBalanceBatch(input: {
       credit_total_cents: totals.creditTotalCents,
       validation_errors: [],
       digest,
+      legal_entity_id: legalEntityId,
       created_by: context.userId,
     })
     .select("id")

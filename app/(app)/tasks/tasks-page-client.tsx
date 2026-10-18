@@ -17,10 +17,14 @@ import { unwrapAction } from "@/lib/action-result"
 
 interface TasksPageClientProps {
   initialTasks: Task[]
-  projects: Array<{ id: string; name: string }>
+  /** Older tasks exist beyond the newest ones listed. */
+  tasksTruncated: boolean
+  /** What the org calls a project: Project, Home. */
+  projectNoun: string
   assignableResources: AssignableResource[]
   approvals: MyWorkApproval[]
-  initialProjectFilter?: string
+  initialTaskId?: string
+  initialProject?: { id: string; name: string }
 }
 
 /* The Tasks page is the personal cross-project hub: approvals waiting on me sit
@@ -54,20 +58,28 @@ function ApprovalsBand({ approvals }: { approvals: MyWorkApproval[] }) {
 
 export function TasksPageClient({
   initialTasks,
-  projects,
+  tasksTruncated,
+  projectNoun,
   assignableResources,
   approvals,
-  initialProjectFilter,
+  initialTaskId,
+  initialProject,
 }: TasksPageClientProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ApprovalsBand approvals={approvals} />
+      {tasksTruncated ? (
+        <p className="border-b px-4 py-2 text-[11px] text-muted-foreground">
+          Showing your {initialTasks.length} newest tasks. Older tasks are not listed here.
+        </p>
+      ) : null}
       <div className="min-h-0 flex-1">
         <TasksTab
+          initialTaskId={initialTaskId}
           tasks={initialTasks}
-          projects={projects}
+          projectNoun={projectNoun}
           assignableResources={assignableResources}
-          initialProjectFilter={initialProjectFilter}
+          initialProject={initialProject}
           onTaskCreate={(input) => createMyTaskAction(input).then(unwrapAction)}
           onTaskUpdate={(taskId, updates) => updateMyTaskAction(taskId, updates).then(unwrapAction)}
           onTaskDelete={(taskId) => deleteMyTaskAction(taskId).then(unwrapAction)}

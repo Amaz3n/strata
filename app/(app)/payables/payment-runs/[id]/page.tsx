@@ -64,7 +64,11 @@ async function PaymentRunDetailPageContent({ params }: { params: Promise<{ id: s
 
 export default function PaymentRunDetailPage(props: Parameters<typeof PaymentRunDetailPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout title="Payment run" breadcrumbs={[{ label: "Payables", href: "/payables" }, { label: "Payment run" }]}>
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <PaymentRunDetailPageContent {...props} />
     </Suspense>
   )

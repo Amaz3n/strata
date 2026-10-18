@@ -1,0 +1,11 @@
+1..10
+ok 1 - Draft workspace uses invoker privileges
+ok 2 - Draft read is stable
+ok 3 - Anonymous callers cannot read salary drafts
+ok 4 - Ordinary authenticated callers cannot read salary drafts
+ok 5 - Private service can read scoped drafts
+ok 6 - Service can read existing project scope
+ok 7 - Service can read scoped cost-code labels
+ok 8 - Null organization rejected
+ok 9 - Page larger than 50 rejected
+ok 10 - Partial cursor rejected

@@ -5,7 +5,7 @@ import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
+import { createFilesDownloadUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
 
 export interface FileShareLink {
   id: string
@@ -35,6 +35,7 @@ export interface FileShareLinkResolved extends FileShareLink {
     size_bytes?: number
   }
   download_url?: string
+  visit_id: string
 }
 
 export interface CreateFileShareLinkInput {
@@ -209,8 +210,14 @@ export async function revokeFileShareLink(
  */
 export async function getFileShareLinkByToken(
   token: string,
+  visitId?: string,
 ): Promise<FileShareLinkResolved | null> {
   const supabase = createServiceSupabaseClient()
+  const { data: claim, error: claimError } = await supabase.rpc("claim_file_share_visit", {
+    p_token: token, p_visit_id: visitId ?? null,
+  })
+  if (claimError) throw new Error(`Unable to claim shared file: ${claimError.message}`)
+  if (!claim) return null
 
   const { data, error } = await supabase
     .from("file_share_links")
@@ -226,22 +233,25 @@ export async function getFileShareLinkByToken(
   if (error || !data) return null
 
   const mapped = mapRow(data)
-  if (!mapped.is_active) return null
+  // The admitted visit stays usable after consuming the final allowed use.
+  if (mapped.revoked_at || (mapped.expires_at && Date.parse(mapped.expires_at) <= Date.now())) return null
 
   const fileRow = (data as any).files
   if (!fileRow) return null
 
   let downloadUrl: string | undefined
   try {
-    downloadUrl =
-      buildFilesPublicUrl(ensureOrgScopedPath(fileRow.org_id, fileRow.storage_path)) ??
-      undefined
+    downloadUrl = (await createFilesDownloadUrl({ supabase, orgId: fileRow.org_id,
+      path: ensureOrgScopedPath(fileRow.org_id, fileRow.storage_path), fileName: fileRow.file_name, expiresIn: 300,
+    })).downloadUrl
   } catch (err) {
     console.error("Failed to build download URL for share link", err)
   }
 
   return {
     ...mapped,
+    is_active: true,
+    visit_id: claim.visit_id,
     file: {
       id: fileRow.id,
       org_id: fileRow.org_id,
@@ -256,7 +266,7 @@ export async function getFileShareLinkByToken(
 }
 
 /**
- * Increment the use count and write a file_access_events entry.
+ * Write access telemetry; the admission RPC owns the use count.
  * Best-effort — failures are logged, not thrown.
  */
 export async function recordShareLinkView(params: {
@@ -267,22 +277,6 @@ export async function recordShareLinkView(params: {
   userAgent?: string | null
 }): Promise<void> {
   const supabase = createServiceSupabaseClient()
-
-  try {
-    const { data } = await supabase
-      .from("file_share_links")
-      .select("use_count")
-      .eq("id", params.linkId)
-      .maybeSingle()
-    if (data) {
-      await supabase
-        .from("file_share_links")
-        .update({ use_count: (data.use_count ?? 0) + 1 })
-        .eq("id", params.linkId)
-    }
-  } catch (err) {
-    console.error("Failed to increment share link use count", err)
-  }
 
   try {
     await supabase.from("file_access_events").insert({

@@ -1,4 +1,5 @@
 import { Suspense } from "react"
+import { connection } from "next/server"
 
 import { CommunityBoard } from "@/components/communities/community-board"
 import { CommunityBoardSkeleton } from "@/components/communities/community-board-skeleton"
@@ -14,22 +15,25 @@ interface CommunitiesPageProps {
 }
 
 async function CommunitiesData({ searchParams }: CommunitiesPageProps) {
-  const [params, ambient] = await Promise.all([searchParams, getAmbientDeskContext()])
-  const [portfolio, divisions, permissionResult] = await Promise.all([
+  await connection()
+  const contextPromise = Promise.all([searchParams, getAmbientDeskContext()])
+  const portfolioPromise = contextPromise.then(([params, ambient]) =>
     getCommunityPortfolio({ divisionId: ambient.divisionId, status: params.status }),
+  )
+  const [[params], portfolio, divisions, permissionResult] = await Promise.all([
+    contextPromise,
+    portfolioPromise,
     listDivisions().catch(() => []),
     getCurrentUserPermissions(),
   ])
   const permissions = permissionResult.permissions
+  const holds = (key: string) => permissions.some((permission) => [key, "org.admin", "*"].includes(permission))
   return (
     <CommunityBoard
       portfolio={portfolio}
       divisions={divisions}
-      canWrite={
-        permissions.includes("community.write") ||
-        permissions.includes("org.admin") ||
-        permissions.includes("*")
-      }
+      canWrite={holds("community.write")}
+      canReadLand={holds("land.read")}
       status={params.status}
     />
   )

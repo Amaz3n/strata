@@ -8,6 +8,9 @@ import type { ReportDefinition, ReportParamSpec, ReportParams } from "@/lib/repo
  */
 
 export const PERIOD_PRESETS = [
+  { value: "custom", label: "Custom dates" },
+  { value: "lastmonth", label: "Last month" },
+  { value: "fytd", label: "Fiscal year to date" },
   { value: "all", label: "All dates" },
   { value: "ytd", label: "Year to date" },
   { value: "qtd", label: "Quarter to date" },
@@ -28,9 +31,15 @@ export function todayIso() {
 
 /** Resolve a period preset to an inclusive date range. `null` means unbounded. */
 export function periodRange(preset: string, now = new Date()): { from: string | null; to: string | null } {
+  if (preset.startsWith("range:")) {
+    const [, from, to] = preset.split(":")
+    return { from, to }
+  }
   const year = now.getUTCFullYear()
   const today = iso(now)
   switch (preset) {
+    case "lastmonth":
+      return { from: iso(new Date(Date.UTC(year, now.getUTCMonth() - 1, 1))), to: iso(new Date(Date.UTC(year, now.getUTCMonth(), 0))) }
     case "ytd":
       return { from: `${year}-01-01`, to: today }
     case "qtd": {
@@ -48,6 +57,29 @@ export function periodRange(preset: string, now = new Date()): { from: string | 
   }
 }
 
+/**
+ * Year and quarter presets on the company's fiscal year, for Books reports: a
+ * company whose year starts in April means April by "year to date" and its prior
+ * April-to-March by "last year". `fytd` is the same as `ytd` here.
+ */
+export function fiscalPeriodRange(preset: string, fiscalStartMonth: number, now = new Date()): { from: string | null; to: string | null } {
+  const month = now.getUTCMonth() + 1
+  const startYear = now.getUTCFullYear() - (month < fiscalStartMonth ? 1 : 0)
+  switch (preset) {
+    case "ytd":
+    case "fytd":
+      return { from: iso(new Date(Date.UTC(startYear, fiscalStartMonth - 1, 1))), to: iso(now) }
+    case "lastyear":
+      return { from: iso(new Date(Date.UTC(startYear - 1, fiscalStartMonth - 1, 1))), to: iso(new Date(Date.UTC(startYear, fiscalStartMonth - 1, 0))) }
+    case "qtd": {
+      const monthsIntoQuarter = ((month - fiscalStartMonth + 12) % 12) % 3
+      return { from: iso(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsIntoQuarter, 1))), to: iso(now) }
+    }
+    default:
+      return periodRange(preset, now)
+  }
+}
+
 export function periodLabel(preset: string) {
   return PERIOD_PRESETS.find((option) => option.value === preset)?.label ?? "All dates"
 }
@@ -60,11 +92,13 @@ function defaultFor(spec: ReportParamSpec): string {
     case "date":
       return todayIso()
     case "period":
-      return "all"
+      return "ytd"
     case "select":
       return spec.options[0]?.value ?? ""
     case "toggle":
       return "0"
+    case "legal_entity":
+      return ""
   }
 }
 
@@ -78,6 +112,8 @@ function schemaFor(spec: ReportParamSpec) {
       return z.enum(spec.options.map((option) => option.value) as [string, ...string[]])
     case "toggle":
       return toggleParam
+    case "legal_entity":
+      return z.union([z.literal(""), z.string().uuid()])
   }
 }
 
@@ -96,6 +132,10 @@ export function parseReportParams(
     const value = Array.isArray(candidate) ? candidate[0] : candidate
     const parsed = value === undefined ? null : schemaFor(spec).safeParse(value)
     params[spec.key] = parsed?.success ? String(parsed.data) : defaultFor(spec)
+  }
+  for (const key of ["_layout", "_from", "_to", "_division", "_community", "_packet", "_visibility", "_favorite", "_name", "comparison", "dimension", "monthly"]) {
+    const value = raw[key]
+    if (typeof value === "string" && value.length <= 40000) params[key] = value
   }
   return params
 }
@@ -139,6 +179,9 @@ export function describeParams(definition: ReportDefinition, params: ReportParam
       }
       case "toggle":
         if (value === "1") parts.push(spec.label)
+        break
+      case "legal_entity":
+        // The company's name is the report's subtitle; an id says nothing here.
         break
     }
   }

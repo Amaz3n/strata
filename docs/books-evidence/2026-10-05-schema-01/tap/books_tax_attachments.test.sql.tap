@@ -1,0 +1,22 @@
+1..20
+ok 1 - internal document guard has no browser execute grant
+ok 2 - new attached workpapers require frozen identity
+ok 3 - stale size rejected under file lock
+ok 4 - cross-organization object path rejected
+ok 5 - prepare frozen scoped attachment
+ok 6 - original object checksum cannot be rewritten in place
+ok 7 - original object size cannot be rewritten in place
+ok 8 - referenced version checksum cannot change
+ok 9 - referenced version cannot be deleted
+ok 10 - referenced document cannot be deleted
+ok 11 - live file may advance to another version
+ok 12 - review retains original identity despite live version advance
+ok 13 - original attachment path retained after review
+ok 14 - saved attachment digest cannot be rewritten
+ok 15 - referenced file cannot move to another organization
+{"sub":"99300000-0000-4000-8000-000000000001","role":"authenticated"}
+ok 16 - ordinary authorized document deletion can consult internal tax guard
+ok 17 - unreferenced document actually deleted under browser role
+ok 18 - legacy file can freeze exact bytes without inventing a version identity
+ok 19 - advancing legacy file requires retaining original object metadata
+ok 20 - backfilled version is protected by frozen object path even when original version ID was null

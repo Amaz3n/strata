@@ -1,11 +1,11 @@
+import { z } from "zod"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { assessCronJob, type CronJobState } from "@/lib/ops/cron-health"
 import { ACCOUNTING_JOB_TYPES } from "@/lib/services/accounting-job-types"
 import { recordAudit } from "@/lib/services/audit"
-import { CRON_JOBS } from "@/lib/services/job-runs"
+import { CRON_JOBS, loadCronRunFacts } from "@/lib/services/job-runs"
 import { DRAWING_PIPELINE_JOB_TYPES } from "@/lib/services/drawings-pipeline"
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
-
-export type CronJobState = "healthy" | "failing" | "overdue" | "no-data"
 
 export interface CronJobHealth {
   name: string
@@ -78,79 +78,94 @@ export interface QboConnectionHealth {
   refreshFailureCount: number
 }
 
-// A job is overdue when its last success is older than twice its cadence
-// (plus slack so a slow run doesn't flap the badge).
+// The Ops page's window: twice the cadence, plus slack so a slow run doesn't
+// flap the badge. (The watchdog alerts on a wider one.)
 const OVERDUE_SLACK_MS = 5 * 60 * 1000
 
 export async function getCronHealth(): Promise<CronJobHealth[]> {
   const supabase = createServiceSupabaseClient()
-  const dayAgoIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  const nowMs = Date.now()
+  const dayAgoIso = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString()
 
   return Promise.all(
     CRON_JOBS.map(async (job) => {
-      const [lastRunRes, lastSuccessRes, failuresRes] = await Promise.all([
-        supabase
-          .from("job_runs")
-          .select("started_at, status, duration_ms, error")
-          .eq("job_name", job.name)
-          .order("started_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        supabase
-          .from("job_runs")
-          .select("started_at")
-          .eq("job_name", job.name)
-          .eq("status", "success")
-          .order("started_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
+      const windowMs = job.expectedIntervalMinutes * 2 * 60 * 1000 + OVERDUE_SLACK_MS
+      const [facts, failuresRes] = await Promise.all([
+        loadCronRunFacts(job.name, windowMs, nowMs),
         supabase
           .from("job_runs")
           .select("*", { count: "exact", head: true })
           .eq("job_name", job.name)
-          .eq("status", "failed")
+          .in("status", ["failed", "timed_out"])
           .gte("started_at", dayAgoIso),
       ])
+      if (failuresRes.error) throw failuresRes.error
 
-      const lastRun = lastRunRes.data
-      const lastSuccessAt = lastSuccessRes.data?.started_at ?? null
-      const failuresLast24h = failuresRes.count ?? 0
-
-      let state: CronJobState
-      if (!lastRun) {
-        state = "no-data"
-      } else {
-        const overdueThreshold =
-          job.expectedIntervalMinutes * 2 * 60 * 1000 + OVERDUE_SLACK_MS
-        const successAge = lastSuccessAt
-          ? Date.now() - new Date(lastSuccessAt).getTime()
-          : Number.POSITIVE_INFINITY
-        if (successAge > overdueThreshold) {
-          state = "overdue"
-        } else if (lastRun.status === "failed") {
-          state = "failing"
-        } else {
-          state = "healthy"
-        }
-      }
-
+      const { state } = assessCronJob(facts, windowMs, nowMs)
+      const finished = facts.lastFinished
       return {
         name: job.name,
         path: job.path,
         scheduleLabel: job.scheduleLabel,
         state,
-        lastRunAt: lastRun?.started_at ?? null,
-        lastRunStatus: lastRun?.status ?? null,
-        lastRunDurationMs: lastRun?.duration_ms ?? null,
-        lastSuccessAt,
-        lastError: lastRun?.status === "failed" ? (lastRun?.error ?? null) : null,
-        failuresLast24h,
+        lastRunAt: facts.inFlight?.startedAt ?? finished?.startedAt ?? null,
+        lastRunStatus: facts.inFlight ? "running" : (finished?.status ?? null),
+        lastRunDurationMs: facts.inFlight ? null : (finished?.durationMs ?? null),
+        lastSuccessAt: facts.lastSuccessAt,
+        lastError: finished?.status === "failed" || finished?.status === "timed_out" ? finished.error : null,
+        failuresLast24h: failuresRes.count ?? 0,
       }
     }),
   )
 }
 
 const FAILED_ITEMS_LIMIT = 50
+
+export interface OutboxOrgBacklog {
+  orgId: string
+  orgName: string | null
+  dueCount: number
+  scheduledCount: number
+  processingCount: number
+  failedLastDay: number
+  oldestDueAt: string | null
+}
+
+const ORG_BACKLOG_LIMIT = 10
+const orgBacklogRowsSchema = z.array(z.object({
+  org_id: z.string(),
+  org_name: z.string().nullable(),
+  due_count: z.coerce.number(),
+  scheduled_count: z.coerce.number(),
+  processing_count: z.coerce.number(),
+  failed_last_day: z.coerce.number(),
+  oldest_due_at: z.string().nullable(),
+  total_orgs: z.coerce.number(),
+}))
+
+/**
+ * Who the queue is working for. Claims rotate across organizations, so a
+ * tenant with a large backlog drains in turn with everyone else; this is the
+ * view that shows whether that is holding (every organization's oldest due job
+ * stays young) or one tenant's backlog is still waiting.
+ */
+export async function getOutboxBacklogByOrg(): Promise<{ orgs: OutboxOrgBacklog[]; totalOrgs: number }> {
+  const { data, error } = await createServiceSupabaseClient().rpc("outbox_backlog_by_org", { p_limit: ORG_BACKLOG_LIMIT })
+  if (error) throw new Error(`Unable to read the outbox backlog by organization: ${error.message}`)
+  const rows = orgBacklogRowsSchema.parse(data ?? [])
+  return {
+    totalOrgs: rows[0]?.total_orgs ?? 0,
+    orgs: rows.map((row) => ({
+      orgId: row.org_id,
+      orgName: row.org_name,
+      dueCount: row.due_count,
+      scheduledCount: row.scheduled_count,
+      processingCount: row.processing_count,
+      failedLastDay: row.failed_last_day,
+      oldestDueAt: row.oldest_due_at,
+    })),
+  }
+}
 
 export async function getOutboxHealth(): Promise<OutboxHealth> {
   const supabase = createServiceSupabaseClient()
@@ -559,9 +574,9 @@ export async function requeueDrawingsPipelineJob(id: number, actorId?: string): 
     actorId,
     action: "update",
     entityType: "outbox",
-    entityId: String(item.id),
-    before: { status: "failed", retry_count: item.retry_count, last_error: item.last_error },
-    after: { status: "pending", retry_count: 0, job_type: item.job_type },
+    // Outbox ids are integers; the audit entity id is a uuid, so the job is named in the record.
+    before: { job_id: item.id, status: "failed", retry_count: item.retry_count, last_error: item.last_error },
+    after: { job_id: item.id, status: "pending", retry_count: 0, job_type: item.job_type },
     source: "platform_ops",
   })
 
@@ -590,22 +605,23 @@ function summarizeDrawingsJobPayload(
 }
 
 // ============================================================================
-// Payment and accounting operational alerts
+// Operational alerts: payments, accounting, production pipelines
 // ============================================================================
 
-/** Event types that mean a human needs to look at money movement or its accounting handoff. */
-const PAYMENT_ALERT_EVENT_TYPES = [
+/** Event types that mean a human needs to look at money movement, its accounting handoff, or production work that stopped. */
+const OPERATIONS_ALERT_EVENT_TYPES = [
   "payment_submission_needs_recovery",
   "vendor_transfer_needs_attention",
   "payment_operations_alert",
   "accounting_sync_needs_review",
   "vendor_payout_destination_changed",
+  "operations_pipeline_alert",
 ] as const
 
-const PAYMENT_ALERT_LIMIT = 50
-const PAYMENT_ALERT_WINDOW_DAYS = 14
+const OPERATIONS_ALERT_LIMIT = 50
+const OPERATIONS_ALERT_WINDOW_DAYS = 14
 
-export interface PaymentOperationsAlert {
+export interface OperationsAlert {
   id: string
   eventType: string
   orgId: string
@@ -618,25 +634,28 @@ export interface PaymentOperationsAlert {
   billId: string | null
   /** First human-readable detail line found in the payload. */
   detail: string | null
+  /** For a production pipeline alert, which pipeline. */
+  pipeline: string | null
   createdAt: string
 }
 
 /**
- * Recent payment/accounting events that were emitted for a human and, until now, had no
- * surface reading them: recovery-needed submissions, vendor transfers stuck at
- * the provider, and platform alerts like a tripped return-loss ceiling.
+ * Recent payment, accounting and production-pipeline events that were emitted
+ * for a human and, until now, had no surface reading them: recovery-needed
+ * submissions, vendor transfers stuck at the provider, platform alerts like a
+ * tripped return-loss ceiling, and starts, imports or warranty work that stopped.
  * Read-only — every one deep-links to the payable it concerns where it can.
  */
-export async function listPaymentOperationsAlerts(): Promise<PaymentOperationsAlert[]> {
+export async function listOperationsAlerts(): Promise<OperationsAlert[]> {
   const supabase = createServiceSupabaseClient()
-  const windowStart = new Date(Date.now() - PAYMENT_ALERT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString()
+  const windowStart = new Date(Date.now() - OPERATIONS_ALERT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString()
   const { data, error } = await supabase
     .from("events")
     .select("id, org_id, event_type, entity_type, entity_id, payload, created_at, org:orgs(name)")
-    .in("event_type", [...PAYMENT_ALERT_EVENT_TYPES])
+    .in("event_type", [...OPERATIONS_ALERT_EVENT_TYPES])
     .gte("created_at", windowStart)
     .order("created_at", { ascending: false })
-    .limit(PAYMENT_ALERT_LIMIT)
+    .limit(OPERATIONS_ALERT_LIMIT)
   if (error) throw error
 
   return (data ?? []).map((row) => {
@@ -664,6 +683,7 @@ export async function listPaymentOperationsAlerts(): Promise<PaymentOperationsAl
       disbursementId: row.entity_type === "disbursement" ? asId(row.entity_id) : asId(payload.disbursement_id),
       billId: asId(payload.bill_id),
       detail,
+      pipeline: typeof payload.pipeline === "string" ? payload.pipeline : null,
       createdAt: row.created_at,
     }
   })

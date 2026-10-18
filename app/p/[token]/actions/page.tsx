@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { PortalActionsTab } from "@/components/portal/tabs/portal-actions-tab"
 import { loadClientPortalActionsPage } from "../load-portal"
@@ -8,6 +9,7 @@ interface Props {
 
 
 export default async function ClientPortalActionsPage({ params }: Props) {
+  await connection()
   const { token } = await params
   const { data, payApplications } = await loadClientPortalActionsPage(token)
 

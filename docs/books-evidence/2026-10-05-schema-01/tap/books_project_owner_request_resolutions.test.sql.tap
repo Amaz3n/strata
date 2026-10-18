@@ -1,0 +1,9 @@
+1..8
+ok 1 - project owner resolution stays private
+ok 2 - anonymous cannot resolve ownership
+ok 3 - authorized server can resolve scoped ownership requests
+ok 4 - resolution preserves invoker authority
+ok 5 - authenticated cannot cancel ownership directly
+ok 6 - anonymous cannot rewrite request coordination
+ok 7 - cancellation history uses RLS defense
+ok 8 - operational fences use RLS defense

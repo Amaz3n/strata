@@ -1,15 +1,32 @@
 import { z } from "zod"
 
-import { LOT_STATUSES } from "@/lib/land/lot-lifecycle"
+import { MIN_FIT_OVERRIDE_REASON_LENGTH } from "@/lib/land/lot-fit"
+import { LOT_STATUSES, MIN_DELIVERY_EXCEPTION_REASON_LENGTH } from "@/lib/land/lot-lifecycle"
 
 export const lotStatusValueSchema = z.enum(LOT_STATUSES)
 export const lotSwingSchema = z.enum(["left", "right", "either"])
 
-const lotDimensionsSchema = z.object({
+export const lotDeliveryExceptionSchema = z.object({
+  reason: z.string().trim().min(MIN_DELIVERY_EXCEPTION_REASON_LENGTH, "Say why a house may start on an undelivered lot.").max(1000),
+})
+
+const setbackFeet = z.number().min(0).max(1000)
+
+/** Setbacks in feet, the same shape for a community's defaults and a lot's own. */
+export const setbacksSchema = z.object({
+  frontSetbackFt: setbackFeet.optional(),
+  rearSetbackFt: setbackFeet.optional(),
+  sideSetbackFt: setbackFeet.optional(),
+  cornerSideSetbackFt: setbackFeet.optional(),
+})
+
+/** Form shape. `lots.dimensions` is stored snake_case; `lib/land/lot-dimensions.ts` owns the translation. */
+const lotDimensionsSchema = setbacksSchema.extend({
   widthFt: z.number().positive().optional(),
   depthFt: z.number().positive().optional(),
   acreage: z.number().positive().optional(),
   irregular: z.boolean().optional(),
+  corner: z.boolean().optional(),
 })
 
 export const lotCreateSchema = z.object({
@@ -70,5 +87,28 @@ export const lotStatusSchema = z.object({
   force: z.boolean().default(false),
 })
 
+/** The handing chosen for the pinned home; the lot's own swing (what it takes) is a land edit. */
+export const lotPlanAssignmentSchema = z.object({
+  versionId: z.string().uuid(),
+  elevationId: z.string().uuid(),
+  swing: z.enum(["left", "right"]).optional(),
+})
+
+export const lotFitOverrideSchema = z.object({
+  lotId: z.string().uuid(),
+  housePlanId: z.string().uuid(),
+  elevationId: z.string().uuid().nullable(),
+  swing: z.enum(["left", "right"]).nullable(),
+  reason: z.string().trim().min(MIN_FIT_OVERRIDE_REASON_LENGTH, "Say why this home may stand on a lot it does not fit.").max(1000),
+  evidenceFileId: z.string().uuid({ message: "Attach the evidence — a plot plan, a variance or an architectural approval." }),
+})
+
+export const lotAllowedElevationsSchema = z.object({
+  elevationIds: z.array(z.string().uuid()).max(500),
+})
+
+export type LotPlanAssignmentInput = z.infer<typeof lotPlanAssignmentSchema>
 export type LotCreateInput = z.infer<typeof lotCreateSchema>
 export type LotUpdateInput = z.infer<typeof lotUpdateSchema>
+export type LotFitOverrideInput = z.infer<typeof lotFitOverrideSchema>
+export type SetbacksInput = z.infer<typeof setbacksSchema>

@@ -77,8 +77,10 @@ test("clearing schedules must support every cent and ledger changes invalidate t
   assert.equal(clearingSupportMatches(balance, [evidence], "2026-01-31"), true);
   assert.equal(clearingSupportMatches(balance, [{ ...evidence, amountCents: 9999 }], "2026-01-31"), false);
   assert.equal(clearingSupportMatches(balance, [{ ...evidence, expectedSettlementDate: "2026-01-30" }], "2026-01-31"), false);
-  const rows = [{ id: "line", entry_id: "entry", account_id: "account", debit_cents: 0, credit_cents: 10000 }];
-  assert.notEqual(clearingLedgerDigest(rows), clearingLedgerDigest([...rows, { ...rows[0], id: "new", credit_cents: 100 }]));
+  const positions = [{ code: "2200", debitCents: 0, creditCents: 10000, lineCount: 1, linesDigest: "a" }];
+  assert.notEqual(clearingLedgerDigest(positions), clearingLedgerDigest([{ ...positions[0], creditCents: 10100, lineCount: 2, linesDigest: "b" }]));
+  // A line replaced by another of the same amount still changes the fingerprint.
+  assert.notEqual(clearingLedgerDigest(positions), clearingLedgerDigest([{ ...positions[0], linesDigest: "c" }]));
 });
 const { hashableFactPayload } = require("../lib/services/books/fact-drafts");
 test("native funding recoding changes economic identity for payments, fees, expenses and reversals", () => {
@@ -92,7 +94,7 @@ test("tax bases separate exempt and unknown lines, allocate discounts and exclud
   assert.deepEqual(invoiceTaxBases([{ ...base, metadata: { taxable: true } }, { ...base, metadata: { taxable: false } }], 2000), { taxableSalesCents: 9000, exemptSalesCents: 9000, unclassifiedSalesCents: 0 });
   assert.deepEqual(invoiceTaxBases([{ ...base, metadata: {} }], 0), { taxableSalesCents: 0, exemptSalesCents: 0, unclassifiedSalesCents: 10000 });
 });
-const { inventoryCostAccount, allocateInventoryCost } = require("../lib/services/books/inventory-rules");
+const { inventoryCostAccount, isClosedHomeCost } = require("../lib/services/books/inventory-rules");
 test("owned inventory policy keeps contract costs and pre-adoption history intact", () => {
   const policy = { enabled: true, effectiveOn: "2026-03-01", completedOn: "2026-05-01", soldOn: "2026-06-01" };
   assert.equal(inventoryCostAccount(undefined, "2026-04-01", "5030"), "5030");
@@ -100,7 +102,17 @@ test("owned inventory policy keeps contract costs and pre-adoption history intac
   assert.equal(inventoryCostAccount(policy, "2026-04-01", "5030"), "1160");
   assert.equal(inventoryCostAccount(policy, "2026-05-10", "5030"), "1170");
   assert.equal(inventoryCostAccount(policy, "2026-06-10", "5030"), "5030");
-  assert.deepEqual(allocateInventoryCost(100, [{id:"b",weight:1},{id:"a",weight:1},{id:"c",weight:1}]), [{id:"a",amountCents:34},{id:"b",amountCents:33},{id:"c",amountCents:33}]);
+  // A cost on or after the sale is cost of the sold home, labeled as such.
+  assert.equal(isClosedHomeCost(policy, "2026-05-31"), false);
+  assert.equal(isClosedHomeCost(policy, "2026-06-01"), true);
+  assert.equal(isClosedHomeCost({ ...policy, soldOn: null }, "2026-06-10"), false);
+});
+test("a sales commission on an owned home is a period expense at every stage, never inventory", () => {
+  const policy = { enabled: true, effectiveOn: "2026-03-01", completedOn: "2026-05-01", soldOn: "2026-06-01" };
+  for (const date of ["2026-04-01", "2026-05-10", "2026-06-10"]) {
+    assert.equal(inventoryCostAccount(policy, date, "6100", "expense"), "6100");
+    assert.equal(isClosedHomeCost(policy, date, "expense"), false);
+  }
 });
 const { preserveLegacyDimensionPayload } = require('../lib/services/books/fact-drafts');
 test('dimension rollout preserves unchanged historical facts and enriches the next economic revision',()=>{
@@ -111,4 +123,33 @@ test('dimension rollout preserves unchanged historical facts and enriches the ne
  assert.deepEqual(preserveLegacyDimensionPayload('invoice','2026-02-01',enriched,previous),enriched);
  const revised={...enriched,total_cents:12000};
  assert.deepEqual(preserveLegacyDimensionPayload('invoice','2026-01-01',revised,previous),revised);
+});
+
+const { forLegalEntity, consolidated } = require("../lib/services/books/statements");
+test("each company's books balance on their own, and consolidation removes what the companies owe each other", async () => {
+  const build = account;
+  const accounts = [build("cash", "1000", "asset", "debit"), build("landbank", "1010", "asset", "debit"), build("due-from", "1180", "asset", "debit"), build("due-to", "2180", "liability", "credit"), build("equity", "3000", "equity", "credit")];
+  const owned = (entryId, accountId, debit, credit, legalEntityId, dimensions = {}) => ({ ...line(entryId, accountId, debit, credit), legal_entity_id: legalEntityId, dimensions });
+  const leg = { intercompany: true };
+  const snapshot = {
+    accounts,
+    entries: [entry("capital", "2026-01-01"), entry("transfer", "2026-02-01")],
+    lines: [
+      owned("capital", "cash", 100000, 0, "builder"), owned("capital", "equity", 0, 100000, "builder"),
+      // The builder funds the land company's bank account: each company balances through the due-from / due-to pair.
+      owned("transfer", "landbank", 30000, 0, "land"), owned("transfer", "due-to", 0, 30000, "land", leg),
+      owned("transfer", "cash", 0, 30000, "builder"), owned("transfer", "due-from", 30000, 0, "builder", leg),
+    ],
+  };
+
+  const builder = await buildBalanceSheet("org", "2026-12-31", forLegalEntity(snapshot, "builder"));
+  const land = await buildBalanceSheet("org", "2026-12-31", forLegalEntity(snapshot, "land"));
+  assert.deepEqual([builder.differenceCents, land.differenceCents], [0, 0]);
+  assert.equal(builder.assetCents, 100000);
+  assert.equal(land.assetCents, 30000);
+
+  const group = await buildBalanceSheet("org", "2026-12-31", consolidated(snapshot, { entries: [], lines: [] }));
+  assert.equal(group.differenceCents, 0);
+  assert.equal(group.assetCents, 100000);
+  assert.equal(group.liabilityCents ?? 0, 0);
 });

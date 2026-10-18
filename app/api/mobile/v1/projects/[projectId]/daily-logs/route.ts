@@ -1,5 +1,6 @@
-import { mobileDataResponse, mobileErrorResponse, mobilePageResponse, mobileRequestId } from "@/lib/mobile/api"
+import { mobileErrorResponse, mobilePageResponse, mobileRequestId } from "@/lib/mobile/api"
 import { requireMobileOrg } from "@/lib/mobile/auth"
+import { idempotentResponse, runIdempotent } from "@/lib/mobile/idempotency"
 import { createMobileDailyLog, listMobileDailyLogs } from "@/lib/mobile/daily-logs"
 
 
@@ -20,7 +21,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     const context = await requireMobileOrg(request)
     const { projectId } = await params
     const body = await request.json().catch(() => null)
-    return mobileDataResponse(await createMobileDailyLog(context, projectId, body), requestId, { status: 201 })
+    return idempotentResponse(await runIdempotent(context, request, body, () => createMobileDailyLog(context, projectId, body)), requestId, 201)
   } catch (error) {
     return mobileErrorResponse(error, requestId)
   }

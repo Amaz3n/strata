@@ -249,7 +249,7 @@ export async function createEnvelopeSigningRequests(
 
   const { data: recipients, error: recipientsError } = await supabase
     .from("envelope_recipients")
-    .select("id, contact_id, email, signer_role, sequence, required, role")
+    .select("id, contact_id, email, signer_role, sequence, required, role, metadata")
     .eq("org_id", resolvedOrgId)
     .eq("envelope_id", envelope.id)
     .eq("role", "signer")
@@ -299,6 +299,7 @@ export async function createEnvelopeSigningRequests(
       document_id: envelope.document_id,
       revision: envelope.document_revision,
       token_hash: tokenHash,
+      access_code_hash: recipient.metadata?.access_code_hash ?? null,
       status: "draft",
       recipient_contact_id: recipient.contact_id ?? null,
       sent_to_email: recipient.email ?? null,

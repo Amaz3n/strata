@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 export const LOT_STATUSES = [
   "controlled",
   "owned",
@@ -44,6 +46,13 @@ export function isLotStatus(value: string | undefined | null): value is LotStatu
 export const ATTACHED_LOT_STATUS: LotStatus = "started"
 export const DETACHED_LOT_STATUS: LotStatus = "assigned"
 
+/**
+ * States a lot only holds while no home stands on it. An owned lot may carry a
+ * home: a presale on land not yet developed keeps the land status, as the
+ * database's lots_status_home_guard does.
+ */
+const HOMELESS_LOT_STATUSES: readonly LotStatus[] = ["controlled", "developed"]
+
 const STATUS_INDEX = new Map<LotStatus, number>(LOT_STATUSES.map((status, index) => [status, index]))
 
 export function assertLotStatusTransition({
@@ -60,6 +69,12 @@ export function assertLotStatusTransition({
   if (from === to) return
   if (to === "started" && !hasProject) {
     throw new Error("A project must be attached before a lot can be marked started.")
+  }
+  if (to === "closed" && !hasProject) {
+    throw new Error("A lot cannot be closed without a home; attach the home that settled first.")
+  }
+  if (hasProject && HOMELESS_LOT_STATUSES.includes(to)) {
+    throw new Error(`A lot with a home attached cannot be set to ${to}; detach the home first.`)
   }
   if ((from === "started" || from === "closed") && !force) {
     throw new Error(`Moving a lot out of ${from} requires an explicit force confirmation.`)
@@ -92,4 +107,69 @@ export function assertLotAttachTransition({ from, force = false }: { from: LotSt
  */
 export function assertLotDetachTransition({ from, force = false }: { from: LotStatus; force?: boolean }) {
   assertLotStatusTransition({ from, to: DETACHED_LOT_STATUS, hasProject: false, force })
+}
+
+/**
+ * Sales state is not land delivery. A hold on an owned lot advances it to
+ * `assigned` the moment a buyer is attached, but the dirt is still undeveloped.
+ * `lots.delivered_at` is the land fact (only the database writes it, when a lot
+ * is developed), and a vertical start needs it — or an active
+ * `lot_delivery_exceptions` row, recorded by a holder of `lot.delivery_override`,
+ * which is the only way a house starts on a lot that has not been delivered.
+ */
+export const MIN_DELIVERY_EXCEPTION_REASON_LENGTH = 10
+
+/** Embed a lot's delivery exceptions (live and revoked) into a `lots` select. */
+export const LOT_DELIVERY_EXCEPTIONS_EMBED =
+  "delivery_exceptions:lot_delivery_exceptions(id,reason,approved_by,approved_at,revoked_at)"
+
+const deliveryExceptionRowSchema = z.object({
+  id: z.string(),
+  reason: z.string().trim().min(MIN_DELIVERY_EXCEPTION_REASON_LENGTH),
+  approved_by: z.string(),
+  approved_at: z.string(),
+  revoked_at: z.string().nullable(),
+})
+
+export interface LotDeliveryException {
+  id: string
+  reason: string
+  approvedBy: string
+  approvedAt: string
+}
+
+/** The lot's live delivery exception from its embedded rows, or null. */
+export function activeDeliveryException(rows: unknown): LotDeliveryException | null {
+  if (!Array.isArray(rows)) return null
+  for (const row of rows) {
+    const parsed = deliveryExceptionRowSchema.safeParse(row)
+    if (parsed.success && parsed.data.revoked_at === null) {
+      return { id: parsed.data.id, reason: parsed.data.reason, approvedBy: parsed.data.approved_by, approvedAt: parsed.data.approved_at }
+    }
+  }
+  return null
+}
+
+export const LOT_DELIVERY_REFUSAL =
+  "This lot has not been delivered by land development. Record a delivery exception with a reason to build on it."
+
+/** Why a lot cannot take a house yet because its land is undelivered, or null when it can. */
+export function lotDeliveryRefusal(lot: { deliveredAt: string | null; deliveryExceptions: unknown }): string | null {
+  if (lot.deliveredAt || activeDeliveryException(lot.deliveryExceptions)) return null
+  return LOT_DELIVERY_REFUSAL
+}
+
+/** Why a lot cannot take a vertical start, or null when it can. */
+export function verticalStartRefusal(lot: {
+  status: string
+  deliveredAt: string | null
+  deliveryExceptions: unknown
+}): string | null {
+  // Delivering land is what makes a lot developed, so an owned lot can only
+  // start under an authorized delivery exception.
+  const excepted = lot.status === "owned" && activeDeliveryException(lot.deliveryExceptions) !== null
+  if (!["developed", "assigned"].includes(lot.status) && !excepted) {
+    return "Only developed or assigned lots, or owned lots with a delivery exception, can enter the start pipeline."
+  }
+  return lotDeliveryRefusal(lot)
 }

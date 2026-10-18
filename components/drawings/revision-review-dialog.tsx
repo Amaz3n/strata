@@ -59,6 +59,7 @@ import {
 import type { DraftRevisionSheetPreview } from "@/app/(app)/drawings/types"
 import type {
   RevisionDiff,
+  RevisionDiffSheet,
 } from "@/lib/services/drawings"
 import type {
   RevisionDistributionRecipient,
@@ -70,6 +71,7 @@ import { IssuanceSheetReview } from "@/components/drawings/issuance-sheet-review
 import { unwrapAction } from "@/lib/action-result"
 
 interface RevisionReviewDialogProps {
+  preconstruction?: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
   revisionId: string
@@ -79,7 +81,7 @@ interface RevisionReviewDialogProps {
   onDistribute?: (revisionId: string) => void
 }
 
-type SheetEdit = { sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline }
+type SheetEdit = { version_id?: string; identity_reviewed?: boolean; sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline }
 
 const ISSUANCE_TYPE_ORDER: DrawingIssuanceType[] = [
   "revision",
@@ -95,6 +97,7 @@ const ISSUANCE_TYPE_ORDER: DrawingIssuanceType[] = [
 ]
 
 export function RevisionReviewDialog({
+  preconstruction = false,
   open,
   onOpenChange,
   revisionId,
@@ -117,16 +120,14 @@ export function RevisionReviewDialog({
   const [retryNonce, setRetryNonce] = useState(0)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [reviewTab, setReviewTab] = useState<"sheets" | "details">("sheets")
-  const [previewRetries, setPreviewRetries] = useState(0)
-  // Pages already split out of the draft, shown live while processing runs.
+  // Details are seeded once per revision so polling never overwrites edits.
   const initializedRevision = useRef<string | null>(null)
   // Sheet numbers deleted from this register before — annotates "new" sheets.
   const [deletedSheetNumbers, setDeletedSheetNumbers] = useState<Set<string>>(
     () => new Set(),
   )
 
-  const loadDiff = useCallback(async (quiet = false) => {
-    if (!quiet) setLoading(true)
+  const loadDiff = useCallback(async () => {
     try {
       const data = await getRevisionDiffAction(revisionId)
       setDiff(data)
@@ -153,77 +154,56 @@ export function RevisionReviewDialog({
     } catch (err) {
       console.error("Failed to load revision diff:", err)
       toast.error("Failed to load revision for review")
+      throw err
     } finally {
       setLoading(false)
     }
   }, [revisionId])
 
-  // Thumbnails/tiles are generated just after the draft becomes ready, so the
-  // first diff load can have missing previews. Refresh a few times to fill them.
-  useEffect(() => {
-    if (!open || !diff || processing || diff.revision.processing_stage === "rendering_pages" || previewRetries >= 6) return
-    const pending = [...diff.updated, ...diff.added].some(
-      (s) => !s.draft.thumbnail_url,
-    )
-    if (!pending) return
-    const timer = setTimeout(() => {
-      setPreviewRetries((n) => n + 1)
-      void loadDiff()
-    }, 4000)
-    return () => clearTimeout(timer)
-  }, [open, diff, processing, previewRetries, loadDiff])
-
-  // Poll until the draft finishes processing, then load the diff.
+  // One non-overlapping poll owns status and diff requests, including preview updates.
   useEffect(() => {
     if (!open) return
-    setPreviewRetries(0)
+    setFailed(null)
+    setEdits({})
+    setDecisions({})
+    setReviewTab("sheets")
+    initializedRevision.current = null
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
-
+    let failures = 0
+    let previousProgress = ""
+    let unchangedTicks = 0
+    const schedule = (ms: number) => { if (!cancelled) timer = setTimeout(tick, ms) }
     const tick = async () => {
+      if (document.hidden) { schedule(5000); return }
       try {
         const status = await getDraftRevisionStatusAction(revisionId)
         if (cancelled) return
-        if (!status) {
-          setFailed("This revision no longer exists.")
-          setProcessing(false)
-          setLoading(false)
+        if (!status || ["published", "discarded", "cancelled"].includes(status.status)) {
+          setProcessing(false); setLoading(false)
+          if (!status) setFailed("This revision no longer exists.")
           return
         }
-        if (
-          status.processing_stage === "failed" ||
-          status.processing_stage === "worker_unavailable"
-        ) {
-          setFailed(status.error_message || "Processing failed.")
-          setProcessing(false)
-          setLoading(false)
-          return
+        if (["failed", "worker_unavailable"].includes(status.processing_stage ?? "")) {
+          setFailed(status.error_message || "Processing failed."); setProcessing(false); setLoading(false); return
         }
-        if (status.status === "processing") {
-          setProcessing(true)
-          // Review available pages immediately; preserve local edits across updates.
-          await loadDiff(true)
-          timer = setTimeout(tick, 2000)
-          return
-        }
-        // draft ready
-        setProcessing(false)
-        await loadDiff(true)
-        if (status.status === "draft" && status.processing_stage === "rendering_pages") {
-          timer = setTimeout(tick, 2000)
-        }
+        const progress = `${status.processed_pages}:${status.total_pages}:${status.updated_at}:${status.processing_stage}`
+        unchangedTicks = progress === previousProgress ? unchangedTicks + 1 : 0
+        if (progress !== previousProgress || unchangedTicks % 3 === 0) await loadDiff()
+        if (cancelled) return
+        previousProgress = progress
+        failures = 0
+        setProcessing(status.status === "processing")
+        setLoading(false)
+        if (status.status === "processing") schedule(Math.min(15000, 2000 + unchangedTicks * 1500))
       } catch (err) {
         if (cancelled) return
         console.error("Failed to poll draft status:", err)
-        timer = setTimeout(tick, 3000)
+        schedule(Math.min(30000, 3000 * 2 ** Math.min(failures++, 3)))
       }
     }
-
     void tick()
-    return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-    }
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
   }, [open, revisionId, loadDiff, retryNonce])
 
   const reviewSheets = diff ? [...diff.updated, ...diff.added] : []
@@ -233,6 +213,12 @@ export function RevisionReviewDialog({
 
   const setEdit = (sheetId: string, patch: SheetEdit) =>
     setEdits((prev) => ({ ...prev, [sheetId]: { ...prev[sheetId], ...patch } }))
+
+  // Typing the number for an unverified page is the reviewer's confirmation of
+  // its identity; the publish transaction requires it against this version.
+  const editSheet = (sheet: RevisionDiffSheet, patch: SheetEdit) => setEdit(sheet.sheet_id,
+    patch.sheet_number === undefined || sheet.verificationStatus === "verified" ? patch
+      : { ...patch, version_id: sheet.draft.version_id, identity_reviewed: Boolean(patch.sheet_number.trim()) })
 
   const accepted = (sheetId: string) => decisions[sheetId] ?? true
   const toggleAccept = (sheetId: string, value: boolean) =>
@@ -244,11 +230,12 @@ export function RevisionReviewDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diff, decisions])
 
-  const unresolvedNumberCount = diff
-    ? [...diff.updated, ...diff.added].filter((sheet) =>
-        decisions[sheet.sheet_id] !== false && sheet.needs_number_review &&
-        !edits[sheet.sheet_id]?.sheet_number?.trim()).length
-    : 0
+  // Publishing needs every accepted page rendered and its identity verified or
+  // confirmed by the reviewer — the same rule the publish transaction enforces.
+  const awaitingRender = reviewSheets.filter(sheet => accepted(sheet.sheet_id) && !sheet.rendered).length
+  const unresolvedNumberCount = reviewSheets.filter(sheet => accepted(sheet.sheet_id) && sheet.rendered &&
+    sheet.verificationStatus !== "verified" && !edits[sheet.sheet_id]?.identity_reviewed).length
+  const publicationReady = Boolean(diff?.revision.manifest_complete) && awaitingRender === 0 && unresolvedNumberCount === 0
 
   const conflictingNumbers = useMemo(() => diff
     ? duplicateIssuanceNumbers([...diff.updated, ...diff.added], decisions, edits)
@@ -256,8 +243,8 @@ export function RevisionReviewDialog({
 
   const handlePublish = async () => {
     if (!diff) return
-    if (unresolvedNumberCount) {
-      toast.error("Confirm the sheet numbers marked Needs review before publishing.")
+    if (!publicationReady) {
+      toast.error(awaitingRender ? "Some accepted sheets are still rendering." : "Confirm the sheet numbers marked Needs review before publishing.")
       return
     }
     if (conflictingNumbers.length) {
@@ -275,8 +262,9 @@ export function RevisionReviewDialog({
         notes: notes.trim() || undefined,
         decisions,
         sheetEdits: edits,
+        expectedRevisionUpdatedAt: diff.revision.updated_at,
       }))
-      toast.success("Issuance published")
+      toast.success(preconstruction ? "Plans ready for estimating" : "Issuance published")
       onPublished()
       onOpenChange(false)
       onDistribute?.(revisionId)
@@ -333,9 +321,11 @@ export function RevisionReviewDialog({
             <div className="mb-1 hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
               <Check className="h-3.5 w-3.5" /> Upload received
             </div>
-            <DialogTitle className="text-xl tracking-tight">{processing && !hasSheets ? "Preparing your drawings" : "Review issuance"}</DialogTitle>
+            <DialogTitle className="text-xl tracking-tight">{processing && !hasSheets ? "Preparing your drawings" : preconstruction ? "Review plans for estimating" : "Review issuance"}</DialogTitle>
             <DialogDescription className="sr-only sm:not-sr-only">
-              {processing || rendering ? "Review available previews now. Full-resolution drawings are processing in the background." : "Review the sheets, confirm the details, then publish to your register."}
+              {processing || rendering ? "Review available previews now. Full-resolution drawings are processing in the background."
+                : preconstruction ? "Confirm sheet names and review changed pages before using these plans for takeoff. Making them ready does not send them to anyone."
+                : "Review the sheets, confirm the details, then publish to your register."}
             </DialogDescription>
           </DialogHeader>
 
@@ -362,8 +352,12 @@ export function RevisionReviewDialog({
                 <p className="text-xs text-muted-foreground">{diff.updated.length} updated · {diff.added.length} new{diff.unchanged.length > 0 ? ` · ${diff.unchanged.length} kept as-is` : ""}</p>
               </div>
               <div className={reviewTab === "sheets" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-                <IssuanceSheetReview sheets={[...diff.updated, ...diff.added]} edits={edits} decisions={decisions}
-                  deletedSheetNumbers={deletedSheetNumbers} onEdit={setEdit} onAccept={toggleAccept} disabled={publishing} />
+                <IssuanceSheetReview sheets={reviewSheets} edits={edits} decisions={decisions}
+                  deletedSheetNumbers={deletedSheetNumbers} disabled={publishing} onAccept={toggleAccept}
+                  onEdit={(sheetId, patch) => {
+                    const sheet = reviewSheets.find((item) => item.sheet_id === sheetId)
+                    if (sheet) editSheet(sheet, patch)
+                  }} />
               </div>
               {reviewTab === "details" && (
                 <fieldset disabled={publishing} className="min-h-0 flex-1 overflow-y-auto p-6 sm:p-10">
@@ -433,7 +427,7 @@ export function RevisionReviewDialog({
                 </fieldset>
               )}
             </>
-          ) : <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">Unable to load this issuance.<Button variant="outline" onClick={() => void loadDiff()}>Try again</Button></div>}
+          ) : <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">Unable to load this issuance.<Button variant="outline" onClick={() => void loadDiff().catch(() => undefined)}>Try again</Button></div>}
 
           {processing && !failed && <DialogFooter className="shrink-0 border-t px-6 py-4 sm:justify-between">
             <p className="text-xs text-muted-foreground">Your live drawings stay unchanged until you publish.</p>
@@ -442,9 +436,14 @@ export function RevisionReviewDialog({
 
           {diff && !processing && !failed && (
             <DialogFooter className="shrink-0 flex-row flex-wrap items-center justify-between gap-2 border-t px-6 py-4 sm:justify-between">
+              {awaitingRender > 0 && (
+                <p role="status" className="w-full text-sm text-muted-foreground">
+                  {awaitingRender} accepted sheets are still rendering.
+                </p>
+              )}
               {unresolvedNumberCount > 0 && (
                 <p role="alert" className="w-full text-sm text-muted-foreground">
-                  {unresolvedNumberCount} sheet numbers need review. Use the Needs review filter to confirm them.
+                  {unresolvedNumberCount} sheet numbers are still being read or need review. Enter the number shown on each sheet to confirm it.
                 </p>
               )}
               {conflictingNumbers.length > 0 && (
@@ -460,13 +459,13 @@ export function RevisionReviewDialog({
               >
                 Discard draft
               </Button>
-              <Button onClick={handlePublish} disabled={publishing || acceptedCount === 0 || conflictingNumbers.length > 0 || unresolvedNumberCount > 0}>
+              <Button onClick={handlePublish} disabled={publishing || acceptedCount === 0 || conflictingNumbers.length > 0 || !publicationReady}>
                 {publishing ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Publishing…
                   </>
                 ) : (
-                  `Publish ${acceptedCount} sheet${acceptedCount === 1 ? "" : "s"}`
+                  preconstruction ? `Use ${acceptedCount} sheet${acceptedCount === 1 ? "" : "s"} for estimating` : `Publish ${acceptedCount} sheet${acceptedCount === 1 ? "" : "s"}`
                 )}
               </Button>
             </DialogFooter>
@@ -563,7 +562,7 @@ export function DistributeRevisionDialog({
       const data = unwrapAction(await listRevisionRecipientsAction(revisionId))
       setRecipients(data.recipients)
       setLastDistribution(data.last_distribution)
-      setSelected(new Set(data.recipients.map((r) => r.token_id + " " + r.email)))
+      setSelected(new Set(data.recipients.map((r) => r.token_id + "\0" + r.email)))
     } catch (err) {
       console.error("Failed to load distribution recipients:", err)
       setLoadError(err instanceof Error ? err.message : "Failed to load recipients")
@@ -578,7 +577,7 @@ export function DistributeRevisionDialog({
     void loadRecipients()
   }, [open, loadRecipients])
 
-  const keyOf = (r: RevisionDistributionRecipient) => r.token_id + " " + r.email
+  const keyOf = (r: RevisionDistributionRecipient) => r.token_id + "\0" + r.email
   const toggle = (recipient: RevisionDistributionRecipient, value: boolean) => {
     setSelected((prev) => {
       const next = new Set(prev)

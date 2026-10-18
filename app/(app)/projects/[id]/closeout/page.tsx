@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -8,15 +9,15 @@ import { GmpSavingsSettlementPanel } from "@/components/closeout/gmp-savings-set
 import { Skeleton } from "@/components/ui/skeleton"
 import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
 
-import { unwrapAction } from "@/lib/action-result"
+import { authorize } from "@/lib/services/authorization"
+import { requireOrgContext } from "@/lib/services/context"
+import { hasPermission } from "@/lib/services/permissions"
 
 interface ProjectCloseoutPageProps {
   params: Promise<{ id: string }>
 }
 
-export default async function ProjectCloseoutPage({ params }: ProjectCloseoutPageProps) {
-  const { id } = await params
-
+export default function ProjectCloseoutPage({ params }: ProjectCloseoutPageProps) {
   return (
     <>
       <PageLayout title="Closeout" breadcrumbs={[
@@ -33,10 +34,17 @@ export default async function ProjectCloseoutPage({ params }: ProjectCloseoutPag
           </div>
         </div>
       }>
-        <ProjectCloseoutData id={id} />
+        <ProjectCloseoutPageRoute params={params} />
       </Suspense>
     </>
   )
+}
+
+async function ProjectCloseoutPageRoute({ params }: ProjectCloseoutPageProps) {
+  await connection()
+  const { id } = await params
+
+  return <ProjectCloseoutData id={id} />
 }
 
 async function ProjectCloseoutData({ id }: { id: string }) {
@@ -44,10 +52,13 @@ async function ProjectCloseoutData({ id }: { id: string }) {
 
   if (!project) notFound()
 
-  const [closeout, readiness, gmpSummary] = await Promise.all([
+  const context = await requireOrgContext()
+  const [closeout, readiness, gmpSummary, writeDecision, orgMember] = await Promise.all([
     getCloseoutPackageAction(id),
     getProjectCloseReadinessAction(id),
-    getProjectGmpControlSummary(id).catch(() => null),
+    getProjectGmpControlSummary(id),
+    authorize({ ...context, permission: "closeout.write", projectId: id, logDecision: false }),
+    hasPermission("org.member"),
   ])
 
   return (
@@ -55,7 +66,7 @@ async function ProjectCloseoutData({ id }: { id: string }) {
       {gmpSummary?.enabled ? (
         <GmpSavingsSettlementPanel projectId={project.id} projectStatus={project.status} summary={gmpSummary} />
       ) : null}
-      <CloseoutClient projectId={project.id} closeoutPackage={closeout?.package} items={closeout?.items ?? []} readiness={readiness} />
+      <CloseoutClient projectId={project.id} closeoutPackage={closeout.package} preparationRequired={closeout.preparationRequired} canWrite={orgMember && writeDecision.allowed} items={closeout.items} readiness={readiness} />
     </div>
   )
 }

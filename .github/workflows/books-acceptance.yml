@@ -1,0 +1,93 @@
+name: Books acceptance
+
+# Every golden Books scenario against a fresh isolated Supabase stack built from
+# the repository's migrations (scripts/books-acceptance/ci.cjs). No production
+# credentials: the stack mints its own development keys. Real storage runs only
+# against the acceptance bucket, Plaid and TaxBandits only against their sandboxes,
+# each when its secrets are configured.
+# Pull requests and pushes to main run the core gate (--core): the legs that wait
+# only on the outside (real storage, the sandboxes, the long-running scenarios)
+# report as not run without failing. The weekly and manual runs are the full gate,
+# where a missing secret or long-run evidence fails the run as incomplete.
+on:
+  schedule:
+    - cron: "30 6 * * 1"
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "lib/services/books/**"
+      - "lib/storage/**"
+      - "lib/financials/**"
+      - "supabase/migrations/**"
+      - "scripts/books-acceptance/**"
+
+concurrency:
+  group: books-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Acceptance storage key
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.BOOKS_ACCEPTANCE_R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.BOOKS_ACCEPTANCE_R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.BOOKS_ACCEPTANCE_R2_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -n "$R2_SECRET_ACCESS_KEY" ]; then
+            umask 077
+            printf 'R2_ACCOUNT_ID=%s\nR2_ACCESS_KEY_ID=%s\nR2_SECRET_ACCESS_KEY=%s\nR2_BUCKET=arc-books-acceptance\n' \
+              "$R2_ACCOUNT_ID" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" > "$RUNNER_TEMP/r2.env"
+            echo "STORAGE_ARGS=--storage-env $RUNNER_TEMP/r2.env" >> "$GITHUB_ENV"
+          fi
+      - name: Plaid sandbox key
+        env:
+          PLAID_CLIENT_ID: ${{ secrets.BOOKS_ACCEPTANCE_PLAID_CLIENT_ID }}
+          PLAID_SECRET: ${{ secrets.BOOKS_ACCEPTANCE_PLAID_SANDBOX_SECRET }}
+        run: |
+          if [ -n "$PLAID_SECRET" ]; then
+            umask 077
+            printf 'PLAID_ENV=sandbox\nPLAID_CLIENT_ID=%s\nPLAID_SECRET=%s\n' "$PLAID_CLIENT_ID" "$PLAID_SECRET" > "$RUNNER_TEMP/plaid.env"
+            echo "PLAID_ARGS=--plaid-env $RUNNER_TEMP/plaid.env" >> "$GITHUB_ENV"
+          fi
+      - name: TaxBandits sandbox key
+        env:
+          TAXBANDITS_CLIENT_ID: ${{ secrets.BOOKS_ACCEPTANCE_TAXBANDITS_CLIENT_ID }}
+          TAXBANDITS_CLIENT_SECRET: ${{ secrets.BOOKS_ACCEPTANCE_TAXBANDITS_CLIENT_SECRET }}
+          TAXBANDITS_USER_TOKEN: ${{ secrets.BOOKS_ACCEPTANCE_TAXBANDITS_USER_TOKEN }}
+        run: |
+          if [ -n "$TAXBANDITS_CLIENT_SECRET" ]; then
+            umask 077
+            printf 'TAXBANDITS_ENV=sandbox\nTAXBANDITS_CLIENT_ID=%s\nTAXBANDITS_CLIENT_SECRET=%s\nTAXBANDITS_USER_TOKEN=%s\n' "$TAXBANDITS_CLIENT_ID" "$TAXBANDITS_CLIENT_SECRET" "$TAXBANDITS_USER_TOKEN" > "$RUNNER_TEMP/taxbandits.env"
+            echo "TAXBANDITS_ARGS=--taxbandits-env $RUNNER_TEMP/taxbandits.env" >> "$GITHUB_ENV"
+          fi
+      - name: Golden scenarios
+        run: >
+          node scripts/books-acceptance/ci.cjs
+          --workspace "$RUNNER_TEMP/books-stack"
+          --db-port 55480
+          --evidence-dir "$RUNNER_TEMP/books-evidence"
+          $STORAGE_ARGS $PLAID_ARGS $TAXBANDITS_ARGS
+          ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && '--core' || '' }}
+      - name: Remove the storage key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/r2.env" "$RUNNER_TEMP/plaid.env" "$RUNNER_TEMP/taxbandits.env"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: books-acceptance-evidence
+          path: ${{ runner.temp }}/books-evidence
+          retention-days: 30

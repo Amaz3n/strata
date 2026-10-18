@@ -7,6 +7,9 @@ import { cookies, headers } from "next/headers"
 import { unstable_rethrow } from "next/navigation"
 import { createServerClient } from "@supabase/ssr"
 import { createClient as createBrowserlessClient, type SupabaseClient } from "@supabase/supabase-js"
+import { createWorkerDatabaseFetch, hasWorkerDatabaseScope } from "@/lib/supabase/worker-request-context"
+import { getScopedServiceSupabaseClient } from "@/lib/supabase/service-client-context"
+import { correlatedFetch } from "@/lib/observability/correlation"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -39,7 +42,7 @@ export const createServerSupabaseClient = cache(async (): Promise<SupabaseClient
     if (forwardedFor) forwardedHeaders["X-Forwarded-For"] = forwardedFor
 
     return createServerClient(url, anonKey, {
-      global: { headers: forwardedHeaders },
+      global: { headers: forwardedHeaders, fetch: correlatedFetch(hasWorkerDatabaseScope() ? createWorkerDatabaseFetch() : undefined) },
       cookies: {
         getAll: () => {
           return cookieStore.getAll()
@@ -64,6 +67,7 @@ export const createServerSupabaseClient = cache(async (): Promise<SupabaseClient
     // If cookies fail, create a client without cookies (for server-side operations)
     console.warn('Cookies not available, creating client without cookies:', error)
     return createBrowserlessClient(url, anonKey, {
+      global: { fetch: correlatedFetch(hasWorkerDatabaseScope() ? createWorkerDatabaseFetch() : undefined) },
       auth: {
         autoRefreshToken: false,
         persistSession: false,
@@ -78,11 +82,14 @@ export const createServerSupabaseClient = cache(async (): Promise<SupabaseClient
 let serviceClient: SupabaseClient | null = null
 
 export function createServiceSupabaseClient(): SupabaseClient {
+  const scoped = getScopedServiceSupabaseClient()
+  if (scoped) return scoped
   if (!serviceClient) {
     const url = requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL")
     const serviceRoleKey = requireEnv(SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY")
 
     serviceClient = createBrowserlessClient(url, serviceRoleKey, {
+      global: { fetch: correlatedFetch() },
       auth: {
         autoRefreshToken: false,
         persistSession: false,
@@ -90,4 +97,33 @@ export function createServiceSupabaseClient(): SupabaseClient {
     })
   }
   return serviceClient
+}
+
+/** A separate client per worker claim; never mutate the shared service headers. */
+export function createDrawingWorkerSupabaseClient(jobId: number, claimToken: string): SupabaseClient {
+  return createBrowserlessClient(requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL"),
+    requireEnv(SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY"), {
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { headers: { "x-drawing-job-id": String(jobId), "x-drawing-claim-token": claimToken } },
+    })
+}
+
+/** Staged starts consumer support: requires approved claim/fencing schema before activation. */
+export function createStartsWorkerSupabaseClient(jobId: number, claimToken: string): SupabaseClient {
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) throw new Error("Invalid starts worker job identifier")
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claimToken)) throw new Error("Invalid starts claim token")
+  return createBrowserlessClient(requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL"),
+    requireEnv(SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY"), {
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { headers: { "x-starts-job-id": String(jobId), "x-starts-claim-token": claimToken } },
+    })
+}
+
+/** Accounting invocation client: finite transport, isolated from the singleton. */
+export function createAccountingWorkerSupabaseClient(): SupabaseClient {
+  return createBrowserlessClient(requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL"),
+    requireEnv(SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY"), {
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { fetch: correlatedFetch(createWorkerDatabaseFetch()) },
+    })
 }

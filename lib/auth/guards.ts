@@ -1,9 +1,12 @@
 import { redirect, unstable_rethrow } from "next/navigation"
+import { connection } from "next/server"
 
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { requireAuth } from "@/lib/auth/context"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 
 export async function requirePermissionGuard(permission: string, orgId?: string) {
+  await connection()
   try {
     const { user, orgId: resolvedOrgId } = await requireAuth()
     const targetOrg = orgId ?? resolvedOrgId
@@ -11,6 +14,11 @@ export async function requirePermissionGuard(permission: string, orgId?: string)
 
     if (!targetOrg && !isPlatformPermission) {
       redirect("/unauthorized")
+    }
+
+    if (isPlatformPermission) {
+      await requireAnyPlatformPermission([permission])
+      return
     }
 
     await requirePermission(permission, {
@@ -25,6 +33,7 @@ export async function requirePermissionGuard(permission: string, orgId?: string)
 }
 
 export async function requireAnyPermissionGuard(permissions: string[], orgId?: string) {
+  await connection()
   try {
     const { user, orgId: resolvedOrgId } = await requireAuth()
     const targetOrg = orgId ?? resolvedOrgId
@@ -34,6 +43,13 @@ export async function requireAnyPermissionGuard(permissions: string[], orgId?: s
 
     if (!targetOrg && !hasAnyPlatformPermission) {
       redirect("/unauthorized")
+    }
+
+    if (permissions.length > 0 && permissions.every(
+      permission => permission.startsWith("platform.") || permission.startsWith("impersonation."),
+    )) {
+      await requireAnyPlatformPermission(permissions)
+      return
     }
 
     await requireAnyPermission(permissions, {

@@ -16,6 +16,7 @@ import { recordEvent } from "@/lib/services/events";
 
 const idRowSchema = z.object({ id: z.string().uuid() });
 const accountRowSchema = z.object({ id: z.string().uuid(), code: z.string() });
+const creditedIncomeSchema = z.array(z.object({ account_code: z.string() }));
 const journalRowSchema = z.object({
   id: z.string().uuid(),
   entry_date: z.string(),
@@ -127,21 +128,30 @@ export async function initializeArcBooks(orgId?: string) {
   ]);
 }
 
-async function resolveAccountIds(orgId: string, accountCodes: string[]) {
+async function resolveAccountIds(
+  orgId: string,
+  accountCodes: string[],
+  includeInactive = false,
+  /** Codes a correction may post to although retired: the original document's own accounts. */
+  originalCodes: string[] = [],
+) {
   const service = createServiceSupabaseClient();
+  const lookup = async (codes: string[], inactive: boolean) => {
+    let query = service.from("gl_accounts").select("id, code").eq("org_id", orgId);
+    if (!inactive) query = query.eq("active", true);
+    const { data, error } = await query.in("code", codes);
+    if (error) throw new Error(`Failed to resolve GL accounts: ${error.message}`);
+    return z.array(accountRowSchema).parse(data ?? []);
+  };
   const uniqueCodes = Array.from(new Set(accountCodes));
-  const { data, error } = await service
-    .from("gl_accounts")
-    .select("id, code")
-    .eq("org_id", orgId)
-    .eq("active", true)
-    .in("code", uniqueCodes);
-  if (error) throw new Error(`Failed to resolve GL accounts: ${error.message}`);
-  const rows = z.array(accountRowSchema).parse(data ?? []);
-  const byCode = new Map(rows.map((row) => [row.code, row.id]));
+  const byCode = new Map((await lookup(uniqueCodes, includeInactive)).map((row) => [row.code, row.id]));
+  const retired = uniqueCodes.filter((code) => !byCode.has(code) && originalCodes.includes(code));
+  if (retired.length) for (const row of await lookup(retired, true)) byCode.set(row.code, row.id);
   const missing = uniqueCodes.filter((code) => !byCode.has(code));
   if (missing.length > 0)
-    throw new Error(`Missing active GL accounts: ${missing.join(", ")}`);
+    throw new Error(
+      `Missing ${includeInactive ? "original" : "active"} GL accounts: ${missing.join(", ")}`,
+    );
   return byCode;
 }
 
@@ -166,46 +176,62 @@ async function postBooksJournalEntryInternal(input: {
 }) {
   const { draft, orgId, actorId = null, factId } = input;
   assertBalancedJournalDraft(draft);
-  const existingId = await findJournalByPostingKey(orgId, draft.postingKey);
-  if (existingId) return { id: existingId, created: false };
+  const reversal = draft.entryKind === "reversal";
+  if (reversal && !draft.reversalOfEntryId)
+    throw new Error("Reversal requires its original journal");
+  if (!reversal) {
+    const existingId = await findJournalByPostingKey(orgId, draft.postingKey);
+    if (existingId) return { id: existingId, created: false };
+  }
 
   const accountIds = await resolveAccountIds(
     orgId,
     draft.lines.map((item) => item.accountCode),
+    reversal,
   );
   const service = createServiceSupabaseClient();
-  const { data, error } = await service.rpc("post_books_journal_entry", {
-    p_org_id: orgId,
-    p_entry: {
-      fact_id: factId ?? null,
-      entry_date: draft.entryDate,
-      entry_kind: draft.entryKind,
-      memo: draft.memo,
-      posting_key: draft.postingKey,
-      projection_version: draft.projectionVersion,
-      policy_version: draft.policyVersion,
-      source_type: draft.sourceType ?? null,
-      source_id: draft.sourceId ?? null,
-      reversal_of_entry_id: draft.reversalOfEntryId ?? null,
-      created_by: actorId,
+  const { data, error } = await service.rpc(
+    reversal ? "reverse_books_journal_entry" : "post_books_journal_entry",
+    {
+      p_org_id: orgId,
+      ...(reversal ? { p_original_entry_id: draft.reversalOfEntryId } : {}),
+      p_entry: {
+        fact_id: factId ?? null,
+        entry_date: draft.entryDate,
+        entry_kind: draft.entryKind,
+        memo: draft.memo,
+        posting_key: draft.postingKey,
+        projection_version: draft.projectionVersion,
+        policy_version: draft.policyVersion,
+        source_type: draft.sourceType ?? null,
+        source_id: draft.sourceId ?? null,
+        reversal_of_entry_id: draft.reversalOfEntryId ?? null,
+        created_by: actorId,
+      },
+      p_lines: draft.lines.map((item, index) => ({
+        line_no: index + 1,
+        account_id: accountIds.get(item.accountCode),
+        project_id: item.projectId ?? null,
+        company_id: item.companyId ?? null,
+        description: item.description ?? null,
+        debit_cents: item.debitCents,
+        credit_cents: item.creditCents,
+        dimensions: item.dimensions ?? {},
+      })),
     },
-    p_lines: draft.lines.map((item, index) => ({
-      line_no: index + 1,
-      account_id: accountIds.get(item.accountCode),
-      project_id: item.projectId ?? null,
-      company_id: item.companyId ?? null,
-      description: item.description ?? null,
-      debit_cents: item.debitCents,
-      credit_cents: item.creditCents,
-      dimensions: item.dimensions ?? {},
-    })),
-  });
+  );
   if (error) {
-    const racedId = await findJournalByPostingKey(orgId, draft.postingKey);
+    const racedId = reversal
+      ? null
+      : await findJournalByPostingKey(orgId, draft.postingKey);
     if (racedId) return { id: racedId, created: false };
     throw new Error(`Failed to post journal entry: ${error.message}`);
   }
-  const entryId = z.string().uuid().parse(data);
+  const receipt = reversal
+    ? z.object({ id: z.string().uuid(), created: z.boolean() }).parse(data)
+    : { id: z.string().uuid().parse(data), created: true };
+  if (!receipt.created) return receipt;
+  const entryId = receipt.id;
   await Promise.all([
     recordEvent({
       orgId,
@@ -227,6 +253,9 @@ async function postBooksJournalEntryInternal(input: {
         entry_kind: draft.entryKind,
       },
       source: "books.post",
+      // A person's posting is evidence the journal cannot go without; a job's
+      // posting is receipted by its fact and posting key.
+      critical: actorId !== null,
     }),
   ]);
   return { id: entryId, created: true };
@@ -293,9 +322,16 @@ export async function projectBooksFactAndJournalForService(input: {
   reversalReason: string;
 }) {
   assertBalancedJournalDraft(input.draft);
+  // A credit memo reverses income on the accounts its invoice was billed to,
+  // even when one has since been retired from the chart.
+  const creditedIncome = input.fact.sourceType === "receivable_adjustment"
+    ? (creditedIncomeSchema.safeParse(input.fact.payload.revenue_lines).data ?? []).map((row) => row.account_code)
+    : [];
   const accountIds = await resolveAccountIds(
     input.orgId,
     input.draft.lines.map((line) => line.accountCode),
+    false,
+    creditedIncome,
   );
   const service = createServiceSupabaseClient();
   const { data, error } = await service.rpc(
@@ -344,7 +380,9 @@ export async function projectBooksFactAndJournalForService(input: {
     },
   );
   if (error)
-    throw new Error(`Failed to project accounting source atomically: ${error.message}`);
+    throw new Error(
+      `Failed to project accounting source atomically: ${error.message}`,
+    );
   const result = atomicProjectionResultSchema.parse(data);
   const effects: Promise<unknown>[] = [];
   if (result.journal_created) {
@@ -413,6 +451,7 @@ export async function reverseBooksJournalEntry(input: {
     reversalDate: input.reversalDate,
     reason: input.reason,
     orgId: context.orgId,
+    actorId: context.userId,
   });
 }
 
@@ -435,6 +474,7 @@ async function reverseJournalEntryInternal(input: {
   reversalDate: string;
   reason: string;
   orgId: string;
+  actorId?: string;
 }) {
   const context = { orgId: input.orgId };
   const service = createServiceSupabaseClient();
@@ -450,7 +490,7 @@ async function reverseJournalEntryInternal(input: {
     service
       .from("journal_lines")
       .select(
-        "line_no, debit_cents, credit_cents, description, project_id, company_id, dimensions, account:gl_accounts!inner(id, code)",
+        "line_no, debit_cents, credit_cents, description, project_id, company_id, dimensions, account:gl_accounts!journal_lines_account_owner_fk!inner(id, code)",
       )
       .eq("org_id", context.orgId)
       .eq("entry_id", input.entryId)
@@ -465,7 +505,23 @@ async function reverseJournalEntryInternal(input: {
       `Failed to load journal lines: ${linesResult.error.message}`,
     );
   const entry = journalRowSchema.parse(entryResult.data);
-  if (entry.entry_kind === "opening" || ["land_acquisition", "inventory_start", "inventory_development_allocation", "inventory_interest", "inventory_completion", "inventory_sale_relief", "warranty_reserve", "warranty_reserve_consumption", "warranty_reserve_recovery"].includes(entryResult.data.source_type ?? "")) throw new Error("This journal belongs to an operational register. It cannot be reversed on its own; the operational record and ledger must be corrected together.");
+  if (
+    entry.entry_kind === "opening" ||
+    [
+      "land_acquisition",
+      "inventory_start",
+      "inventory_development_allocation",
+      "inventory_interest",
+      "inventory_completion",
+      "inventory_sale_relief",
+      "warranty_reserve",
+      "warranty_reserve_consumption",
+      "warranty_reserve_recovery",
+    ].includes(entryResult.data.source_type ?? "")
+  )
+    throw new Error(
+      "This journal belongs to an operational register. It cannot be reversed on its own; the operational record and ledger must be corrected together.",
+    );
   if (entry.status === "draft")
     throw new Error("Only a posted journal entry can be reversed");
   const lines = z.array(journalLineRowSchema).parse(linesResult.data ?? []);
@@ -497,6 +553,7 @@ async function reverseJournalEntryInternal(input: {
   const accountIds = await resolveAccountIds(
     context.orgId,
     draft.lines.map((item) => item.accountCode),
+    true,
   );
   const { data, error } = await service.rpc("reverse_books_journal_entry", {
     p_org_id: context.orgId,
@@ -545,12 +602,14 @@ async function reverseJournalEntryInternal(input: {
       }),
       recordAudit({
         orgId: context.orgId,
+        actorId: input.actorId,
         action: "update",
         entityType: "journal_entry",
         entityId: entry.id,
         before: { status: "posted" },
         after: { status: "reversed", reversal_entry_id: result.id },
         source: "books.reverse",
+        critical: input.actorId !== undefined,
       }),
     ]);
   }

@@ -1,3 +1,4 @@
+import { documentTheme } from "@/lib/pdfs/document-theme"
 import { Document, Image, Link, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer"
 
 export type InvoicePdfLine = {
@@ -39,34 +40,16 @@ export type InvoicePdfData = {
  * composer's live preview; the two move together.
  */
 
-const palette = {
-  bg: "#FFFFFF",
-  text: "#111111",
-  muted: "#6B7280",
-  line: "#E5E7EB",
-  soft: "#F3F4F6",
-}
+const palette = documentTheme.colors
 
 const styles = StyleSheet.create({
-  page: {
-    paddingTop: 44,
-    paddingBottom: 40,
-    paddingHorizontal: 48,
-    backgroundColor: palette.bg,
-    color: palette.text,
-    fontFamily: "Helvetica",
-    fontSize: 10,
-  },
+  page: { ...documentTheme.page, backgroundColor: palette.bg, color: palette.text },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
   },
-  title: {
-    fontSize: 22,
-    fontWeight: "bold",
-    letterSpacing: -0.2,
-  },
+  title: documentTheme.title,
   subtitle: {
     marginTop: 4,
     fontSize: 10.5,
@@ -87,8 +70,7 @@ const styles = StyleSheet.create({
   },
   metaLabel: {
     width: 96,
-    fontSize: 9.5,
-    color: palette.muted,
+    ...documentTheme.label,
   },
   metaValue: {
     fontSize: 10,
@@ -102,8 +84,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   partyLabel: {
-    fontSize: 9.5,
-    color: palette.muted,
+    ...documentTheme.label,
     marginBottom: 5,
   },
   partyLine: {
@@ -132,15 +113,13 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: "row",
-    paddingVertical: 9,
-    borderBottomWidth: 1,
-    borderBottomColor: palette.line,
+    ...documentTheme.row,
   },
   td: {
     fontSize: 10,
   },
   totalsWrap: {
-    width: 240,
+    width: documentTheme.totalsWidth,
     marginLeft: "auto",
     marginTop: 16,
   },
@@ -150,8 +129,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   totalLabel: {
-    fontSize: 9.5,
-    color: palette.muted,
+    ...documentTheme.label,
   },
   totalValue: {
     fontSize: 10,

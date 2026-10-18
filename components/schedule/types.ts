@@ -1,4 +1,5 @@
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
+import type { ScheduleReschedulePreview } from "@/lib/services/schedule"
 
 // View types (List view removed - redundant with Gantt)
 export type ScheduleViewType = "gantt" | "lookahead"
@@ -76,6 +77,18 @@ export interface ScheduleBulkItemUpdate {
   status?: ScheduleItem["status"]
 }
 
+/** Accepting a breach of a promised close: the houses, and why. */
+export interface ScheduleBulkApproval {
+  acknowledgeCloseImpacts?: string[]
+  reason?: string
+}
+
+export interface ScheduleDateMove {
+  id: string
+  start_date: string
+  end_date: string
+}
+
 // Schedule context
 export interface ScheduleContextValue {
   // Data
@@ -95,7 +108,9 @@ export interface ScheduleContextValue {
   
   // Actions
   onItemUpdate: (id: string, updates: Partial<ScheduleItem>) => Promise<ScheduleItem>
-  onItemsBulkUpdate: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
+  onItemsBulkUpdate: (updates: ScheduleBulkItemUpdate[], approval?: ScheduleBulkApproval) => Promise<ScheduleItem[]>
+  // Present when the server plans date moves: the Gantt reviews its plan before applying.
+  onPreviewReschedule?: (moves: ScheduleDateMove[]) => Promise<ScheduleReschedulePreview>
   onItemCreate: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete: (id: string) => Promise<void>
   onDependencyCreate: (from: string, to: string, type?: ScheduleDependency["dependency_type"], lagDays?: number) => Promise<void>

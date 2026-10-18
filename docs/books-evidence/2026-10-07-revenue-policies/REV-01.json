@@ -1,0 +1,269 @@
+{
+  "scenario": "REV-01",
+  "status": "PASSED",
+  "reviewedFrom": "B11.1 definition of done (advisor-plans/013) and docs/books-revenue-recognition.md §2/§4b/§4d.",
+  "subcases": [
+    {
+      "name": "explicit-policy-by-kind",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "7a21e8c6-4dd2-4c8e-8e3a-0fca9fe53757"
+      },
+      "checks": [
+        {
+          "label": "every kind of work posts under a stated policy, recorded and labeled as not yet reviewed",
+          "pass": true,
+          "expected": {
+            "policies": {
+              "Fixed price": {
+                "method": "percentage_of_completion",
+                "billingMethod": "fixed_price",
+                "source": "inferred"
+              },
+              "Time and materials": {
+                "method": "percentage_of_completion",
+                "billingMethod": "time_and_materials",
+                "source": "inferred"
+              },
+              "Cost plus percentage": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_percent",
+                "source": "inferred"
+              },
+              "Cost plus fixed fee": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_fixed_fee",
+                "source": "inferred"
+              },
+              "Cost plus GMP": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_gmp",
+                "source": "inferred"
+              },
+              "Home closing": {
+                "method": "closing",
+                "billingMethod": "purchase_agreement",
+                "source": "inferred"
+              }
+            },
+            "postings": {
+              "Fixed price": "deferred until earned",
+              "Time and materials": "deferred until earned",
+              "Cost plus percentage": "deferred until earned",
+              "Cost plus fixed fee": "deferred until earned",
+              "Cost plus GMP": "deferred until earned",
+              "Home closing": "earned when invoiced",
+              "Standalone service": "earned when invoiced"
+            }
+          },
+          "observed": {
+            "policies": {
+              "Fixed price": {
+                "method": "percentage_of_completion",
+                "billingMethod": "fixed_price",
+                "source": "inferred"
+              },
+              "Time and materials": {
+                "method": "percentage_of_completion",
+                "billingMethod": "time_and_materials",
+                "source": "inferred"
+              },
+              "Cost plus percentage": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_percent",
+                "source": "inferred"
+              },
+              "Cost plus fixed fee": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_fixed_fee",
+                "source": "inferred"
+              },
+              "Cost plus GMP": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_gmp",
+                "source": "inferred"
+              },
+              "Home closing": {
+                "method": "closing",
+                "billingMethod": "purchase_agreement",
+                "source": "inferred"
+              }
+            },
+            "postings": {
+              "Fixed price": "deferred until earned",
+              "Time and materials": "deferred until earned",
+              "Cost plus percentage": "deferred until earned",
+              "Cost plus fixed fee": "deferred until earned",
+              "Cost plus GMP": "deferred until earned",
+              "Home closing": "earned when invoiced",
+              "Standalone service": "earned when invoiced"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T14:00:42.978Z"
+    },
+    {
+      "name": "settings-change-cannot-rewrite",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "4c64e815-d9ae-4233-84c0-dd31b2794650"
+      },
+      "checks": [
+        {
+          "label": "the recorded policy governs; the settings change is flagged, not applied",
+          "pass": true,
+          "expected": {
+            "julyInvoice": "deferred until earned",
+            "augustInvoice": "deferred until earned",
+            "entriesAddedByReprojection": 0,
+            "register": {
+              "method": "percentage_of_completion",
+              "source": "inferred",
+              "drift": true,
+              "settingsSay": "closing"
+            }
+          },
+          "observed": {
+            "julyInvoice": "deferred until earned",
+            "augustInvoice": "deferred until earned",
+            "entriesAddedByReprojection": 0,
+            "register": {
+              "method": "percentage_of_completion",
+              "source": "inferred",
+              "drift": true,
+              "settingsSay": "closing"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T14:00:45.394Z"
+    },
+    {
+      "name": "approved-change-from-its-date",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "13cc25a1-b582-45b1-b0af-b4efd0afbbe2"
+      },
+      "checks": [
+        {
+          "label": "an approved change applies from its date only, approved by someone else, and is kept as written",
+          "pass": true,
+          "expected": {
+            "intoClosedMonth": "July 2026 is closed under the current method. Date the change after 2026-07-31, or reopen July 2026 first.",
+            "selfApproval": "A revenue policy is approved by someone other than the person who proposed it",
+            "julyInvoice": "deferred until earned",
+            "augustInvoice": "earned when invoiced",
+            "augustNamesPolicy": true,
+            "rewrite": "refused",
+            "register": {
+              "method": "closing",
+              "source": "approved",
+              "effectiveFrom": "2026-08-01",
+              "history": [
+                "approved",
+                "inferred"
+              ]
+            }
+          },
+          "observed": {
+            "intoClosedMonth": "July 2026 is closed under the current method. Date the change after 2026-07-31, or reopen July 2026 first.",
+            "selfApproval": "A revenue policy is approved by someone other than the person who proposed it",
+            "julyInvoice": "deferred until earned",
+            "augustInvoice": "earned when invoiced",
+            "augustNamesPolicy": true,
+            "rewrite": "refused",
+            "register": {
+              "method": "closing",
+              "source": "approved",
+              "effectiveFrom": "2026-08-01",
+              "history": [
+                "approved",
+                "inferred"
+              ]
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T14:00:45.980Z"
+    },
+    {
+      "name": "superseded-contracts-reconstructible",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "e2f900ed-80ce-40a7-aebc-aeee320e405a"
+      },
+      "checks": [
+        {
+          "label": "superseded contracts stay reconstructible, and unknown legacy policy has an attribution path",
+          "pass": true,
+          "expected": {
+            "recordedJob": {
+              "posted": "earned when invoiced",
+              "entriesAdded": 0
+            },
+            "legacyBefore": {
+              "posted": "not posted",
+              "finding": true
+            },
+            "legacyAfter": "earned when invoiced"
+          },
+          "observed": {
+            "recordedJob": {
+              "posted": "earned when invoiced",
+              "entriesAdded": 0
+            },
+            "legacyBefore": {
+              "posted": "not posted",
+              "finding": true
+            },
+            "legacyAfter": "earned when invoiced"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T14:00:46.659Z"
+    },
+    {
+      "name": "mixed-contracts-reviewed",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "e4c58232-f854-487a-879d-3f55de4d8dc9"
+      },
+      "checks": [
+        {
+          "label": "contracts that earn differently are refused until reviewed, then each earns under its own policy",
+          "pass": true,
+          "expected": {
+            "beforeReview": {
+              "build": "not posted",
+              "refusedWithCure": true
+            },
+            "afterReview": {
+              "build": "deferred until earned",
+              "sale": "earned when invoiced"
+            },
+            "wipScopes": [
+              "Construction"
+            ]
+          },
+          "observed": {
+            "beforeReview": {
+              "build": "not posted",
+              "refusedWithCure": true
+            },
+            "afterReview": {
+              "build": "deferred until earned",
+              "sale": "earned when invoiced"
+            },
+            "wipScopes": [
+              "Construction"
+            ]
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T14:00:47.414Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T14:00:47.922Z"
+}

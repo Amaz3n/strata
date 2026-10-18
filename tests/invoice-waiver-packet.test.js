@@ -36,3 +36,50 @@ test('packet delivery requires the selected signed, shared, current waiver', asy
     await assert.rejects(ready(db, 'org', invoice), /Finish signing/)
   } finally { Module._load = original }
 })
+
+test('review saves large imported waivers with short version filters and rejects actual races', async () => {
+  let conflict = false, failure = false
+  const waiver = { id: 'selected', org_id: 'org', invoice_id: 'invoice', status: 'pending_payment', updated_at: '2026-09-01T00:00:00Z', metadata: { template: 'Imported wording '.repeat(2000), workflow: { version: 2, lifecycle: 'draft', source: 'template', shared: false } } }
+  const currentInvoice = { ...structuredClone(invoice), org_id: 'org', updated_at: '2026-09-01T00:00:00Z' }
+  const db = { from(table) {
+    const filters = []; let patch, single = false
+    const q = {
+      select(){return q}, order(){return q},
+      eq(key, value){ assert.notEqual(key, 'metadata', 'never put the document in a URL'); assert.ok(String(value).length < 100); filters.push(row => row[key] === value); return q },
+      neq(key, value){ filters.push(row => row[key] !== value); return q },
+      update(value){patch = value; return q}, maybeSingle(){single = true; return q},
+      then(resolve, reject){return Promise.resolve().then(() => {
+        if (patch && table === 'invoice_lien_waivers') {
+          if (failure) return { data: null, error: { message: 'database unavailable' } }
+          if (conflict) waiver.updated_at = 'concurrent-version'
+        }
+        const row = table === 'invoice_lien_waivers' ? waiver : currentInvoice
+        const found = filters.every(f => f(row))
+        if (found && patch) Object.assign(row, structuredClone(patch))
+        return { data: single ? (found ? structuredClone(row) : null) : (found ? [structuredClone(row)] : []), error: null }
+      }).then(resolve, reject)},
+    }; return q
+  } }
+  const original = Module._load
+  const modulePath = require.resolve('../lib/services/invoice-waiver-packet')
+  delete require.cache[modulePath]
+  Module._load = function(request, ...args) {
+    if (request === '@/lib/services/invoice-waiver-workflow') return { invoiceWaiverContext: async () => ({ supabase: db, orgId: 'org', invoice: structuredClone(currentInvoice) }) }
+    return original.call(this, request, ...args)
+  }
+  try {
+    const { setInvoiceWaiverPacket: save } = require(modulePath)
+    const wording = waiver.metadata.template
+    await save('invoice', true, 'selected')
+    assert.equal(waiver.metadata.template, wording)
+    assert.equal(waiver.metadata.workflow.sharing_requested, true)
+    assert.equal(waiver.metadata.workflow.shared, false, 'review must not publish unsigned waivers')
+    assert.notEqual(waiver.updated_at, '2026-09-01T00:00:00Z')
+    assert.equal(currentInvoice.metadata.waiver_packet.waiver_id, 'selected')
+    conflict = true
+    await assert.rejects(save('invoice', false), /waiver changed/)
+    assert.equal(currentInvoice.metadata.waiver_packet.enabled, true)
+    conflict = false; failure = true
+    await assert.rejects(save('invoice', false), /Could not save the waiver packet/)
+  } finally { Module._load = original; delete require.cache[modulePath] }
+})

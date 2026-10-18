@@ -1,3 +1,5 @@
+import { CDC_ENTITIES, CdcResponseError, cdcIdentity, cdcRecord, parseRecoveryPage, type CdcEntity, type RecoveryPage } from "@/lib/integrations/accounting/qbo/cdc"
+import { QBOTransportError } from "@/lib/integrations/accounting/qbo/transport"
 import { accountingDeliveryDeadline, AccountingDeliveryError } from "@/lib/services/accounting-delivery"
 import { getQBOAccessToken, getQBOAccessTokenForConnection } from "@/lib/integrations/accounting/qbo/connections"
 import { logQBO } from "@/lib/services/accounting-logger"
@@ -78,14 +80,27 @@ const REQUEST_TIMEOUT_MS = 45_000
 // invalidate each other's tokens and burn the failure counter until the connection expires.
 const refreshInFlight = new Map<string, Promise<{ token: string; realmId: string } | null>>()
 
-function sleep(ms: number) {
-  if (Date.now() + ms >= (accountingDeliveryDeadline() ?? Infinity)) throw new AccountingDeliveryError("Accounting delivery deadline reached", true, "deadline")
+function sleep(ms: number, response?: Response) {
+  const remaining = (accountingDeliveryDeadline() ?? Date.now() + REQUEST_TIMEOUT_MS) - Date.now()
+  if (ms >= remaining) throw new QBOTransportError("retry wait", response?.status === 429 ? "throttle" : "deadline", response?.status ?? null, response ? getIntuitTid(response) : null, null, true)
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function retryDelayMs(response: Response | null, attempt: number): number {
-  const retryAfter = Number(response?.headers.get("retry-after"))
-  if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(retryAfter * 1000, 60_000)
+  const raw = response?.headers.get("retry-after")?.trim()
+  let providerWait: number | undefined
+  if (raw) {
+    const seconds = Number(raw)
+    if (Number.isFinite(seconds) && seconds >= 0) providerWait = seconds * 1000
+    else if (/^[A-Za-z]{3}, /.test(raw)) {
+      const instant = Date.parse(raw)
+      if (Number.isFinite(instant)) providerWait = Math.max(0, instant - Date.now())
+    }
+  }
+  // Intuit requires at least 60 seconds after 429, even when the header is missing or
+  // unusable. A longer provider interval must never be shortened to a cap.
+  if (response?.status === 429) return Math.max(60_000, providerWait ?? 0)
+  if (providerWait !== undefined) return providerWait
   const backoff = Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS)
   return Math.round(backoff * (0.5 + Math.random() * 0.5))
 }
@@ -361,7 +376,7 @@ export class QBOClient {
       if (retryable && attempt < REQUEST_MAX_ATTEMPTS) {
         // Release the abandoned response body so retries don't pin sockets.
         void response.body?.cancel()
-        await sleep(retryDelayMs(response, attempt))
+        await sleep(retryDelayMs(response, attempt), response)
         continue
       }
 
@@ -1024,6 +1039,30 @@ export class QBOClient {
     return this.request<any>("GET", `cdc?${params.toString()}`)
   }
 
+  /** Bounded recovery enumeration; offset pages do not prove a stable snapshot. */
+  async queryRecoveryPage(entity: CdcEntity, startPosition: number, pageSize = 200): Promise<RecoveryPage> {
+    if (!CDC_ENTITIES.includes(entity) || !Number.isSafeInteger(startPosition) || startPosition < 1 || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 200) throw new Error("Invalid QBO recovery query")
+    const query = `SELECT * FROM ${entity} STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+    const result = await this.request<unknown>("GET", `query?query=${encodeURIComponent(query)}`)
+    return parseRecoveryPage(result, entity, startPosition, pageSize)
+  }
+
+  /** Only an actual supported missing-entity fault confirms absence. */
+  async readRecoveryEntity(entity: CdcEntity, id: string): Promise<Record<string, unknown> | null> {
+    if (!CDC_ENTITIES.includes(entity)) throw new Error("Invalid QBO recovery entity")
+    const identity = cdcIdentity(id)
+    try {
+      const result = cdcRecord(await this.request<unknown>("GET", `${entity.toLowerCase()}/${encodeURIComponent(identity)}`), "recovery read envelope")
+      if (result.Fault !== undefined) throw new CdcResponseError("QBO recovery entity fault")
+      const row = cdcRecord(result[entity], "recovery read entity")
+      if (cdcIdentity(row.Id) !== identity) throw new CdcResponseError("Mismatched QBO recovery entity identity")
+      return row
+    } catch (error) {
+      if (error instanceof QBOError && isQboMissingEntityFault(error)) return null
+      throw error
+    }
+  }
+
   /**
    * Run a raw entity query and return the matching rows. Used by the QBO import flow to enumerate
    * transactions that may not yet exist in Arc. `whereClause` should NOT include the "WHERE" keyword.
@@ -1204,7 +1243,7 @@ export class QBOClient {
       // where a failed whole push after posted money is not.
       if ((response.status === 429 || response.status >= 500) && attempt < REQUEST_MAX_ATTEMPTS) {
         void response.body?.cancel()
-        await sleep(retryDelayMs(response, attempt))
+        await sleep(retryDelayMs(response, attempt), response)
         continue
       }
       const errorPayload = await response.json().catch(() => ({}))

@@ -1,0 +1,1444 @@
+{
+  "scenario": "CUTOVER-01",
+  "reviewedFrom": "EP12 imports readiness (docs/enterprise-production/completion-checklist.json): EP12-02 Open-WIP continuity, EP12-03 atomic resumable cutover; EP12-04 financial and signed-document migration, EP12-05 selections and warranty continuity.",
+  "subcases": {
+    "crash-mid-file-resumes-exactly-once": {
+      "derivation": "Eight houses on lots 11-18 (as of 2026-09-01), each with a three-line budget of 90,000 + 100 x lot dollars and four open POs of 1,000, 1,010, 1,020 and 1,030 dollars (406,000 cents a house, 3,248,000 for the file); even lots are sold, so 12, 14, 16 and 18 bring four buyers and four agreements. A separate session holds lot 14, the fourth house, so the committing process is caught waiting on it with three receipts written and is killed: at least three and fewer than eight rows are committed and the batch is still 'committing' under the dead process's claim. Once the claim lapses the reaper hands it to the outbox, whose job claims it as attempt 2 and builds only the houses without a receipt. Every lot ends with exactly one home, started; 8 approved budgets, 32 approved POs, 8 scheduled homes, and the reconciliation counts 8 rows, 8 receipts, 8 homes, 8 budgets and 32 POs with no mismatch. The one resume job is completed.",
+      "inputs": {
+        "asOf": "2026-09-01",
+        "lots": [
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18"
+        ],
+        "holdLot": "14",
+        "posPerHouse": 4
+      },
+      "expected": {
+        "atKill": {
+          "waitingOnTheHeldLot": true,
+          "status": "committing",
+          "prefixOnly": true,
+          "claimed": true
+        },
+        "reaper": {
+          "resumed": true
+        },
+        "batch": {
+          "status": "committed",
+          "committedCount": 8,
+          "stamped": true,
+          "attempts": 2,
+          "claimed": false
+        },
+        "reconciliation": {
+          "rows": 8,
+          "receipts": 8,
+          "homes": 8,
+          "budgets": 8,
+          "purchaseOrders": 32,
+          "clean": true,
+          "mismatches": []
+        },
+        "homes": [
+          {
+            "lot": "11",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "12",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "13",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "14",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "15",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "16",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "17",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "18",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          }
+        ],
+        "records": {
+          "homes": 8,
+          "budgets": 8,
+          "approvedPurchaseOrders": 32,
+          "poCents": 3248000,
+          "agreements": 4,
+          "scheduledHomes": 8
+        },
+        "buyers": 4,
+        "resumeJobs": [
+          "completed"
+        ]
+      }
+    },
+    "stale-claim-adopts-homes-built-before-receipts": {
+      "derivation": "Three houses on lots 19-21 (as of 2026-09-02), two POs each (1,000 and 1,010 dollars: 201,000 cents a house); lot 20 is sold. The commit builds lot 19 and is killed on lot 20. The state is then set to what the importer before this change left on a crash: lot 19's home whole and attached but its row receipt never written, lot 20's home half-built (a project owned by its row, no lot, no budget), the batch 'committing' with no claim, lease or attempt and no job. So before: no receipts, two homes owned by the batch, lot 19 attached. The reaper finds the claimless batch and queues a job, which claims it as attempt 1: lot 19's row adopts the home already on it (same project), lot 20's half-built project is removed and the home built whole, lot 21 is built. Three homes, one per lot; 3 budgets, 6 approved POs (603,000 cents), 1 agreement, 3 scheduled homes; the reconciliation is clean.",
+      "inputs": {
+        "asOf": "2026-09-02",
+        "lots": [
+          "19",
+          "20",
+          "21"
+        ]
+      },
+      "expected": {
+        "before": {
+          "receipts": 0,
+          "homes": 2,
+          "firstAttached": true
+        },
+        "reaper": {
+          "resumed": true
+        },
+        "batch": {
+          "status": "committed",
+          "committedCount": 3,
+          "attempts": 1
+        },
+        "reconciliation": {
+          "rows": 3,
+          "receipts": 3,
+          "homes": 3,
+          "budgets": 3,
+          "purchaseOrders": 6,
+          "clean": true,
+          "mismatches": []
+        },
+        "firstHomeAdopted": true,
+        "halfBuiltHomeRemoved": true,
+        "homes": [
+          {
+            "lot": "19",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "20",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "21",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          }
+        ],
+        "records": {
+          "homes": 3,
+          "budgets": 3,
+          "approvedPurchaseOrders": 6,
+          "poCents": 603000,
+          "agreements": 1,
+          "scheduledHomes": 3
+        }
+      }
+    },
+    "failed-batch-retry-adopts-prior-homes": {
+      "derivation": "Four houses on lots 22-25 (as of 2026-09-03), two POs each (201,000 cents a house); lots 22 and 24 are sold. The commit is killed waiting on lot 24 with lots 22 and 23 built. The batch has already been interrupted 5 times, the reaper's limit, so when its claim lapses the reaper fails it instead of resuming: no claim, its homes kept with one receipt each, and the error says it was interrupted too often. Discarding it is refused, since that would orphan its homes. The operator's commit re-claims the failed batch as attempt 6, adopts the committed rows and builds the rest: 4 homes, one per lot, 4 budgets, 8 approved POs (804,000 cents), 2 agreements, 4 scheduled homes, clean reconciliation.",
+      "inputs": {
+        "asOf": "2026-09-03",
+        "lots": [
+          "22",
+          "23",
+          "24",
+          "25"
+        ],
+        "holdLot": "24",
+        "maxAttempts": 5
+      },
+      "expected": {
+        "reaper": {
+          "exhausted": true
+        },
+        "failed": {
+          "status": "failed",
+          "claimed": false,
+          "keptHomesWithReceipts": true,
+          "error": "interrupted too often"
+        },
+        "discard": "refused",
+        "retry": {
+          "status": "committed",
+          "committedCount": 4,
+          "attempts": 6
+        },
+        "reconciliation": {
+          "rows": 4,
+          "receipts": 4,
+          "homes": 4,
+          "budgets": 4,
+          "purchaseOrders": 8,
+          "clean": true,
+          "mismatches": []
+        },
+        "homes": [
+          {
+            "lot": "22",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "23",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "24",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "25",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          }
+        ],
+        "records": {
+          "homes": 4,
+          "budgets": 4,
+          "approvedPurchaseOrders": 8,
+          "poCents": 804000,
+          "agreements": 2,
+          "scheduledHomes": 4
+        }
+      }
+    },
+    "concurrent-commits-make-one-home": {
+      "derivation": "Same batch: lots 26 and 27 (as of 2026-09-04) committed by two sessions at once. One claims the batch and builds both homes; the other finds it claimed or done and is refused as not staged. Two homes, two receipts. Same lot: lot 28 is in two house files for 2026-09-05, X = [28, 29] and Y = [30, 28], committed at once. Whichever reaches lot 28 first keeps it and commits both its houses; the other fails on lot 28 ('already has a project') and takes back any home it built first, so its own lot (29 or 30) stays free. One project is named for lot 28 and it belongs to the winner; the loser has no homes, receipts or committed count; the winner's two homes reconcile.",
+      "inputs": {
+        "sameBatch": {
+          "asOf": "2026-09-04",
+          "lots": [
+            "26",
+            "27"
+          ]
+        },
+        "sameLot": {
+          "asOf": "2026-09-05",
+          "contested": "28",
+          "xOnly": "29",
+          "yOnly": "30"
+        }
+      },
+      "expected": {
+        "sameBatch": {
+          "outcomes": [
+            "fulfilled",
+            "rejected"
+          ],
+          "refusal": [
+            "refused"
+          ],
+          "homes": [
+            {
+              "lot": "26",
+              "homes": 1,
+              "attached": true,
+              "lotStatus": "started"
+            },
+            {
+              "lot": "27",
+              "homes": 1,
+              "attached": true,
+              "lotStatus": "started"
+            }
+          ],
+          "receipts": 2
+        },
+        "sameLot": {
+          "outcomes": [
+            "fulfilled",
+            "rejected"
+          ],
+          "statuses": [
+            "committed",
+            "failed"
+          ],
+          "homesOnContestedLot": 1,
+          "contestedLotHeldByWinner": true,
+          "loser": {
+            "homes": 0,
+            "receipts": 0,
+            "committedCount": 0,
+            "exclusiveLotFree": true,
+            "refusal": "lot already has a project"
+          },
+          "winner": {
+            "homes": 2,
+            "reconciled": true
+          }
+        }
+      }
+    },
+    "failed-row-leaves-no-parties": {
+      "derivation": "Two sold houses (as of 2026-09-06), each with one PO from a vendor the org does not have and a buyer it does not have: lot 31 (land bought) with Fresh Cutover Framing A, lot 47 (land never bought) with Fresh Cutover Roofing B. Lot 31's home is built, creating its buyer and vendor. Lot 47's write creates its buyer, vendor, project, budget, PO, schedule and agreement, then fails when the lot is delivered, because its land was never recorded in Books; that transaction leaves nothing. The failure fails the batch and takes back lot 31's home with the buyer and vendor only it used: rolled back 1 home and 2 parties, none kept and no activity found, no receipts, both lots free and as they were (31 back to owned with no delivery date: the failed import's delivery is undone; 47 stays controlled), and no contact or company by any of the four names. After the land for lot 47 is bought the same batch is committed again: both homes are built and each buyer and vendor exists exactly once.",
+      "inputs": {
+        "asOf": "2026-09-06",
+        "houses": [
+          {
+            "lot": "31",
+            "buyerEmail": "cutover.failed.lot31@acceptance.example.test",
+            "vendor": "Fresh Cutover Framing A"
+          },
+          {
+            "lot": "47",
+            "buyerEmail": "cutover.failed.lot47@acceptance.example.test",
+            "vendor": "Fresh Cutover Roofing B"
+          }
+        ]
+      },
+      "expected": {
+        "afterFailure": {
+          "refusal": "land not bought",
+          "status": "failed",
+          "committedCount": 0,
+          "receipts": 0,
+          "rolledBack": {
+            "homes": 1,
+            "parties": 2,
+            "activity": [],
+            "kept_homes": 0
+          },
+          "homes": [
+            {
+              "lot": "31",
+              "homes": 0,
+              "attached": false,
+              "lotStatus": "owned"
+            },
+            {
+              "lot": "47",
+              "homes": 0,
+              "attached": false,
+              "lotStatus": "controlled"
+            }
+          ],
+          "parties": {
+            "buyers": [
+              0,
+              0
+            ],
+            "vendors": [
+              0,
+              0
+            ]
+          }
+        },
+        "retry": {
+          "status": "committed",
+          "committedCount": 2,
+          "homes": [
+            {
+              "lot": "31",
+              "homes": 1,
+              "attached": true,
+              "lotStatus": "started"
+            },
+            {
+              "lot": "47",
+              "homes": 1,
+              "attached": true,
+              "lotStatus": "started"
+            }
+          ],
+          "parties": {
+            "buyers": [
+              1,
+              1
+            ],
+            "vendors": [
+              1,
+              1
+            ]
+          },
+          "reconciled": true
+        }
+      }
+    },
+    "finalize-refuses-unreconciled-counts": {
+      "derivation": "Four houses on lots 32-35 (as of 2026-09-07), three POs each of 1,000, 1,010 and 1,020 dollars (303,000 cents a house). The commit is killed waiting on lot 34. Before it resumes, lot 32's first PO (1,000 dollars) loses its approval. The resumed attempt builds the remaining houses, so all 4 rows have receipts and 4 homes exist, but lot 32 now has 2 approved POs for 203,000 cents where its source says 3 for 303,000: the batch is 'failed', never stamped, with that one mismatch named; the counts still read 4 rows, receipts, homes and budgets and 12 POs. Committing it again re-claims it, finds nothing to build, and is refused for the same reason.",
+      "inputs": {
+        "asOf": "2026-09-07",
+        "lots": [
+          "32",
+          "33",
+          "34",
+          "35"
+        ],
+        "holdLot": "34",
+        "posPerHouse": 3
+      },
+      "expected": {
+        "resumed": {
+          "status": "failed",
+          "committedCount": 0,
+          "stamped": false,
+          "receipts": 4
+        },
+        "reconciliation": {
+          "rows": 4,
+          "receipts": 4,
+          "homes": 4,
+          "budgets": 4,
+          "purchaseOrders": 12,
+          "clean": false,
+          "mismatches": [
+            {
+              "lot": "32",
+              "check": "purchase_orders",
+              "actual": {
+                "cents": 203000,
+                "count": 2
+              },
+              "expected": {
+                "cents": 303000,
+                "count": 3
+              }
+            }
+          ]
+        },
+        "retry": {
+          "refusal": "does not reconcile",
+          "status": "failed",
+          "stamped": false
+        },
+        "homes": [
+          {
+            "lot": "32",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "33",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "34",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "35",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          }
+        ]
+      }
+    },
+    "member-cannot-forge-a-commit": {
+      "derivation": "Three one-house files as of 2026-09-08: lot 36 committed by the operator, lot 37 left staged, lot 40 staged. A member holding import.manage (org_office_admin) writes through their own signed-in API session. Setting the staged batch to 'committing' with no lease, zero attempts and the operator as its actor (what let the reaper build homes as the operator), inserting a 'committing' batch, zeroing a batch's error count, receipting a staged row, rewriting or un-receipting the committed batch's row and deleting the committed batch are each refused (42501). Changing the staged batch's update-existing option and a staged row's issues are still allowed. The batches stay staged and committed, the committed row keeps its receipt and no resume job is queued for the staged batch. Lot 40's batch is then left 'committing' with a lapsed claim under the member as its operator (who has no platform onboarding access): the reaper queues its resume job, the job finds the operator without access, fails the batch saying so and builds nothing.",
+      "inputs": {
+        "asOf": "2026-09-08",
+        "memberRole": "org_office_admin",
+        "committedLot": "36",
+        "stagedLot": "37",
+        "resumedLot": "40"
+      },
+      "expected": {
+        "forged": {
+          "claimForOperator": "refused",
+          "insertCommitting": "refused",
+          "clearErrorCount": "refused",
+          "stagedRowReceipt": "refused",
+          "committedRowParsed": "refused",
+          "committedRowStatus": "refused",
+          "deleteCommittedBatch": "refused"
+        },
+        "staging": {
+          "mapping": "allowed",
+          "stagedRowIssues": "allowed"
+        },
+        "batches": {
+          "staged": "staged",
+          "committed": "committed",
+          "committedRowStillReceipted": true,
+          "stagedBatchNeverQueued": true
+        },
+        "resumedWithoutAccess": {
+          "status": "failed",
+          "error": "operator lost access",
+          "homes": 0,
+          "receipts": 0,
+          "resumeJobs": [
+            "completed"
+          ]
+        }
+      }
+    },
+    "used-home-is-kept-not-rolled-back": {
+      "derivation": "One house file as of 2026-09-09: lots 38, 39, 43 and 48 (48's land never bought). The first attempt is killed waiting on lot 39, a lot another session holds; once released, the write that was waiting lands, so lots 38 and 39 have homes with receipts. The batch is then interrupted 5 times and the reaper fails it, keeping those homes. The site team logs a day on lot 38's home. The operator retries (attempt 6): it builds lot 43's home, and while it waits on lot 48 the site team logs a day on lot 43's home too; lot 48 then refuses because its land was never recorded in Books. Lot 43's home is the only one this attempt built, and a daily log the import did not write refers to it, so the rollback takes back nothing: 0 homes and 0 parties rolled back, 3 homes kept with their receipts, the activity named (the daily log, and the permission decision recorded when it was written), and the batch failed saying its homes are in use. Lots 38, 39 and 43 keep their started homes (38 and 43 with their one daily log each); lot 48 stays controlled. Before this fix the rollback deleted every home with a receipt, daily logs included.",
+      "inputs": {
+        "asOf": "2026-09-09",
+        "lots": [
+          "38",
+          "39",
+          "43",
+          "48"
+        ],
+        "keptLot": "38",
+        "killedAt": "39",
+        "usedLot": "43",
+        "unboughtLot": "48",
+        "maxAttempts": 5,
+        "logDate": "2026-09-10"
+      },
+      "expected": {
+        "retry": {
+          "refusal": "land not bought",
+          "status": "failed",
+          "claimed": false,
+          "error": "homes kept: in use"
+        },
+        "rolledBack": {
+          "homes": 0,
+          "parties": 0,
+          "activity": [
+            "public.authorization_audit_log",
+            "public.daily_logs"
+          ],
+          "kept_homes": 3
+        },
+        "homes": [
+          {
+            "lot": "38",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "39",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "43",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "48",
+            "homes": 0,
+            "attached": false,
+            "lotStatus": "controlled"
+          }
+        ],
+        "receipts": 3,
+        "dailyLogs": {
+          "keptHome": 1,
+          "usedHome": 1
+        }
+      }
+    },
+    "rollback-restores-the-lot-as-it-was": {
+      "derivation": "One house file as of 2026-09-10: lot 42 (land bought, so owned and not yet delivered) and lot 48 (land never bought), both sold. Lot 42's home is built: its lot is delivered (developed, delivery date stamped) and started. Lot 48 refuses, so the batch rolls back lot 42's home and its new buyer (1 home, 1 party; its PO vendor already existed). The lot goes back exactly as it was: owned, no delivery date, no home and no plan, rather than developed with the failed import's delivery date.",
+      "inputs": {
+        "asOf": "2026-09-10",
+        "lots": [
+          "42",
+          "48"
+        ]
+      },
+      "expected": {
+        "refusal": "land not bought",
+        "rolledBack": {
+          "homes": 1,
+          "parties": 1,
+          "activity": [],
+          "kept_homes": 0
+        },
+        "before": {
+          "status": "owned",
+          "delivered": false
+        },
+        "after": {
+          "status": "owned",
+          "delivered": false,
+          "home": false,
+          "plan": false
+        },
+        "unchanged": true
+      }
+    },
+    "agreement-with-executed-file-is-bound-and-immutable": {
+      "derivation": "Runs only with acceptance storage (--storage-env); BLOCKED otherwise, because an executed copy is bound only by the SHA-256 the server computes from the stored object. Two Open-WIP homes (lots 21 and 22) start evidence_missing and not executed. Both PDFs are uploaded through Documents. Lot 21's row gives the upper-cased SHA-256 of its bytes, two signers and 2026-06-12: it stages valid. Lot 22's row names its PDF but the hash of a different scan, so it is executed_file_hash_mismatch and the batch refuses to commit until that row is skipped. The commit hashes lot 21's stored bytes, which match, and binds them: one signed contract document on the agreement pointing at the file, evidence executed_file with the server-verified hash, both signers, the date and the 10,000-dollar stated deposit; the agreement counts as executed. A reviewer then attaches lot 22's rescan with two signers (one without email): its server-computed hash is recorded and verified. Changing the hash, reopening, deleting and a member write are refused. Re-importing lot 21 warns already_evidenced and is skipped_existing, leaving one document.",
+      "requires": "storage",
+      "inputs": {
+        "homes": [
+          {
+            "lot": "21",
+            "buyer": "Rosa Quintero",
+            "saleCents": 41250000,
+            "saleDate": "2026-06-12"
+          },
+          {
+            "lot": "22",
+            "buyer": "Daniel Okafor",
+            "saleCents": 39800000,
+            "saleDate": "2026-07-03"
+          }
+        ],
+        "signers": "Rosa Quintero <rosa.quintero@acceptance.example.test>; Marcus Hale <marcus.hale@acceptance.example.test>",
+        "depositCents": 1000000,
+        "file": {
+          "name": "Lot 21 purchase agreement (executed).pdf",
+          "bytes": "%PDF-1.7 executed purchase agreement, Lot 21, Rosa Quintero"
+        },
+        "wrongHash": {
+          "name": "Lot 22 purchase agreement.pdf",
+          "bytesOnFile": "%PDF-1.7 Lot 22 rescan",
+          "bytesRecorded": "%PDF-1.7 Lot 22 original scan"
+        },
+        "attachSigners": [
+          {
+            "name": "Daniel Okafor",
+            "email": "daniel.okafor@acceptance.example.test"
+          },
+          {
+            "name": "Marcus Hale",
+            "email": null
+          }
+        ]
+      },
+      "expected": {
+        "before": {
+          "firstExecuted": false,
+          "status": "evidence_missing"
+        },
+        "staged": [
+          [
+            1,
+            "valid",
+            []
+          ],
+          [
+            2,
+            "error",
+            [
+              "executed_file_hash_mismatch"
+            ]
+          ]
+        ],
+        "refusedWithError": "refused",
+        "actions": {
+          "created": 1
+        },
+        "evidence": {
+          "status": "executed_file",
+          "signers": [
+            {
+              "name": "Rosa Quintero",
+              "email": "rosa.quintero@acceptance.example.test"
+            },
+            {
+              "name": "Marcus Hale",
+              "email": "marcus.hale@acceptance.example.test"
+            }
+          ],
+          "signed_on": "2026-06-12",
+          "source_deposit_cents": 1000000,
+          "review_reason": null,
+          "reviewed": false,
+          "verified": true,
+          "document_status": "signed",
+          "document_type": "contract",
+          "source_entity_type": "contract",
+          "document_binds_file": true,
+          "document_binds_agreement": true,
+          "file_sha256_matches_upload": true
+        },
+        "attached": {
+          "status": "executed_file",
+          "verified": true,
+          "file_sha256_matches_stored_bytes": true,
+          "signers": [
+            {
+              "name": "Daniel Okafor",
+              "email": "daniel.okafor@acceptance.example.test"
+            },
+            {
+              "name": "Marcus Hale",
+              "email": null
+            }
+          ],
+          "reviewed": true,
+          "document_binds_file": true
+        },
+        "firstExecuted": true,
+        "immutability": {
+          "changeHash": "refused",
+          "reopen": "refused",
+          "delete": "refused",
+          "memberWrite": "refused"
+        },
+        "reimport": {
+          "issues": [
+            [
+              1,
+              "warning",
+              [
+                "already_evidenced"
+              ]
+            ]
+          ],
+          "actions": {
+            "skipped_existing": 1
+          }
+        },
+        "documents": 1
+      }
+    },
+    "executed-copy-hash-is-verified-from-stored-bytes": {
+      "derivation": "Lot 81's PDF row carries a checksum claiming the bytes of its executed agreement, as a direct upload's browser-supplied checksum would, but no object is stored behind it. The checksum is only a lookup hint, so the row stages valid. Committing it refuses because the server cannot read the bytes to hash them, and a reviewer attaching the same file is refused the same way: the evidence stays evidence_missing, the agreement is not executed and no imported document exists. Below the service, with a signed document on the agreement, the database refuses executed_file without a server-verified hash, and refuses a verified hash that disagrees with the file's recorded checksum (the hash of different bytes). On this stack the server hash cannot be produced because there is no object storage; the binding leg is the storage subcase above.",
+      "inputs": {
+        "home": {
+          "lot": "81",
+          "buyer": "Mateo Silva",
+          "saleCents": 38400000,
+          "saleDate": "2026-06-18"
+        },
+        "signers": "Mateo Silva <mateo.silva@acceptance.example.test>",
+        "file": {
+          "name": "Lot 81 purchase agreement.pdf",
+          "claimedBytes": "%PDF-1.7 Lot 81 executed agreement",
+          "storedBytes": "%PDF-1.7 Lot 81 something else"
+        }
+      },
+      "expected": {
+        "staged": [
+          [
+            1,
+            "valid",
+            []
+          ]
+        ],
+        "importBind": "refused",
+        "reviewBind": "refused",
+        "evidence": "evidence_missing",
+        "executed": false,
+        "importedDocuments": 0,
+        "database": {
+          "browserChecksumOnly": "refused: no server-verified hash",
+          "checksumDisagreesWithBytes": "refused: recorded checksum disagrees"
+        }
+      }
+    },
+    "agreement-without-file-blocks-closing-until-reviewed": {
+      "derivation": "Two homes (lots 31 and 32) import agreement rows with deposits of 5,000 and 7,500 dollars and no executed file: each warns evidence_missing and is updated with its stated deposit. Lot 31's closing is scheduled; its agreement_executed item can be neither completed nor waived and the agreement does not count as executed. The review queue lists both homes. A sales agent lacks closing.manage and a 2-character reason is too short. The owner accepts lot 31 with a reason: it counts as executed and the gate completes; the evidence keeps the reason and reviewer and has no document. Accepting it again is refused as already reviewed. Lot 32 stays evidence_missing and is the only home left in the queue.",
+      "inputs": {
+        "homes": [
+          {
+            "lot": "31",
+            "buyer": "Priya Raman",
+            "saleCents": 38700000,
+            "saleDate": "2026-05-20",
+            "depositCents": 500000
+          },
+          {
+            "lot": "32",
+            "buyer": "Tomas Lindqvist",
+            "saleCents": 40100000,
+            "saleDate": "2026-06-02",
+            "depositCents": 750000
+          }
+        ],
+        "closingDate": "2026-11-20",
+        "reason": "Paper original held by the closing attorney; buyer confirmed terms in writing"
+      },
+      "expected": {
+        "staged": [
+          [
+            1,
+            "warning",
+            [
+              "evidence_missing"
+            ]
+          ],
+          [
+            2,
+            "warning",
+            [
+              "evidence_missing"
+            ]
+          ]
+        ],
+        "actions": {
+          "updated": 2
+        },
+        "blocked": {
+          "executed": false,
+          "complete": "refused",
+          "waive": "refused"
+        },
+        "queue": {
+          "total": 2,
+          "homes": [
+            "Cypress Landing — Lot 31",
+            "Cypress Landing — Lot 32"
+          ],
+          "deposits": [
+            500000,
+            750000
+          ]
+        },
+        "refusals": {
+          "salesAgent": "refused",
+          "shortReason": "refused"
+        },
+        "afterAccept": {
+          "executed": true,
+          "complete": "allowed"
+        },
+        "acceptedEvidence": {
+          "status": "accepted",
+          "signers": [],
+          "signed_on": null,
+          "source_deposit_cents": 500000,
+          "review_reason": "Paper original held by the closing attorney; buyer confirmed terms in writing",
+          "reviewed": true,
+          "document_status": null
+        },
+        "waitingEvidence": {
+          "status": "evidence_missing",
+          "signers": [],
+          "signed_on": null,
+          "source_deposit_cents": 750000,
+          "review_reason": null,
+          "reviewed": false,
+          "document_status": null
+        },
+        "reviewedAgain": "refused",
+        "queueAfter": [
+          "Cypress Landing — Lot 32"
+        ]
+      }
+    },
+    "agreement-evidence-and-history-stay-in-the-reviewers-divisions": {
+      "derivation": "Divisions Gulf Coast and Atlantic; lot 91 is in Gulf Coast and lot 92 in Atlantic, each with an imported agreement left evidence_missing and one Foundation inspection record. A bookkeeper (closing.manage) and a superintendent (inspection.write) are each assigned to Atlantic only. The bookkeeper's queue lists only lot 92. Accepting lot 91 is refused for missing closing.manage on that home; accepting lot 92 succeeds, so 91 stays evidence_missing and 92 is accepted. With row-level security the bookkeeper and the superintendent each read 1 evidence row and 1 history record, and the owner reads 2 of each. The bookkeeper's reconciliation counts 1 imported agreement (1 accepted, 0 missing) and no unlinked-deposit count, because a deposit on no home is in no division. The superintendent's inspection reconciliation covers 1 home.",
+      "inputs": {
+        "divisions": [
+          {
+            "name": "Gulf Coast",
+            "code": "GC",
+            "region": "Tampa Bay"
+          },
+          {
+            "name": "Atlantic",
+            "code": "AT",
+            "region": "Treasure Coast"
+          }
+        ],
+        "reviewerDivision": "Atlantic",
+        "homes": [
+          {
+            "lot": "91",
+            "buyer": "Elena Duarte",
+            "saleCents": 36900000,
+            "saleDate": "2026-07-07",
+            "division": "Gulf Coast"
+          },
+          {
+            "lot": "92",
+            "buyer": "Kofi Mensah",
+            "saleCents": 37400000,
+            "saleDate": "2026-07-21",
+            "division": "Atlantic"
+          }
+        ],
+        "inspectedOn": "2026-09-10",
+        "reason": "Executed original filed with the closing attorney; terms confirmed in writing"
+      },
+      "expected": {
+        "queue": [
+          "Cypress Landing — Lot 92"
+        ],
+        "outsideAccept": "refused: missing closing.manage",
+        "insideAccept": "allowed",
+        "statuses": {
+          "91": "evidence_missing",
+          "92": "accepted"
+        },
+        "reads": {
+          "reviewer": {
+            "evidence": 1,
+            "history": 1
+          },
+          "superintendent": {
+            "evidence": 1,
+            "history": 1
+          },
+          "owner": {
+            "evidence": 2,
+            "history": 2
+          }
+        },
+        "reconciliation": {
+          "imported": 1,
+          "accepted": 1,
+          "evidenceMissing": 0,
+          "unlinkedOpeningDeposits": null,
+          "inspectionHomes": 1
+        }
+      }
+    },
+    "deposits-link-and-reconcile-per-home": {
+      "derivation": "An opening batch on 2026-09-30 posts customer deposits on each home: lot 41 two deposits of 5,000 and 2,500, lot 42 one of 10,000, lot 43 none, plus one 2,500 deposit with no home, against 22,500 in operating cash. The agreements file states 7,500, 12,000 and 0. Arc holds 7,500, 10,000 and 0 received per home, so three homes reconcile with two matched; source 19,500 against Arc 17,500; lot 42 is the mismatch (12,000 stated, 10,000 held); and one opening deposit is unlinked to any home.",
+      "inputs": {
+        "depositDate": "2026-09-15",
+        "unlinkedDepositCents": 250000,
+        "homes": [
+          {
+            "lot": "41",
+            "buyer": "Grace Mbeki",
+            "saleCents": 36500000,
+            "saleDate": "2026-07-10",
+            "arcDeposits": [
+              500000,
+              250000
+            ],
+            "statedDepositCents": 750000
+          },
+          {
+            "lot": "42",
+            "buyer": "Henry Castillo",
+            "saleCents": 37200000,
+            "saleDate": "2026-08-01",
+            "arcDeposits": [
+              1000000
+            ],
+            "statedDepositCents": 1200000
+          },
+          {
+            "lot": "43",
+            "buyer": "Ana Ferreira",
+            "saleCents": 35900000,
+            "saleDate": "2026-08-22",
+            "arcDeposits": [],
+            "statedDepositCents": 0
+          }
+        ]
+      },
+      "expected": {
+        "depositsByHome": {
+          "41": 750000,
+          "42": 1000000,
+          "43": 0
+        },
+        "reconciliation": {
+          "homes": 3,
+          "matched": 2,
+          "sourceTotals": {
+            "deposits_cents": 1950000
+          },
+          "arcTotals": {
+            "deposits_cents": 1750000
+          },
+          "unlinkedOpeningDeposits": 1,
+          "mismatches": [
+            [
+              "42",
+              1200000,
+              1000000
+            ]
+          ]
+        }
+      }
+    },
+    "selections-cutoffs-and-balances-reconcile": {
+      "derivation": "A community catalog of flooring (5,950, repriced to 6,500 after the buyer chose it, so revision 2), cabinets (12,000) and quartz (4,800), and one 'Interior finishes' group. Lot 51 chose flooring at 5,950 (warns price_differs_from_catalog) and cabinets from the Q2 sheet, confirmed; lot 52 chose quartz from the Q3 sheet, selected; an unknown option code is unresolved_option and skipped. Three selections land with the given price and the option cost, the current revision, the date and price sheet; confirmed ones are locked. Cutoffs land as manual_override: lot 51's past and locked, lot 52's 2026-11-30 open. The design coordinator cannot commit the totals file because lot 51 carries a 17,950 change-order balance that needs sales.manage; the owner can, and it amends lot 51's agreement once from 420,000 to 437,950. Re-importing the selections skips all three. Totals file: lot 51 2 selections, 17,950, balance 17,950 (matches); lot 52 states 2 selections totaling 9,600 while Arc holds 1 at 4,800, so lot 52 is the mismatch in count and total.",
+      "inputs": {
+        "group": "Interior finishes",
+        "options": [
+          {
+            "sku": "FLR-LVP-2",
+            "category": "Flooring",
+            "name": "LVP plank, level 2",
+            "priceCents": 595000,
+            "repricedCents": 650000,
+            "costCents": 410000
+          },
+          {
+            "sku": "CAB-SHK-1",
+            "category": "Cabinets",
+            "name": "Shaker cabinets, white",
+            "priceCents": 1200000,
+            "costCents": 800000
+          },
+          {
+            "sku": "CTR-QTZ-3",
+            "category": "Countertops",
+            "name": "Quartz, level 3",
+            "priceCents": 480000,
+            "costCents": 300000
+          }
+        ],
+        "homes": [
+          {
+            "lot": "51",
+            "buyer": "Olivia Brandt",
+            "saleCents": 42000000,
+            "saleDate": "2026-06-05"
+          },
+          {
+            "lot": "52",
+            "buyer": "Samuel Adeyemi",
+            "saleCents": 39900000,
+            "saleDate": "2026-07-18"
+          }
+        ],
+        "selections": [
+          {
+            "lot": "51",
+            "sku": "FLR-LVP-2",
+            "priceCents": 595000,
+            "priceVersion": "2026 Q2 price sheet",
+            "selectedOn": "2026-06-20",
+            "status": "confirmed"
+          },
+          {
+            "lot": "51",
+            "sku": "CAB-SHK-1",
+            "priceCents": 1200000,
+            "priceVersion": "2026 Q2 price sheet",
+            "selectedOn": "2026-06-20"
+          },
+          {
+            "lot": "52",
+            "sku": "CTR-QTZ-3",
+            "priceCents": 480000,
+            "priceVersion": "2026 Q3 price sheet",
+            "selectedOn": "2026-08-02",
+            "status": "selected"
+          }
+        ],
+        "cutoffs": [
+          {
+            "lot": "51",
+            "date": "2026-07-15",
+            "locked": true
+          },
+          {
+            "lot": "52",
+            "date": "2026-11-30",
+            "locked": false
+          }
+        ],
+        "totals": [
+          {
+            "lot": "51",
+            "count": 2,
+            "totalCents": 1795000,
+            "balanceCents": 1795000
+          },
+          {
+            "lot": "52",
+            "count": 2,
+            "totalCents": 960000,
+            "balanceCents": 0
+          }
+        ]
+      },
+      "expected": {
+        "selectionIssues": [
+          [
+            1,
+            "warning",
+            [
+              "price_differs_from_catalog"
+            ]
+          ],
+          [
+            2,
+            "valid",
+            []
+          ],
+          [
+            3,
+            "valid",
+            []
+          ],
+          [
+            4,
+            "error",
+            [
+              "unresolved_option"
+            ]
+          ]
+        ],
+        "selectionActions": {
+          "created": 3
+        },
+        "selections": [
+          {
+            "lot": "51",
+            "sku": "CAB-SHK-1",
+            "status": "confirmed",
+            "price": 1200000,
+            "cost": 800000,
+            "revision": 1,
+            "selected_on": "2026-06-20",
+            "locked": true,
+            "price_version": "2026 Q2 price sheet"
+          },
+          {
+            "lot": "51",
+            "sku": "FLR-LVP-2",
+            "status": "confirmed",
+            "price": 595000,
+            "cost": 410000,
+            "revision": 2,
+            "selected_on": "2026-06-20",
+            "locked": true,
+            "price_version": "2026 Q2 price sheet"
+          },
+          {
+            "lot": "52",
+            "sku": "CTR-QTZ-3",
+            "status": "selected",
+            "price": 480000,
+            "cost": 300000,
+            "revision": 1,
+            "selected_on": "2026-08-02",
+            "locked": false,
+            "price_version": "2026 Q3 price sheet"
+          }
+        ],
+        "cutoffs": [
+          {
+            "lot": "51",
+            "cutoff": "2026-07-15",
+            "source": "manual_override",
+            "status": "locked"
+          },
+          {
+            "lot": "52",
+            "cutoff": "2026-11-30",
+            "source": "manual_override",
+            "status": "open"
+          }
+        ],
+        "designAmends": "refused",
+        "amendments": [
+          {
+            "lot": "51",
+            "kind": "original",
+            "delta": 42000000,
+            "total": 42000000
+          },
+          {
+            "lot": "51",
+            "kind": "amendment",
+            "delta": 1795000,
+            "total": 43795000
+          },
+          {
+            "lot": "52",
+            "kind": "original",
+            "delta": 39900000,
+            "total": 39900000
+          }
+        ],
+        "reimport": {
+          "skipped_existing": 3
+        },
+        "reconciliation": {
+          "homes": 2,
+          "matched": 1,
+          "sourceTotals": {
+            "selections": 4,
+            "selections_total_cents": 2755000,
+            "change_order_balance_cents": 1795000
+          },
+          "arcTotals": {
+            "selections": 3,
+            "selections_total_cents": 2275000,
+            "change_order_balance_cents": 1795000
+          },
+          "mismatches": [
+            [
+              "52",
+              [
+                "selections",
+                "selections_total_cents"
+              ]
+            ]
+          ]
+        },
+        "homes": 2
+      }
+    },
+    "concurrent-balance-imports-amend-once": {
+      "derivation": "Lot 55's agreement is 405,000 dollars. Two totals batches each carry the same 12,500-dollar change-order balance and are committed at once. One creates the balance and the other matches it as skipped_existing. The home has exactly one imported balance, and the agreement has its original version and one amendment to 417,500. A direct insert of a second imported balance for the home is refused by the one-per-home index.",
+      "inputs": {
+        "home": {
+          "lot": "55",
+          "buyer": "Hannah Weiss",
+          "saleCents": 40500000,
+          "saleDate": "2026-07-01"
+        },
+        "balanceCents": 1250000
+      },
+      "expected": {
+        "outcomes": [
+          "{\"created\":1}",
+          "{\"skipped_existing\":1}"
+        ],
+        "balances": 1,
+        "agreement": [
+          {
+            "kind": "original",
+            "delta": 40500000,
+            "total": 40500000
+          },
+          {
+            "kind": "amendment",
+            "delta": 1250000,
+            "total": 41750000
+          }
+        ],
+        "duplicate": "refused: one imported balance per home"
+      }
+    },
+    "inspection-history-is-read-only-and-the-lifecycle-stays-the-only-path": {
+      "derivation": "The cutover rule: past inspections import as read-only history records, never as inspections. Lot 61 brings Foundation pass on 2026-07-08 and Framing failed on 2026-08-19 then passed on 2026-08-26 (results normalized to pass and fail); an Insulation inspection dated 2027-01-15 is inspected_in_future and skipped. The superintendent (inspection.write) commits three records. Editing, deleting and a member insert are refused, and the home has no inspections or obligations. A new framing re-inspection starts through the lifecycle (number 1, in progress), while writing a completed inspection directly is refused without its atomic receipt. Re-importing skips all three, and the reconciliation matches 3 of 3 on one home.",
+      "inputs": {
+        "home": {
+          "lot": "61",
+          "buyer": "Leah Novak",
+          "saleCents": 37800000,
+          "saleDate": "2026-05-02"
+        },
+        "history": [
+          {
+            "type": "Foundation",
+            "on": "2026-07-08",
+            "result": "Pass",
+            "inspector": "County — J. Ortiz",
+            "reference": "BLD-26-1182"
+          },
+          {
+            "type": "Framing",
+            "on": "2026-08-19",
+            "result": "Failed",
+            "inspector": "County — J. Ortiz",
+            "reference": "BLD-26-1182"
+          },
+          {
+            "type": "Framing",
+            "on": "2026-08-26",
+            "result": "pass",
+            "inspector": "County — J. Ortiz",
+            "reference": "BLD-26-1182"
+          }
+        ],
+        "future": {
+          "type": "Insulation",
+          "on": "2027-01-15",
+          "result": "pass"
+        }
+      },
+      "expected": {
+        "staged": [
+          [
+            1,
+            "valid",
+            []
+          ],
+          [
+            2,
+            "valid",
+            []
+          ],
+          [
+            3,
+            "valid",
+            []
+          ],
+          [
+            4,
+            "error",
+            [
+              "inspected_in_future"
+            ]
+          ]
+        ],
+        "actions": {
+          "created": 3
+        },
+        "history": [
+          {
+            "type": "Foundation",
+            "on": "2026-07-08",
+            "result": "pass",
+            "inspector": "County — J. Ortiz"
+          },
+          {
+            "type": "Framing",
+            "on": "2026-08-19",
+            "result": "fail",
+            "inspector": "County — J. Ortiz"
+          },
+          {
+            "type": "Framing",
+            "on": "2026-08-26",
+            "result": "pass",
+            "inspector": "County — J. Ortiz"
+          }
+        ],
+        "immutability": {
+          "edit": "refused",
+          "delete": "refused",
+          "memberInsert": "refused"
+        },
+        "afterImport": {
+          "inspections": 0,
+          "obligations": 0
+        },
+        "newInspection": {
+          "status": "in_progress",
+          "number": 1
+        },
+        "forgedCompletion": "refused",
+        "afterNewInspection": {
+          "inspections": 1,
+          "obligations": 0
+        },
+        "reimport": {
+          "skipped_existing": 3
+        },
+        "reconciliation": {
+          "homes": 1,
+          "matched": 1,
+          "sourceTotals": {
+            "inspections": 3
+          },
+          "arcTotals": {
+            "inspections": 3
+          }
+        }
+      }
+    },
+    "each-import-takes-its-owners-permission": {
+      "derivation": "Each cutover importer takes its domain's permission instead of import.manage. Agreements need closing.manage, which the sales agent and warranty manager lack; selections need design_studio.manage, which the superintendent lacks; inspection history needs inspection.write, which the design coordinator and sales agent lack. The owner, superintendent and design coordinator each stage their own. The reconciliation shows the owner every section, the sales agent none, the superintendent only inspections, and the warranty manager only warranty. The installed base the warranty manager imports (two homes closed 2025-11-14 and 2026-02-27 on 12/24/120-month terms) appears in it as two covered and active homes with no exceptions.",
+      "inputs": {
+        "home": {
+          "lot": "71",
+          "buyer": "Noah Petersen",
+          "saleCents": 36100000,
+          "saleDate": "2026-06-30"
+        },
+        "warrantyHomes": [
+          {
+            "lot": "72",
+            "buyer": "Ivy Chen",
+            "closed": "2025-11-14"
+          },
+          {
+            "lot": "73",
+            "buyer": "Ravi Kapoor",
+            "closed": "2026-02-27"
+          }
+        ]
+      },
+      "expected": {
+        "refused": {
+          "agreementsBySales": "closing.manage",
+          "agreementsByWarranty": "closing.manage",
+          "selectionsBySuperintendent": "design_studio.manage",
+          "inspectionsByDesign": "inspection.write",
+          "inspectionsBySales": "inspection.write"
+        },
+        "allowed": {
+          "agreementsByOwner": "staged",
+          "inspectionsBySuperintendent": "staged",
+          "selectionsByDesign": "staged"
+        },
+        "sections": {
+          "owner": {
+            "agreements": true,
+            "selections": true,
+            "inspections": true,
+            "warranty": true
+          },
+          "sales": {
+            "agreements": false,
+            "selections": false,
+            "inspections": false,
+            "warranty": false
+          },
+          "superintendent": {
+            "agreements": false,
+            "selections": false,
+            "inspections": true,
+            "warranty": false
+          },
+          "warranty": {
+            "agreements": false,
+            "selections": false,
+            "inspections": false,
+            "warranty": true
+          }
+        },
+        "warrantyInCutover": {
+          "homes": 2,
+          "covered": 2,
+          "active": 2,
+          "expired": 0,
+          "exceptionCount": 0,
+          "clean": true
+        }
+      }
+    }
+  }
+}

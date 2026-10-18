@@ -96,7 +96,7 @@ interface ProjectSettingsSheetProps {
 }
 
 export function ProjectSettingsSheet({ project, contract, contacts = [], open, onOpenChange, onSave, initialStep = "details" }: ProjectSettingsSheetProps) {
-  const { productTier } = usePageTitle()
+  const { productTier, businessProfile } = usePageTitle()
   const initialLocation = useMemo(() => {
     const location = (project as any).location as Record<string, any> | undefined
     if (location) {
@@ -119,7 +119,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   )
   const [propertyType, setPropertyType] = useState<Project["property_type"] | undefined>(project.property_type)
   const posture = getProjectPosture(propertyType, productTier)
-  const terms = terminology(posture)
+  const terms = terminology(posture, businessProfile)
   const [projectType, setProjectType] = useState<Project["project_type"] | undefined>(project.project_type)
   const [superintendentId, setSuperintendentId] = useState<string | null>(project.superintendent_id ?? null)
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
@@ -392,7 +392,13 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
         }
       }
       if (isProductionProjectPosture(posture) && superintendentId !== (project.superintendent_id ?? null)) {
-        unwrapAction(await setProjectSuperintendentAction(project.id, superintendentId))
+        const assignment = unwrapAction(await setProjectSuperintendentAction(project.id, superintendentId))
+        if (!assignment.assigned) {
+          toast.error("Superintendent not assigned", {
+            description: `They already run ${assignment.houses} houses, at their limit of ${assignment.limit}. ${assignment.canOverride ? "Assign past it with a reason from the house's start package." : "A starts coordinator can assign past it with a reason."}`,
+          })
+          return
+        }
       }
       toast.success("Project updated")
       onOpenChange(false)

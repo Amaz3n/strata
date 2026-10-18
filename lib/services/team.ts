@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { createHash, randomBytes } from "node:crypto"
 
-import type { MemberPermissionOverride, PermissionOption, TeamMember, OrgRole, OrgRoleOption } from "@/lib/types"
+import type { MemberPermissionOverride, TeamMember, OrgRole, OrgRoleOption } from "@/lib/types"
 import {
   inviteMemberSchema,
   memberStatusSchema,
@@ -12,12 +12,20 @@ import {
   type InviteMemberInput,
   type UpdateMemberLaborSettingsInput,
 } from "@/lib/validation/team"
+import { TEAM_PERMISSION_OPTIONS } from "@/lib/permission-catalog"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { sendInviteEmail } from "@/lib/services/mailer"
-import { authorize, requireAuthorization } from "@/lib/services/authorization"
+import {
+  authorize,
+  getDivisionAccessForUser,
+  getEffectiveOrgPermissions,
+  requireAuthorization,
+} from "@/lib/services/authorization"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
+import { logger } from "@/lib/logging/logger"
 
 async function resolveRoleId(client: SupabaseClient, role: OrgRole) {
   const { data, error } = await client.from("roles").select("id").eq("scope", "org").eq("key", role).maybeSingle()
@@ -135,120 +143,6 @@ function defaultRoleDescription(roleKey: string) {
   return descriptions[roleKey]
 }
 
-export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
-  { key: "import.manage", label: "Manage staged data imports", category: "Business Ops" },
-  { key: "sales.read", label: "View sales pipeline and closings", category: "Plans & Production" },
-  { key: "sales.manage", label: "Manage reservations and agreements", category: "Plans & Production" },
-  { key: "closing.manage", label: "Schedule and settle closings", category: "Plans & Production" },
-  { key: "start.read", label: "View starts and release board", category: "Plans & Production" },
-  { key: "start.write", label: "Manage start packages and gates", category: "Plans & Production" },
-  { key: "start.release", label: "Approve, waive, and release starts", category: "Plans & Production" },
-  { key: "start.slots", label: "Edit even-flow slots", category: "Plans & Production" },
-  { key: "price_book.read", label: "View purchasing and price book", category: "Purchasing" },
-  { key: "price_book.write", label: "Manage price agreements", category: "Purchasing" },
-  { key: "po.generate", label: "Generate purchase orders", category: "Purchasing" },
-  { key: "po_exception.resolve", label: "Resolve PO exceptions", category: "Purchasing" },
-  { key: "vpo.request", label: "Request VPOs", category: "Purchasing" },
-  { key: "vpo.approve", label: "Approve standard VPOs", category: "Purchasing" },
-  { key: "vpo.approve_large", label: "Approve large VPOs and backcharges", category: "Purchasing" },
-  { key: "po_completion.report", label: "Report PO completion", category: "Purchasing" },
-  { key: "po_completion.verify", label: "Verify PO completion", category: "Purchasing" },
-  { key: "selections.read", label: "View selections", category: "Plans & Production" },
-  { key: "selections.write", label: "Choose and confirm selections", category: "Plans & Production" },
-  { key: "selections.catalog.manage", label: "Manage option catalog", category: "Plans & Production" },
-  { key: "selections.cutoff.override", label: "Override selection cutoffs", category: "Plans & Production" },
-  { key: "design_studio.manage", label: "Manage Design Studio", category: "Plans & Production" },
-  { key: "plan.read", label: "View plan library", category: "Plans & Production" },
-  { key: "plan.write", label: "Manage draft plans", category: "Plans & Production" },
-  { key: "plan.release", label: "Release plan versions", category: "Plans & Production" },
-  { key: "plan.instantiate", label: "Instantiate plans on lots", category: "Plans & Production" },
-  { key: "community.read", label: "View communities and lots", category: "Land & Communities" },
-  { key: "community.write", label: "Manage communities and takedowns", category: "Land & Communities" },
-  { key: "lot.write", label: "Manage lots and lot status", category: "Land & Communities" },
-  { key: "division.manage", label: "Manage divisions and scope", category: "Land & Communities" },
-  { key: "project.create", label: "Create projects", category: "Project Access" },
-  { key: "project.archive", label: "Archive projects", category: "Project Access" },
-  { key: "project.settings.update", label: "Manage project settings", category: "Project Access" },
-  { key: "docs.share", label: "Share documents", category: "Documents & Sharing" },
-  { key: "docs.delete", label: "Delete documents", category: "Documents & Sharing" },
-  { key: "portal.access.manage", label: "Manage client/sub access", category: "Documents & Sharing" },
-  { key: "drawing.upload", label: "Upload drawings", category: "Field Operations" },
-  { key: "schedule.publish", label: "Publish schedule", category: "Field Operations" },
-  { key: "daily_log.approve", label: "Approve daily logs", category: "Field Operations" },
-  { key: "time.read", label: "View time entries", category: "Field Operations" },
-  { key: "time.write", label: "Create/edit time entries", category: "Field Operations" },
-  { key: "rfi.close", label: "Close RFIs", category: "Field Operations" },
-  { key: "submittal.review", label: "Review submittals", category: "Field Operations" },
-  { key: "submittal.approve", label: "Approve submittals", category: "Field Operations" },
-  { key: "submittal.route", label: "Route submittal reviews", category: "Field Operations" },
-  { key: "meeting.write", label: "Manage meeting minutes", category: "Field Operations" },
-  { key: "transmittal.write", label: "Manage transmittals", category: "Documents & Sharing" },
-  { key: "spec.write", label: "Manage specifications", category: "Documents & Sharing" },
-  { key: "punch.close", label: "Close punch items", category: "Field Operations" },
-  { key: "inspection.write", label: "Run inspections", category: "Field Operations" },
-  { key: "safety.read", label: "View safety incidents", category: "Field Operations" },
-  { key: "safety.write", label: "Record safety incidents & observations", category: "Field Operations" },
-  { key: "quick_capture.create", label: "Use field quick capture", category: "Field Operations" },
-  { key: "warranty.read", label: "View warranty requests", category: "Field Operations" },
-  { key: "warranty.write", label: "Manage warranty requests and visits", category: "Field Operations" },
-  { key: "warranty.manage", label: "Manage warranty coverage and SLAs", category: "Field Operations" },
-  { key: "warranty.backcharge", label: "Manage warranty backcharges", category: "Financials" },
-  { key: "budget.read", label: "View budgets", category: "Financials" },
-  { key: "budget.write", label: "Edit budgets", category: "Financials" },
-  { key: "budget.approve", label: "Approve budget transfers", category: "Financials" },
-  { key: "commitment.read", label: "View commitments", category: "Financials" },
-  { key: "commitment.write", label: "Manage commitments", category: "Financials" },
-  { key: "commitment.approve", label: "Approve commitments", category: "Financials" },
-  { key: "change_order.approve", label: "Approve change orders", category: "Financials" },
-  { key: "change_events.read", label: "View change events", category: "Financials" },
-  { key: "change_events.write", label: "Manage change events and RFQs", category: "Financials" },
-  { key: "change_events.convert", label: "Convert change events", category: "Financials" },
-  { key: "invoice.read", label: "View invoices", category: "Financials" },
-  { key: "invoice.write", label: "Create/edit invoices", category: "Financials" },
-  { key: "invoice.approve", label: "Approve invoices", category: "Financials" },
-  { key: "invoice.send", label: "Send invoices", category: "Financials" },
-  { key: "bill.read", label: "View bills/payables", category: "Financials" },
-  { key: "bill.write", label: "Create/edit bills", category: "Financials" },
-  { key: "bill.approve", label: "Approve bills", category: "Financials" },
-  { key: "payment.release", label: "Release payments", category: "Financials" },
-  { key: "payment.approve_run", label: "Approve Arc Pay runs", category: "Financials" },
-  { key: "payment.manage_rail", label: "Manage payment rail settings", category: "Financials" },
-  { key: "payment.reconcile", label: "Reconcile Arc Pay activity", category: "Financials" },
-  { key: "payment.override_hold", label: "Override payment holds", category: "Financials" },
-  { key: "draw.approve", label: "Approve draws", category: "Financials" },
-  { key: "sov.write", label: "Edit schedule of values", category: "Financials" },
-  { key: "payapp.write", label: "Manage pay applications", category: "Financials" },
-  { key: "payroll.write", label: "Manage certified payroll", category: "Financials" },
-  { key: "retainage.manage", label: "Manage retainage", category: "Financials" },
-  { key: "books.read", label: "View Arc Books and statements", category: "Arc Books" },
-  { key: "books.manage", label: "Manage Books setup and opening balances", category: "Arc Books" },
-  { key: "books.adjust", label: "Create and approve accounting adjustments", category: "Arc Books" },
-  { key: "books.reconcile", label: "Manage bank and accounting reconciliations", category: "Arc Books" },
-  { key: "books.close", label: "Review and close accounting periods", category: "Arc Books" },
-  { key: "books.reopen", label: "Reopen closed accounting periods", category: "Arc Books" },
-  { key: "books.cutover", label: "Approve ledger-authority cutover", category: "Arc Books" },
-  { key: "books.export", label: "Export books and accountant packages", category: "Arc Books" },
-  { key: "books.tax", label: "Manage tax readiness", category: "Arc Books" },
-  { key: "pipeline.read", label: "View pipeline", category: "Business Ops" },
-  { key: "pipeline.write", label: "Manage pipeline", category: "Business Ops" },
-  { key: "directory.read", label: "View directory", category: "Business Ops" },
-  { key: "directory.write", label: "Manage directory", category: "Business Ops" },
-  { key: "prequal.review", label: "Review prequalifications", category: "Business Ops" },
-  { key: "compliance.read", label: "View vendor compliance", category: "Business Ops" },
-  { key: "compliance.manage", label: "Set and waive compliance requirements", category: "Business Ops" },
-  { key: "compliance.review", label: "Approve vendor compliance documents", category: "Business Ops" },
-  { key: "bid.read", label: "View bids", category: "Business Ops" },
-  { key: "bid.write", label: "Manage bids", category: "Business Ops" },
-  { key: "proposal.read", label: "View proposals", category: "Business Ops" },
-  { key: "proposal.write", label: "Manage proposals", category: "Business Ops" },
-  { key: "signature.read", label: "View signatures", category: "Business Ops" },
-  { key: "signature.send", label: "Send signatures", category: "Business Ops" },
-  { key: "report.read", label: "View reports", category: "Business Ops" },
-  { key: "report.schedule", label: "Schedule report delivery", category: "Business Ops" },
-  { key: "report.export.manage", label: "Manage report export tokens", category: "Business Ops" },
-  { key: "correspondence.read", label: "View project correspondence", category: "Documents & Sharing" },
-  { key: "correspondence.write", label: "Manage project correspondence", category: "Documents & Sharing" },
-]
 
 const CUSTOMIZABLE_PERMISSION_KEYS = new Set(TEAM_PERMISSION_OPTIONS.map((option) => option.key))
 
@@ -397,6 +291,23 @@ async function mapProjectCounts(supabase: SupabaseClient, orgId: string) {
   }, {})
 }
 
+/**
+ * Who is allowed to hand out membership. The default is an org member, held to
+ * the in-org reach rules. Platform provisioning is the one path where the actor
+ * (Arc staff) has no membership in a brand-new org; it is re-verified here
+ * against the platform permission, so no caller can claim it without holding it.
+ */
+export type InviteAuthority = { kind: "platform_provisioning" }
+
+const PLATFORM_PROVISIONING_PERMISSION = "platform.billing.manage"
+
+export async function assertPlatformProvisioningAuthority(actorUserId: string) {
+  const user = await requireAnyPlatformPermission([PLATFORM_PROVISIONING_PERMISSION])
+  if (user.id !== actorUserId) {
+    throw new Error("Platform provisioning must be performed by the signed-in operator.")
+  }
+}
+
 export async function createOrgMemberInvite(input: {
   supabase: SupabaseClient
   orgId: string
@@ -405,8 +316,33 @@ export async function createOrgMemberInvite(input: {
   role: OrgRole
   fullName?: string | null
   sendEmail?: boolean
+  projectScope?: "all" | "assigned"
+  divisionScope?: "all" | "assigned"
+  divisionIds?: string[]
+  authority?: InviteAuthority
 }) {
   const email = input.email.trim().toLowerCase()
+  const projectScope = input.projectScope ?? "all"
+  const divisionScope = input.divisionScope ?? "all"
+  const divisionIds = input.divisionIds ?? []
+  // Every path that creates a membership -- the importer, org provisioning and
+  // the team form -- is refused here before a user, a membership or an email exists.
+  const roleId = await resolveRoleId(input.supabase, input.role)
+  if (input.authority?.kind === "platform_provisioning") {
+    await assertPlatformProvisioningAuthority(input.actorUserId)
+  } else {
+    await assertInviteWithinReach({
+      orgId: input.orgId,
+      userId: input.actorUserId,
+      supabase: input.supabase,
+      client: input.supabase,
+      roleId,
+      grantedPermissions: [],
+      projectScope,
+      divisionScope,
+      divisionIds,
+    })
+  }
   const { data: existingUser } = await input.supabase
     .from("app_users")
     .select("id, email, full_name, avatar_url")
@@ -433,7 +369,6 @@ export async function createOrgMemberInvite(input: {
     throw new Error(`Failed to create invited user profile for ${email}: ${profileError.message}`)
   }
 
-  const roleId = await resolveRoleId(input.supabase, input.role)
   const inviteToken = generateInviteToken()
   const inviteTokenExpiresAt = getInviteTokenExpiry()
 
@@ -444,6 +379,8 @@ export async function createOrgMemberInvite(input: {
       user_id: targetUserId,
       role_id: roleId,
       status: "invited",
+      project_scope: projectScope,
+      division_scope: divisionScope,
       invited_by: input.actorUserId,
       invite_token_hash: hashInviteToken(inviteToken),
       invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
@@ -460,6 +397,16 @@ export async function createOrgMemberInvite(input: {
 
   if (error || !data) {
     throw new Error(`Failed to create membership for ${email}: ${error?.message}`)
+  }
+
+  if (divisionScope === "assigned") {
+    await replaceMembershipDivisions({
+      client: input.supabase,
+      membershipId: data.id as string,
+      orgId: input.orgId,
+      scope: divisionScope,
+      divisionIds,
+    })
   }
 
   if (input.sendEmail !== false) {
@@ -893,6 +840,195 @@ export async function updateMemberProfile({
   return data
 }
 
+async function rolePermissionKeys(client: SupabaseClient, roleId: string): Promise<string[]> {
+  const { data, error } = await client.from("role_permissions").select("permission_key").eq("role_id", roleId)
+  if (error) throw new Error(`Failed to resolve role permissions: ${error.message}`)
+  return (data ?? []).map((row) => row.permission_key as string)
+}
+
+/**
+ * Nobody hands out authority they do not hold. An org administrator holds the
+ * whole tenant by definition and is exempt; everyone else must already hold
+ * every key the target role (or explicit grant) carries. A refusal is written
+ * to authorization_audit_log through authorize(), like every other denial.
+ */
+async function assertActorHoldsPermissions({
+  orgId,
+  userId,
+  supabase,
+  required,
+  resourceId,
+}: {
+  orgId: string
+  userId: string
+  supabase: SupabaseClient
+  required: string[]
+  resourceId: string
+}) {
+  const held = new Set(await getEffectiveOrgPermissions(orgId, userId))
+  if (held.has("org.admin")) return
+  const missing = Array.from(new Set(required)).filter((key) => !held.has(key))
+  if (missing.length === 0) return
+
+  const decision = await authorize({
+    permission: missing[0],
+    userId,
+    orgId,
+    supabase,
+    logDecision: true,
+    resourceType: "membership",
+    resourceId,
+  })
+  // Platform operators hold every key through their platform membership.
+  if (decision.allowed) return
+  throw new Error(
+    `You cannot grant access you do not hold yourself (${missing.slice(0, 3).join(", ")}). Ask an organization administrator.`,
+  )
+}
+
+/** A division-limited inviter can only hand out a subset of their own divisions. */
+async function assertDivisionGrantWithinReach({
+  orgId,
+  userId,
+  divisionScope,
+  divisionIds,
+}: {
+  orgId: string
+  userId: string
+  divisionScope: "all" | "assigned"
+  divisionIds: string[]
+}) {
+  const access = await getDivisionAccessForUser({ orgId, userId })
+  if (!access.assignedOnly) return
+  if (divisionScope !== "assigned") {
+    throw new Error("You are limited to your own divisions, so you can only invite people into divisions you hold.")
+  }
+  const reachable = new Set(access.divisionIds)
+  if (divisionIds.some((divisionId) => !reachable.has(divisionId))) {
+    throw new Error("You can only assign divisions you belong to.")
+  }
+}
+
+/**
+ * A division-limited actor may only act on a member who is themselves limited to
+ * a subset of the actor's divisions; an org-wide or foreign-division member is
+ * out of reach. org.admin is never division-limited, so it is exempt.
+ */
+async function assertMemberWithinDivisionReach({
+  orgId,
+  userId,
+  client,
+  membership,
+}: {
+  orgId: string
+  userId: string
+  client: SupabaseClient
+  membership: { id: string; user_id: string; division_scope: string | null }
+}) {
+  if (membership.user_id === userId) return
+  const access = await getDivisionAccessForUser({ orgId, userId })
+  if (!access.assignedOnly) return
+  const refusal = "You are limited to your own divisions, so you can only manage members who are limited to them."
+  if (membership.division_scope !== "assigned") throw new Error(refusal)
+  const targetDivisions = (await mapMembershipDivisions(client, [membership.id]))[membership.id] ?? []
+  const reachable = new Set(access.divisionIds)
+  if (targetDivisions.some((divisionId) => !reachable.has(divisionId))) throw new Error(refusal)
+}
+
+/**
+ * Everything an invite hands out must be inside the inviter's own reach: the
+ * role and granted overrides they hold, the divisions they belong to, and --
+ * when their own project access is assigned-only -- no wider project scope.
+ */
+async function assertInviteWithinReach({
+  orgId,
+  userId,
+  supabase,
+  client,
+  roleId,
+  grantedPermissions,
+  projectScope,
+  divisionScope,
+  divisionIds,
+}: {
+  orgId: string
+  userId: string
+  supabase: SupabaseClient
+  client: SupabaseClient
+  roleId: string
+  grantedPermissions: string[]
+  projectScope: "all" | "assigned"
+  divisionScope: "all" | "assigned"
+  divisionIds: string[]
+}) {
+  await assertActorHoldsPermissions({
+    orgId,
+    userId,
+    supabase,
+    required: [...(await rolePermissionKeys(client, roleId)), ...grantedPermissions],
+    resourceId: roleId,
+  })
+  if (projectScope === "all" && (await actorProjectScopeIsAssigned(client, orgId, userId))) {
+    throw new Error("Your own project access is limited to assigned projects, so you can only invite people into assigned projects.")
+  }
+  await assertDivisionGrantWithinReach({ orgId, userId, divisionScope, divisionIds })
+}
+
+/**
+ * The refusal an invite of this role (optionally into one division) would meet,
+ * or null. The importer asks at staging so a row the importer may not create is
+ * reported on the row instead of failing the whole commit.
+ */
+export async function inviteRefusal(input: {
+  supabase: SupabaseClient
+  orgId: string
+  actorUserId: string
+  role: OrgRole
+  divisionId: string | null
+}): Promise<string | null> {
+  try {
+    await assertInviteWithinReach({
+      orgId: input.orgId,
+      userId: input.actorUserId,
+      supabase: input.supabase,
+      client: input.supabase,
+      roleId: await resolveRoleId(input.supabase, input.role),
+      grantedPermissions: [],
+      projectScope: "all",
+      divisionScope: input.divisionId ? "assigned" : "all",
+      divisionIds: input.divisionId ? [input.divisionId] : [],
+    })
+    return null
+  } catch (error) {
+    return error instanceof Error ? error.message : "This invite is not allowed."
+  }
+}
+
+/** Mirrors authorization: any active membership marked 'assigned' restricts the user, and org.admin is never restricted. */
+async function actorProjectScopeIsAssigned(client: SupabaseClient, orgId: string, userId: string) {
+  const { data, error } = await client
+    .from("memberships")
+    .select("project_scope")
+    .eq("org_id", orgId)
+    .eq("user_id", userId)
+    .eq("status", "active")
+  if (error) throw new Error(`Failed to check your project access: ${error.message}`)
+  if (!(data ?? []).some((row) => row.project_scope === "assigned")) return false
+  return !(await getEffectiveOrgPermissions(orgId, userId)).includes("org.admin")
+}
+
+/** The authority a member already carries: their role plus granted overrides. */
+async function memberAuthority(client: SupabaseClient, membershipId: string, roleId: string) {
+  const [rolePermissions, overrides] = await Promise.all([
+    rolePermissionKeys(client, roleId),
+    mapPermissionOverrides(client, [membershipId]),
+  ])
+  return [
+    ...rolePermissions,
+    ...(overrides[membershipId] ?? []).filter((o) => o.effect === "grant").map((o) => o.permission_key),
+  ]
+}
+
 export async function inviteTeamMember({
   input,
   orgId,
@@ -913,6 +1049,22 @@ export async function inviteTeamMember({
   })
   const serviceClient = createServiceSupabaseClient()
 
+  // Escalation is refused before the invite creates a user, a membership or an email.
+  const roleId = await resolveRoleId(serviceClient, parsed.role)
+  await assertInviteWithinReach({
+    orgId: resolvedOrgId,
+    userId,
+    supabase,
+    client: serviceClient,
+    roleId,
+    grantedPermissions: normalizePermissionOverrides(parsed.permissionOverrides)
+      .filter((override) => override.effect === "grant")
+      .map((override) => override.permission_key),
+    projectScope: parsed.projectScope,
+    divisionScope: parsed.divisionScope,
+    divisionIds: parsed.divisionIds,
+  })
+
   const { data: existingUser } = await serviceClient
     .from("app_users")
     .select("id, email, full_name, avatar_url")
@@ -920,6 +1072,26 @@ export async function inviteTeamMember({
     .maybeSingle()
 
   let targetUserId = existingUser?.id as string | undefined
+
+  // The membership upsert below would silently overwrite a live member's role and
+  // status. Changing a member goes through the role-change and reactivate actions.
+  if (targetUserId) {
+    const { data: current, error: currentError } = await serviceClient
+      .from("memberships")
+      .select("id, status")
+      .eq("org_id", resolvedOrgId)
+      .eq("user_id", targetUserId)
+      .in("status", ["active", "suspended"])
+      .maybeSingle()
+    if (currentError) throw new Error(`Failed to check existing membership: ${currentError.message}`)
+    if (current) {
+      throw new Error(
+        current.status === "suspended"
+          ? "This person is already a suspended member. Reactivate them instead of inviting them again."
+          : "This person is already an active member. Change their role from the team list instead of inviting them again.",
+      )
+    }
+  }
 
   // Create user if they don't exist
   if (!targetUserId) {
@@ -943,8 +1115,6 @@ export async function inviteTeamMember({
     console.error("Failed to create user profile for invite", profileError)
     throw new Error("Failed to create invited user profile")
   }
-
-  const roleId = await resolveRoleId(serviceClient, parsed.role)
 
   // Generate invite token
   const inviteToken = generateInviteToken()
@@ -1150,13 +1320,42 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
 
   const { data: existing, error: fetchError } = await supabase
     .from("memberships")
-    .select("id, org_id, user_id, role_id, status, created_at")
+    .select("id, org_id, user_id, role_id, status, division_scope, created_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", membershipId)
     .maybeSingle()
 
   if (fetchError || !existing) {
     throw new Error("Membership not found")
+  }
+
+  // Suspending someone ends their access and reactivating restores it: both are
+  // decisions about authority the actor must already hold themselves.
+  await assertMemberWithinDivisionReach({
+    orgId: resolvedOrgId,
+    userId,
+    client: createServiceSupabaseClient(),
+    membership: existing,
+  })
+  if (existing.user_id !== userId) {
+    await assertActorHoldsPermissions({
+      orgId: resolvedOrgId,
+      userId,
+      supabase,
+      required: await memberAuthority(createServiceSupabaseClient(), membershipId, existing.role_id as string),
+      resourceId: membershipId,
+    })
+  }
+
+  // A suspended member holds no authority, so suspending the last administrator
+  // strands the org exactly as demoting or removing them would.
+  if (status === "suspended") {
+    await assertNotLastOrgAdmin({
+      client: createServiceSupabaseClient(),
+      orgId: resolvedOrgId,
+      membershipId,
+      nextRoleId: null,
+    })
   }
 
   const { data, error } = await supabase
@@ -1187,10 +1386,164 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
     after: data,
   })
 
+  if (status !== existing.status && (status === "suspended" || existing.status === "suspended")) {
+    const serviceClient = createServiceSupabaseClient()
+    const [sessions, queued] =
+      status === "suspended"
+        ? await Promise.all([
+            revokeSessionsOfDepartedMember(serviceClient, resolvedOrgId, existing.user_id as string),
+            sweepQueuedAuthority(serviceClient, resolvedOrgId, existing.user_id as string),
+          ])
+        : [null, null]
+    await recordEvent({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      eventType: status === "suspended" ? "member_suspended" : "member_reactivated",
+      entityType: "membership",
+      entityId: data.id as string,
+      payload: { user_id: existing.user_id, ...(sessions ? { sessions, queued } : {}) },
+    })
+  }
+
   const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
   const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
   const mfaEnabledByUser = await mapMfaEnabledByUser(createServiceSupabaseClient(), [selectedUser?.id].filter(Boolean), resolvedOrgId)
   return mapTeamMember(data, projectCounts, mfaEnabledByUser)
+}
+
+type SessionRevocation =
+  | { revoked: true; count: number }
+  | { revoked: false; reason: "other_active_memberships" | "revocation_failed" | "own_account" }
+
+async function revokeAllSessions(client: SupabaseClient, userId: string): Promise<SessionRevocation> {
+  const { data, error } = await client.rpc("revoke_user_sessions", { p_user_id: userId })
+  if (error) {
+    logger.error("team.session_revocation_failed", { error: new Error(error.message), domain: "team", userId })
+    return { revoked: false, reason: "revocation_failed" }
+  }
+  return { revoked: true, count: typeof data === "number" ? data : 0 }
+}
+
+/**
+ * End the suspended member's Supabase sessions (and, by cascade, their refresh
+ * tokens) so an open browser or phone cannot keep minting access tokens.
+ *
+ * Suspension itself is already effective on the next request - membership is
+ * re-read from the database on every authorization - so this closes the
+ * remaining window: a token that would otherwise keep refreshing. A person who
+ * is still active in another organization keeps their sessions, because one
+ * org's decision must not sign them out of another's; the per-request
+ * membership check is what excludes them here. A failed revocation does not
+ * undo the suspension; it is reported in the event so it is never silent.
+ */
+async function revokeSessionsOfDepartedMember(
+  client: SupabaseClient,
+  orgId: string,
+  memberUserId: string,
+): Promise<SessionRevocation> {
+  const { count, error: othersError } = await client
+    .from("memberships")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", memberUserId)
+    .eq("status", "active")
+    .neq("org_id", orgId)
+  if (othersError) return { revoked: false, reason: "revocation_failed" }
+  if ((count ?? 0) > 0) return { revoked: false, reason: "other_active_memberships" }
+
+  return revokeAllSessions(client, memberUserId)
+}
+
+type QueuedAuthorityOutcome = {
+  invoice_schedules: number
+  report_schedules: number
+  outbox_jobs: number
+  payment_approver_rows: number
+  device_tokens: number
+  failed: string[]
+}
+
+/**
+ * Cancel everything the departed member queued up to run later as them: a
+ * recurring invoice, a scheduled report, a delayed send waiting in the outbox
+ * and their seat on the payment approver roster. These run on cron without
+ * re-reading their membership, so leaving them in place would keep their
+ * authority alive after the sessions are gone.
+ *
+ * Reactivation deliberately does not resurrect any of it: a returning member
+ * re-creates what they still want, so nothing resumes on their behalf unseen.
+ * A step that fails is named in `failed` and never undoes the suspension.
+ */
+async function sweepQueuedAuthority(
+  client: SupabaseClient,
+  orgId: string,
+  memberUserId: string,
+): Promise<QueuedAuthorityOutcome> {
+  const outcome: QueuedAuthorityOutcome = {
+    invoice_schedules: 0,
+    report_schedules: 0,
+    outbox_jobs: 0,
+    payment_approver_rows: 0,
+    device_tokens: 0,
+    failed: [],
+  }
+  const step = async (name: keyof Omit<QueuedAuthorityOutcome, "failed">, run: () => Promise<{ data: unknown[] | null; error: { message: string } | null }>) => {
+    const { data, error } = await run()
+    if (error) {
+      logger.error("team.queued_authority_sweep_failed", { error: new Error(error.message), domain: "team", userId: memberUserId, step: name })
+      outcome.failed.push(name)
+      return
+    }
+    outcome[name] = data?.length ?? 0
+  }
+
+  const { count: otherActive, error: othersError } = await client
+    .from("memberships")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", memberUserId)
+    .eq("status", "active")
+    .neq("org_id", orgId)
+
+  await Promise.all([
+    step("invoice_schedules", async () =>
+      client
+        .from("invoice_schedules")
+        .update({ active: false, updated_at: new Date().toISOString() })
+        .eq("org_id", orgId)
+        .eq("created_by", memberUserId)
+        .eq("active", true)
+        .select("id"),
+    ),
+    step("report_schedules", async () =>
+      client
+        .from("report_schedules")
+        .update({ is_active: false, delivery_claimed_until: null, delivery_payload: null })
+        .eq("org_id", orgId)
+        .eq("created_by", memberUserId)
+        .eq("is_active", true)
+        .select("id"),
+    ),
+    step("outbox_jobs", async () =>
+      client
+        .from("outbox")
+        .update({ status: "failed", last_error: "Cancelled: the member who queued this job left the organization." })
+        .eq("org_id", orgId)
+        .eq("status", "pending")
+        .eq("payload->>actor_id", memberUserId)
+        .select("id"),
+    ),
+    step("payment_approver_rows", async () =>
+      client.from("payment_run_approvers").delete().eq("org_id", orgId).eq("user_id", memberUserId).select("user_id"),
+    ),
+    // Push tokens are per device, not per org: they go only when no other org
+    // still has a reason to notify this person; otherwise just this org's.
+    step("device_tokens", async () => {
+      const removal = client.from("device_tokens").delete().eq("user_id", memberUserId)
+      return othersError || (otherActive ?? 0) > 0
+        ? removal.eq("org_id", orgId).select("id")
+        : removal.select("id")
+    }),
+  ])
+  return outcome
 }
 
 export function suspendMember(membershipId: string, orgId?: string) {
@@ -1215,13 +1568,30 @@ export async function removeMember(membershipId: string, orgId?: string) {
 
   const { data: membership, error: fetchError } = await supabase
     .from("memberships")
-    .select("id, org_id, user_id, role_id, status")
+    .select("id, org_id, user_id, role_id, status, division_scope")
     .eq("org_id", resolvedOrgId)
     .eq("id", membershipId)
     .maybeSingle()
 
   if (fetchError || !membership) {
     throw new Error("Membership not found")
+  }
+
+  await assertMemberWithinDivisionReach({
+    orgId: resolvedOrgId,
+    userId,
+    client: createServiceSupabaseClient(),
+    membership,
+  })
+
+  if (membership.user_id !== userId) {
+    await assertActorHoldsPermissions({
+      orgId: resolvedOrgId,
+      userId,
+      supabase,
+      required: await memberAuthority(createServiceSupabaseClient(), membershipId, membership.role_id as string),
+      resourceId: membershipId,
+    })
   }
 
   // Never let the org lose its last admin via a removal.
@@ -1258,6 +1628,20 @@ export async function removeMember(membershipId: string, orgId?: string) {
     entityId: membershipId,
     before: membership,
     after: null,
+  })
+
+  const serviceClient = createServiceSupabaseClient()
+  const [sessions, queued] = await Promise.all([
+    revokeSessionsOfDepartedMember(serviceClient, resolvedOrgId, membership.user_id as string),
+    sweepQueuedAuthority(serviceClient, resolvedOrgId, membership.user_id as string),
+  ])
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "member_removed",
+    entityType: "membership",
+    entityId: membershipId,
+    payload: { user_id: membership.user_id, sessions, queued },
   })
 
   return true
@@ -1347,7 +1731,7 @@ export async function resetMemberMfa(membershipId: string, orgId?: string) {
 
   const { data: membership, error: membershipError } = await serviceClient
     .from("memberships")
-    .select("id, org_id, user_id")
+    .select("id, org_id, user_id, role_id")
     .eq("org_id", resolvedOrgId)
     .eq("id", membershipId)
     .maybeSingle()
@@ -1355,6 +1739,17 @@ export async function resetMemberMfa(membershipId: string, orgId?: string) {
   if (membershipError || !membership?.user_id) {
     throw new Error("Membership not found")
   }
+
+  // Resetting a second factor lets whoever holds the password enroll their own,
+  // so it is a path to impersonating the member: only someone who already holds
+  // everything the member holds may do it.
+  await assertActorHoldsPermissions({
+    orgId: resolvedOrgId,
+    userId,
+    supabase,
+    required: await memberAuthority(serviceClient, membershipId, membership.role_id as string),
+    resourceId: membershipId,
+  })
 
   const { data: factorData, error: factorError } = await serviceClient.auth.admin.mfa.listFactors({
     userId: membership.user_id,
@@ -1389,7 +1784,27 @@ export async function resetMemberMfa(membershipId: string, orgId?: string) {
     after: { mfa_factor_count: 0 },
   })
 
-  return { reset: true, deletedFactors: factors.length }
+  // The factor is global to the person, not to this org, so every session that
+  // proved the old one is revoked regardless of other memberships. Your own
+  // session is kept: you are resetting yourself and would only be signed out
+  // of the screen you are using.
+  const sessions: SessionRevocation =
+    membership.user_id === userId
+      ? { revoked: false, reason: "own_account" }
+      : await revokeAllSessions(serviceClient, membership.user_id as string)
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "member_mfa_reset",
+    entityType: "membership",
+    entityId: membershipId,
+    payload: { user_id: membership.user_id, deleted_factors: factors.length, sessions },
+  })
+
+  // A reset whose sessions could not be ended is not finished: an open session
+  // keeps working until its token expires. Say so, so the admin can retry.
+  return { reset: true, deletedFactors: factors.length, sessionsEnded: sessions.revoked || sessions.reason === "own_account" }
 }
 
 export async function getInviteDetailsByToken(token: string): Promise<{

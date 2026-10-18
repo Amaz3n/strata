@@ -1,0 +1,10 @@
+1..9
+ok 1 - browser cannot bypass Books authorization
+ok 2 - service can capture scoped income evidence
+ok 3 - cross-org requested invoice is excluded
+ok 4 - one JSON snapshot preserves all 1001 lines
+ok 5 - header revision comes from the same snapshot
+ok 6 - native chart account captured with lines
+ok 7 - foreign chart identity is never resolved
+ok 8 - stable invoker function uses a single statement snapshot
+ok 9 - real ledger accepts fully retained billing without a zero AR line

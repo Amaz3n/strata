@@ -204,6 +204,21 @@ Judgment rules:
 - Multi-tenant: all tables `org_id`-scoped with RLS. Events → `events`,
   audit → `audit_log`, async work → `outbox`, cron telemetry → `job_runs`.
 
+## Writing tests
+
+Full standard: **`docs/testing.md`** — read it before adding a test. Most of
+`tests/` predates it and is being rewritten; **never copy a sibling test file
+as a pattern.**
+
+- Test through public exports. Never read source text to test it — no
+  `readFileSync` on `lib/`/`app/`/`supabase/`, no `ts.createSourceFile` to lift
+  a function out, no regex against code.
+- One suite per module; new cases go into the existing suite for that area.
+  No new file per feature, audit or invariant (`*-integrity`, `*-hardening`).
+- Harness code (fakes, builders, `Module._load` overrides) lives only in
+  `tests/support/`.
+- Fewer, sharper tests. A failing test is fixed or deleted in the same change.
+
 ## Verifying your work
 
 `pnpm lint` is **NOT type-aware** — the ESLint config has no `parserOptions.project`.
@@ -278,6 +293,16 @@ Then the suites your change touches:
   `lib/drawings/measure.ts`). Rollup math is pure in
   `lib/drawings/condition-rollup.ts` — keep it that way, it is how money gets
   tested. Stale, pending-review and unscaled members are excluded on purpose.
+- **Drawings workspace** — `docs/reference/drawings-workspace.md`. No modes:
+  a measuring tool always measures into an item, chosen when the tool is picked
+  (`ItemPicker`). The 3D model is a view of the workspace (Sheet · Split · 3D),
+  rendered everywhere by `components/plans/model-viewer`; sheet ↔ model mapping
+  goes only through `lib/drawings/model-takeoff.ts`. Every cut (dollhouse,
+  section box, wall section) is ONE set of global clipping planes so AO and
+  picking agree; tools draw in a separate unclipped pass, and the path-traced
+  photo is built from wall-height-clamped geometry because the tracer can't
+  clip. Furniture layout rules, option pricing, palettes and revision diffs are
+  pure and tested in `lib/drawings/` — keep judgement out of the scene.
 - **Drawings pipeline** — `lib/services/drawings-pipeline.ts`: re-uploads stack
   versions onto ONE canonical sheet set per project. Never create a set per
   upload, never delete old sheets.
@@ -349,6 +374,20 @@ Then the suites your change touches:
   (`null` = whole org, never flattened to an empty list), and it restates the
   ledger status sets and `payableOutstandingCents` because SQL cannot import
   them — `tests/ledger-definition-parity.test.js` compares those literally.
+- **The pipeline is one screen, and every deal has one next move.** `/pipeline`
+  lists deals grouped by whose move it is (you / trades / client), and
+  `/pipeline/[dealId]` is the deal; the app sidebar never changes and plans, files
+  and full quote packages open over the deal as takeovers. `dealMove()`
+  (`lib/precon/deal-move.ts`, pure, tested) is the ONLY place a deal's stage,
+  sentence and button are decided — never store a stage or branch on
+  `prospects.status` in a component. The worksheet is the only place a price is
+  edited; the client gets one document that hardens from a **Budget** (range,
+  approval only) to the **Proposal & agreement** once `SIGNATURE_FIRMNESS` of
+  cost is firm (quote or measured) and every client question is answered — the
+  builder never picks which. Client questions are `client_decision` rows the
+  client answers on the review link. Signing is the handoff: **Start building**
+  (`startBuilding()`) activates the job and drafts its budget from the signed
+  lines; there is no separate handoff step. See `docs/reference/pipeline.md`.
 - **Billing is one book, three bands.** `/projects/[id]/financials/billing` is
   `BillingBook` (`components/invoices/billing-book.tsx`): UP NEXT (planned
   billing events from `getProjectBillingUpNext()` + drafts), OPEN (issued with a

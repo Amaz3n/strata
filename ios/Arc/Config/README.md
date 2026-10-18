@@ -2,8 +2,8 @@
 
 The iOS app has **no `.env` file** — iOS reads config from build settings. The
 idiomatic equivalent is an `.xcconfig` file: plain `KEY = value` text, one per
-build configuration. These feed into the generated `Info.plist`
-(`INFOPLIST_KEY_Arc…` build settings already map them), and `AppEnvironment.swift`
+build configuration. These expand the placeholders in `Config/AppInfo.plist`, which Xcode merges
+with its generated app metadata, and `AppEnvironment.swift`
 reads them at runtime, falling back to hardcoded defaults if a value is missing.
 
 ## The app needs only a handful of PUBLIC values
@@ -26,6 +26,8 @@ QBO client secret, R2/storage keys, `DRAWINGS_TILES_COOKIE_SECRET`, etc. They
 stay in your Vercel/server env.
 
 ## Files
+
+- `AppInfo.plist` — explicit runtime configuration keys expanded from the build settings. Required for launches outside Xcode; arbitrary `INFOPLIST_KEY_Arc…` settings alone are not emitted into a generated plist.
 
 - `Shared.xcconfig` — common, non-secret public defaults; `#include`d by the others. Committed.
 - `Debug.xcconfig` — local dev (points API at `127.0.0.1:3000`). Committed.

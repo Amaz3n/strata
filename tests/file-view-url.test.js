@@ -129,3 +129,15 @@ test("one direct-read failure stands the mechanism down for every file", async (
     fetchStub.restore()
   }
 })
+
+ test("replacing the bytes invalidates the cached signed view URL", async () => {
+  const { resolveFileViewUrl } = loadResolver()
+  let count = 0
+  const fetchStub = stubFetch(() => signed(`https://bucket.example/revision-${++count}`))
+  try {
+    const oldUrl = await resolveFileViewUrl("same-file", "version-one-path")
+    assert.equal(await resolveFileViewUrl("same-file", "version-one-path"), oldUrl)
+    assert.notEqual(await resolveFileViewUrl("same-file", "version-two-path"), oldUrl)
+    assert.equal(fetchStub.calls.length, 2)
+  } finally { fetchStub.restore() }
+})

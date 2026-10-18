@@ -48,6 +48,7 @@ import { type UnifiedSignableEntityType } from "@/lib/esign/unified-contracts"
 import { cn } from "@/lib/utils"
 import { ESignDocumentViewer, type ESignFieldDraft } from "@/components/esign/esign-document-viewer"
 import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
@@ -84,6 +85,8 @@ type EnvelopeRecipient = {
   email: string
   role: RecipientRole
   signer_role: string
+  sequence?: number
+  access_code?: string
 }
 
 type DraftRecipientPayload = {
@@ -91,6 +94,7 @@ type DraftRecipientPayload = {
   email?: string
   role?: RecipientRole
   signer_role?: string
+  sequence?: number
 }
 
 type HydrateRecipientPayload = {
@@ -98,6 +102,7 @@ type HydrateRecipientPayload = {
   email?: string | null
   role?: RecipientRole | null
   signer_role?: string | null
+  sequence?: number | null
 }
 
 type UploadedPdf = {
@@ -118,7 +123,6 @@ const sourceEntityMetadataIdKeyByType: Record<UnifiedSignableEntityType, string>
   contract: "contract_id",
   change_order: "change_order_id",
   lien_waiver: "lien_waiver_id",
-  selection: "selection_id",
   subcontract: "subcontract_id",
   subcontract_change_order: "subcontract_change_order_id",
   closeout: "closeout_id",
@@ -176,8 +180,6 @@ function getSourceOptionTypeLabel(type: UnifiedSignableEntityType) {
       return "Change Order"
     case "proposal":
       return "Proposal"
-    case "selection":
-      return "Selection"
     case "subcontract":
       return "Subcontract"
     case "subcontract_change_order":
@@ -206,6 +208,7 @@ function serializeDraftRecipients(recipients: EnvelopeRecipient[]): DraftRecipie
     email: recipient.email.trim(),
     role: recipient.role,
     signer_role: recipient.signer_role || `signer_${index + 1}`,
+    sequence: recipient.sequence ?? index + 1,
   }))
 }
 
@@ -219,6 +222,7 @@ function hydrateDraftRecipients(recipients: HydrateRecipientPayload[]): Envelope
       name: recipient.name?.trim() ?? "",
       email: recipient.email?.trim() ?? "",
       signer_role: recipient.signer_role?.trim() || fallback.signer_role || `signer_${index + 1}`,
+      sequence: recipient.sequence ?? index + 1,
     }
   })
 }
@@ -272,6 +276,11 @@ export function EnvelopeWizard({
   const [draftReady, setDraftReady] = useState(!resumeDocumentId)
   const [prepareStep, setPrepareStep] = useState<PrepareStep>("envelope")
   const [documentTitle, setDocumentTitle] = useState("")
+  const [emailSubject, setEmailSubject] = useState("")
+  const [emailMessage, setEmailMessage] = useState("")
+  const [savedFields, setSavedFields] = useState("[]")
+  const [discardDialogOpen, setDiscardDialogOpen] = useState(false)
+  const [sendReviewOpen, setSendReviewOpen] = useState(false)
   const [signingOrderEnabled, setSigningOrderEnabled] = useState(true)
   const [recipients, setRecipients] = useState<EnvelopeRecipient[]>([createRecipient("signer")])
   const [uploadedPdf, setUploadedPdf] = useState<UploadedPdf | null>(null)
@@ -353,7 +362,7 @@ export function EnvelopeWizard({
     return new Map(
       recipients
         .filter((recipient) => recipient.role === "signer")
-        .map((recipient, index) => [recipient.id, index + 1]),
+        .map((recipient, index) => [recipient.id, recipient.sequence ?? index + 1]),
     )
   }, [recipients])
 
@@ -378,6 +387,7 @@ export function EnvelopeWizard({
           name: recipient.name.trim(),
           email: recipient.email.trim().toLowerCase(),
           signer_role: recipient.signer_role,
+          sequence: recipient.sequence,
         })),
       ),
     [recipients],
@@ -561,6 +571,12 @@ export function EnvelopeWizard({
           document_type: draft.document.document_type,
         })
         setViewerFields(mappedFields)
+        setSavedFields(JSON.stringify(mappedFields))
+        setEmailSubject(draft.subject ?? "")
+        setEmailMessage(draft.message ?? "")
+        setExpiresInDays(String(draft.expires_in_days ?? 14))
+        setRemindersEnabled(draft.reminder_enabled !== false)
+        setReminderIntervalDays(String(draft.reminder_interval_days ?? 3))
         setViewerFileUrl(`/api/files/${draft.file.id}/raw`)
         setSigningOrderEnabled(draft.signing_order_enabled !== false)
 
@@ -667,6 +683,12 @@ export function EnvelopeWizard({
           document_type: draft.document.document_type,
         })
         setViewerFields(mappedFields)
+        setSavedFields(JSON.stringify(mappedFields))
+        setEmailSubject(draft.subject ?? "")
+        setEmailMessage(draft.message ?? "")
+        setExpiresInDays(String(draft.expires_in_days ?? 14))
+        setRemindersEnabled(draft.reminder_enabled !== false)
+        setReminderIntervalDays(String(draft.reminder_interval_days ?? 3))
         setViewerFileUrl(`/api/files/${draft.file.id}/raw`)
         setSigningOrderEnabled(draft.signing_order_enabled !== false)
 
@@ -748,7 +770,7 @@ export function EnvelopeWizard({
       const oldIndex = prev.findIndex((recipient) => recipient.id === String(active.id))
       const newIndex = prev.findIndex((recipient) => recipient.id === String(over.id))
       if (oldIndex < 0 || newIndex < 0) return prev
-      return arrayMove(prev, oldIndex, newIndex)
+      return arrayMove(prev, oldIndex, newIndex).map((recipient, index) => ({ ...recipient, sequence: index + 1 }))
     })
   }
 
@@ -757,32 +779,7 @@ export function EnvelopeWizard({
   }
 
   const updateSignerOrder = (recipientId: string, nextOrder: number) => {
-    setRecipients((prev) => {
-      const signerIds = prev.filter((recipient) => recipient.role === "signer").map((recipient) => recipient.id)
-      const fromIndex = signerIds.indexOf(recipientId)
-      if (fromIndex < 0) return prev
-
-      const targetIndex = Math.max(0, Math.min(nextOrder - 1, signerIds.length - 1))
-      if (targetIndex === fromIndex) return prev
-
-      const reorderedSignerIds = [...signerIds]
-      const [movedId] = reorderedSignerIds.splice(fromIndex, 1)
-      reorderedSignerIds.splice(targetIndex, 0, movedId)
-
-      const signerById = new Map(
-        prev
-          .filter((recipient) => recipient.role === "signer")
-          .map((recipient) => [recipient.id, recipient]),
-      )
-
-      let signerPointer = 0
-      return prev.map((recipient) => {
-        if (recipient.role !== "signer") return recipient
-        const nextSignerId = reorderedSignerIds[signerPointer]
-        signerPointer += 1
-        return signerById.get(nextSignerId) ?? recipient
-      })
-    })
+    setRecipients(previous => previous.map((recipient, index) => ({ ...recipient, sequence: recipient.id === recipientId ? nextOrder : recipient.sequence ?? index + 1 })))
   }
 
   const addRecipient = () => {
@@ -800,7 +797,17 @@ export function EnvelopeWizard({
     onBusyChange?.(sendingEnvelope || uploadingPdf || movingToFields)
   }, [sendingEnvelope, uploadingPdf, movingToFields, onBusyChange])
 
-  const closeWizard = (nextOpen: boolean) => {
+  const fieldsDirty = JSON.stringify(viewerFields) !== savedFields
+  useEffect(() => {
+    if (!open || !fieldsDirty) return
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = "" }
+    window.addEventListener("beforeunload", warn)
+    return () => window.removeEventListener("beforeunload", warn)
+  }, [open, fieldsDirty])
+
+  const closeWizard = (nextOpen: boolean, force = false) => {
+    if (!nextOpen && !force && (sendingEnvelope || uploadingPdf || movingToFields)) return
+    if (!nextOpen && !force && fieldsDirty) { setDiscardDialogOpen(true); return }
     if (!nextOpen) {
       draftHydrationRef.current += 1
       setPrepareStep("envelope")
@@ -823,6 +830,7 @@ export function EnvelopeWizard({
       prewarmedPdfUrlRef.current = null
       directUploadDisabledRef.current = false
       setSendingEnvelope(false)
+      setSendReviewOpen(false)
       setRecipientSuggestions([])
       setContractTermsTemplate(null)
       setLoadingContractTermsTemplate(false)
@@ -836,6 +844,9 @@ export function EnvelopeWizard({
       setRemindersEnabled(true)
       setReminderIntervalDays("3")
       setViewerFields([])
+      setSavedFields("[]")
+      setEmailSubject("")
+      setEmailMessage("")
       setViewerDocument(null)
       setViewerFileUrl(null)
     }
@@ -1043,8 +1054,13 @@ export function EnvelopeWizard({
       title: nextTitle,
       signing_order_enabled: signingOrderEnabled,
       recipients: serializeDraftRecipients(recipients),
+      subject: emailSubject,
+      message: emailMessage,
+      expires_in_days: Number(expiresInDays) || 14,
+      reminder_enabled: remindersEnabled,
+      reminder_interval_days: Number(reminderIntervalDays) || 3,
     }))
-  }, [recipients, signingOrderEnabled, sourceEntity])
+  }, [recipients, signingOrderEnabled, sourceEntity, emailSubject, emailMessage, expiresInDays, remindersEnabled, reminderIntervalDays])
 
   const buildPreparationKey = useCallback(() => {
     const projectId = sourceEntity?.project_id ?? "none"
@@ -1052,8 +1068,8 @@ export function EnvelopeWizard({
       sourceEntity && !sourceEntity.standalone ? `${sourceEntity.type}:${sourceEntity.id}` : "standalone"
     const fileId = uploadedPdf?.id ?? "none"
     const titleKey = (documentTitle.trim() || uploadedPdf?.fileName?.replace(/\.pdf$/i, "") || "").toLowerCase()
-    return [projectId, sourceKey, fileId, documentType, signingOrderEnabled ? "ordered" : "unordered", titleKey, recipientSignature].join("::")
-  }, [documentTitle, documentType, recipientSignature, signingOrderEnabled, sourceEntity, uploadedPdf])
+    return [projectId, sourceKey, fileId, documentType, signingOrderEnabled ? "ordered" : "unordered", titleKey, recipientSignature, emailSubject, emailMessage, expiresInDays, String(remindersEnabled), reminderIntervalDays].join("::")
+  }, [documentTitle, documentType, recipientSignature, signingOrderEnabled, sourceEntity, uploadedPdf, emailSubject, emailMessage, expiresInDays, remindersEnabled, reminderIntervalDays])
 
   const prewarmPdfInBackground = useCallback(async (fileUrl: string) => {
     if (!fileUrl || prewarmedPdfUrlRef.current === fileUrl) return
@@ -1061,7 +1077,7 @@ export function EnvelopeWizard({
     try {
       await fetch(fileUrl, { credentials: "include" }).catch(() => null)
       const { pdfjs } = await import("react-pdf")
-      configurePdfWorker()
+      configurePdfWorker(pdfjs)
       const task = pdfjs.getDocument({ url: fileUrl, withCredentials: true })
       const pdf = await task.promise
       pdf.destroy()
@@ -1272,6 +1288,7 @@ export function EnvelopeWizard({
       if (viewerDocument.title !== draftTitle) {
         setViewerDocument((prev) => (prev ? { ...prev, title: draftTitle } : prev))
       }
+      setSavedFields(JSON.stringify(viewerFields))
       if (showToast) toast.success("Fields saved")
       return true
     } catch (error: any) {
@@ -1291,6 +1308,8 @@ export function EnvelopeWizard({
       toast.error("Compliance documents are required before sending")
       return
     }
+    if (recipients.some(recipient => !/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(recipient.email.trim()))) { toast.error("Enter a valid email for every recipient, or remove unused recipients"); return }
+    if (recipients.some(recipient => recipient.role === "signer" && recipient.access_code?.trim() && recipient.access_code.trim().length < 6)) { toast.error("Access codes must contain at least 6 characters"); return }
     setSendingEnvelope(true)
 
     try {
@@ -1300,7 +1319,7 @@ export function EnvelopeWizard({
       const signerSequenceById = new Map(
         recipients
           .filter((recipient) => recipient.role === "signer")
-          .map((recipient, index) => [recipient.id, index + 1]),
+          .map((recipient, index) => [recipient.id, recipient.sequence ?? index + 1]),
       )
       const preparedRecipients = recipients
         .map((recipient) => ({
@@ -1308,6 +1327,7 @@ export function EnvelopeWizard({
           email: recipient.email.trim(),
           role: recipient.role,
           signer_role: recipient.signer_role,
+          access_code: recipient.role === "signer" ? recipient.access_code?.trim() || undefined : undefined,
           sequence:
             recipient.role === "signer"
               ? signingOrderEnabled
@@ -1328,6 +1348,8 @@ export function EnvelopeWizard({
       const reminderDays = Math.max(1, Math.min(30, Number(reminderIntervalDays) || 3))
       const result = unwrapAction(await sendDocumentEnvelopeAction({
         document_id: viewerDocument.id,
+        subject: emailSubject.trim() || undefined,
+        message: emailMessage.trim() || undefined,
         recipients: preparedRecipients,
         expires_at: expiresAt,
         reminder_enabled: remindersEnabled,
@@ -1338,7 +1360,7 @@ export function EnvelopeWizard({
         envelopeId: result?.envelopeId ?? null,
       })
       if (!continueToSign) toast.success("Envelope sent")
-      closeWizard(false)
+      closeWizard(false, true)
     } catch (error: any) {
       console.error(error)
       toast.error("Failed to send envelope", { description: error?.message ?? "Please try again." })
@@ -1632,6 +1654,12 @@ export function EnvelopeWizard({
                   />
                 </div>
 
+                <div className="space-y-2">
+                  <Label htmlFor="esign-email-subject">Email subject</Label>
+                  <Input id="esign-email-subject" maxLength={500} value={emailSubject} onChange={event => setEmailSubject(event.target.value)} placeholder="Signature requested" />
+                  <Label htmlFor="esign-email-message">Message to recipients</Label>
+                  <Textarea id="esign-email-message" maxLength={5000} value={emailMessage} onChange={event => setEmailMessage(event.target.value)} placeholder="Explain what recipients are signing and when you need it." />
+                </div>
                 <div className="grid gap-3 rounded-md border bg-muted/20 p-3 sm:grid-cols-[1fr_auto] sm:items-end">
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-2">
@@ -1784,11 +1812,11 @@ export function EnvelopeWizard({
                   </div>
                   <p className="text-xs text-muted-foreground">
                     {signingOrderEnabled
-                      ? "Signers receive email one at a time based on order."
+                      ? "Signers with the same stage sign together. Later stages wait for all earlier signers."
                       : "All signer emails are sent at once; CC receives the executed document."}
                   </p>
 
-                  <DndContext sensors={recipientSensors} collisionDetection={closestCenter} onDragEnd={handleRecipientDragEnd}>
+                  <DndContext id="envelope-recipients" sensors={recipientSensors} collisionDetection={closestCenter} onDragEnd={handleRecipientDragEnd}>
                     <SortableContext items={recipients.map((recipient) => recipient.id)} strategy={verticalListSortingStrategy}>
                       <div className="space-y-2">
                         {recipients.map((recipient, index) => (
@@ -1828,22 +1856,6 @@ export function EnvelopeWizard({
               </Button>
             </div>
 
-            {viewerDocument && viewerFileUrl ? (
-              <div className="h-0 overflow-hidden pointer-events-none opacity-0">
-                <ESignDocumentViewer
-                  open
-                  title={viewerDocument.title}
-                  documentType={viewerDocument.document_type}
-                  fileUrl={viewerFileUrl}
-                  fields={viewerFields}
-                  setFields={setViewerFields}
-                  onSave={() => undefined}
-                  signerRoles={signerRoleOptions}
-                  embedded
-                  className="h-0"
-                />
-              </div>
-            ) : null}
           </>
         ) : (
           <div className="flex-1 min-h-0 -mt-px">
@@ -1862,7 +1874,7 @@ export function EnvelopeWizard({
                   setSaveTemplateOpen(true)
                 }}
                 signerRoles={signerRoleOptions}
-                onSend={() => void handleSendEnvelope()}
+                onSend={() => setSendReviewOpen(true)}
                 sendDisabled={sendingEnvelope || signatureComplianceBlocksSend}
                 sendLoading={sendingEnvelope}
                 sendLabel={sendingEnvelope ? (continueToSign ? "Preparing…" : "Sending...") : signatureComplianceBlocksSend ? "Compliance blocked" : continueToSign ? "Continue to sign" : "Send"}
@@ -1878,6 +1890,27 @@ export function EnvelopeWizard({
     </>
   )
   const templateDialog = (
+    <>
+      <Dialog open={sendReviewOpen} onOpenChange={next => { if (!sendingEnvelope) setSendReviewOpen(next) }}>
+        <DialogContent className="sm:max-w-xl"><DialogHeader><DialogTitle>Review signature request</DialogTitle><DialogDescription>Confirm the document, recipients and signing settings before sending.</DialogDescription></DialogHeader>
+          <div className="max-h-[55vh] space-y-3 overflow-auto text-sm">
+            <p className="font-medium">{documentTitle || viewerDocument?.title}</p><p className="text-muted-foreground">{uploadedPdf?.fileName} · {viewerFields.length} fields</p>
+            <ul className="space-y-2">{recipients.map((recipient, index) => <li key={recipient.id}><span className="font-medium">{recipient.name || recipient.email || `Recipient ${index + 1}`}</span> — {recipient.email || "Email required"}<span className="block text-xs text-muted-foreground">{recipient.role === "cc" ? "Receives executed copy" : `Signing stage ${signingOrderEnabled ? signerOrderById.get(recipient.id) ?? 1 : 1}${recipient.access_code?.trim() ? " · Access code required" : ""}`}</span></li>)}</ul>
+            <p>Expires after {expiresInDays} days. {remindersEnabled ? `Reminders every ${reminderIntervalDays} days.` : "Automatic reminders off."}</p>
+            {emailSubject ? <p>Subject: {emailSubject}</p> : null}{emailMessage ? <p className="whitespace-pre-wrap rounded-md border p-3">{emailMessage}</p> : null}
+          </div>
+          <DialogFooter><Button variant="outline" disabled={sendingEnvelope} onClick={() => setSendReviewOpen(false)}>Back to preparation</Button><Button disabled={sendingEnvelope || signatureComplianceBlocksSend} onClick={() => void handleSendEnvelope()}>{sendingEnvelope ? "Sending…" : continueToSign ? "Continue to sign" : "Send signature request"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={discardDialogOpen} onOpenChange={setDiscardDialogOpen}>
+        <DialogContent><DialogHeader><DialogTitle>Save your field changes?</DialogTitle><DialogDescription>Your latest field placement has not been saved.</DialogDescription></DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDiscardDialogOpen(false)}>Keep editing</Button>
+            <Button variant="destructive" onClick={() => { setDiscardDialogOpen(false); closeWizard(false, true) }}>Discard changes</Button>
+            <Button onClick={async () => { if (await handleSaveFields(false)) { setDiscardDialogOpen(false); closeWizard(false, true) } }}>Save and close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={saveTemplateOpen} onOpenChange={setSaveTemplateOpen}>
         <DialogContent>
           <DialogHeader>
@@ -1917,6 +1950,7 @@ export function EnvelopeWizard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </>
   )
   if (embedded) return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{content}{templateDialog}</div>
   return (
@@ -2017,7 +2051,7 @@ function RecipientCard({
               onValueChange={(value) => onSignerOrderChange(recipient.id, Number(value))}
               disabled={!signingOrderEnabled}
             >
-              <SelectTrigger className="h-9 w-[56px] px-2 text-xs">
+              <SelectTrigger aria-label={`Signing stage for ${recipient.name || recipient.email || "recipient"}`} className="h-9 w-[56px] px-2 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -2158,6 +2192,11 @@ function RecipientCard({
           </Button>
         </div>
       </div>
+      {recipient.role === "signer" ? <div className="mt-2 space-y-1">
+        <Label htmlFor={`access-code-${recipient.id}`} className="text-xs">Access code (optional)</Label>
+        <Input id={`access-code-${recipient.id}`} type="password" autoComplete="new-password" minLength={6} maxLength={128} value={recipient.access_code ?? ""} onChange={event => onChange(recipient.id, { access_code: event.target.value })} placeholder="At least 6 characters" />
+        <p className="text-xs text-muted-foreground">Share separately with the signer. Codes are not saved in drafts; re-enter them after reopening.</p>
+      </div> : null}
     </div>
   )
 }

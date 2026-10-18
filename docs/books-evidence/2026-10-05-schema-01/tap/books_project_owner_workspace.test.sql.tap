@@ -1,0 +1,4 @@
+1..3
+ok 1 - project ownership workspace stays private
+ok 2 - project ownership workspace preserves invoker authority
+ok 3 - authorized server can load scoped project ownership workspace

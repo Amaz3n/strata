@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation"
 import { useState, useTransition } from "react"
 import { toast } from "sonner"
 
-import { offerPlanInCommunityAction, withdrawPlanFromCommunityAction } from "@/app/(app)/sales/actions"
+import { offerPlanInCommunityAction, searchOfferablePlansAction, withdrawPlanFromCommunityAction } from "@/app/(app)/sales/actions"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -16,10 +16,9 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-picker"
 import { unwrapAction } from "@/lib/action-result"
 
-export type OfferablePlan = { id: string; code: string | null; name: string }
 export type OfferedPlan = { id: string; code: string | null; name: string }
 
 /**
@@ -30,13 +29,11 @@ export type OfferedPlan = { id: string; code: string | null; name: string }
  */
 export function OfferingPlanManager({
   communityId,
-  offerablePlans,
   offeredPlans,
   triggerLabel = "Offer a plan",
   triggerVariant = "outline",
 }: {
   communityId: string
-  offerablePlans: OfferablePlan[]
   offeredPlans: OfferedPlan[]
   triggerLabel?: string
   triggerVariant?: "outline" | "default"
@@ -44,19 +41,19 @@ export function OfferingPlanManager({
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [pending, startTransition] = useTransition()
-  const [planId, setPlanId] = useState("")
+  const [plan, setPlan] = useState<SearchPickerItem | null>(null)
   const [launchPrice, setLaunchPrice] = useState("")
 
   const priceCents = Math.round((Number(launchPrice) || 0) * 100)
-  const canOffer = Boolean(planId) && priceCents > 0
+  const canOffer = plan !== null && priceCents > 0
 
   function offer() {
     startTransition(async () => {
       try {
-        unwrapAction(await offerPlanInCommunityAction(communityId, { communityId, housePlanId: planId, basePriceCents: priceCents }))
+        unwrapAction(await offerPlanInCommunityAction(communityId, { communityId, housePlanId: plan?.id, basePriceCents: priceCents }))
         toast.success("Plan added to this community's offering")
         setOpen(false)
-        setPlanId("")
+        setPlan(null)
         setLaunchPrice("")
         router.refresh()
       } catch (error) {
@@ -93,36 +90,26 @@ export function OfferingPlanManager({
           </DialogHeader>
 
           <div className="space-y-3">
+            <SearchPicker
+              label="Plan"
+              noun="released plans"
+              placeholder="Search released plans by code or name"
+              value={plan}
+              onChange={setPlan}
+              search={(query) => searchOfferablePlansAction(communityId, query)}
+              disabled={pending}
+            />
             <div className="grid gap-1.5">
-              <Label htmlFor="offer-plan" className="text-xs">Plan</Label>
-              {offerablePlans.length === 0 ? (
-                <p className="border p-3 text-xs text-muted-foreground">
-                  Every released plan is already offered here. Release a new plan version in the library to add more.
-                </p>
-              ) : (
-                <Select value={planId} onValueChange={setPlanId}>
-                  <SelectTrigger id="offer-plan" className="rounded-none"><SelectValue placeholder="Choose a released plan" /></SelectTrigger>
-                  <SelectContent>
-                    {offerablePlans.map((plan) => (
-                      <SelectItem key={plan.id} value={plan.id}>{plan.code ? `${plan.code} — ${plan.name}` : plan.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+              <Label htmlFor="offer-price" className="text-xs">Launch base price</Label>
+              <Input
+                id="offer-price"
+                inputMode="decimal"
+                className="h-8 rounded-none text-xs tabular-nums"
+                placeholder="425000"
+                value={launchPrice}
+                onChange={(event) => setLaunchPrice(event.target.value)}
+              />
             </div>
-            {offerablePlans.length > 0 && (
-              <div className="grid gap-1.5">
-                <Label htmlFor="offer-price" className="text-xs">Launch base price</Label>
-                <Input
-                  id="offer-price"
-                  inputMode="decimal"
-                  className="h-8 rounded-none text-xs tabular-nums"
-                  placeholder="425000"
-                  value={launchPrice}
-                  onChange={(event) => setLaunchPrice(event.target.value)}
-                />
-              </div>
-            )}
 
             {offeredPlans.length > 0 && (
               <div className="grid gap-1.5">

@@ -73,7 +73,7 @@ export function PlatformSessionControl({
             Platform elevated session
           </div>
           <p className="text-xs text-muted-foreground">
-            Support access is active. Actions are audited and scoped to this session.
+            Support access is active, time limited, and visible to the organization&apos;s administrators.
           </p>
         </div>
 
@@ -89,7 +89,13 @@ export function PlatformSessionControl({
             <div className="space-y-1">
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Org context</p>
               <p className="font-medium">{state.platformContext.orgName ?? state.platformContext.orgId}</p>
-              <p className="text-xs text-muted-foreground">Started {formatDateTime(state.platformContext.startedAt)}</p>
+              {state.platformContext.reason ? (
+                <p className="text-xs text-muted-foreground">{state.platformContext.reason}</p>
+              ) : null}
+              <p className="text-xs text-muted-foreground">
+                Started {formatDateTime(state.platformContext.startedAt)} · Ends{" "}
+                {formatDateTime(state.platformContext.expiresAt)}
+              </p>
             </div>
           ) : null}
         </div>
@@ -105,7 +111,7 @@ export function PlatformSessionControl({
           {showContext ? (
             <form action={clearOrgContext}>
               <Button size="sm" variant="outline" type="submit">
-                Exit org context
+                End access
               </Button>
             </form>
           ) : null}

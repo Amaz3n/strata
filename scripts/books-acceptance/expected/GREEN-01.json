@@ -1,0 +1,48 @@
+{
+  "scenario": "GREEN-01",
+  "reviewedFrom": "Greenfield launch (lib/services/books/greenfield.ts): a genuinely new set of books becomes official once readiness passes and the exact attestation is given; a zero opening posts no journal. Amounts are integer cents on each account's normal side.",
+  "subcases": {
+    "zero-history-launch": {
+      "inputs": {
+        "invoiceCents": 100000,
+        "billCents": 60000,
+        "expenseCents": 5000
+      },
+      "derivation": "Before setup the company has no period and an active QuickBooks connection, so launch is not ready for both reasons. With a July period and the connection disconnected it is ready. A mistyped attestation is refused; the exact one launches Arc as the official ledger (authority arc, mode official, outside sync disconnected) with no journal for the zero opening, one launch record, one audit entry and one event; launching again is refused. July: a 1,000.00 invoice earned when issued (1100 / 4900), a 600.00 framing bill (5000 / 2000) and a 50.00 cash expense (5000 / 1000): net income 1,000 - 600 - 50 = 350.00.",
+      "expected": {
+        "beforeSetup": {
+          "ready": false,
+          "blockers": [
+            "An external accounting connection is active; use the parallel cutover workflow",
+            "No accounting period exists"
+          ]
+        },
+        "afterSetup": {
+          "ready": true,
+          "blockers": []
+        },
+        "mistypedRefused": true,
+        "againRefused": true,
+        "settings": {
+          "ledger_authority": "arc",
+          "arc_ledger_mode": "official",
+          "external_sync_posture": "disconnected"
+        },
+        "journalsAfterLaunch": 0,
+        "onRecord": {
+          "launches": 1,
+          "audit": 1,
+          "event": 1
+        },
+        "trialBalance": {
+          "1000": -5000,
+          "1100": 100000,
+          "2000": 60000,
+          "4900": 100000,
+          "5000": 65000
+        },
+        "julyNetIncome": 35000
+      }
+    }
+  }
+}

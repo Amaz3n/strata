@@ -4,10 +4,14 @@ import "server-only"
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { requireOrgContext } from "@/lib/services/context"
 import { authorize } from "@/lib/services/authorization"
-import { listInvoices } from "@/lib/services/invoices"
+import { listInvoicePage, type ListInvoicesOptions } from "@/lib/services/invoices"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { listProjects } from "@/lib/services/projects"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots"
+import { accountingCutoff, isInvoiceReceivableAsOf, loadLedgerRemovalDates, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
+import { getAgingBucket, type AgingBucket } from "@/lib/services/reports/aging"
+import type { ARAgingReport } from "@/lib/services/reports/ar-aging"
 
 export type FinancialPartyType = "contact" | "company"
 
@@ -27,7 +31,7 @@ export interface PartyReceivablesSummary {
   party_type: FinancialPartyType
   party_id: string
   included_contact_ids: string[]
-  attribution_basis: "project_client_contact"
+  attribution_basis: "project_client_contact_and_general_customer"
   contract_value_cents: number
   invoiced_cents: number
   collected_cents: number
@@ -35,18 +39,20 @@ export interface PartyReceivablesSummary {
   invoice_count: number
   can_view_invoices: boolean
   can_view_books: boolean
+  available_deposit_cents: number
+  general_billing: { invoiced_cents: number; collected_cents: number; outstanding_cents: number; invoice_count: number }
   projects: PartyReceivableProject[]
   activity: PartyFinancialActivity[]
 }
 
 export interface PartyFinancialActivity {
   id: string
-  kind: "invoice" | "payment" | "credit_memo" | "write_off"
+  kind: "invoice" | "payment" | "credit_memo" | "write_off" | "refund" | "deposit_request" | "deposit_application"
   occurred_at: string
   label: string
   detail: string
   amount_cents: number
-  project_id: string
+  project_id: string | null
   project_name: string
   invoice_id: string
   source_href: string
@@ -64,6 +70,15 @@ function cents(value: unknown) {
 
 function latest(values: Array<string | null | undefined>) {
   return values.filter((value): value is string => Boolean(value)).sort().at(-1)
+}
+
+async function listPartyInvoices(options: ListInvoicesOptions) {
+  const invoices: Awaited<ReturnType<typeof listInvoicePage>>["invoices"] = []
+  for (let offset = 0; ; offset += 500) {
+    const page = await listInvoicePage({ ...options, offset, limit: 500 })
+    invoices.push(...page.invoices)
+    if (!page.hasMore) return invoices
+  }
 }
 
 async function resolvePartyContactIds(input: {
@@ -112,21 +127,10 @@ async function resolvePartyContactIds(input: {
   )
 }
 
-/**
- * One receivable attribution contract for both people and companies.
- *
- * Projects own the client relationship through `projects.client_id`; invoices
- * inherit that relationship through their project. A company includes the union
- * of its linked contacts, de-duplicated before any project is counted. This is
- * deliberately not an invoice-metadata union: doing both would count the same
- * invoice once under its project contact and again under a company label.
- */
-export async function getFinancialPartyReceivables(input: {
-  partyType: FinancialPartyType
-  partyId: string
-  orgId?: string
-}): Promise<PartyReceivablesSummary> {
-  const context = await requireOrgContext(input.orgId)
+type PartyContext = Awaited<ReturnType<typeof requireOrgContext>>
+
+/** The party's client projects and every invoice the caller may read on them, plus its general billing. */
+async function loadPartyInvoices(context: PartyContext, input: { partyType: FinancialPartyType; partyId: string }) {
   await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
     supabase: context.supabase,
     orgId: context.orgId,
@@ -145,30 +149,58 @@ export async function getFinancialPartyReceivables(input: {
   const invoiceResults = await Promise.all(
     visibleProjects.map(async (project) => {
       try {
-        const invoices = await listInvoices({ orgId: context.orgId, projectId: project.id })
+        const invoices = await listPartyInvoices({ orgId: context.orgId, projectId: project.id })
         return { projectId: project.id, invoices, canViewInvoices: true }
       } catch {
         return { projectId: project.id, invoices: [], canViewInvoices: false }
       }
     }),
   )
-  const readableInvoices = invoiceResults.flatMap((result) => result.invoices)
+  // Only invoices WITHOUT a project use the explicit billing contact. A project's
+  // invoices continue to belong to its client, even if their bill-to text differs.
+  const generalResult = await listPartyInvoices({ orgId: context.orgId, generalCustomerIds: contactIds })
+    .then(invoices => ({ invoices, canViewInvoices: true }), () => ({ invoices: [], canViewInvoices: false }))
+  return { contactIds, visibleProjects, invoiceResults, generalResult }
+}
+
+/**
+ * One receivable attribution contract for both people and companies.
+ *
+ * Projects own the client relationship through `projects.client_id`; invoices
+ * inherit that relationship through their project. A company includes the union
+ * of its linked contacts, de-duplicated before any project is counted. This is
+ * deliberately not an invoice-metadata union: doing both would count the same
+ * invoice once under its project contact and again under a company label.
+ */
+export async function getFinancialPartyReceivables(input: {
+  partyType: FinancialPartyType
+  partyId: string
+  orgId?: string
+}): Promise<PartyReceivablesSummary> {
+  const context = await requireOrgContext(input.orgId)
+  const { contactIds, visibleProjects, invoiceResults, generalResult } = await loadPartyInvoices(context, input)
+  const readableInvoices = [...invoiceResults.flatMap((result) => result.invoices), ...generalResult.invoices]
   const invoiceIds = readableInvoices.map((invoice) => invoice.id)
   const canViewBooks = (await authorize({ permission: "books.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase, logDecision: false })).allowed
   const service = createServiceSupabaseClient()
   const [paymentResult, adjustmentResult] = invoiceIds.length === 0
     ? [{ data: [], error: null }, { data: [], error: null }]
     : await Promise.all([
-        service.from("payments").select("id,invoice_id,amount_cents,status,received_at,method,reference").eq("org_id", context.orgId).in("invoice_id", invoiceIds).in("status", ["succeeded", "completed", "paid"]),
+        service.from("payments").select("id,invoice_id,amount_cents,status,received_at,method,reference,metadata,payment_reversals(id,amount_cents,status,created_at,reversal_type,reason)").eq("org_id", context.orgId).in("invoice_id", invoiceIds).in("status", ["succeeded", "completed", "paid", "refunded"]),
         service.from("receivable_adjustments").select("id,invoice_id,adjustment_type,status,amount_cents,effective_date,reason,created_at,voided_at").eq("org_id", context.orgId).in("invoice_id", invoiceIds),
       ])
   if (paymentResult.error) throw new Error(`Unable to load party payments: ${paymentResult.error.message}`)
   if (adjustmentResult.error) throw new Error(`Unable to load party credits: ${adjustmentResult.error.message}`)
+  const netCollected = (invoiceIds: Set<string>) => (paymentResult.data ?? [])
+    .filter(payment => invoiceIds.has(payment.invoice_id) && !payment.metadata?.customer_deposit_application)
+    .reduce((sum, payment) => sum + Number(payment.amount_cents) - (payment.payment_reversals ?? [])
+      .filter((reversal: any) => ["pending", "succeeded"].includes(reversal.status))
+      .reduce((total: number, reversal: any) => total + Number(reversal.amount_cents), 0), 0)
   const invoicesByProject = new Map(invoiceResults.map((result) => [result.projectId, result]))
   const billed = new Set<string>(BILLED_INVOICE_STATUSES)
   const projects = visibleProjects.map((project) => {
     const invoices = (invoicesByProject.get(project.id)?.invoices ?? []).filter((invoice) =>
-      billed.has(String(invoice.status)),
+      billed.has(String(invoice.status)) && invoice.metadata?.invoice_kind !== "earnest_deposit",
     )
     const contractValue =
       project.billing_contract?.total_cents ??
@@ -186,7 +218,7 @@ export async function getFinancialPartyReceivables(input: {
       client_contact_id: String(project.client_id),
       contract_value_cents: contractValue,
       invoiced_cents: invoiced,
-      collected_cents: Math.max(0, invoiced - outstanding),
+      collected_cents: netCollected(new Set((invoicesByProject.get(project.id)?.invoices ?? []).filter(invoice => billed.has(String(invoice.status))).map(invoice => invoice.id))),
       outstanding_cents: Math.max(0, outstanding),
       invoice_count: invoices.length,
       last_activity: latest([
@@ -203,20 +235,28 @@ export async function getFinancialPartyReceivables(input: {
   const activity: PartyFinancialActivity[] = []
   for (const invoice of readableInvoices.filter((row) => billed.has(String(row.status)))) {
     const project = projectById.get(String(invoice.project_id))
-    if (!project) continue
-    activity.push({ id: `invoice:${invoice.id}`, kind: "invoice", occurred_at: invoice.issue_date ?? invoice.sent_at ?? invoice.updated_at ?? invoice.created_at ?? "1970-01-01", label: `Invoice ${invoice.invoice_number ?? ""}`.trim(), detail: invoice.title || project.name, amount_cents: Number(invoice.total_cents ?? 0), project_id: project.id, project_name: project.name, invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project.id), journal_entry_id: null })
+    activity.push({ id: `invoice:${invoice.id}`, kind: invoice.metadata?.invoice_kind === "earnest_deposit" ? "deposit_request" : "invoice", occurred_at: invoice.issue_date ?? invoice.sent_at ?? invoice.updated_at ?? invoice.created_at ?? "1970-01-01", label: `${invoice.metadata?.invoice_kind === "earnest_deposit" ? "Deposit request" : "Invoice"} ${invoice.invoice_number ?? ""}`.trim(), detail: invoice.title || project?.name || "General billing", amount_cents: Number(invoice.total_cents ?? 0), project_id: project?.id ?? null, project_name: project?.name ?? "General billing", invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project?.id), journal_entry_id: null })
   }
   for (const payment of paymentResult.data ?? []) {
     const invoice = invoiceById.get(payment.invoice_id)
     const project = invoice ? projectById.get(String(invoice.project_id)) : null
-    if (!invoice || !project) continue
-    activity.push({ id: `payment:${payment.id}`, kind: "payment", occurred_at: payment.received_at, label: "Payment received", detail: payment.reference || payment.method || invoice.invoice_number || "Invoice payment", amount_cents: Number(payment.amount_cents), project_id: project.id, project_name: project.name, invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project.id), journal_entry_id: null })
+    if (!invoice) continue
+    activity.push({ id: `payment:${payment.id}`, kind: payment.metadata?.customer_deposit_application ? "deposit_application" : "payment", occurred_at: payment.received_at, label: payment.metadata?.customer_deposit_application ? "Deposit applied" : invoice.metadata?.invoice_kind === "earnest_deposit" ? "Deposit received" : "Payment received", detail: payment.reference || payment.method || invoice.invoice_number || "Invoice payment", amount_cents: Number(payment.amount_cents), project_id: project?.id ?? null, project_name: project?.name ?? "General billing", invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project?.id), journal_entry_id: null })
+  }
+  for (const payment of paymentResult.data ?? []) {
+    const invoice = invoiceById.get(payment.invoice_id)
+    if (!invoice) continue
+    const project = projectById.get(String(invoice.project_id))
+    for (const reversal of payment.payment_reversals ?? []) {
+      if (!["pending", "succeeded"].includes(reversal.status)) continue
+      activity.push({ id: `reversal:${reversal.id}`, kind: "refund", occurred_at: reversal.created_at, label: reversal.reversal_type === "refund" ? "Refund" : "Payment reversed", detail: reversal.reason || invoice.invoice_number || "Payment reversal", amount_cents: -Number(reversal.amount_cents), project_id: project?.id ?? null, project_name: project?.name ?? "General billing", invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project?.id), journal_entry_id: null })
+    }
   }
   for (const adjustment of adjustmentResult.data ?? []) {
     const invoice = invoiceById.get(adjustment.invoice_id)
     const project = invoice ? projectById.get(String(invoice.project_id)) : null
-    if (!invoice || !project) continue
-    activity.push({ id: `adjustment:${adjustment.id}`, kind: adjustment.adjustment_type as "credit_memo" | "write_off", occurred_at: adjustment.voided_at ?? adjustment.effective_date ?? adjustment.created_at, label: `${adjustment.adjustment_type === "write_off" ? "Write-off" : "Credit memo"}${adjustment.status === "void" ? " voided" : ""}`, detail: adjustment.reason, amount_cents: adjustment.status === "void" ? 0 : -Number(adjustment.amount_cents), project_id: project.id, project_name: project.name, invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project.id), journal_entry_id: null })
+    if (!invoice) continue
+    activity.push({ id: `adjustment:${adjustment.id}`, kind: adjustment.adjustment_type as "credit_memo" | "write_off", occurred_at: adjustment.voided_at ?? adjustment.effective_date ?? adjustment.created_at, label: `${adjustment.adjustment_type === "write_off" ? "Write-off" : "Credit memo"}${adjustment.status === "void" ? " voided" : ""}`, detail: adjustment.reason, amount_cents: adjustment.status === "void" ? 0 : -Number(adjustment.amount_cents), project_id: project?.id ?? null, project_name: project?.name ?? "General billing", invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project?.id), journal_entry_id: null })
   }
   if (canViewBooks && activity.length > 0) {
     const sourceIds = activity.map((row) => row.id.split(":")[1])
@@ -226,19 +266,88 @@ export async function getFinancialPartyReceivables(input: {
   }
   activity.sort((left, right) => right.occurred_at.localeCompare(left.occurred_at))
 
+  const generalBilled = generalResult.invoices.filter(invoice => billed.has(String(invoice.status)) && invoice.metadata?.invoice_kind !== "earnest_deposit")
+  const depositPayments = (paymentResult.data ?? []).filter(payment => invoiceById.get(payment.invoice_id)?.metadata?.invoice_kind === "earnest_deposit")
+  const availableDeposits = depositPayments.reduce((sum, payment) => {
+    const refunded = (payment.payment_reversals ?? []).filter((row: any) => ["pending", "succeeded"].includes(row.status)).reduce((total: number, row: any) => total + Number(row.amount_cents), 0)
+    const applied = (paymentResult.data ?? []).filter(row => row.metadata?.deposit_payment_id === payment.id).reduce((total, row) => total + Number(row.amount_cents), 0)
+    return sum + Math.max(0, Number(payment.amount_cents) - refunded - applied)
+  }, 0)
   return {
     party_type: input.partyType,
     party_id: input.partyId,
     included_contact_ids: contactIds,
-    attribution_basis: "project_client_contact",
+    attribution_basis: "project_client_contact_and_general_customer",
     contract_value_cents: projects.reduce((sum, project) => sum + project.contract_value_cents, 0),
-    invoiced_cents: projects.reduce((sum, project) => sum + project.invoiced_cents, 0),
-    collected_cents: projects.reduce((sum, project) => sum + project.collected_cents, 0),
-    outstanding_cents: projects.reduce((sum, project) => sum + project.outstanding_cents, 0),
-    invoice_count: projects.reduce((sum, project) => sum + project.invoice_count, 0),
-    can_view_invoices: invoiceResults.every((result) => result.canViewInvoices),
+    invoiced_cents: projects.reduce((sum, project) => sum + project.invoiced_cents, 0) + generalBilled.reduce((sum, invoice) => sum + Number(invoice.total_cents ?? 0), 0),
+    collected_cents: netCollected(new Set(readableInvoices.filter(invoice => billed.has(String(invoice.status))).map(invoice => invoice.id))),
+    outstanding_cents: projects.reduce((sum, project) => sum + project.outstanding_cents, 0) + generalBilled.reduce((sum, invoice) => sum + Number(invoice.balance_due_cents ?? (invoice.status === "paid" ? 0 : invoice.total_cents ?? 0)), 0),
+    invoice_count: projects.reduce((sum, project) => sum + project.invoice_count, 0) + generalBilled.length,
+    can_view_invoices: generalResult.canViewInvoices && invoiceResults.every((result) => result.canViewInvoices),
     can_view_books: canViewBooks,
+    available_deposit_cents: availableDeposits,
+    general_billing: {
+      invoiced_cents: generalBilled.reduce((sum, invoice) => sum + Number(invoice.total_cents ?? 0), 0),
+      collected_cents: netCollected(new Set(generalResult.invoices.filter(invoice => billed.has(String(invoice.status))).map(invoice => invoice.id))),
+      outstanding_cents: generalBilled.reduce((sum, invoice) => sum + Number(invoice.balance_due_cents ?? (invoice.status === "paid" ? 0 : invoice.total_cents ?? 0)), 0),
+      invoice_count: generalBilled.length,
+    },
     projects,
     activity,
   }
+}
+
+export interface CustomerStatement {
+  as_of: string
+  /** Set when `as_of` ends a closed period: the balances saved at that close. */
+  as_closed: string | null
+  can_view_invoices: boolean
+  invoices: Array<{ id: string; number: string; project_name: string; issue_date: string | null; due_date: string | null; total_cents: number; balance_cents: number; bucket: AgingBucket }>
+  aging: Record<Exclude<AgingBucket, "paid">, number>
+  balance_cents: number
+}
+
+/**
+ * A customer's open invoices on a date, read exactly as receivables aging reads
+ * them: issued by the date, voids removed on the ledger's date, payments and
+ * credits dated by when they happened. The end of a closed period reads the
+ * aging saved at close, so a statement can never disagree with a closed month.
+ */
+export async function getCustomerStatement(input: { partyType: FinancialPartyType; partyId: string; asOf: string; orgId?: string }): Promise<CustomerStatement> {
+  const context = await requireOrgContext(input.orgId)
+  accountingCutoff(input.asOf)
+  const { visibleProjects, invoiceResults, generalResult } = await loadPartyInvoices(context, input)
+  const canViewInvoices = generalResult.canViewInvoices && invoiceResults.every((result) => result.canViewInvoices)
+  const projectName = new Map(visibleProjects.map((project) => [project.id, project.name]))
+  const invoices = [...invoiceResults.flatMap((result) => result.invoices), ...generalResult.invoices]
+    .filter((invoice) => invoice.issue_date && invoice.issue_date <= input.asOf)
+  const aging: CustomerStatement["aging"] = { current: 0, "1_30": 0, "31_60": 0, "61_90": 0, "90_plus": 0, no_due_date: 0 }
+  const statement = (rows: CustomerStatement["invoices"], asClosed: string | null): CustomerStatement => {
+    const open = rows.filter((row) => row.balance_cents !== 0 && row.bucket !== "paid")
+      .sort((left, right) => (left.due_date ?? "9999").localeCompare(right.due_date ?? "9999") || left.number.localeCompare(right.number))
+    for (const row of open) if (row.bucket !== "paid") aging[row.bucket] += row.balance_cents
+    return { as_of: input.asOf, as_closed: asClosed, can_view_invoices: canViewInvoices, invoices: open, aging, balance_cents: open.reduce((sum, row) => sum + row.balance_cents, 0) }
+  }
+
+  const closed = await loadClosedPeriodSnapshots(context.orgId, { end: input.asOf })
+  if (closed) {
+    const ids = new Set(invoices.map((invoice) => invoice.id))
+    const saved = closed.report<ARAgingReport & { statement: "ar_aging" }>("ar_aging")
+    return statement(saved.rows.filter((row) => ids.has(row.invoice_id)).map((row) => ({
+      id: row.invoice_id, number: row.invoice_number ?? "Invoice", project_name: row.project_name ?? "General billing", issue_date: row.issue_date, due_date: row.due_date, total_cents: row.total_cents, balance_cents: row.open_balance_cents, bucket: row.bucket,
+    })), closed.closedAt)
+  }
+
+  const service = createServiceSupabaseClient()
+  const removedOn = await loadLedgerRemovalDates(context.orgId, invoices.filter((invoice) => invoice.status === "void").map((invoice) => invoice.id))
+  const receivable = invoices.filter((invoice) => isInvoiceReceivableAsOf(invoice, input.asOf, removedOn))
+  const settled = await loadSubledgerSettlements(service, context.orgId, "receivable", receivable.map((invoice) => invoice.id), input.asOf)
+  return statement(receivable.map((invoice) => {
+    const total = Number(invoice.total_cents ?? 0)
+    const balance = total - (settled.get(invoice.id) ?? 0)
+    return {
+      id: invoice.id, number: invoice.invoice_number ?? "Invoice", project_name: projectName.get(String(invoice.project_id)) ?? "General billing", issue_date: invoice.issue_date ?? null, due_date: invoice.due_date ?? null, total_cents: total, balance_cents: balance,
+      bucket: getAgingBucket({ dueDate: invoice.due_date, asOf: input.asOf, isPaid: balance === 0 }).bucket,
+    }
+  }), null)
 }

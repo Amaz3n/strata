@@ -1,4 +1,5 @@
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
+import type { InvoiceRevenueBasis, InvoiceRevenueLine } from "@/lib/services/books/invoice-revenue-rules";
 import {
   assertBalancedJournalDraft,
   assertIntegerCents,
@@ -203,10 +204,10 @@ export function postVendorBillFromCostLines(
   if (useTaxCents < 0)
     throw new Error("Vendor bill use tax cannot be negative");
   const costTotal = input.costLines.reduce(
-    (sum, item) => sum + item.amountCents,
-    0,
+    (sum, item) => { assertIntegerCents(item.amountCents, "Vendor bill cost line"); return sum + BigInt(item.amountCents); },
+    BigInt(0),
   );
-  if (costTotal !== input.grossCents + useTaxCents) {
+  if (costTotal !== BigInt(input.grossCents) + BigInt(useTaxCents)) {
     throw new Error(
       `Vendor bill cost lines total ${costTotal} does not equal the bill gross plus use tax ${input.grossCents + useTaxCents}`,
     );
@@ -413,6 +414,7 @@ export function postClosingInvoice(
     grossCents: number;
     taxCents?: number;
     revenueAccountCode?: string;
+    revenueLines?: InvoiceRevenueLine[];
   },
 ) {
   const taxCents = input.taxCents ?? 0;
@@ -422,6 +424,8 @@ export function postClosingInvoice(
     throw new Error("Closing invoice sales tax is invalid");
   if (input.grossCents === 0)
     throw new Error("Closing invoice gross must not be zero");
+  const revenueLines = input.revenueLines?.length ? input.revenueLines : [{ account_code: input.revenueAccountCode ?? SYSTEM_ACCOUNT_CODES.constructionRevenue, amount_cents: input.grossCents - taxCents }];
+  if (revenueLines.reduce((sum, row) => sum + row.amount_cents, 0) !== input.grossCents - taxCents) throw new Error("Invoice income allocations must equal revenue excluding tax");
   return complete({
     entryDate: input.date,
     entryKind: "operational",
@@ -438,12 +442,7 @@ export function postClosingInvoice(
         "debit",
         input,
       ),
-      signedLine(
-        input.revenueAccountCode ?? SYSTEM_ACCOUNT_CODES.constructionRevenue,
-        input.grossCents - taxCents,
-        "credit",
-        input,
-      ),
+      ...revenueLines.map(row => signedLine(row.account_code, row.amount_cents, "credit", { ...input, dimensions: row.dimensions })),
       signedLine(
         SYSTEM_ACCOUNT_CODES.salesUseTaxPayable,
         taxCents,
@@ -464,7 +463,8 @@ export function postReceivableAdjustment(
     amountCents: number;
     taxCents?: number;
     adjustmentType: "credit_memo" | "write_off";
-    revenueBasis?: "closing" | "percentage_of_completion";
+    revenueBasis?: InvoiceRevenueBasis;
+    revenueLines?: InvoiceRevenueLine[];
   },
 ) {
   assertIntegerCents(input.amountCents, "Receivable adjustment amount");
@@ -475,6 +475,9 @@ export function postReceivableAdjustment(
   if (taxCents < 0 || taxCents > input.amountCents)
     throw new Error("Receivable adjustment sales tax is invalid");
 
+  const revenueLines = input.revenueLines?.length ? input.revenueLines : [{ account_code: SYSTEM_ACCOUNT_CODES.constructionRevenue, amount_cents: input.amountCents - taxCents }];
+  const earned = input.revenueBasis === "closing" || input.revenueBasis === "on_invoice";
+  if (earned && input.adjustmentType !== "write_off" && revenueLines.reduce((sum, row) => sum + row.amount_cents, 0) !== input.amountCents - taxCents) throw new Error("Credit income allocations must equal credit excluding tax");
   const debitLines =
     input.adjustmentType === "write_off"
       ? [
@@ -486,14 +489,9 @@ export function postReceivableAdjustment(
           ),
         ]
       : compactLines([
-          signedLine(
-            input.revenueBasis === "closing"
-              ? SYSTEM_ACCOUNT_CODES.constructionRevenue
-              : SYSTEM_ACCOUNT_CODES.contractLiability,
-            input.amountCents - taxCents,
-            "debit",
-            input,
-          ),
+          ...(earned
+            ? revenueLines.map(row => signedLine(row.account_code, row.amount_cents, "debit", { ...input, dimensions: row.dimensions }))
+            : [signedLine(SYSTEM_ACCOUNT_CODES.contractLiability, input.amountCents - taxCents, "debit", input)]),
           signedLine(
             SYSTEM_ACCOUNT_CODES.salesUseTaxPayable,
             taxCents,
@@ -786,10 +784,10 @@ export function postExpenseFromCostLines(
   if (input.amountCents === 0)
     throw new Error("An expense with no amount is not an accounting fact");
   const costTotal = input.costLines.reduce(
-    (sum, item) => sum + item.amountCents,
-    0,
+    (sum, item) => { assertIntegerCents(item.amountCents, "Expense cost line"); return sum + BigInt(item.amountCents); },
+    BigInt(0),
   );
-  if (costTotal !== input.amountCents) {
+  if (costTotal !== BigInt(input.amountCents)) {
     throw new Error(
       `Expense cost lines total ${costTotal} does not equal the expense amount ${input.amountCents}`,
     );
@@ -996,58 +994,42 @@ export function postRevenueRecognition(
   input: CommonPostingInput & {
     deltaCents: number;
     periodKey: string;
+    dimensions?: Record<string, unknown>;
+    revenueLines?: InvoiceRevenueLine[];
+    /** Set when the project has several contracts: the position is this contract's. */
+    contractId?: string | null;
   },
 ) {
   assertIntegerCents(input.deltaCents, "Revenue recognition delta");
-  if (input.deltaCents === 0)
+  const revenueLines = input.revenueLines ?? [{ account_code: SYSTEM_ACCOUNT_CODES.constructionRevenue, amount_cents: input.deltaCents }];
+  for (const allocation of revenueLines) assertIntegerCents(allocation.amount_cents, "Revenue allocation delta");
+  if (revenueLines.reduce((sum, row) => sum + BigInt(row.amount_cents), BigInt(0)) !== BigInt(input.deltaCents)) throw new Error("POC revenue allocation deltas do not reconcile");
+  if (!revenueLines.some(row => row.amount_cents !== 0))
     throw new Error(
       "A zero revenue-recognition delta does not require a journal entry",
     );
   if (!input.projectId)
     throw new Error("Revenue recognition requires a project");
-  const amountCents = Math.abs(input.deltaCents);
-  const earning = input.deltaCents > 0;
+  const scoped = input.contractId ? { ...input, dimensions: { ...input.dimensions, contract_id: input.contractId } } : input;
   return complete({
     entryDate: input.date,
     entryKind: "poc",
     memo: input.memo,
     postingKey: buildPostingKey(
-      `revenue_recognition:${input.projectId}:${input.periodKey}`,
+      `revenue_recognition:${input.projectId}:${input.contractId ? `${input.contractId}:` : ""}${input.periodKey}`,
       input,
     ),
     projectionVersion: input.projectionVersion,
     policyVersion: input.policyVersion,
     sourceType: "revenue_recognition",
     sourceId: input.id,
-    lines: earning
-      ? [
-          line(
-            SYSTEM_ACCOUNT_CODES.contractLiability,
-            amountCents,
-            "debit",
-            input,
-          ),
-          line(
-            SYSTEM_ACCOUNT_CODES.constructionRevenue,
-            amountCents,
-            "credit",
-            input,
-          ),
-        ]
-      : [
-          line(
-            SYSTEM_ACCOUNT_CODES.constructionRevenue,
-            amountCents,
-            "debit",
-            input,
-          ),
-          line(
-            SYSTEM_ACCOUNT_CODES.contractLiability,
-            amountCents,
-            "credit",
-            input,
-          ),
-        ],
+    lines: compactLines([
+      ...(input.deltaCents >= 0 ? [signedLine(SYSTEM_ACCOUNT_CODES.contractLiability, input.deltaCents, "debit", scoped)] : []),
+      ...revenueLines.map(allocation => signedLine(allocation.account_code, allocation.amount_cents, "credit", {
+        ...scoped, dimensions: { ...allocation.dimensions, ...scoped.dimensions },
+      })),
+      ...(input.deltaCents < 0 ? [signedLine(SYSTEM_ACCOUNT_CODES.contractLiability, input.deltaCents, "debit", scoped)] : []),
+    ]),
   });
 }
 

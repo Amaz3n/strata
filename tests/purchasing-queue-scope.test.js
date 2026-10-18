@@ -1,0 +1,115 @@
+require('../scripts/register-ts-node-test')
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const { createClient } = require('@supabase/supabase-js')
+const { ORG, ACTOR, PROJECT, COMMUNITY, PACKAGE } = require('./support/starts-harness')
+const { freshRequire, stubModule } = require('./support/modules')
+
+// The real queue services over the SDK's own transport (a fake fetch), with only the
+// session and the permission gate replaced; no live organization. Join/RLS semantics
+// require the full-schema and authenticated QA gates and are not claimed by this suite.
+let current = null
+stubModule('@/lib/services/context', { requireOrgContext: async () => current.context })
+stubModule('@/lib/services/authorization', {
+  getProjectReadScopeForUser: async () => current.scope,
+  requireAuthorization: async input => { current.gates.push(input); if (current.denied) throw new Error('Forbidden') },
+})
+const { listPoExceptions } = freshRequire('lib/services/po-generation.ts')
+const { listPoCompletions } = freshRequire('lib/services/po-completions.ts')
+
+function harness({ scope = { divisionIds: null, projectMembershipRequired: false }, denied = false, failure = false, rows = [] } = {}) {
+  const calls = [], gates = []
+  const supabase = createClient('https://purchasing.invalid', 'local-test-key', {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: async (url, options) => {
+      const parsed = new URL(url)
+      calls.push({ table: parsed.pathname.split('/').pop(), params: parsed.searchParams, options })
+      if (failure) return new Response(JSON.stringify({ message: 'Queue unavailable' }), { status: 500 })
+      return new Response(JSON.stringify(rows), { status: 200, headers: { 'content-type': 'application/json', 'content-range': '100-149/1203' } })
+    } },
+  })
+  const queues = {
+    exceptions: filters => { current = state; return listPoExceptions(filters) },
+    completions: filters => { current = state; return listPoCompletions(filters) },
+  }
+  const state = { context: { supabase, orgId: ORG, userId: ACTOR }, scope, gates, denied }
+  return { queues, calls, gates }
+}
+
+// The variance queue reads through the service client and resolves homes by lot-then-project division;
+// tests/commitment-change-orders.test.js covers it through the real service.
+for (const queue of ['exceptions', 'completions']) {
+  test(`${queue}: actual home lens, active membership and tenant filters precede exact page/count`, async () => {
+    const h = harness({ scope: { divisionIds: [PACKAGE, COMMUNITY], projectMembershipRequired: true }, rows: [{ id: PROJECT }] })
+    const result = await h.queues[queue]({ communityId: COMMUNITY, divisionId: PACKAGE, projectId: PROJECT, page: 3, pageSize: 50 })
+    assert.equal(h.calls.length, 1, 'No organization home/lot roster may be enumerated')
+    const q = h.calls[0].params
+    assert.equal(q.get('org_id'), `eq.${ORG}`)
+    assert.equal(q.get('project.org_id'), `eq.${ORG}`)
+    assert.equal(q.get('project.division_id'), `in.(${PACKAGE})`)
+    assert.equal(q.get('project.lot.community_id'), `eq.${COMMUNITY}`)
+    assert.equal(q.get('project.lot.org_id'), `eq.${ORG}`)
+    assert.equal(q.get('project.lot.community.org_id'), `eq.${ORG}`)
+    assert.equal(q.get('project.access.org_id'), `eq.${ORG}`)
+    assert.equal(q.get('project.access.user_id'), `eq.${ACTOR}`)
+    assert.equal(q.get('project.access.status'), 'eq.active')
+    assert.equal(q.get('project_id'), `eq.${PROJECT}`)
+    assert.match(q.get('select'), /project:projects!inner\(/)
+    assert.match(q.get('select'), /lot:lots!lots_project_id_fkey!inner\(/)
+    assert.match(q.get('select'), /access:project_members!project_members_project_id_fkey!inner\(/)
+    assert.equal(q.get('offset'), '100'); assert.equal(q.get('limit'), '50')
+    assert.ok(h.calls[0].options.headers.get('prefer').includes('count=exact'))
+    assert.equal(result.count, 1203); assert.deepEqual(result.items, [{ id: PROJECT }])
+    assert.equal(h.gates[0].permission, 'price_book.read')
+  })
+  test(`${queue}: selected division cannot widen authority and an empty assignment reads nothing`, async () => {
+    for (const divisionIds of [[PACKAGE], []]) {
+      const h = harness({ scope: { divisionIds, projectMembershipRequired: false } })
+      const result = await h.queues[queue]({ divisionId: COMMUNITY, page: 3 })
+      assert.equal(result.count, 0); assert.equal(result.page, 3); assert.equal(h.calls.length, 0)
+    }
+  })
+  test(`${queue}: all-communities view retains assigned divisions and active-home restriction`, async () => {
+    const h = harness({ scope: { divisionIds: [PACKAGE, COMMUNITY], projectMembershipRequired: true } })
+    await h.queues[queue]()
+    const q = h.calls[0].params
+    assert.equal(q.get('project.division_id'), `in.(${PACKAGE},${COMMUNITY})`)
+    assert.equal(q.get('project.access.user_id'), `eq.${ACTOR}`)
+    assert.equal(q.has('project.lot.community_id'), false)
+    assert.equal(q.has('project_id'), false)
+    assert.equal(q.get('limit'), '50')
+  })
+  test(`${queue}: unrestricted mixed-organization view adds no posture or membership gate`, async () => {
+    const h = harness()
+    await h.queues[queue]()
+    const q = h.calls[0].params
+    assert.equal(q.has('project.division_id'), false)
+    assert.equal(q.has('project.access.user_id'), false)
+    assert.equal(q.has('property_type'), false)
+    assert.equal(q.has('product_tier'), false)
+    assert.equal(q.get('project.org_id'), `eq.${ORG}`)
+  })
+  test(`${queue}: malformed lens, home, status and page fail before reads`, async () => {
+    for (const input of [{ communityId: 'bad' }, { divisionId: 'bad' }, { projectId: 'bad' }, { status: 'bad' }, { page: 0 }, { page: 1.5 }, { pageSize: 101 }, { page: 100001 }]) {
+      const h = harness()
+      await assert.rejects(h.queues[queue](input))
+      assert.equal(h.calls.length, 0); assert.equal(h.gates.length, 0)
+    }
+  })
+  test(`${queue}: denied permission and database failure remain errors`, async () => {
+    const denied = harness({ denied: true })
+    await assert.rejects(denied.queues[queue](), /Forbidden/)
+    assert.equal(denied.calls.length, 0)
+    const failed = harness({ failure: true })
+    await assert.rejects(failed.queues[queue](), /Queue unavailable/)
+  })
+}
+test('original queue-specific filters and stable sort survive scope narrowing', async () => {
+  const h = harness()
+  await h.queues.exceptions({ status: 'dismissed' })
+  await h.queues.completions({ status: 'reported' })
+  assert.equal(h.calls[0].params.get('status'), 'eq.dismissed')
+  assert.equal(h.calls[0].params.get('order'), 'created_at.asc,id.asc')
+  assert.equal(h.calls[1].params.get('status'), 'eq.reported')
+  assert.equal(h.calls[1].params.get('order'), 'reported_at.desc,id.desc')
+})

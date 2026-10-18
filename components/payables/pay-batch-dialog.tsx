@@ -1,5 +1,6 @@
 "use client"
 
+import { payBatchFingerprint, payBatchIdempotencyKey, type PayBatchLine } from "@/lib/payables/batch-idempotency"
 import * as React from "react"
 import Link from "next/link"
 import { toast } from "sonner"
@@ -84,6 +85,15 @@ export function PayBatchDialog({
   const [pending, setPending] = React.useState(false)
   const [outcomes, setOutcomes] = React.useState<BulkOutcome[]>([])
   const [splitDraftIds, setSplitDraftIds] = React.useState<string[]>([])
+  // One key per logical submit: minted when the dialog opens, never per click.
+  const submitSession = React.useRef({ id: "", discardedRuns: new Map<string, number>() })
+  React.useEffect(() => {
+    if (open) submitSession.current = { id: crypto.randomUUID(), discardedRuns: new Map() }
+  }, [open])
+  const keyFor = (items: PayBatchLine[]) => {
+    const fingerprint = payBatchFingerprint(fundingSourceId, items)
+    return { fingerprint, key: payBatchIdempotencyKey(submitSession.current.id, fingerprint, submitSession.current.discardedRuns.get(fingerprint) ?? 0) }
+  }
 
   const scheduledPreferences = React.useMemo(
     () => bills.map((bill) => bill.payment_schedule === "scheduled" ? bill.scheduled_payment_date ?? null : null),
@@ -199,7 +209,8 @@ export function PayBatchDialog({
       const nextOutcomes: BulkOutcome[] = []
       let submittedCount = 0
       for (const chunk of chunks) {
-        const prepared = await preparePayableApprovalAction({ bills: chunk.map((line) => ({ bill_id: line.bill.id, amount_cents: line.amountCents })), funding_source_id: fundingSourceId, idempotency_key: crypto.randomUUID(), mode: "skip_failures" })
+        const { fingerprint, key } = keyFor(chunk.map((line) => ({ billId: line.bill.id, amountCents: line.amountCents })))
+        const prepared = await preparePayableApprovalAction({ bills: chunk.map((line) => ({ bill_id: line.bill.id, amount_cents: line.amountCents })), funding_source_id: fundingSourceId, idempotency_key: key, mode: "skip_failures" })
         if (!prepared.success) {
           nextOutcomes.push(...chunk.map((line) => ({ id: line.bill.id, label: labels.get(line.bill.id) ?? `Payable ${line.bill.id.slice(0, 8)}`, ok: false, reason: prepared.error })))
           continue
@@ -209,6 +220,7 @@ export function PayBatchDialog({
         const submitted = await submitPayableBatchAction({ run_id: prepared.data.runId, scheduled_for: scheduledFor })
         if (!submitted.success) {
           await discardPayableBatchAction(prepared.data.runId)
+          submitSession.current.discardedRuns.set(fingerprint, (submitSession.current.discardedRuns.get(fingerprint) ?? 0) + 1)
           activeRunIds.splice(activeRunIds.indexOf(prepared.data.runId), 1)
           for (const outcome of nextOutcomes.filter((outcome) => chunk.some((line) => line.bill.id === outcome.id) && outcome.ok)) { outcome.ok = false; outcome.reason = submitted.error }
           continue
@@ -240,7 +252,8 @@ export function PayBatchDialog({
     try {
       const results = []
       for (const group of groups.slice(0, 2)) {
-        const prepared = await preparePayableApprovalAction({ bills: group.map((bill) => ({ bill_id: bill.id, amount_cents: payableOutstandingCents(bill) })), funding_source_id: fundingSourceId, idempotency_key: crypto.randomUUID(), mode: "skip_failures" })
+        const { key } = keyFor(group.map((bill) => ({ billId: bill.id, amountCents: payableOutstandingCents(bill) })))
+        const prepared = await preparePayableApprovalAction({ bills: group.map((bill) => ({ bill_id: bill.id, amount_cents: payableOutstandingCents(bill) })), funding_source_id: fundingSourceId, idempotency_key: key, mode: "skip_failures" })
         if (!prepared.success) throw new Error(prepared.error)
         results.push(prepared.data.runId)
       }

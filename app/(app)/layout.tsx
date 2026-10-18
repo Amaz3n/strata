@@ -1,5 +1,7 @@
 import React, { Suspense } from "react"
+import { DocumentTransferProvider } from "@/components/documents/transfer-provider"
 import { connection } from "next/server"
+import { unstable_rethrow } from "next/navigation"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
 import type { User } from "@/lib/types"
@@ -24,7 +26,7 @@ import {
 import { getAppChromeContext } from "@/lib/services/app-chrome"
 import { getReleaseNotesSummary } from "@/lib/services/release-notes"
 import { getNavigationBadgeCounts } from "@/lib/services/navigation-badges"
-import { shouldShowProductionOrgNavigation } from "@/lib/product-tier"
+import { shouldShowCustomBuildNavigation, shouldShowProductionOrgNavigation, shouldShowSafetyNavigation } from "@/lib/product-tier"
 
 // This layout is the contract for every authenticated destination: a click
 // must be able to render app chrome immediately while request data streams.
@@ -45,14 +47,20 @@ async function loadNavigationBadges(): Promise<NavigationBadgeValues> {
   await connection()
 
   const [releaseNotesSummary, navigationBadgeCounts] = await Promise.all([
-    getReleaseNotesSummary().catch(() => ({ unreadCount: 0, announcement: null })),
-    getNavigationBadgeCounts().catch(() => ({
-      pipelineBadgeCount: 0,
-      myWorkBadgeCount: 0,
-      readyToBillBadgeCount: 0,
-      projectReviewBadgeCounts: {} as Record<string, number>,
-      projectCorrespondenceBadgeCounts: {} as Record<string, number>,
-    })),
+    getReleaseNotesSummary().catch((error) => {
+      unstable_rethrow(error)
+      return { unreadCount: 0, announcement: null }
+    }),
+    getNavigationBadgeCounts().catch((error) => {
+      unstable_rethrow(error)
+      return {
+        pipelineBadgeCount: 0,
+        myWorkBadgeCount: 0,
+        readyToBillBadgeCount: 0,
+        projectReviewBadgeCounts: {} as Record<string, number>,
+        projectCorrespondenceBadgeCounts: {} as Record<string, number>,
+      }
+    }),
   ])
 
   return {
@@ -66,10 +74,10 @@ async function loadNavigationBadges(): Promise<NavigationBadgeValues> {
 }
 
 async function ReleaseNotesAnnouncementSlot() {
-  const summary = await getReleaseNotesSummary().catch(() => ({
-    unreadCount: 0,
-    announcement: null,
-  }))
+  const summary = await getReleaseNotesSummary().catch((error) => {
+    unstable_rethrow(error)
+    return { unreadCount: 0, announcement: null }
+  })
   return <ReleaseNotesAnnouncement announcement={summary.announcement} />
 }
 
@@ -86,19 +94,26 @@ async function AuthenticatedAppChrome({
   // every authenticated route was an empty sidebar rectangle.
   const {
     user: currentUser,
+    orgId,
     permissions,
     access,
     platformAccess,
     platformSessionState,
     productTier,
+    businessProfile,
     ambientContext,
     projects,
+    projectsTruncated,
     hasProductionProjects,
+    hasActiveNonProductionProjects,
+    hasActiveCommercialProjects,
     hasPriceAgreements,
     booksEnabled,
   } = await getAppChromeContext()
 
   const showProductionNavigation = shouldShowProductionOrgNavigation(productTier, hasProductionProjects)
+  const showCustomBuildNavigation = shouldShowCustomBuildNavigation(productTier, hasActiveNonProductionProjects)
+  const showSafetyNavigation = shouldShowSafetyNavigation(productTier, hasActiveCommercialProjects)
   const showPurchasingNavigation = showProductionNavigation || hasPriceAgreements
 
   if (access.locked) {
@@ -126,26 +141,29 @@ async function AuthenticatedAppChrome({
       }
     >
       <SidebarProvider className="h-svh max-h-svh overflow-hidden">
-        <SettingsDraftProvider key={currentUser?.id}><OptimisticPathProvider>
+        <SettingsDraftProvider key={currentUser?.id}><DocumentTransferProvider key={`${currentUser?.id}:${orgId}`} scope={`${currentUser?.id}:${orgId}`}><OptimisticPathProvider>
           <NavigationBadgeProvider valuesPromise={navigationBadgesPromise}>
             <DemoUsageTracker />
             <Suspense fallback={null}>
               <ReleaseNotesAnnouncementSlot />
             </Suspense>
+            <PageTitleProvider productTier={productTier} businessProfile={businessProfile}>
             <AppSidebar
               user={currentUser}
               projects={projects}
+              projectsTruncated={projectsTruncated}
               canAccessPlatform={platformAccess.canAccessPlatform}
               permissions={permissions}
               productTier={productTier}
+              businessProfile={businessProfile}
               showProductionNavigation={showProductionNavigation}
               showPurchasingNavigation={showPurchasingNavigation}
-              showPipelineNavigation={productTier !== "production"}
+              showPipelineNavigation={showCustomBuildNavigation}
+              showSafetyNavigation={showSafetyNavigation}
               booksEnabled={booksEnabled}
             />
             <MobileActionProvider>
               <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
-                <PageTitleProvider productTier={productTier}>
                   <AppHeader
                     divisions={ambientContext.divisions}
                     divisionId={ambientContext.divisionId}
@@ -157,7 +175,6 @@ async function AuthenticatedAppChrome({
                   />
                   <TrialStatusBanner access={access} />
                   <AppPageContent>{children}</AppPageContent>
-                </PageTitleProvider>
               </SidebarInset>
               <MobileBottomNav
                 user={currentUser}
@@ -165,14 +182,16 @@ async function AuthenticatedAppChrome({
                 canAccessPlatform={platformAccess.canAccessPlatform}
                 permissions={permissions}
                 productTier={productTier}
+              businessProfile={businessProfile}
                 showProductionNavigation={showProductionNavigation}
-                showPipelineNavigation={productTier !== "production"}
+                showPipelineNavigation={showCustomBuildNavigation}
                 showPurchasingNavigation={showPurchasingNavigation}
                 booksEnabled={booksEnabled}
               />
             </MobileActionProvider>
+            </PageTitleProvider>
           </NavigationBadgeProvider>
-        </OptimisticPathProvider></SettingsDraftProvider>
+        </OptimisticPathProvider></DocumentTransferProvider></SettingsDraftProvider>
       </SidebarProvider>
     </div>
   )

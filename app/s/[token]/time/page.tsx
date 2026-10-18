@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -16,6 +17,7 @@ interface Props {
 
 
 export default async function PortalTimePage({ params }: Props) {
+  await connection()
   const { token } = await params
   let access
   try {

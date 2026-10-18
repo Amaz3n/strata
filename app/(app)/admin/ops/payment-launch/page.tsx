@@ -75,7 +75,11 @@ async function PaymentLaunchPageContent() {
 
 export default function PaymentLaunchPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout title="Payment launch gates" breadcrumbs={[{ label: "Admin", href: "/admin" }, { label: "Ops", href: "/admin/ops" }, { label: "Payment launch" }]}>
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <PaymentLaunchPageContent />
     </Suspense>
   )

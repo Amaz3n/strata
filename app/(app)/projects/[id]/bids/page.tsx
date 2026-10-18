@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -25,7 +26,30 @@ function numberParam(value: string | string[] | undefined) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-export default async function ProjectBidsPage({ params, searchParams }: ProjectBidsPageProps) {
+export default function ProjectBidsPage({ params, searchParams }: ProjectBidsPageProps) {
+  return (
+    <>
+      <PageLayout title="Bids" breadcrumbs={[{ label: "Project" }, { label: "Bids" }]} />
+      <Suspense
+        fallback={
+          <div className="space-y-4 p-6">
+            <Skeleton className="mb-6 h-8 w-48" />
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-14 w-full rounded-md" />
+              ))}
+            </div>
+          </div>
+        }
+      >
+        <ProjectBidsPageRoute params={params} searchParams={searchParams} />
+      </Suspense>
+    </>
+  )
+}
+
+async function ProjectBidsPageRoute({ params, searchParams }: ProjectBidsPageProps) {
+  await connection()
   const { id } = await params
   const query = (await searchParams) ?? {}
   const initialDraft = {
@@ -43,25 +67,7 @@ export default async function ProjectBidsPage({ params, searchParams }: ProjectB
       initialDraft.amount_cents,
   )
 
-  return (
-    <>
-      <PageLayout title="Bids" breadcrumbs={[{ label: "Project" }, { label: "Bids" }]} />
-      <Suspense
-        fallback={
-          <div className="space-y-4 p-6">
-            <Skeleton className="mb-6 h-8 w-48" />
-            <div className="space-y-2">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-14 w-full rounded-md" />
-              ))}
-            </div>
-          </div>
-        }
-      >
-        <ProjectBidsData id={id} initialDraft={hasInitialDraft ? initialDraft : null} />
-      </Suspense>
-    </>
-  )
+  return <ProjectBidsData id={id} initialDraft={hasInitialDraft ? initialDraft : null} />
 }
 
 async function ProjectBidsData({

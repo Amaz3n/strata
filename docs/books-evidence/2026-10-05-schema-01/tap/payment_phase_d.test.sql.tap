@@ -1,0 +1,12 @@
+1..11
+ok 1 - Function public.submit_vendor_bills_for_approval(uuid, uuid, uuid[]) should exist
+ok 2 - Function public.approve_vendor_bills_with_outcomes(uuid, uuid, jsonb, text) should exist
+ok 3 - Function public.create_payment_run_with_outcomes(uuid, uuid, uuid, text, text, smallint, bigint, bigint, bigint, bigint, jsonb, text, jsonb, text) should exist
+ok 4 - Function public.submit_vendor_bills_for_approval(uuid, uuid, uuid[]) should return setof record
+ok 5 - Function public.approve_vendor_bills_with_outcomes(uuid, uuid, jsonb, text) should return setof record
+ok 6 - Function public.create_payment_run_with_outcomes(uuid, uuid, uuid, text, text, smallint, bigint, bigint, bigint, bigint, jsonb, text, jsonb, text) should return jsonb
+ok 7 - browser roles cannot submit drafts through the bulk RPC
+ok 8 - browser roles cannot approve through the outcome RPC
+ok 9 - browser roles cannot create runs through the outcome RPC
+ok 10 - submit RPC returns one outcome per bill
+ok 11 - approval RPC implements explicit modes

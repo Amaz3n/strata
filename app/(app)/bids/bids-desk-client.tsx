@@ -70,6 +70,7 @@ function bandFor(pkg: DeskPackage, today: Date): Band | null {
 }
 
 function jobHref(pkg: DeskPackage): string | null {
+  if (pkg.award_target === "price_agreement") return `/purchasing/bids/${pkg.id}`
   if (pkg.project_id) return `/projects/${pkg.project_id}/bids/${pkg.id}`
   return null
 }

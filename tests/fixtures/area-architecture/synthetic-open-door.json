@@ -1,0 +1,484 @@
+{
+  "qualification": "Synthetic analytic geometry, not a construction-sheet accuracy reference.",
+  "recognition": {
+    "provider": "google",
+    "model": "gemini-3.8-flash",
+    "captured": "2026-09-30"
+  },
+  "input": {
+    "segments": [],
+    "evidence": {
+      "version": 1,
+      "extractionProfile": "floor-area-2",
+      "paths": [
+        {
+          "id": 0,
+          "commands": [
+            [
+              "M",
+              0.08333333333333333,
+              0.875
+            ],
+            [
+              "L",
+              0.08333333333333333,
+              0.86
+            ],
+            [
+              "L",
+              0.9166666666666666,
+              0.86
+            ],
+            [
+              "L",
+              0.9166666666666666,
+              0.875
+            ],
+            [
+              "Z"
+            ]
+          ],
+          "kind": "fill",
+          "color": [
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224
+          ],
+          "colorSpace": "DeviceRGB",
+          "opacity": 1,
+          "width": 0,
+          "dashes": [],
+          "layer": [],
+          "groups": [],
+          "clips": [],
+          "evenOdd": false
+        },
+        {
+          "id": 1,
+          "commands": [
+            [
+              "M",
+              0.08333333333333333,
+              0.175
+            ],
+            [
+              "L",
+              0.08333333333333333,
+              0.16
+            ],
+            [
+              "L",
+              0.9166666666666666,
+              0.16
+            ],
+            [
+              "L",
+              0.9166666666666666,
+              0.175
+            ],
+            [
+              "Z"
+            ]
+          ],
+          "kind": "fill",
+          "color": [
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224
+          ],
+          "colorSpace": "DeviceRGB",
+          "opacity": 1,
+          "width": 0,
+          "dashes": [],
+          "layer": [],
+          "groups": [],
+          "clips": [],
+          "evenOdd": false
+        },
+        {
+          "id": 2,
+          "commands": [
+            [
+              "M",
+              0.08333333333333333,
+              0.875
+            ],
+            [
+              "L",
+              0.08333333333333333,
+              0.175
+            ],
+            [
+              "L",
+              0.09333333333333334,
+              0.175
+            ],
+            [
+              "L",
+              0.09333333333333334,
+              0.875
+            ],
+            [
+              "Z"
+            ]
+          ],
+          "kind": "fill",
+          "color": [
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224
+          ],
+          "colorSpace": "DeviceRGB",
+          "opacity": 1,
+          "width": 0,
+          "dashes": [],
+          "layer": [],
+          "groups": [],
+          "clips": [],
+          "evenOdd": false
+        },
+        {
+          "id": 3,
+          "commands": [
+            [
+              "M",
+              0.9066666666666666,
+              0.875
+            ],
+            [
+              "L",
+              0.9066666666666666,
+              0.175
+            ],
+            [
+              "L",
+              0.9166666666666666,
+              0.175
+            ],
+            [
+              "L",
+              0.9166666666666666,
+              0.875
+            ],
+            [
+              "Z"
+            ]
+          ],
+          "kind": "fill",
+          "color": [
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224
+          ],
+          "colorSpace": "DeviceRGB",
+          "opacity": 1,
+          "width": 0,
+          "dashes": [],
+          "layer": [],
+          "groups": [],
+          "clips": [],
+          "evenOdd": false
+        },
+        {
+          "id": 4,
+          "commands": [
+            [
+              "M",
+              0.495,
+              0.875
+            ],
+            [
+              "L",
+              0.495,
+              0.5
+            ],
+            [
+              "L",
+              0.505,
+              0.5
+            ],
+            [
+              "L",
+              0.505,
+              0.875
+            ],
+            [
+              "Z"
+            ]
+          ],
+          "kind": "fill",
+          "color": [
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224
+          ],
+          "colorSpace": "DeviceRGB",
+          "opacity": 1,
+          "width": 0,
+          "dashes": [],
+          "layer": [],
+          "groups": [],
+          "clips": [],
+          "evenOdd": false
+        },
+        {
+          "id": 5,
+          "commands": [
+            [
+              "M",
+              0.495,
+              0.375
+            ],
+            [
+              "L",
+              0.495,
+              0.175
+            ],
+            [
+              "L",
+              0.505,
+              0.175
+            ],
+            [
+              "L",
+              0.505,
+              0.375
+            ],
+            [
+              "Z"
+            ]
+          ],
+          "kind": "fill",
+          "color": [
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224
+          ],
+          "colorSpace": "DeviceRGB",
+          "opacity": 1,
+          "width": 0,
+          "dashes": [],
+          "layer": [],
+          "groups": [],
+          "clips": [],
+          "evenOdd": false
+        },
+        {
+          "id": 6,
+          "commands": [
+            [
+              "M",
+              0.5,
+              0.5
+            ],
+            [
+              "L",
+              0.5833333333333334,
+              0.5
+            ]
+          ],
+          "kind": "stroke",
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "colorSpace": "DeviceRGB",
+          "opacity": 1,
+          "width": 1,
+          "dashes": [],
+          "layer": [],
+          "groups": [],
+          "clips": [],
+          "evenOdd": false
+        },
+        {
+          "id": 7,
+          "commands": [
+            [
+              "M",
+              0.13333333333333333,
+              0.775
+            ],
+            [
+              "L",
+              0.45,
+              0.775
+            ]
+          ],
+          "kind": "stroke",
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "colorSpace": "DeviceRGB",
+          "opacity": 1,
+          "width": 0.30000001192092896,
+          "dashes": [],
+          "layer": [],
+          "groups": [],
+          "clips": [],
+          "evenOdd": false
+        }
+      ],
+      "truncated": false,
+      "unrepresentedPaint": false,
+      "omittedDecorationPaths": 0
+    },
+    "textRuns": [
+      {
+        "text": "SYNTHETIC TAKEOFF TEST - NO CUSTOMER DRAWING",
+        "x": 0.075,
+        "y": 0.055,
+        "w": 0.5366666666666666,
+        "h": 0.04
+      },
+      {
+        "text": "BEDROOM",
+        "x": 0.19166666666666668,
+        "y": 0.5175,
+        "w": 0.10333333333333333,
+        "h": 0.04
+      },
+      {
+        "text": "STUDY",
+        "x": 0.65,
+        "y": 0.5175,
+        "w": 0.06666666666666667,
+        "h": 0.04
+      },
+      {
+        "text": "9 ft 6 in",
+        "x": 0.21666666666666667,
+        "y": 0.745,
+        "w": 0.03666666666666667,
+        "h": 0.0225
+      }
+    ],
+    "imageWidth": 600,
+    "imageHeight": 400,
+    "feetPerImagePx": 0.05,
+    "region": {
+      "x0": 0,
+      "y0": 0,
+      "x1": 1,
+      "y1": 1
+    },
+    "visualObservations": [
+      {
+        "id": "visual-1",
+        "region": {
+          "x0": 0,
+          "y0": 0,
+          "x1": 0.8433333333333333,
+          "y1": 1
+        },
+        "suppliedPathIds": [
+          2,
+          4,
+          7,
+          5,
+          6
+        ],
+        "elements": [
+          {
+            "pathIds": [
+              2,
+              4,
+              5
+            ],
+            "kind": "wall"
+          },
+          {
+            "pathIds": [
+              6
+            ],
+            "kind": "door"
+          },
+          {
+            "pathIds": [
+              7
+            ],
+            "kind": "annotation"
+          }
+        ],
+        "openings": [
+          {
+            "a": {
+              "pathId": 5,
+              "commandIndex": 0
+            },
+            "b": {
+              "pathId": 4,
+              "commandIndex": 1
+            },
+            "doorPathIds": [
+              6
+            ]
+          }
+        ]
+      },
+      {
+        "id": "visual-2",
+        "region": {
+          "x0": 0.08333333333333337,
+          "y0": 0,
+          "x1": 1,
+          "y1": 1
+        },
+        "suppliedPathIds": [
+          3,
+          4,
+          7,
+          5,
+          6
+        ],
+        "elements": [
+          {
+            "pathIds": [
+              3,
+              4,
+              5
+            ],
+            "kind": "wall"
+          },
+          {
+            "pathIds": [
+              6
+            ],
+            "kind": "door"
+          },
+          {
+            "pathIds": [
+              7
+            ],
+            "kind": "annotation"
+          }
+        ],
+        "openings": [
+          {
+            "a": {
+              "pathId": 5,
+              "commandIndex": 3
+            },
+            "b": {
+              "pathId": 4,
+              "commandIndex": 2
+            },
+            "doorPathIds": [
+              6
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "totalSqft": 330.92,
+    "roomAreasSqft": [
+      165.085,
+      165.835
+    ]
+  }
+}

@@ -140,10 +140,8 @@ struct CreateVarianceOrderRequest: Encodable, Sendable {
     let clientId: String
 }
 
-/// A purchase order a variance can be charged to. The mobile API has no
-/// purchase-order listing route, so these are recovered from the commitments
-/// already referenced by this house's variance history.
-struct MobileVarianceCommitment: Equatable, Identifiable, Sendable {
+/// An issued purchase order, including orders without variance history.
+struct MobileVarianceCommitment: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let title: String
     let companyName: String?
@@ -224,5 +222,65 @@ extension MobileMyHouseWorkItem {
         case let (nil, end?): return "Due \(formatter.string(from: end))"
         default: return nil
         }
+    }
+}
+
+// MARK: - Technician visits
+
+/// Minimal field queue contract. Continuation is always the opaque server cursor.
+struct MobileServiceVisit: Decodable, Identifiable, Sendable {
+    struct Request: Decodable, Sendable {
+        let title: String
+        let description: String?
+        let severity: String?
+    }
+    struct Project: Decodable, Sendable { let name: String }
+    let id: String
+    let requestId: String
+    let projectId: String
+    let visitNumber: Int
+    let windowStart: Date
+    let windowEnd: Date
+    let status: String
+    let request: Request?
+    let project: Project?
+    var updatedAt: String? = nil
+    var canComplete: Bool? = nil
+    var outcome: String? = nil
+    var outcomeNote: String? = nil
+    var laborHours: Double? = nil
+    var laborRateCents: Int? = nil
+    var internalMaterialCents: Int? = nil
+}
+
+struct MobileServiceVisitPage: Sendable {
+    let rows: [MobileServiceVisit]
+    let nextCursor: String?
+}
+
+struct MobileServiceVisitCompletion: Codable, Equatable, Sendable {
+    let expectedVisitAt: String
+    let outcome: String
+    let outcomeNote: String
+    let photoFileIds: [String]
+    let laborHours: Double?
+    let laborRateCents: Int?
+    let materialCents: Int
+
+    /// Parse decimal amounts as integral cents, without floating-point money arithmetic.
+    static func cents(_ text: String) throws -> Int? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { return nil }
+        guard value.range(of: #"^[0-9]{1,7}([.,][0-9]{1,2})?$"#, options: .regularExpression) != nil else { throw APIError.invalidRequest }
+        let parts = value.replacingOccurrences(of: ",", with: ".").split(separator: ".")
+        guard let whole = Int(parts[0]) else { throw APIError.invalidRequest }
+        let fraction = parts.count == 2 ? Int(parts[1])! * (parts[1].count == 1 ? 10 : 1) : 0
+        let result = whole * 100 + fraction
+        guard result <= 100_000_000 else { throw APIError.invalidRequest }
+        return result
+    }
+    static func amountText(_ cents: Int?) -> String {
+        guard let cents else { return "" }
+        return "\(cents / 100).\(String(format: "%02d", cents % 100))"
     }
 }

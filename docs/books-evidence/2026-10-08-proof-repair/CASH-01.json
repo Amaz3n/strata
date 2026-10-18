@@ -1,0 +1,417 @@
+{
+  "scenario": "CASH-01",
+  "status": "PASSED",
+  "reviewedFrom": "Cash method as presented in docs/books-revenue-recognition.md: income when collected (net of refunds, sales tax separate), costs when paid, capitalized purchases separate, and non-income cash flows classified in a bridge. Book-only entries (depreciation, inventory movements, reserves) are listed, not deducted; tax deductibility is a reviewed workpaper adjustment. Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "two-months-with-bridge",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "1d315b7f-51a6-4287-980a-b23785b9b4d0"
+      },
+      "checks": [
+        {
+          "label": "each month and both months together: cash income and costs, the bridge, book-only entries, and the tie to cash",
+          "pass": true,
+          "expected": {
+            "first": {
+              "income": 90000,
+              "costs": 20000,
+              "expenses": 0,
+              "netIncome": 70000,
+              "accounts": {
+                "4110": 54000,
+                "4120": 36000,
+                "5000": 20000
+              },
+              "salesTax": 7200,
+              "capitalized": 0,
+              "bridge": {
+                "transfer": 0,
+                "loan": 100000,
+                "owner": 50000,
+                "fixed_assets": -36000,
+                "prepaid": -1200
+              },
+              "bookOnly": {
+                "books_fixed_asset:6080": 1000,
+                "manual_adjustment:6010": 100
+              },
+              "cashMovement": 190000
+            },
+            "second": {
+              "income": -10000,
+              "costs": 10000,
+              "expenses": 725,
+              "netIncome": -20725,
+              "accounts": {
+                "4110": -6000,
+                "4120": -4000,
+                "5000": 10000,
+                "6050": 25,
+                "6060": 700
+              },
+              "salesTax": -800,
+              "capitalized": 0,
+              "bridge": {
+                "loan": -5000,
+                "owner": -8000
+              },
+              "bookOnly": {
+                "books_fixed_asset:6080": 1000
+              },
+              "cashMovement": -34525
+            },
+            "both": {
+              "income": 80000,
+              "costs": 30000,
+              "expenses": 725,
+              "netIncome": 49275,
+              "accounts": {
+                "4110": 48000,
+                "4120": 32000,
+                "5000": 30000,
+                "6050": 25,
+                "6060": 700
+              },
+              "salesTax": 6400,
+              "capitalized": 0,
+              "bridge": {
+                "transfer": 0,
+                "loan": 95000,
+                "owner": 42000,
+                "fixed_assets": -36000,
+                "prepaid": -1200
+              },
+              "bookOnly": {
+                "books_fixed_asset:6080": 2000,
+                "manual_adjustment:6010": 100
+              },
+              "cashMovement": 155475
+            },
+            "monthsAddUp": true,
+            "tiesToLedgerCash": [
+              true,
+              true
+            ]
+          },
+          "observed": {
+            "first": {
+              "income": 90000,
+              "costs": 20000,
+              "expenses": 0,
+              "netIncome": 70000,
+              "accounts": {
+                "4110": 54000,
+                "4120": 36000,
+                "5000": 20000
+              },
+              "salesTax": 7200,
+              "capitalized": 0,
+              "bridge": {
+                "transfer": 0,
+                "loan": 100000,
+                "owner": 50000,
+                "fixed_assets": -36000,
+                "prepaid": -1200
+              },
+              "bookOnly": {
+                "books_fixed_asset:6080": 1000,
+                "manual_adjustment:6010": 100
+              },
+              "cashMovement": 190000
+            },
+            "second": {
+              "income": -10000,
+              "costs": 10000,
+              "expenses": 725,
+              "netIncome": -20725,
+              "accounts": {
+                "4110": -6000,
+                "4120": -4000,
+                "5000": 10000,
+                "6050": 25,
+                "6060": 700
+              },
+              "salesTax": -800,
+              "capitalized": 0,
+              "bridge": {
+                "loan": -5000,
+                "owner": -8000
+              },
+              "bookOnly": {
+                "books_fixed_asset:6080": 1000
+              },
+              "cashMovement": -34525
+            },
+            "both": {
+              "income": 80000,
+              "costs": 30000,
+              "expenses": 725,
+              "netIncome": 49275,
+              "accounts": {
+                "4110": 48000,
+                "4120": 32000,
+                "5000": 30000,
+                "6050": 25,
+                "6060": 700
+              },
+              "salesTax": 6400,
+              "capitalized": 0,
+              "bridge": {
+                "transfer": 0,
+                "loan": 95000,
+                "owner": 42000,
+                "fixed_assets": -36000,
+                "prepaid": -1200
+              },
+              "bookOnly": {
+                "books_fixed_asset:6080": 2000,
+                "manual_adjustment:6010": 100
+              },
+              "cashMovement": 155475
+            },
+            "monthsAddUp": true,
+            "tiesToLedgerCash": [
+              true,
+              true
+            ]
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:42.352Z"
+    },
+    {
+      "name": "unclassified-refused",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "ae98bb2c-a296-47f2-99c6-44d39b57128c"
+      },
+      "checks": [
+        {
+          "label": "an accrual or its payment by journal is refused with the cure, not guessed",
+          "pass": true,
+          "expected": {
+            "accrualOnly": "refused",
+            "paid": "refused",
+            "namesTheCure": true
+          },
+          "observed": {
+            "accrualOnly": "refused",
+            "paid": "refused",
+            "namesTheCure": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:43.675Z"
+    },
+    {
+      "name": "home-sale",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "e40e4889-de27-45c5-a1fb-ffce81a92129"
+      },
+      "checks": [
+        {
+          "label": "held deposit, capitalized land and construction, income at closing; the cost of the home is listed, not deducted",
+          "pass": true,
+          "expected": {
+            "june": {
+              "income": 0,
+              "costs": 0,
+              "expenses": 0,
+              "netIncome": 0,
+              "accounts": {},
+              "salesTax": 0,
+              "capitalized": 20000000,
+              "bridge": {
+                "customer_deposits": 2000000,
+                "inventory": -6000000
+              },
+              "bookOnly": {},
+              "cashMovement": -24000000
+            },
+            "july": {
+              "income": 40000000,
+              "costs": 0,
+              "expenses": 0,
+              "netIncome": 40000000,
+              "accounts": {
+                "4000": 40000000
+              },
+              "salesTax": 0,
+              "capitalized": 0,
+              "bridge": {
+                "customer_deposits": -2000000
+              },
+              "bookOnly": {
+                "inventory_sale_relief:5000": 26000000
+              },
+              "cashMovement": 38000000
+            },
+            "both": {
+              "income": 40000000,
+              "costs": 0,
+              "expenses": 0,
+              "netIncome": 40000000,
+              "accounts": {
+                "4000": 40000000
+              },
+              "salesTax": 0,
+              "capitalized": 20000000,
+              "bridge": {
+                "customer_deposits": 0,
+                "inventory": -6000000
+              },
+              "bookOnly": {
+                "inventory_sale_relief:5000": 26000000
+              },
+              "cashMovement": 14000000
+            },
+            "monthsAddUp": true
+          },
+          "observed": {
+            "june": {
+              "income": 0,
+              "costs": 0,
+              "expenses": 0,
+              "netIncome": 0,
+              "accounts": {},
+              "salesTax": 0,
+              "capitalized": 20000000,
+              "bridge": {
+                "customer_deposits": 2000000,
+                "inventory": -6000000
+              },
+              "bookOnly": {},
+              "cashMovement": -24000000
+            },
+            "july": {
+              "income": 40000000,
+              "costs": 0,
+              "expenses": 0,
+              "netIncome": 40000000,
+              "accounts": {
+                "4000": 40000000
+              },
+              "salesTax": 0,
+              "capitalized": 0,
+              "bridge": {
+                "customer_deposits": -2000000
+              },
+              "bookOnly": {
+                "inventory_sale_relief:5000": 26000000
+              },
+              "cashMovement": 38000000
+            },
+            "both": {
+              "income": 40000000,
+              "costs": 0,
+              "expenses": 0,
+              "netIncome": 40000000,
+              "accounts": {
+                "4000": 40000000
+              },
+              "salesTax": 0,
+              "capitalized": 20000000,
+              "bridge": {
+                "customer_deposits": 0,
+                "inventory": -6000000
+              },
+              "bookOnly": {
+                "inventory_sale_relief:5000": 26000000
+              },
+              "cashMovement": 14000000
+            },
+            "monthsAddUp": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:43.917Z"
+    },
+    {
+      "name": "tax-workpaper",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "49c92d6c-e069-4334-9469-ae55ed48bf2a",
+        "workpapers": [
+          "8e8f255b-6422-43c4-9478-5bd5ca1b74b0",
+          "41720bcc-ea3f-464d-bf4d-513aeebf5d0f",
+          "292a710c-adaf-4336-a3c5-72c7af9a427a"
+        ],
+        "runId": "24667784-96ca-4803-9378-4a0a8d666ef1"
+      },
+      "checks": [
+        {
+          "label": "self-review and a stale basis are refused; the replacement supersedes the approval, which stays on record; the report reproduces",
+          "pass": true,
+          "expected": {
+            "selfReviewRefused": true,
+            "staleRefused": "refused",
+            "approved": {
+              "bookIncome": 501000,
+              "adjustments": -10000,
+              "adjusted": 491000,
+              "separateReviewer": true
+            },
+            "replaced": {
+              "bookIncome": 501000,
+              "adjustments": 0,
+              "adjusted": 501000,
+              "workpaper": true
+            },
+            "originalKept": {
+              "status": "superseded",
+              "reviewer": true,
+              "notes": "Checked against the depreciation schedule"
+            },
+            "statuses": [
+              "withdrawn",
+              "superseded",
+              "approved"
+            ],
+            "delivery": {
+              "csvNamesReviewNotes": true,
+              "pdf": true,
+              "savedRunReproduces": true
+            }
+          },
+          "observed": {
+            "selfReviewRefused": true,
+            "staleRefused": "refused",
+            "approved": {
+              "bookIncome": 501000,
+              "adjustments": -10000,
+              "adjusted": 491000,
+              "separateReviewer": true
+            },
+            "replaced": {
+              "bookIncome": 501000,
+              "adjustments": 0,
+              "adjusted": 501000,
+              "workpaper": true
+            },
+            "originalKept": {
+              "status": "superseded",
+              "reviewer": true,
+              "notes": "Checked against the depreciation schedule"
+            },
+            "statuses": [
+              "withdrawn",
+              "superseded",
+              "approved"
+            ],
+            "delivery": {
+              "csvNamesReviewNotes": true,
+              "pdf": true,
+              "savedRunReproduces": true
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:45.636Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T17:56:46.524Z"
+}

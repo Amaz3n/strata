@@ -1,3 +1,4 @@
+import { estimateLineNotes } from "@/lib/financials/estimate-commercial"
 import { renderQuotePdf, type QuoteLine, type QuotePricingDisplay, type QuoteSigner } from "@/lib/pdfs/quote-document"
 
 type EstimateLine = QuoteLine
@@ -8,6 +9,7 @@ type EstimatePdfData = {
   orgAddress?: string | null
   accentColor?: string | null
   fontFamily?: string | null
+  builderFeeCents?: number
   estimateTitle: string
   estimateNumber?: string
   recipientName?: string
@@ -25,6 +27,8 @@ type EstimatePdfData = {
   subtotalCents?: number | null
   taxCents?: number | null
   totalCents?: number | null
+  /** A budget prints its range in place of a total. */
+  totalRange?: { lowCents: number; highCents: number } | null
   contingencyCents?: number | null
   contingencyPercent?: number | null
   inclusions?: string | null
@@ -63,12 +67,13 @@ export async function renderEstimatePdf(data: EstimatePdfData): Promise<Buffer> 
     subtotalCents: data.subtotalCents,
     taxCents: data.taxCents,
     totalCents: data.totalCents,
+    totalRange: data.totalRange,
     contingencyCents: data.contingencyCents,
     contingencyPercent: data.contingencyPercent,
     inclusions: data.inclusions,
     exclusions: data.exclusions,
     validUntil: data.validUntil,
     signers: data.signers,
-    lines: data.lines,
+    lines: [...data.lines, ...(data.builderFeeCents ? [{ description: "Fixed builder fee", quantity: 1, unit_cost_cents: data.builderFeeCents, markup_pct: 0, metadata: {} }] : [])].map((line) => ({ ...line, metadata: { ...line.metadata, notes: estimateLineNotes(line.metadata) } })),
   })
 }

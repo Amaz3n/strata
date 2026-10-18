@@ -1,8 +1,9 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { listReviewStepsForReviewer } from "@/lib/services/submittals"
-import { loadReviewerPortalPage } from "../load-reviewer"
+import { loadReviewerPortalAccess } from "../load-reviewer"
 import { ReviewerSubmittalsTab } from "../reviewer-submittals-tab"
 
 interface Props {
@@ -11,8 +12,9 @@ interface Props {
 
 
 export default async function ReviewerSubmittalsPage({ params }: Props) {
+  await connection()
   const { token } = await params
-  const { access } = await loadReviewerPortalPage(token)
+  const access = await loadReviewerPortalAccess(token)
 
   const reviewerContactId = access.contact_id ?? null
   if (!(access.permissions.can_review_submittals ?? false) || reviewerContactId === null) {

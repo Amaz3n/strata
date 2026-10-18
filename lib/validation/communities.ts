@@ -42,7 +42,10 @@ export const takedownInputSchema = z.object({
   actualDate: isoDate,
   lotCount: z.number().int().min(0).default(0),
   pricePerLotCents: z.number().int().min(0).optional().nullable(),
-  depositCents: z.number().int().min(0).default(0),
+  /** The land contract the tranche is under; its deposits live on the contract's schedule. */
+  landContractId: z.string().uuid().optional().nullable(),
+  /** The land deal the tranche came from; closing it then needs that deal's acquisition approved. */
+  landOpportunityId: z.string().uuid().optional().nullable(),
   status: takedownStatusSchema.default("scheduled"),
   sellerCompanyId: z.string().uuid().optional().nullable(),
   notes: z.string().trim().max(5000).optional().nullable(),

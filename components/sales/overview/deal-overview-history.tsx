@@ -92,10 +92,12 @@ function sinceLabel(value: string): string {
  */
 export function DealOverviewHistory({
   activity,
+  canLog,
   truncated,
   prospectId,
   buyerName,
 }: {
+  canLog: boolean
   activity: ProspectActivity[]
   /** True when the query itself capped the log. */
   truncated: boolean
@@ -125,7 +127,7 @@ export function DealOverviewHistory({
           </span>
         )}
         {/* The one mutation this pane owns, at the head of the log it writes to. */}
-        {prospectId ? <LogActivityButton prospectId={prospectId} buyerName={buyerName} /> : null}
+        {canLog && prospectId ? <LogActivityButton prospectId={prospectId} buyerName={buyerName} /> : null}
       </BandHeader>
 
       <BandBody>
@@ -134,7 +136,7 @@ export function DealOverviewHistory({
             icon={<MessageSquare className="h-5 w-5 text-muted-foreground/70" />}
             tone="neutral"
             title="Nothing recorded yet"
-            description="Use Log activity, above. Holds, pricing and signatures land here on their own."
+            description={canLog ? "Use Log activity, above. Holds, pricing and signatures land here on their own." : "Holds, pricing, signatures and logged contact appear here."}
           />
         ) : (
           <div className="space-y-7">
@@ -155,10 +157,10 @@ export function DealOverviewHistory({
                       ? "text-foreground"
                       : group.isYesterday
                       ? "text-foreground/85"
-                      : "text-muted-foreground/85"
+                      : "text-muted-foreground"
                   }
                 >
-                  <span className="text-[10px] tabular-nums text-muted-foreground/55">
+                  <span className="text-[10px] tabular-nums text-muted-foreground">
                     {group.secondary}
                   </span>
                   {group.isToday && (
@@ -187,7 +189,7 @@ export function DealOverviewHistory({
                             </span>
                             {note ? <span className="text-muted-foreground"> — {note}</span> : null}
                           </span>
-                          <span className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground/70">
+                          <span className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground">
                             {formatTime(event.created_at)}
                           </span>
                         </OverviewRow>
@@ -199,7 +201,7 @@ export function DealOverviewHistory({
             ))}
 
             {truncated ? (
-              <p className="text-[11px] text-muted-foreground/70">
+              <p className="text-[11px] text-muted-foreground">
                 Showing the 60 most recent events on this buyer.
               </p>
             ) : null}

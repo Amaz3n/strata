@@ -1,68 +1,19 @@
 import { notFound, redirect } from "next/navigation"
+import { connection } from "next/server"
 
-import { PageLayout } from "@/components/layout/page-layout"
-import { Plan3dPanel } from "@/components/plans/plan-3d-panel"
-import { getProjectPosture } from "@/lib/product-tier"
 import { isProjectModelEnabled } from "@/lib/project-model-access"
-import { getFloorplanModel } from "@/lib/services/floorplan-models"
-import { getOrgProductTier } from "@/lib/services/context"
-import { hasPermission } from "@/lib/services/permissions"
 import { getProjectAction } from "../../actions"
 
-
 /**
- * The walkable model of a custom home.
- *
- * A residential project's floorplan sheets live on its OWN drawing set, so the
- * model is anchored to the project and interpreted from those sheets directly
- * — there is no plan version to indirect through, because there is no plan.
- *
- * Production projects are sent to the plan instead: their drawings ARE the
- * released plan set, one interpretation of which already serves every lot
- * built to it. Anchoring a second model here would describe the same house
- * twice and let the two disagree.
+ * The 3D model is a view of the drawings workspace now, beside the sheets it
+ * is traced from. Old links land there with the model open — except where the
+ * model is withheld from an organization, which lands on the sheets.
  */
-export default async function ProjectFloorplanModelPage({
-  params,
-}: {
-  params: Promise<{ id: string }>
-}) {
+export default async function ProjectFloorplanModelPage({ params }: { params: Promise<{ id: string }> }) {
+  // A redirect read from the project: request time, never prerendered.
+  await connection()
   const { id } = await params
   const project = await getProjectAction(id)
   if (!project) notFound()
-
-  if (!isProjectModelEnabled(project.org_id)) {
-    redirect(`/projects/${id}/drawings`)
-  }
-
-  const orgTier = await getOrgProductTier()
-  const posture = getProjectPosture(project.property_type, orgTier)
-  if (posture === "production") {
-    redirect(`/projects/${id}/drawings`)
-  }
-
-  const [record, canWrite] = await Promise.all([
-    getFloorplanModel({ kind: "project", projectId: id }).catch(() => null),
-    hasPermission("plan.write"),
-  ])
-
-  return (
-    <PageLayout
-      title="3D model"
-      breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}` },
-        { label: "Drawings", href: `/projects/${project.id}/drawings` },
-        { label: "3D model" },
-      ]}
-      fullBleed
-    >
-      <Plan3dPanel
-        target={{ kind: "project", projectId: id }}
-        title={project.name}
-        status={record}
-        canWrite={canWrite}
-        fill
-      />
-    </PageLayout>
-  )
+  redirect(isProjectModelEnabled(project.org_id) ? `/projects/${id}/drawings?view=3d` : `/projects/${id}/drawings`)
 }

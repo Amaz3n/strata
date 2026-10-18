@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -58,7 +59,7 @@ interface PlansClientProps {
 }
 
 export function SubscriptionPlansClient({ plans }: PlansClientProps) {
-  const [items, setItems] = useState(plans)
+  const router = useRouter()
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
   const [pricingFilter, setPricingFilter] = useState("all")
@@ -67,7 +68,7 @@ export function SubscriptionPlansClient({ plans }: PlansClientProps) {
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
-    return items.filter((plan) => {
+    return plans.filter((plan) => {
       const status = plan.isActive ? "active" : "inactive"
       const matchesStatus = statusFilter === "all" || status === statusFilter
       const matchesPricing = pricingFilter === "all" || plan.pricingModel === pricingFilter
@@ -75,7 +76,7 @@ export function SubscriptionPlansClient({ plans }: PlansClientProps) {
       const matchesSearch = !term || haystack.includes(term)
       return matchesStatus && matchesPricing && matchesSearch
     })
-  }, [items, statusFilter, pricingFilter, search])
+  }, [plans, statusFilter, pricingFilter, search])
 
   async function handleCreate(formData: FormData) {
     startCreating(async () => {
@@ -87,8 +88,7 @@ export function SubscriptionPlansClient({ plans }: PlansClientProps) {
         } else {
           toast.success("Plan created", { description: result.message })
           setCreateOpen(false)
-          // Refresh the page to show the new plan
-          window.location.reload()
+          router.refresh()
         }
       } catch (error: any) {
         console.error(error)
@@ -112,8 +112,7 @@ export function SubscriptionPlansClient({ plans }: PlansClientProps) {
         } else {
           toast.success("Plan deleted", { description: result.message })
           setPlanToDelete(null)
-          // Refresh the page to show the updated plans
-          window.location.reload()
+          router.refresh()
         }
       } catch (error: any) {
         console.error(error)

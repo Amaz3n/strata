@@ -1,9 +1,12 @@
+import { readAllRows } from "@/lib/land/paging"
 import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { isPlatformAdminId } from "@/lib/auth/platform"
+import { getPlatformPermissions, hasActivePlatformAccessGrant, holdsPlatformOrgAccess, isPlatformAdminId } from "@/lib/auth/platform"
+import { correlationId } from "@/lib/observability/correlation"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { decideAuthorization, type AuthorizationReasonCode } from "@/lib/services/authorization-policy"
+import { decideAuthorization, hasAllProjectAccess, type AuthorizationReasonCode } from "@/lib/services/authorization-policy"
+import { permissionDeniedDigest } from "@/lib/permission-denied"
 
 export type { AuthorizationReasonCode }
 
@@ -38,6 +41,7 @@ export class AuthorizationError extends Error {
   reasonCode: AuthorizationReasonCode
   permission: string
   scopesEvaluated: string[]
+  digest: string
 
   constructor(decision: AuthorizationDecision) {
     super(`Missing permission: ${decision.permission}`)
@@ -45,10 +49,13 @@ export class AuthorizationError extends Error {
     this.reasonCode = decision.reasonCode
     this.permission = decision.permission
     this.scopesEvaluated = decision.scopesEvaluated
+    // Survives Next's production redaction so error boundaries can name the permission.
+    this.digest = permissionDeniedDigest(decision.permission.split(" or "))
   }
 }
 
-type PermissionRow = { role?: { permissions?: { permission_key: string }[] } }
+type PermissionRole = { permissions?: { permission_key: string }[] }
+type PermissionRow = { role?: PermissionRole | PermissionRole[] }
 
 type ProjectPermissionRow = PermissionRow & { org_id?: string }
 type MembershipOverrideRow = { permission_key: string; effect: "grant" | "deny" }
@@ -153,7 +160,7 @@ async function fetchOrgPermissions({
   // whose answer they do not use -- it just no longer waits on the overrides.
   const [overrides, divisionIds] = await Promise.all([
     fetchMembershipPermissionOverrides({ supabase, membershipIds }),
-    divisionAssignedOnly ? fetchMembershipDivisionIds({ supabase, membershipIds }) : [],
+    divisionAssignedOnly ? fetchMembershipDivisionIds({ supabase, membershipIds }) : [] as string[],
   ])
 
   return {
@@ -173,7 +180,7 @@ async function fetchMembershipDivisionIds({
 }: {
   supabase: SupabaseClient
   membershipIds: string[]
-}) {
+}): Promise<string[]> {
   if (membershipIds.length === 0) return []
   const { data, error } = await supabase
     .from("membership_divisions")
@@ -220,15 +227,18 @@ async function fetchProjectPermissions({
   supabase,
   projectId,
   userId,
+  orgId,
 }: {
   supabase: SupabaseClient
   projectId: string
   userId: string
+  orgId: string
 }) {
   const { data, error } = await supabase
     .from("project_members")
     .select("org_id, role:roles!inner(permissions:role_permissions(permission_key))")
     .eq("project_id", projectId)
+    .eq("org_id", orgId)
     .eq("user_id", userId)
     .eq("status", "active")
 
@@ -238,7 +248,6 @@ async function fetchProjectPermissions({
 
   const rows = (data ?? []) as ProjectPermissionRow[]
   const permissions = unique(rows.flatMap((row) => normalizePermissionRow(row)))
-  const orgId = rows[0]?.org_id
 
   return {
     permissions,
@@ -247,51 +256,35 @@ async function fetchProjectPermissions({
   }
 }
 
-async function fetchProjectOrgId({ supabase, projectId }: { supabase: SupabaseClient; projectId: string }) {
-  const { data, error } = await supabase.from("projects").select("org_id").eq("id", projectId).maybeSingle()
-  if (error) {
-    throw new Error(`Unable to resolve project organization: ${error.message}`)
-  }
-  return data?.org_id as string | undefined
-}
-
 // Request-scoped memoization: a page render runs authorize() once per permission
 // gate, but the underlying membership/role rows are invariant within a request.
 // Keyed on scalars so React cache() dedupes across every gate in the render.
 const fetchOrgPermissionsCached = cache((orgId: string, userId: string) =>
   fetchOrgPermissions({ supabase: createServiceSupabaseClient(), orgId, userId }),
 )
-const fetchProjectPermissionsCached = cache((projectId: string, userId: string) =>
-  fetchProjectPermissions({ supabase: createServiceSupabaseClient(), projectId, userId }),
+const fetchProjectPermissionsCached = cache((projectId: string, userId: string, orgId: string) =>
+  fetchProjectPermissions({ supabase: createServiceSupabaseClient(), projectId, userId, orgId }),
 )
-const fetchPlatformPermissionsCached = cache((userId: string) =>
-  fetchPlatformPermissions({ supabase: createServiceSupabaseClient(), userId }),
-)
-const fetchProjectOrgIdCached = cache((projectId: string) =>
-  fetchProjectOrgId({ supabase: createServiceSupabaseClient(), projectId }),
-)
+/** Membership grants are read only inside the already-verified home organization. */
+async function resolveProjectScope({ projectId, userId, orgIdHint }: { projectId: string; userId: string; orgIdHint: string }) {
+  const result = await fetchProjectPermissionsCached(projectId, userId, orgIdHint)
+  return { ...result, orgId: orgIdHint }
+}
 
-/**
- * A project's permissions plus the org they belong to, as one awaitable.
- *
- * Exists so `authorize()` can start the project, org and platform scopes in the
- * same tick. The org fallback is the only genuinely serial step in the project
- * branch — it needs the project_members read to come back empty first — and it
- * belongs next to the read that usually makes it unnecessary. An explicit
- * `orgIdHint` skips it outright, exactly as the caller's `??` chain used to.
- */
-async function resolveProjectScope({
-  projectId,
-  userId,
-  orgIdHint,
-}: {
-  projectId: string
-  userId: string
-  orgIdHint?: string
-}) {
-  const result = await fetchProjectPermissionsCached(projectId, userId)
-  const orgId = orgIdHint ?? result.orgId ?? (await fetchProjectOrgIdCached(projectId))
-  return { ...result, orgId }
+type AuthorizationHome = { id: string; org_id: string; division_id: string | null }
+/** Fresh identity/scope facts, bounded below the PostgREST response ceiling. */
+async function readAuthorizationHomes(supabase: SupabaseClient, projectIds: string[]) {
+  const homes = new Map<string, AuthorizationHome>()
+  for (let offset = 0; offset < projectIds.length; offset += 100) {
+    const batch = projectIds.slice(offset, offset + 100)
+    const { data, error } = await supabase.from("projects").select("id,org_id,division_id").in("id", batch).order("id").limit(101)
+    if (error || !data) throw new Error(`Unable to verify authorization home scope: ${error?.message ?? "Rows unavailable"}`)
+    for (const row of data) {
+      if (!batch.includes(row.id) || !row.org_id || homes.has(row.id)) throw new Error("Invalid authorization home identity")
+      homes.set(row.id, { id: row.id, org_id: row.org_id, division_id: row.division_id ?? null })
+    }
+  }
+  return homes
 }
 
 /**
@@ -318,9 +311,23 @@ export async function getDivisionAccessForUser({
   orgId: string
   userId: string
 }): Promise<{ assignedOnly: boolean; divisionIds: string[] }> {
-  if (isPlatformAdminId(userId, undefined)) return { assignedOnly: false, divisionIds: [] }
+  // A non-member (including staff inside a support grant) has no division
+  // assignment to narrow by; a staff member who really belongs is narrowed by
+  // their own membership like anyone else.
   const result = await fetchOrgPermissionsCached(orgId, userId)
   return { assignedOnly: result.divisionAssignedOnly, divisionIds: result.divisionIds }
+}
+
+/** Desk predicates, not a catalog of every home. Call after the domain permission gate. */
+export async function getProjectReadScopeForUser({ orgId, userId }: { orgId: string; userId: string }): Promise<{
+  divisionIds: string[] | null; projectMembershipRequired: boolean
+}> {
+  const [org, platformContext] = await Promise.all([fetchOrgPermissionsCached(orgId, userId), hasPlatformOrgContext(orgId, userId)])
+  if (platformContext) return { divisionIds: null, projectMembershipRequired: false }
+  return {
+    divisionIds: org.divisionAssignedOnly ? org.divisionIds : null,
+    projectMembershipRequired: !hasAllProjectAccess([...org.permissions, ...org.grants], org.assignedOnly),
+  }
 }
 
 /** One PostgREST page. The loop below reads as many as the division actually has. */
@@ -368,26 +375,25 @@ export async function getDivisionScopedProjectIds({
   )
 }
 
-async function fetchPlatformPermissions({ supabase, userId }: { supabase: SupabaseClient; userId: string }) {
-  const { data, error } = await supabase
-    .from("platform_memberships")
-    .select("role:roles!inner(permissions:role_permissions(permission_key))")
-    .eq("user_id", userId)
-    .eq("status", "active")
-    // Expiry is Postgres' to evaluate ("now" is a timestamptz literal); permission
-    // loading is on the render path of every page and cannot read a JS clock.
-    .or("expires_at.is.null,expires_at.gt.now")
-
-  if (error) {
-    throw new Error(`Unable to load platform permissions: ${error.message}`)
-  }
-
-  const permissions = unique(((data ?? []) as PermissionRow[]).flatMap((row) => normalizePermissionRow(row)))
-  return {
-    permissions,
-    hasMembership: (data ?? []).length > 0,
-  }
-}
+/**
+ * Whether Arc staff stand inside this organization as the platform pseudo-owner:
+ * every permission, no denies, no division or project narrowing.
+ *
+ * Platform standing is not tenant access. It applies only when all three hold:
+ * the user is staff with org access (an environment superadmin, or a platform
+ * role holding `platform.org.access` or `*`); the user is NOT a real active
+ * member here — a staff member who belongs to the organization acts as exactly
+ * that membership, never as the pseudo-owner; and an open, unexpired support
+ * grant exists for this organization. This is the same grant
+ * `requireOrgMembership()` reads, so entering and acting never disagree.
+ */
+// Members never depend on reading platform roles: staff standing is probed only
+// for someone who is not a member of the organization.
+export const hasPlatformOrgContext = cache(async (orgId: string, userId: string) => {
+  const org = await fetchOrgPermissionsCached(orgId, userId)
+  if (org.hasMembership) return false
+  return (await holdsPlatformOrgAccess(userId)) && hasActivePlatformAccessGrant(orgId, userId)
+})
 
 async function logAuthorizationDecision(
   supabase: SupabaseClient,
@@ -408,7 +414,9 @@ async function logAuthorizationDecision(
       context: {
         scopes_evaluated: decision.scopesEvaluated,
       },
-      request_id: input.requestId ?? null,
+      // The column predates correlation ids and holds exactly that: the id the
+      // audit and event rows of the same unit of work carry.
+      request_id: input.requestId ?? (await correlationId()),
     })
   } catch (error) {
     console.error("Failed to write authorization audit log", error)
@@ -504,22 +512,47 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     return decision
   }
 
-  if (isPlatformAdminId(input.userId, undefined)) {
+  const home = input.projectId ? (await readAuthorizationHomes(catalogSupabase, [input.projectId])).get(input.projectId) : undefined
+  if (input.projectId && (!home || (input.orgId && home.org_id !== input.orgId))) {
+    const decision: AuthorizationDecision = { allowed: false, reasonCode: "deny_project_org_mismatch", permission: input.permission,
+      userId: input.userId, orgId: input.orgId, projectId: input.projectId, permissions: [], scopesEvaluated: ["project_identity"] }
+    if (input.logDecision) await auditAuthorizationDecision(catalogSupabase, input, decision)
+    return decision
+  }
+
+  // Platform authority comes only from an environment superadmin or an active
+  // platform membership. Tenant wildcards, overrides and a support grant's
+  // tenant-context expansion must never grant a platform capability.
+  if (input.permission.startsWith("platform.") || input.permission.startsWith("impersonation.")) {
+    if (isPlatformAdminId(input.userId, undefined)) {
+      const decision: AuthorizationDecision = {
+        allowed: true,
+        reasonCode: "allow_superadmin",
+        permission: input.permission,
+        userId: input.userId,
+        orgId: input.orgId ?? home?.org_id,
+        projectId: input.projectId,
+        permissions: ["*"],
+        scopesEvaluated: ["superadmin"],
+      }
+      if (input.logDecision) await auditAuthorizationDecision(catalogSupabase, input, decision)
+      return decision
+    }
+
+    const platform = await getPlatformPermissions(input.userId)
+    const allowed = platform.hasMembership &&
+      (platform.permissions.includes(input.permission) || platform.permissions.includes("*"))
     const decision: AuthorizationDecision = {
-      allowed: true,
-      reasonCode: "allow_superadmin",
+      allowed,
+      reasonCode: allowed ? "allow_permission" : "deny_missing_permission",
       permission: input.permission,
       userId: input.userId,
-      orgId: input.orgId,
+      orgId: input.orgId ?? home?.org_id,
       projectId: input.projectId,
-      permissions: ["*"],
-      scopesEvaluated: ["superadmin"],
+      permissions: platform.permissions,
+      scopesEvaluated: ["platform"],
     }
-
-    if (input.logDecision) {
-      await auditAuthorizationDecision(catalogSupabase, input, decision)
-    }
-
+    if (input.logDecision) await auditAuthorizationDecision(catalogSupabase, input, decision)
     return decision
   }
 
@@ -528,26 +561,22 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   const permissionSet: string[] = []
   const deniedPermissions: string[] = []
   const orgPermissionSet: string[] = []
-  let resolvedOrgId = input.orgId
+  let resolvedOrgId = input.orgId ?? home?.org_id
   let hasOrgMembership = false
   let hasProjectMembership = false
   let orgAssignedOnly = false
   let divisionAssignedOnly = false
   let divisionIds: string[] = []
 
-  // The three scopes are read together because none of them is an input to
-  // another: project membership is keyed on (projectId, userId), platform
-  // membership on userId alone, and the org read only has to wait when the
-  // caller did not name an org and the project has to supply one. Every branch
-  // below issues exactly the queries the serial version issued -- the org read
-  // is still skipped when there is no org to read, and still keyed on
-  // input.orgId whenever the caller supplied one.
-  const [projectScope, callerOrgResult, platformResult] = await Promise.all([
+  // Read membership grants concurrently inside the verified home organization.
+  // Platform standing is decided per organization (hasPlatformOrgContext);
+  // a platform role's own keys never count toward a tenant permission.
+  const [projectScope, callerOrgResult, platformOrgContext] = await Promise.all([
     input.projectId
-      ? resolveProjectScope({ projectId: input.projectId, userId: input.userId, orgIdHint: input.orgId })
+      ? resolveProjectScope({ projectId: input.projectId, userId: input.userId, orgIdHint: home!.org_id })
       : null,
-    input.orgId ? fetchOrgPermissionsCached(input.orgId, input.userId) : null,
-    fetchPlatformPermissionsCached(input.userId),
+    resolvedOrgId ? fetchOrgPermissionsCached(resolvedOrgId, input.userId) : null,
+    resolvedOrgId ? hasPlatformOrgContext(resolvedOrgId, input.userId) : false,
   ])
 
   if (projectScope) {
@@ -572,14 +601,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     deniedPermissions.push(...orgResult.denies)
   }
 
-  if (platformResult.hasMembership) {
-    scopesEvaluated.push("platform")
-    permissionSet.push(...platformResult.permissions)
-  }
-
-  const hasPlatformOrgAccess =
-    platformResult.permissions.includes("*") || platformResult.permissions.includes("platform.org.access")
-  if (hasPlatformOrgAccess && (resolvedOrgId || input.projectId)) {
+  if (platformOrgContext) {
     const allPermissions = await listAllPermissionKeys(supabase)
     scopesEvaluated.push("platform_org_context")
     permissionSet.push("*", ...allPermissions)
@@ -593,7 +615,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     }
   }
 
-  const { allowed, reasonCode, permissions } = decideAuthorization({
+  const policy = decideAuthorization({
     permission: input.permission,
     hasProjectScope: Boolean(input.projectId),
     hasResolvedOrg: Boolean(resolvedOrgId),
@@ -604,6 +626,14 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     hasOrgMembership,
     assignedOnly: orgAssignedOnly,
   })
+
+  const permissions = policy.permissions
+  let { allowed, reasonCode } = policy
+  if (home && divisionAssignedOnly && (!home.division_id || !divisionIds.includes(home.division_id))) {
+    allowed = false
+    reasonCode = "deny_division_scope"
+    scopesEvaluated.push("project_division")
+  }
 
   const decision: AuthorizationDecision = {
     allowed,
@@ -626,12 +656,12 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
 }
 
 /**
- * Evaluate one permission across many projects in a fixed number of queries.
+ * Evaluate one permission across projects using bounded catalog batches.
  *
  * `authorize()` resolves project membership per call, so gating N projects cost
  * N `project_members` round-trips even though every other input (org role,
- * overrides, platform membership) is identical across them. This batches the
- * project lookup into a single `in(...)` query and then runs the *same*
+ * overrides, platform membership) is identical across them. This verifies home
+ * identity and memberships in batches of at most 100, then runs the *same*
  * `decideAuthorization` policy per project, so a project's verdict here is
  * always identical to `authorize({ permission, projectId })`.
  *
@@ -663,28 +693,33 @@ export async function authorizeMany({
 
   const supabase = createServiceSupabaseClient()
   if (!(await permissionExists(supabase, permission))) return settle(false)
-  if (isPlatformAdminId(userId, undefined)) return settle(true)
+  const homes = await readAuthorizationHomes(supabase, uniqueProjectIds)
+  const identityMatches = (projectId: string) => homes.get(projectId)?.org_id === orgId
+  const settleScoped = () => { for (const projectId of uniqueProjectIds) verdicts.set(projectId, identityMatches(projectId)); return verdicts }
 
-  const [orgResult, platformResult] = await Promise.all([
+  if (permission.startsWith("platform.") || permission.startsWith("impersonation.")) {
+    const decision = await authorize({ permission, userId })
+    for (const projectId of uniqueProjectIds) {
+      verdicts.set(projectId, decision.allowed && identityMatches(projectId))
+    }
+    return verdicts
+  }
+
+  const [orgResult, platformOrgContext] = await Promise.all([
     fetchOrgPermissionsCached(orgId, userId),
-    fetchPlatformPermissionsCached(userId),
+    hasPlatformOrgContext(orgId, userId),
   ])
+  if (platformOrgContext) return settleScoped()
 
-  const hasPlatformOrgAccess =
-    platformResult.permissions.includes("*") ||
-    platformResult.permissions.includes("platform.org.access")
-  if (hasPlatformOrgAccess) return settle(true)
-
-  // The one query that used to be N.
-  const { data, error } = await supabase
-    .from("project_members")
-    .select("project_id, role:roles!inner(permissions:role_permissions(permission_key))")
-    .in("project_id", uniqueProjectIds)
-    .eq("user_id", userId)
-    .eq("status", "active")
-
-  if (error) {
-    throw new Error(`Unable to load project permissions: ${error.message}`)
+  const data: (ProjectPermissionRow & { project_id?: string })[] = []
+  for (let offset = 0; offset < uniqueProjectIds.length; offset += 100) {
+    const batch = uniqueProjectIds.slice(offset, offset + 100)
+    const rows = await readAllRows((from, to) => supabase.from("project_members")
+      .select("project_id, role:roles!inner(permissions:role_permissions(permission_key))")
+      .eq("org_id", orgId).in("project_id", batch).eq("user_id", userId).eq("status", "active")
+      .order("project_id").order("id").range(from, to), { cap: 1001, label: "Unable to load project permissions" })
+    if (rows.truncated) throw new Error("Project permission membership batch exceeds supported limit")
+    data.push(...rows.rows)
   }
 
   const projectPermissions = new Map<string, string[]>()
@@ -696,7 +731,7 @@ export async function authorizeMany({
   }
 
   const orgPermissionSet = [...orgResult.permissions, ...orgResult.grants]
-  const platformPermissions = platformResult.hasMembership ? platformResult.permissions : []
+  const assignedDivisionIds: string[] = orgResult.divisionIds
 
   for (const projectId of uniqueProjectIds) {
     const projectGrants = projectPermissions.get(projectId) ?? []
@@ -704,14 +739,16 @@ export async function authorizeMany({
       permission,
       hasProjectScope: true,
       hasResolvedOrg: true,
-      permissionSet: [...projectGrants, ...orgPermissionSet, ...platformPermissions],
+      permissionSet: [...projectGrants, ...orgPermissionSet],
       orgPermissionSet,
       deniedPermissions: orgResult.denies,
       hasProjectMembership: projectPermissions.has(projectId),
       hasOrgMembership: orgResult.hasMembership,
       assignedOnly: orgResult.assignedOnly,
     })
-    verdicts.set(projectId, allowed)
+    const home = homes.get(projectId)
+    const divisionMatches = !orgResult.divisionAssignedOnly || Boolean(home?.division_id && assignedDivisionIds.includes(home.division_id))
+    verdicts.set(projectId, allowed && identityMatches(projectId) && divisionMatches)
   }
 
   return verdicts

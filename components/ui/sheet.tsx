@@ -5,6 +5,7 @@ import * as SheetPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { useReturnFocus } from '@/components/ui/use-return-focus'
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />
@@ -49,12 +50,15 @@ function SheetContent({
   children,
   side = 'right',
   mobileFullscreen = false,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: 'top' | 'right' | 'bottom' | 'left'
   /** When true, sheet becomes fullscreen on mobile (no margins/rounded corners) but keeps floating card style on desktop */
   mobileFullscreen?: boolean
 }) {
+  const returnFocus = useReturnFocus({ onOpenAutoFocus, onCloseAutoFocus })
   return (
     <SheetPortal>
       <SheetOverlay />
@@ -75,9 +79,12 @@ function SheetContent({
           className,
         )}
         {...props}
+        {...returnFocus}
       >
-        <SheetPrimitive.Title className="sr-only">Sheet</SheetPrimitive.Title>
         {children}
+        {/* Fallback name for sheets without a SheetTitle. It comes after the children because
+            Radix gives every title the same id and the first one in the document names the sheet. */}
+        <SheetPrimitive.Title className="sr-only">Sheet</SheetPrimitive.Title>
         <SheetPrimitive.Close
           data-slot="sheet-close"
           className="ring-offset-background focus:ring-ring data-[state=open]:bg-secondary absolute top-4 right-4 opacity-70 transition-opacity hover:opacity-100 focus:ring-1 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none"
@@ -111,8 +118,9 @@ function SheetInlineContent({
       )}
       {...props}
     >
-      <SheetPrimitive.Title className="sr-only">Sheet</SheetPrimitive.Title>
       {children}
+      {/* After the children, so a SheetTitle among them names the sheet (see SheetContent). */}
+      <SheetPrimitive.Title className="sr-only">Sheet</SheetPrimitive.Title>
     </SheetPrimitive.Content>
   )
 }

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -8,7 +9,6 @@ import { listCostCodes } from "@/lib/services/cost-codes"
 import { requireOrgContext } from "@/lib/services/context"
 import { getOrgBranding } from "@/lib/services/estimate-portal"
 
-import { unwrapAction } from "@/lib/action-result"
 
 // desk-rule: reachable via dashboard/search/feature flows only, not workspace nav.
 
@@ -17,6 +17,7 @@ interface EstimatesPageProps {
 }
 
 async function EstimatesData({ searchParams }: EstimatesPageProps) {
+  await connection()
   const { orgId } = await requireOrgContext()
   const [estimates, contacts, costCodes, branding, resolvedSearchParams] = await Promise.all([
     listEstimatesAction(),

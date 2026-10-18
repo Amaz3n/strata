@@ -1,0 +1,2620 @@
+{
+  "generatedAt": "2026-10-08T13:20:40.977Z",
+  "sourceDigest": "50f3a3f73f1800bf3231aaa8ba54aec415cd57d58a98694f39b7d6d8b1b58b48",
+  "git": {
+    "head": "c915113f0f911ed21d8cb143c6b3ed3c3edd33f8",
+    "branch": "books-readiness-sync",
+    "uncommittedBooksPaths": [
+      "omponents/books/greenfield-launch.tsx",
+      "docs/books-1099.md",
+      "docs/books-entities.md",
+      "lib/reports/definitions/financial.ts",
+      "lib/services/books/reconciliation-rules.ts",
+      "lib/services/books/reconciliation.ts",
+      "lib/services/reports/vendor-1099.ts",
+      "scripts/books-acceptance/browser-seed.cjs",
+      "scripts/books-acceptance/catalog.cjs",
+      "scripts/books-acceptance/expected/CLOSE-01.json",
+      "scripts/books-acceptance/expected/RACE-01.json",
+      "scripts/books-acceptance/journeys/support.ts",
+      "scripts/books-acceptance/scenario-kit.cjs",
+      "scripts/books-acceptance/scenarios/close-01.cjs",
+      "scripts/books-acceptance/scenarios/entity-01.cjs",
+      "scripts/books-acceptance/scenarios/race-01.cjs",
+      "scripts/books-acceptance/scenarios/restore-01.cjs",
+      "supabase/migrations/20261001164202_drawing_split_registration.sql",
+      "supabase/migrations/20261007235800_books_legal_entities.sql",
+      "supabase/migrations/20261007235900_books_intercompany_lot_sales.sql",
+      "scripts/books-acceptance/expected/AUTH-01.json",
+      "scripts/books-acceptance/expected/CONSOL-01.json",
+      "scripts/books-acceptance/expected/GREEN-01.json",
+      "scripts/books-acceptance/expected/INTERCO-01.json",
+      "scripts/books-acceptance/expected/MIG-01.json",
+      "scripts/books-acceptance/journeys/greenfield-launch.spec.ts",
+      "scripts/books-acceptance/scenarios/auth-01.cjs",
+      "scripts/books-acceptance/scenarios/consol-01.cjs",
+      "scripts/books-acceptance/scenarios/green-01.cjs",
+      "scripts/books-acceptance/scenarios/interco-01.cjs",
+      "scripts/books-acceptance/scenarios/mig-01.cjs"
+    ]
+  },
+  "runtime": {
+    "node": "v22.22.0",
+    "next": "16.3.8",
+    "pnpm": "10.26.1",
+    "postgres": "17.6"
+  },
+  "counts": {
+    "sources": 445,
+    "booksMigrations": 171,
+    "migrations": 598,
+    "tracker": {
+      "LOCALLY_VERIFIED": 37,
+      "PARTIAL": 20,
+      "BLOCKED_EXTERNAL": 2,
+      "NOT_STARTED": 1
+    }
+  },
+  "sources": [
+    {
+      "path": "app/(app)/books/_components/books-section-page.tsx",
+      "sha256": "5664e6f99dd541d41c0333e0085017fa482a40869006dba3c61294b41222e34e"
+    },
+    {
+      "path": "app/(app)/books/accountant/page.tsx",
+      "sha256": "2ed2514af4cfa65dc69f14969315f4017808a6526b6d1d67322da74f3c79bbf7"
+    },
+    {
+      "path": "app/(app)/books/actions.ts",
+      "sha256": "f26f0e92e029155d833f535217a954624bcf175593e00bdd726506d657d1fe0a"
+    },
+    {
+      "path": "app/(app)/books/assets/loading.tsx",
+      "sha256": "e29c997fcab300e7323f6e4be8c7c3ff072626b86e1f492d0388330f0c30ce1c"
+    },
+    {
+      "path": "app/(app)/books/assets/page.tsx",
+      "sha256": "a3462841206b75297cce71f904243813ec51073a686c9f95898e55875f8846af"
+    },
+    {
+      "path": "app/(app)/books/banking-actions.ts",
+      "sha256": "58861e509268fca3dbd1f68865b6a2b1e3a9a90a155b030ef9dd48af9be33a19"
+    },
+    {
+      "path": "app/(app)/books/banking/[accountId]/reconcile/loading.tsx",
+      "sha256": "e29c997fcab300e7323f6e4be8c7c3ff072626b86e1f492d0388330f0c30ce1c"
+    },
+    {
+      "path": "app/(app)/books/banking/[accountId]/reconcile/page.tsx",
+      "sha256": "11dd4fce738bb3b594d8c396ffdaf2bb43fa2c7948e60fc50e64024270a13ce9"
+    },
+    {
+      "path": "app/(app)/books/banking/page.tsx",
+      "sha256": "926d318ed300c68e3c9babf4b811260a186703aee3ab4445ae8bd6a3a290ad6a"
+    },
+    {
+      "path": "app/(app)/books/books-client.tsx",
+      "sha256": "eb7c92762a4fb8d4ed9a1bdfe6712d906d7b16b39dfbe79b770453c7fdb7d094"
+    },
+    {
+      "path": "app/(app)/books/chart/page.tsx",
+      "sha256": "3fef5bc773a17f93581a97b5e0b79bdf63886adc9755b113d511a3c9c30290fc"
+    },
+    {
+      "path": "app/(app)/books/close/[periodId]/loading.tsx",
+      "sha256": "e29c997fcab300e7323f6e4be8c7c3ff072626b86e1f492d0388330f0c30ce1c"
+    },
+    {
+      "path": "app/(app)/books/close/[periodId]/page.tsx",
+      "sha256": "73a7eae1b90488f32e867be113db3109056bb2031badc74bfcb1e6007e1e4e29"
+    },
+    {
+      "path": "app/(app)/books/close/page.tsx",
+      "sha256": "476342f0d1a5ac9e7ceb9132d95c310aed120ee025e11d43347014b30c3dbf43"
+    },
+    {
+      "path": "app/(app)/books/cost-allocations/loading.tsx",
+      "sha256": "e29c997fcab300e7323f6e4be8c7c3ff072626b86e1f492d0388330f0c30ce1c"
+    },
+    {
+      "path": "app/(app)/books/cost-allocations/page.tsx",
+      "sha256": "9788bdc2e6798bcd056c2469dbd64ae03ff2b4ff124a892a12ffd5b3e85a4fff"
+    },
+    {
+      "path": "app/(app)/books/cutover/page.tsx",
+      "sha256": "1ac2ad7c851e5cde4e9f70997d0867266f97250d281f869af01c0a9e2705aaf9"
+    },
+    {
+      "path": "app/(app)/books/entities/loading.tsx",
+      "sha256": "e29c997fcab300e7323f6e4be8c7c3ff072626b86e1f492d0388330f0c30ce1c"
+    },
+    {
+      "path": "app/(app)/books/entities/page.tsx",
+      "sha256": "bddeecb3ab9a58e0ba8e6a444ed8eff8c0aed44cf5b3664380148d97797e8be4"
+    },
+    {
+      "path": "app/(app)/books/error.tsx",
+      "sha256": "b00c2364ee0bf9a70e2610c6b88ef24ba05c84421bba6380fdcb7c906fcc7bdf"
+    },
+    {
+      "path": "app/(app)/books/exports/page.tsx",
+      "sha256": "0de74445bf6e068e98343d2e4d822a816d5f2e31f89cfa726a52dc2b92fb09ac"
+    },
+    {
+      "path": "app/(app)/books/inventory/loading.tsx",
+      "sha256": "e29c997fcab300e7323f6e4be8c7c3ff072626b86e1f492d0388330f0c30ce1c"
+    },
+    {
+      "path": "app/(app)/books/inventory/page.tsx",
+      "sha256": "7bcc02f6683bd0acaf4f9d6d7425ae58d18299c52d28cdeaf009993eddb106a2"
+    },
+    {
+      "path": "app/(app)/books/layout.tsx",
+      "sha256": "25c1143bae024fdad87c1f24362426ed213cc3aa1b749093a24c6931bc73341c"
+    },
+    {
+      "path": "app/(app)/books/ledger/page.tsx",
+      "sha256": "3af622802d0fcdd0dc2e0814c9ffd5ed962f6c16c517853b86fb8a7f72693d4a"
+    },
+    {
+      "path": "app/(app)/books/opening-balances/page.tsx",
+      "sha256": "51b16665f610305e7d184c23d57d68dea729210a79022011a54f8cfd22e3edfb"
+    },
+    {
+      "path": "app/(app)/books/overhead/loading.tsx",
+      "sha256": "e29c997fcab300e7323f6e4be8c7c3ff072626b86e1f492d0388330f0c30ce1c"
+    },
+    {
+      "path": "app/(app)/books/overhead/page.tsx",
+      "sha256": "f43a3a232b0988aa5798f8b81588e23ee5b130007c2d26aa9618d9f57c8414a3"
+    },
+    {
+      "path": "app/(app)/books/page.tsx",
+      "sha256": "685f070991306c31f02c766bd681e4c115006e5df788a44eaf473e60bba3444f"
+    },
+    {
+      "path": "app/(app)/books/posting-actions.ts",
+      "sha256": "128833dad0a5b8c19402272e2a2c45b84560e383196611c6d18dbef06081a8f3"
+    },
+    {
+      "path": "app/(app)/books/revenue-policies/loading.tsx",
+      "sha256": "e29c997fcab300e7323f6e4be8c7c3ff072626b86e1f492d0388330f0c30ce1c"
+    },
+    {
+      "path": "app/(app)/books/revenue-policies/page.tsx",
+      "sha256": "80cd18372966be7f812e53d0c0b38a754a57b088cdab0e4a14ffd8f8404e8ca1"
+    },
+    {
+      "path": "app/(app)/books/statements/page.tsx",
+      "sha256": "2b0ca03eedef48a4006068b7a0b5093fe766e6c1cd3ba1a326f5374914eb4b77"
+    },
+    {
+      "path": "app/(app)/books/taxes/page.tsx",
+      "sha256": "a13de52bc0efcb55fb7cbb58f276f72ea4f199f9cbb2eccb695a9933e11b2813"
+    },
+    {
+      "path": "app/(app)/books/transactions/page.tsx",
+      "sha256": "be1ddc7ace5022f3811943c6ab52d1eac0814c0c593becbcc44d0bd35319650f"
+    },
+    {
+      "path": "app/api/books/1099-packages/[packageId]/filing/route.ts",
+      "sha256": "ff0366803e67395721902289f16b332f5f688db70c7949ff0345719e5c593849"
+    },
+    {
+      "path": "app/api/books/payroll/documents/[fileId]/versions/[versionId]/route.ts",
+      "sha256": "6c4d0f4e334d720b9b778921440aeac895f75c576dcdbed7ac6e1aeea1eef543"
+    },
+    {
+      "path": "app/api/books/receipts/route.ts",
+      "sha256": "887b426f46bf0ae2416bde40cb4df02f7764c25781cfc21858331f06e7380d2b"
+    },
+    {
+      "path": "app/api/books/tax-workpapers/[workpaperId]/attachments/[lineId]/route.ts",
+      "sha256": "c538f614759aaed772410c68eac4316cd6b717874f93facde8b6e5ef6c8f0b07"
+    },
+    {
+      "path": "components/books/account-activity-sheet.tsx",
+      "sha256": "85f17c2668030bc9bf4b4f7c4d2f6a5443bc241a4553235c0ca1702f94f24502"
+    },
+    {
+      "path": "components/books/accountant-handoff.tsx",
+      "sha256": "39c9ce8eb5adeb1971dc1115aaa7c87000454b6dab214d00170c45da0e53171b"
+    },
+    {
+      "path": "components/books/affiliate-lot-sale.tsx",
+      "sha256": "f4e12fd5825d08ad8afd08ba93b7d3bdc953d40530d6d45407d63e095c892975"
+    },
+    {
+      "path": "components/books/bank-reconciliation-detail.tsx",
+      "sha256": "0fd9c93f999202d550f82a9ed2fef36531d553723f8eec2287cc77ab869c71dc"
+    },
+    {
+      "path": "components/books/bank-review-tray.tsx",
+      "sha256": "a6d38981885be4a07820fc66153c4013aa4120d7970952323ee30e9e320fcb68"
+    },
+    {
+      "path": "components/books/bank-statement-desk.tsx",
+      "sha256": "2744c5aec871bdc04442a1352b0797176a0ef1072d8b0c0b953f73f9c961a23c"
+    },
+    {
+      "path": "components/books/bank-transaction-register.tsx",
+      "sha256": "b75d0a7f04f1a0a6fa581f58e94442e731135ee4e16acff660a58c4c0cbe879f"
+    },
+    {
+      "path": "components/books/banking-account-card.tsx",
+      "sha256": "5e73424a27db3dc6a21efda57674d92679e7435702b22c24b58d60b590226a57"
+    },
+    {
+      "path": "components/books/banking-bulk-island.tsx",
+      "sha256": "e0e326c344fb07b32cd34fc6d1f4dddf93277828e92efc2ff4a2f0d89f8fd29b"
+    },
+    {
+      "path": "components/books/banking-picker.tsx",
+      "sha256": "4ece65900a251ad3499e371f44cd3256f320a49238c50e7776800c74ae1db210"
+    },
+    {
+      "path": "components/books/banking-receipt-cell.tsx",
+      "sha256": "a3c0e2758de79801f93743db4f7e1ba98e0cfa63f90a4b5c90d167249e0bb45d"
+    },
+    {
+      "path": "components/books/banking-rule-editor.tsx",
+      "sha256": "75fad3e0e008d98b7235a493680c1ca636fa493d6fb642c3f22ae02914c2fe86"
+    },
+    {
+      "path": "components/books/banking-rules.tsx",
+      "sha256": "5cf4bd159f66988d8d02af724a222058acfddcfbf75ce361dec4078af5d55992"
+    },
+    {
+      "path": "components/books/banking-sync-control.tsx",
+      "sha256": "200db9e693fc6c0c2d1620f6b932e7fa07bd077d4f541eb036f69c3bcf318f5f"
+    },
+    {
+      "path": "components/books/banking-ui.ts",
+      "sha256": "e832c14f1ec65b29a8c6ebd58ba95c04da6ec0499d7aff9cab5828c3fb7c54d3"
+    },
+    {
+      "path": "components/books/banking-workspace.tsx",
+      "sha256": "c4cf16e914ddce4a4fd539308ef2c6a2e60e0a838fe18dee43039075a0cad530"
+    },
+    {
+      "path": "components/books/books-journals.tsx",
+      "sha256": "9844d8fe559bc78366e4922e67b1c7e603488f1576eebb18b39c5c814f00c531"
+    },
+    {
+      "path": "components/books/books-registers.tsx",
+      "sha256": "d5b595ed6cc702a9ea5c1bcab7be04e94b170ed6d0be937ede093776bd7da97a"
+    },
+    {
+      "path": "components/books/books-statements.tsx",
+      "sha256": "42af6d13ae60824f63b9d56a23080e9a9b5f8303ac403a6ee38f752087bdc9b5"
+    },
+    {
+      "path": "components/books/clearing-support.tsx",
+      "sha256": "ea27be618da2722b4a2983b4ca22548373d84a30e98500402e556e86a1c70568"
+    },
+    {
+      "path": "components/books/close-workspace.tsx",
+      "sha256": "299e6de50c3df1d42302ec3023f9e8cd31465b174721fdc3e13bd43d3c69a88c"
+    },
+    {
+      "path": "components/books/cost-allocation-register.tsx",
+      "sha256": "10236a1e7eaa3d724a34ee17fc94512258c1e8317c7f493435d5bb871dd43b28"
+    },
+    {
+      "path": "components/books/customer-deposits.tsx",
+      "sha256": "9d9d6e251630f398bb816f3b76b21b59888997dc09ad5b3c9e3b6612af70214f"
+    },
+    {
+      "path": "components/books/deposit-batches.tsx",
+      "sha256": "f407e5983b668da973f842fe6fcddb8ba415bdfedefef1d3693af0e94de941bb"
+    },
+    {
+      "path": "components/books/external-account-mapping.tsx",
+      "sha256": "6a7b2531e448b223b083df76c99826ba4af48431711b6edddc0ef2da6ca012c3"
+    },
+    {
+      "path": "components/books/funding-accounts.tsx",
+      "sha256": "5bdfb38614e6f2c0a772d7964b0f6e1bb854401dabcf26ec48a785de8d539886"
+    },
+    {
+      "path": "components/books/greenfield-launch.tsx",
+      "sha256": "c82b279aa58291550ca9d4425193eea727d1a4c1990686188902d5bad5506fd7"
+    },
+    {
+      "path": "components/books/inventory-allocation.tsx",
+      "sha256": "01d307e69cf68fd504df89329b77eb61bd5a3084cc1137533983a3b92986e382"
+    },
+    {
+      "path": "components/books/inventory-impairment.tsx",
+      "sha256": "5f8b61114c2b59d343c8ee51580cb2f455728256276b22fba7fafffaac52b550"
+    },
+    {
+      "path": "components/books/inventory-workspace.tsx",
+      "sha256": "6de3e89ed05d3cbc6748697bdae8460394f130ca4930bcb38437d144d8e52f2d"
+    },
+    {
+      "path": "components/books/journal-proposal-review.tsx",
+      "sha256": "7dbde132767783b0d342159544dad6e039f9e34e6ff8939720eb0017cdc62b88"
+    },
+    {
+      "path": "components/books/journal-recovery.tsx",
+      "sha256": "60d3f797563ab23a471bd312da22e2fc8832978517376dd738c02a0e8729b96d"
+    },
+    {
+      "path": "components/books/land-acquisition.tsx",
+      "sha256": "814aaab30b5a10dddfc9d20997efde2f7535815549d3cc7e60813c58bf9acdce"
+    },
+    {
+      "path": "components/books/legal-entity-workspace.tsx",
+      "sha256": "c21e0e6ac41ddb1cbcce0ab8a6fa83651dbabbfb9e9351dcd62c199fdf8a4493"
+    },
+    {
+      "path": "components/books/manual-bank-import.tsx",
+      "sha256": "b1a4a91bdbc9aa6e46af5712a8fbee08eac6f378d750f4719d46b092db891458"
+    },
+    {
+      "path": "components/books/opening-balances-wizard.tsx",
+      "sha256": "82400ef89b9e046551097c9b57a757023f87132173f9eb5596dda1008788bd3e"
+    },
+    {
+      "path": "components/books/overhead-budget.tsx",
+      "sha256": "bb23b7b159eccb0c13b79475e3f1d135a0d3304f019eb9e8b823e6a3fd2d02bd"
+    },
+    {
+      "path": "components/books/owned-inventory-desk.tsx",
+      "sha256": "d6b2734504daacf8b64557438b0eb3210c87b5ea811fb9d6175585be2218cb3d"
+    },
+    {
+      "path": "components/books/payroll-settlement.tsx",
+      "sha256": "fd8be479b0291cf0e6be9f7c88f19b0feb45717f37652e37515c7ee651a39ad6"
+    },
+    {
+      "path": "components/books/project-accounting-tools.tsx",
+      "sha256": "b0c4325027738633762890e2803c307027e71c3335b7c31220361720a520b3cf"
+    },
+    {
+      "path": "components/books/revenue-policy-register.tsx",
+      "sha256": "1c062d6c9c453f983a3134d61e3225dc375a59e5958db1df5e2362e40c059b2c"
+    },
+    {
+      "path": "components/books/source-posting-status.tsx",
+      "sha256": "2456b65637fd86346da3f1458e674a32651fdfad712c974cf3dc57d3138cae8f"
+    },
+    {
+      "path": "components/books/tax-register.tsx",
+      "sha256": "3c5ecf9d24f25024391481a02bcd3d3e03452c1dc90ba5461a42c3894bf3763d"
+    },
+    {
+      "path": "components/books/tax-workpapers.tsx",
+      "sha256": "5f3d5f97e14d26935e430dbe1c671d080c3739eb50bd98bbead0131361aab41e"
+    },
+    {
+      "path": "components/books/vendor-1099-packages.tsx",
+      "sha256": "e08d8bae049f72625ee6d1ab0121114e65c547b3b457db7e3aa22d61be020c31"
+    },
+    {
+      "path": "components/books/warranty-accounting.tsx",
+      "sha256": "b74d33e93e90ac41a72c75cf4552dfbfe4f63bde65818a2742cea25c6f0700d4"
+    },
+    {
+      "path": "components/books/wip-ownership.tsx",
+      "sha256": "205fd92d7d777764a9a5d2e4f57bdbbfd5860b47f727b12308985ce17c5d13ab"
+    },
+    {
+      "path": "components/books/wip-revenue-allocation.tsx",
+      "sha256": "94a4075dc520c8ea0674ea68b665f2e1def36dee831af1091afe03e6d4dee681"
+    },
+    {
+      "path": "components/books/wip-review.tsx",
+      "sha256": "9c283f562562040d73addd1afccc5bdf663eb609cc9760b9816ee1e8ba89d585"
+    },
+    {
+      "path": "docs/books-1099.md",
+      "sha256": "9ab4bf4975b8543a472c64c04e7f3f7191eeefb1920fb78e4ca34cabac566890"
+    },
+    {
+      "path": "docs/books-entities.md",
+      "sha256": "d49ddf6823c301b2273e289304b21a7e2d3cf23edf2465e8002a98dbe0cbbdba"
+    },
+    {
+      "path": "docs/books-period-close.md",
+      "sha256": "931639c52e7958df9ef4ea9c1913addf2e8755b69697e4e1d062b0b6acf71161"
+    },
+    {
+      "path": "docs/books-restore.md",
+      "sha256": "3aa3770defe91242ce03428f0f32e4544312d25551f4d893893de274e2bb5d48"
+    },
+    {
+      "path": "docs/books-revenue-recognition.md",
+      "sha256": "48e8790dc59562d19bbd45ad55b3fa7e43cbda83971519fc84921923172cad44"
+    },
+    {
+      "path": "lib/financials/accounting-experience.ts",
+      "sha256": "af7a0a338eb0a07632e838712210a7753ae27ccb2b293cfa8c7737ea9e795394"
+    },
+    {
+      "path": "lib/financials/approval-gates.ts",
+      "sha256": "697975096b1db96ab1689b182961ef7852a863314c7c1f8c4a2d8e45d26c6392"
+    },
+    {
+      "path": "lib/financials/approval-signal-fingerprint.ts",
+      "sha256": "08d8b2c56bd35e347933a9e81e56ddfa490270e7d2e80cc92347fca9694ed861"
+    },
+    {
+      "path": "lib/financials/approved-cost-rules.ts",
+      "sha256": "c6a91bd973677b52b17c1a819439905f2a6dc2e81e89d1c915e62cf24b1d23d6"
+    },
+    {
+      "path": "lib/financials/bank-statement-import.ts",
+      "sha256": "d58d41b74a1663ee2a783411c73325748039d4b9be46ff07a9c02465fe7fd607"
+    },
+    {
+      "path": "lib/financials/bill-schedule-crosscheck.ts",
+      "sha256": "46af89dbeeabfcdb49dddbac472d2cf48161f9f55d4fc944432d4e91f2cfc9a9"
+    },
+    {
+      "path": "lib/financials/billable-ledger-rules.ts",
+      "sha256": "813c57efe28f97b252e252b6ecca75b31b5d2391346f62448e40c419aba3c1a0"
+    },
+    {
+      "path": "lib/financials/billing-cycle-summary.ts",
+      "sha256": "df250c295e0293df0a443c4c468015217dd19e4b44f1c83e3d3fa74029da6c4e"
+    },
+    {
+      "path": "lib/financials/billing-model.ts",
+      "sha256": "2f577174bcda21707a42c4561a7dac745bed5a80eeaf665f9a7b8162e652aecb"
+    },
+    {
+      "path": "lib/financials/billing-period-rules.ts",
+      "sha256": "8d9fb130e6a876b976d8a36ceb80dbdc93e21acd7b3cd4cc4653f1ea0b81ea83"
+    },
+    {
+      "path": "lib/financials/billing-profile.ts",
+      "sha256": "556e2232bb00c1faeee9d34a8af60e8ffccc7c0d5a1f32ca764a4877cb8a02c5"
+    },
+    {
+      "path": "lib/financials/budget-forecast.ts",
+      "sha256": "43cbd2d9287d8cbcc6d1bc6660668218629166f7ec5d6a8da78dac28c1639924"
+    },
+    {
+      "path": "lib/financials/budget-transfer-math.ts",
+      "sha256": "034b77bc481f5690b38a6ed62396d2ef1a82a3e257046300f5b41dfa6b79ef4d"
+    },
+    {
+      "path": "lib/financials/change-order-math.ts",
+      "sha256": "11072ef07092be0356e7394c391b8dd49c8233b789a352542f96456808b48dea"
+    },
+    {
+      "path": "lib/financials/closing-settlement-evidence.ts",
+      "sha256": "6df7efa5ee992561e5a68f21e1958cd6abaf04dda8ed2ea0f509da211b0efc66"
+    },
+    {
+      "path": "lib/financials/commitment-position.ts",
+      "sha256": "9671ea11de0ac949a519ef0f57b9befe2b2a8212ff3d04e60919f3f665586955"
+    },
+    {
+      "path": "lib/financials/company-budget.ts",
+      "sha256": "1480a1e64b0a69226fc4ee92bd897ddfce8ae24f0c8221767bd62a7b651f02ca"
+    },
+    {
+      "path": "lib/financials/contracted-estimate.ts",
+      "sha256": "ea86240bc7c83f269b00afac286831e0a7b53768e1706e51b0dc6367d32b2455"
+    },
+    {
+      "path": "lib/financials/cost-codes-enabled.ts",
+      "sha256": "81cb08153f067fd6f86c2ddb1d7280b92401d4d51bb3e4cfd0b88bac0a4b9d71"
+    },
+    {
+      "path": "lib/financials/draft-save-queue.ts",
+      "sha256": "12e1cb34f1415e85d654ad8e3b89e01106342f1e210f5da8c16cda9aae74060c"
+    },
+    {
+      "path": "lib/financials/estimate-commercial.ts",
+      "sha256": "0ed146b9843931e9d249ab634ec5cf0dbdd48af13b301a8cd5bd09b39664f3cf"
+    },
+    {
+      "path": "lib/financials/estimate-draft.ts",
+      "sha256": "40f22c28b81c0f6798c7448598d4907b8c58a33e5f357ebf25b1063e2ac82592"
+    },
+    {
+      "path": "lib/financials/estimate-totals.ts",
+      "sha256": "7a9b85825a87e8338ec69e5efd4c18d87607ed6ef2052d000d64f9727a981d97"
+    },
+    {
+      "path": "lib/financials/even-flow-price-anomaly.ts",
+      "sha256": "596eff7bb7247e030362923399b3be1b75be435ca2856e9d0a98504f7ae5c64e"
+    },
+    {
+      "path": "lib/financials/expected-loss.ts",
+      "sha256": "749f7fb403110f907bea4f3daf79a684e5d695a7fd8c7d5b4f1d539c34775837"
+    },
+    {
+      "path": "lib/financials/forecasting.ts",
+      "sha256": "8b8d9b7bd1a9e9b726f557b340b8e29fc4f4aa2d0e4c76899a36a00f77059066"
+    },
+    {
+      "path": "lib/financials/gmp-classification.ts",
+      "sha256": "f75095b0209830d69ae5766b6d0ba5f75e7c290eb63b03c4fb92a8faae0977eb"
+    },
+    {
+      "path": "lib/financials/invoice-destinations.ts",
+      "sha256": "f101c2cbca116941db0240126ec644b4730d0899615e8e861e9c12453a17d1cb"
+    },
+    {
+      "path": "lib/financials/invoice-lifecycle.test.ts",
+      "sha256": "40d1f8ce65889b85d3384961c9d9a7331ea51365b0e7295af425f812c2033c4e"
+    },
+    {
+      "path": "lib/financials/invoice-lifecycle.ts",
+      "sha256": "5d0736a009602a23dcd79b871bb3b41393aad0b057e580de6fdeaec573f22a94"
+    },
+    {
+      "path": "lib/financials/invoice-reconcile.ts",
+      "sha256": "c2fd66f9df64c7fd43b5b6d97691dfed0ff7f051c23ca5bc7132843501aa4366"
+    },
+    {
+      "path": "lib/financials/invoice-rollup.ts",
+      "sha256": "272fc75a6265b42b74719077f2e308a4488ad7588886ca325ae7af07142790a5"
+    },
+    {
+      "path": "lib/financials/invoice-totals.ts",
+      "sha256": "1630a793e6b3c0164a9629d1bf59c031128ac2c6afaa0ed4b96e1599218f311c"
+    },
+    {
+      "path": "lib/financials/job-cost-calculations.ts",
+      "sha256": "7ea91b40ef1f838c4a0207c1561bd4b26a7fece8e2cc6dfd65d74b7993fb7437"
+    },
+    {
+      "path": "lib/financials/job-cost-rules.ts",
+      "sha256": "687038dd519f6d0dcaf1acbf77d6a787e4f0bda5ba70903b37f3438a47033eef"
+    },
+    {
+      "path": "lib/financials/ledger-status.ts",
+      "sha256": "9607ef44ecd9b2432607568035b1bcfd02a731d135f6e664d149803211f880e0"
+    },
+    {
+      "path": "lib/financials/money-input.ts",
+      "sha256": "dbb8202ebdcf173487527d921865843a15ff62a5a5c0c255034cf25e80ac3f37"
+    },
+    {
+      "path": "lib/financials/money.ts",
+      "sha256": "2d10b251f96a170e8cff675126776fefc070df8a97a3943c674f677dd5c8504e"
+    },
+    {
+      "path": "lib/financials/pay-app-certification.ts",
+      "sha256": "e852670b96b05c10dd08090b8201bd12af7e51373ca24109f051de38112890d8"
+    },
+    {
+      "path": "lib/financials/pay-app-deferrals.ts",
+      "sha256": "2f84eafb389adff541512bfde0aee02f165b9f12b5e08d63228931f7e67f418b"
+    },
+    {
+      "path": "lib/financials/pay-app-entry.ts",
+      "sha256": "8c7dfb4faddc39b971885bfebbb21ae1029b0c134a81b129f5d43711cc2122a4"
+    },
+    {
+      "path": "lib/financials/pay-app-evidence.ts",
+      "sha256": "826cdd9162848881a8063adc3c3bbdfd7ad0a3839e10ff032ae0f080d32f2d0a"
+    },
+    {
+      "path": "lib/financials/pay-app-lifecycle.ts",
+      "sha256": "6c9d966e0c247ed60c0c00fc55a2e740b1571bb5f33764ce7ba2c17d0af2ee70"
+    },
+    {
+      "path": "lib/financials/pay-app-math.ts",
+      "sha256": "dac51c05abfa07b4e527bc0e641e9c5df33d4d704ca51df32748a9a35cac4437"
+    },
+    {
+      "path": "lib/financials/payable-duplicates.ts",
+      "sha256": "1b1e14d28392cf886801b2608483a1b2e5efd327d7f88eb339e7a09eaa16b9f1"
+    },
+    {
+      "path": "lib/financials/payable-line-match.ts",
+      "sha256": "bd27ee655103e93e8469e24e433b3cc96bb134562c819b99e242ac2a1e6e70a8"
+    },
+    {
+      "path": "lib/financials/payables-book.ts",
+      "sha256": "e4fd834c15d4ef56a18e3dabcb215c707d6bd218bb6f1e0e3c250d666e6782e5"
+    },
+    {
+      "path": "lib/financials/payables-queues.test.ts",
+      "sha256": "459142ee25769c5e7100ac77a2a8d70e0c9f53a4ae1c0e4b3bcfcde6636e0a12"
+    },
+    {
+      "path": "lib/financials/payables-queues.ts",
+      "sha256": "b6d4c22ddc8f0bf7e33c5de89bd3c2b56aa1ea5139afcd5ee92e94a6c50f7495"
+    },
+    {
+      "path": "lib/financials/payables-rules.ts",
+      "sha256": "c5a9a8cf76e52748bedcf0af8b2c53e2717482f74c41a4379754d291aa1e5c05"
+    },
+    {
+      "path": "lib/financials/plan-pricing.ts",
+      "sha256": "03ddcde1ec10aae3c42ca3edb517176247c25496be741a0729dd097f3966b267"
+    },
+    {
+      "path": "lib/financials/po-generation-math.ts",
+      "sha256": "d6dd88c675ef2a899281dbab30be524a91b8d3021b540bd609e0269fdc346553"
+    },
+    {
+      "path": "lib/financials/poc-inputs.ts",
+      "sha256": "ebd9bbfe246c34bfe720482b34fcfab259f59393a4efcfd15745f09c0457727a"
+    },
+    {
+      "path": "lib/financials/poc-rules.ts",
+      "sha256": "39a97be5fb47cb5f2d8c8e00a74fa576713199112ff5d50ed2fb280d8a9bcf61"
+    },
+    {
+      "path": "lib/financials/price-resolution.ts",
+      "sha256": "13cd8a0d9c9117683048c27ed0633e78009d7bc4166ff60230915344ac80f193"
+    },
+    {
+      "path": "lib/financials/production-margin.ts",
+      "sha256": "7779881a1e1e5c2dfe943a5c7fc127b5ea648dc527abbe3024d842ba954fe8cd"
+    },
+    {
+      "path": "lib/financials/project-revenue-basis.ts",
+      "sha256": "7d3d791b44b3e5e9381f0424bb36a2ba4477d22ee2b7ee1b653045cd296199c8"
+    },
+    {
+      "path": "lib/financials/purchase-agreement-pricing.ts",
+      "sha256": "20be9b6a1fc62feb8b47235280c2ec9dd70c4d66b79503495a8a354043e75da0"
+    },
+    {
+      "path": "lib/financials/revenue-policy.ts",
+      "sha256": "f331d0b9c5c39f62ef57fbabcdab30d4cceb5e4966e4f9a2771fc8ce2b9d6998"
+    },
+    {
+      "path": "lib/financials/sov-allocation.ts",
+      "sha256": "81cb220a430632225a6c8af6dc06c907e9e60d3eddad349d3ed5a04952769af6"
+    },
+    {
+      "path": "lib/financials/trial-balance-import.ts",
+      "sha256": "425a3f472a7c00d724f8fdb0e1d9e082b1fb6f0fb108b97bed143153eab0e8dc"
+    },
+    {
+      "path": "lib/financials/vendor-bill-constants.ts",
+      "sha256": "97c618158b14b5f3b12972188e215027c8ab78d883f137d2a8a3a9d8d31541a5"
+    },
+    {
+      "path": "lib/financials/vpo-approval-thresholds.ts",
+      "sha256": "9bcdcda157cc738c96a8b40a0122f150eca776b3593bbecce07ea4b6f455a122"
+    },
+    {
+      "path": "lib/financials/wip-validation.ts",
+      "sha256": "ca11dae44756ce263d9d5537c75641f4be3e8a3179e9e9ee92cc0c5213e21f6c"
+    },
+    {
+      "path": "lib/reports/activity-result.ts",
+      "sha256": "5fced4d58236476e4351ebf34b977ffa9c2f63235cf342f53c129b8e45411d37"
+    },
+    {
+      "path": "lib/reports/ar-aging-result.ts",
+      "sha256": "2d4c8c70450ffa8c5320a2e564fd992e3979c9c615dcf5dbd600c21173a93dd6"
+    },
+    {
+      "path": "lib/reports/builder.ts",
+      "sha256": "870f46f35c88da044b3055f9d3846f79e69fec30e6354893a8e1f561a55d249b"
+    },
+    {
+      "path": "lib/reports/collections.ts",
+      "sha256": "4c99fd15b4af6f2908c82bdb18225851e90f8c92e779419a82f404729a512f11"
+    },
+    {
+      "path": "lib/reports/date-range.ts",
+      "sha256": "c4b1a8c0aac5933981ffd03702182aaa2079f060c314111ba8bed38df6e6e3f9"
+    },
+    {
+      "path": "lib/reports/definitions/financial.ts",
+      "sha256": "52272a9fea8bc18523b5bcd235b2600e669c4c178c9389fac6ab2cce5d7af7c7"
+    },
+    {
+      "path": "lib/reports/definitions/parity.ts",
+      "sha256": "1aef08fe522e814519fdf02b4f596ae29cae10ad4eab44b5ccb825f6c3e21142"
+    },
+    {
+      "path": "lib/reports/definitions/production.ts",
+      "sha256": "134144108e18b6170b49e56051358f02d8ac79d65145cc52b3385c1b0463bf62"
+    },
+    {
+      "path": "lib/reports/export-csv.ts",
+      "sha256": "c5730741ba850d158464331c9ac7d25e9c04ac232a8d94ca6b4a570c20648f5c"
+    },
+    {
+      "path": "lib/reports/format.ts",
+      "sha256": "c25276d4c653aa2023eb35eab65e2f6a86dcdd1a3b1900f50cd4a5c2b2d02be4"
+    },
+    {
+      "path": "lib/reports/params.ts",
+      "sha256": "e384185353ce313c61358b41a181160bd8d46ba83f29b5e7cbd88ad8b295bd5a"
+    },
+    {
+      "path": "lib/reports/registry.ts",
+      "sha256": "0ec0dde51d17db5f0e08c2cb01414448cbebbb586e9f5b4bc7904ba183184170"
+    },
+    {
+      "path": "lib/reports/sort.ts",
+      "sha256": "17fa8e7c2edb1acc95ba3835ad19c6b9a9117e89502ed76327a154656487d2fb"
+    },
+    {
+      "path": "lib/reports/statement-result.ts",
+      "sha256": "14c401c59edb156c76d4d282eb31cea62b726f4c93b9323df69a4ac97e4e5976"
+    },
+    {
+      "path": "lib/reports/types.ts",
+      "sha256": "5743e4fb8d7ed128f50ef111a597938293a8da50baa3acd90660073a5ba218d2"
+    },
+    {
+      "path": "lib/services/books/access.ts",
+      "sha256": "1fba8da54e3fd4b039dd00e2736926c59f950594f293419645965764fc7c52a5"
+    },
+    {
+      "path": "lib/services/books/account-hierarchy.ts",
+      "sha256": "05aa47d70cdf81dc425fc86d8d3615ec92412bc1ae4b5d14a8c71e0310726b38"
+    },
+    {
+      "path": "lib/services/books/accountant-package.ts",
+      "sha256": "168b76f0e879245d599600f791e35195a914760be12c10cdc20e11b66b14afab"
+    },
+    {
+      "path": "lib/services/books/authority.ts",
+      "sha256": "3ad92c9584e9c303631355d8e3fc950c4eba64c72b2eee6e205791e6e9941d4a"
+    },
+    {
+      "path": "lib/services/books/bank-ai-model.ts",
+      "sha256": "3ccf4db8b3f5d3fdfe15770a2caec037d9e66d966c5330dc02d8a4924c9cb91e"
+    },
+    {
+      "path": "lib/services/books/bank-ai-suggestions.ts",
+      "sha256": "214228c3d96d33c739517ba6c6cbaea8b50757cd91d318d5e4d6a8f500731c02"
+    },
+    {
+      "path": "lib/services/books/bank-feed-health.ts",
+      "sha256": "c66debf0c7e3b800d10a0c450737ffde6dade4c396adcb1f171a2b8441abbe1d"
+    },
+    {
+      "path": "lib/services/books/bank-feeds.ts",
+      "sha256": "304a90a222b895ce34ced7d203bb64bf57760194cc84d42deca2759d131d9ed8"
+    },
+    {
+      "path": "lib/services/books/bank-manual-rules.ts",
+      "sha256": "74df6cc5afb2e7c5754d6486a865a865155292264fe74c964f2a5799a7c473d8"
+    },
+    {
+      "path": "lib/services/books/bank-match-rules.ts",
+      "sha256": "4f3f1e32c67584e70579def54651a21c181b0a6fde0524d39a4f29a1bc617a16"
+    },
+    {
+      "path": "lib/services/books/bank-reconciliation.ts",
+      "sha256": "12067bdec5668876aa2933e87014ce243d7f841b957ebcc0c334089aabb8cdd4"
+    },
+    {
+      "path": "lib/services/books/bank-rule-matching.ts",
+      "sha256": "94563f92455f2fae0598e93f95713e7f8ae2058c734dec325a9315d78bc71bb0"
+    },
+    {
+      "path": "lib/services/books/bank-rules-data.ts",
+      "sha256": "35d42051633ab2320be4d98454658289ee1d66267cbd1d9c72aa144c01455e0f"
+    },
+    {
+      "path": "lib/services/books/bank-rules.ts",
+      "sha256": "97ada2b95b7b3758821215e890b5d0dd55e13124135ab8ca9ae57ddf8fcc5ca8"
+    },
+    {
+      "path": "lib/services/books/banking-model.ts",
+      "sha256": "0edc62cc1bf5d3c719c01cfe479ca2806215f5ec6e7cfa698123c52c93b9aeb2"
+    },
+    {
+      "path": "lib/services/books/banking-presentation.ts",
+      "sha256": "811a74bb300edfdcbd38ddc9e8661fee14f4083c651f865c7d0eb60b4709a105"
+    },
+    {
+      "path": "lib/services/books/banking-workspace.ts",
+      "sha256": "77576e38388a255d082def114c25a2ce6b7382b5c95adc8b495a825e70e4ed97"
+    },
+    {
+      "path": "lib/services/books/bookkeeping.ts",
+      "sha256": "318abf8e2e3f7649c1337833c7f5a7f99318d50f0f2da8d6ff4a823ace032383"
+    },
+    {
+      "path": "lib/services/books/cash-activity.ts",
+      "sha256": "18fa1384faf587494d0ea5dd9ae989930c0bf3453018f4ac6adcdd20f16720d8"
+    },
+    {
+      "path": "lib/services/books/cash-basis-rules.ts",
+      "sha256": "f936af816ea31350461674863a02600768020f13750e40dc0ad24a4cbcbd6aff"
+    },
+    {
+      "path": "lib/services/books/cash-cost-service.ts",
+      "sha256": "ddd0e3b0e401bcd7b2312a9b4ffcf13d1658697dd09d695d6c40e59d274c2a20"
+    },
+    {
+      "path": "lib/services/books/cash-cost-snapshot.ts",
+      "sha256": "43f987f814a93dcbf77c9836c553783a58013336af8bfab5063f0920dede9c39"
+    },
+    {
+      "path": "lib/services/books/cash-costs.ts",
+      "sha256": "6a60c0d2fadb54ae3087a1897c3ffc934fc45456e3ff5a02015121f79695dd76"
+    },
+    {
+      "path": "lib/services/books/cash-document-evidence.ts",
+      "sha256": "c5139e31205383227a7010236d745d2a2be5293fa7bcc99198883d7ca2dd1c9d"
+    },
+    {
+      "path": "lib/services/books/cash-expense-snapshot.ts",
+      "sha256": "0915ea03339b04241bb7ed085320151638f40771541e63df01b36a2cb63b0872"
+    },
+    {
+      "path": "lib/services/books/cash-flow-rules.ts",
+      "sha256": "a29d9d1f69da0005f1f3f8d58c964da53a1223317c36ccc3abfa454a632ab923"
+    },
+    {
+      "path": "lib/services/books/cash-income-snapshot.ts",
+      "sha256": "2d4cbb5aff9da40658718077b59ed446d8c41f010cf6e86339895d935647f330"
+    },
+    {
+      "path": "lib/services/books/cash-income.ts",
+      "sha256": "40c220143a068ca630eccf0055fc28500ba021fa7b39be7ae34fff5386d4da66"
+    },
+    {
+      "path": "lib/services/books/cash-profit-loss.ts",
+      "sha256": "0ca97ae6b2d398f80315acffa9f5a33413fe61de25365f2931015de19267d069"
+    },
+    {
+      "path": "lib/services/books/cash-settlement-ancillary.ts",
+      "sha256": "09d2d7d89809f1cb71dfc83fdcd0b659dcd621d8a20f21d75f33a9e6be4d237f"
+    },
+    {
+      "path": "lib/services/books/cash-settlement-ledger.ts",
+      "sha256": "bf319049f9dd1db1e88e20de44f26caa11700cafc3822c49444b9ad99317655b"
+    },
+    {
+      "path": "lib/services/books/cash-settlement-rules.ts",
+      "sha256": "464c6fa3c32d8cc44a13e123119d29dcac2d0ca9be6f28b52d69c0a2a1a57dcd"
+    },
+    {
+      "path": "lib/services/books/chart-management.ts",
+      "sha256": "c191d5a3bb499dd31a1c6542a3fa117b7f0c9583718b475b31ea9701b06352c0"
+    },
+    {
+      "path": "lib/services/books/chart-of-accounts.ts",
+      "sha256": "6401d33354b944b37d06f417dc26975f24590ab0a818ce55cead90a7bf66438c"
+    },
+    {
+      "path": "lib/services/books/clearing-support-rules.ts",
+      "sha256": "4a9d2d17f5d28ec57e9d114a91481e0b7e2926db046a65e2cb4caf0eca11e446"
+    },
+    {
+      "path": "lib/services/books/clearing-support.ts",
+      "sha256": "93a771c7340d322d1871442074b2a26ccf8be5512db712489e7a156239597827"
+    },
+    {
+      "path": "lib/services/books/close-control-rules.ts",
+      "sha256": "739c4771f83be9de7c9e6ef132c9c63f6903b6a8392a3df2ddb940cca4af51eb"
+    },
+    {
+      "path": "lib/services/books/close-review.ts",
+      "sha256": "8ee630fdc0c2511b7e859b25e9f7f079c839c989728bf322e83fdc249704cab7"
+    },
+    {
+      "path": "lib/services/books/closed-period-guard.ts",
+      "sha256": "39a3399283f6e77b3cd0b303a930ac4b7ea94c9334bcf23295a125c40f52cc46"
+    },
+    {
+      "path": "lib/services/books/closed-snapshots.ts",
+      "sha256": "9e661a8f6c46ec02cfa1a29cd4f6d0c6e208e79fb89ac214ad4d2eb67707fae7"
+    },
+    {
+      "path": "lib/services/books/coding-rules.ts",
+      "sha256": "4d231024ac78fd400ea1ae0559aa23779337d85138aba75ddbf0a05fc0dc1fa2"
+    },
+    {
+      "path": "lib/services/books/comparison.ts",
+      "sha256": "de156e1ed139d80681b5c0741c105a8a699589d6fde22ad2daf9013e7a194871"
+    },
+    {
+      "path": "lib/services/books/cost-allocations.ts",
+      "sha256": "c70395721c1684eef87c6ff43ff6eec2cc54d887d8e6a537e2f3441d7aba6e5c"
+    },
+    {
+      "path": "lib/services/books/customer-deposits.ts",
+      "sha256": "ba5ea43e4bedd4f76a0015d46c2baf02e72c370b34b0f9237b5cc420115cbbe4"
+    },
+    {
+      "path": "lib/services/books/cutover-rules.ts",
+      "sha256": "13bf1d3e95df0a11de6a776420a3b8d13006eb7695abeb42c02279e0a2501112"
+    },
+    {
+      "path": "lib/services/books/cutover.ts",
+      "sha256": "70a85efb92a4787ad9c60629e18699c8188744ef8d31e18ff9b3d51511d19b2c"
+    },
+    {
+      "path": "lib/services/books/deposit-batches.ts",
+      "sha256": "aee7005f64efb1a60d20d6fc578b637a42d108fd2201c64d80a0f79104f6cebf"
+    },
+    {
+      "path": "lib/services/books/dimensions.ts",
+      "sha256": "650efb6af79df578f370c9b177e2922f608e996ebb2fb659b8c773b354b0a028"
+    },
+    {
+      "path": "lib/services/books/export-contract.ts",
+      "sha256": "420bec0ddc35950a7daabcf14e23d37b2c7e9f776de00a32f75022ada722a7a4"
+    },
+    {
+      "path": "lib/services/books/exports.ts",
+      "sha256": "07b1a9e048ed44a32d3d14d1e19afd27e6e45d9fca1a26b48f6afa9582aa43de"
+    },
+    {
+      "path": "lib/services/books/external-mirror.ts",
+      "sha256": "ef6345d402cd89a6de12b63a6ca0f5a82785ad0cbabeab29f6a26c7fefaa2881"
+    },
+    {
+      "path": "lib/services/books/fact-drafts.ts",
+      "sha256": "82057ccfac52ebc355255e089da23a5233946beed9c588607c9f3fbe7fbedca6"
+    },
+    {
+      "path": "lib/services/books/fact-identity.ts",
+      "sha256": "9cc9f16a3e6f83838023d7c8fd847ae9eff5e2d03f539ab0e104348e3827d62f"
+    },
+    {
+      "path": "lib/services/books/fact-journal-check.ts",
+      "sha256": "379e39a7dfa3e2ca0a52f4036d0f132aa87c7badb34972028c75ba71adc7b08f"
+    },
+    {
+      "path": "lib/services/books/fiscal-calendar.ts",
+      "sha256": "21aa9d48191cff39bdb5a6de3a1cb8bde9c71edea4cb1b63a87dbcaf87f50661"
+    },
+    {
+      "path": "lib/services/books/funding.ts",
+      "sha256": "3ac18b4b183e47dfc43e802a2d5eda643efd6385037836c0779e21bce2cd6430"
+    },
+    {
+      "path": "lib/services/books/greenfield.ts",
+      "sha256": "0f91be2283dd45be6f2a8323cff37f800788677e8fc6157207e0bdcdc2f7a115"
+    },
+    {
+      "path": "lib/services/books/hash.ts",
+      "sha256": "0f67e6f6d144cc9f5c7b6414d14d8ddac40f030da785123d1da520b516b55233"
+    },
+    {
+      "path": "lib/services/books/inventory-rules.ts",
+      "sha256": "b79e7bc9fe5c299de3388233400b2793af821a8bdb7c6b61247c83370b6fd053"
+    },
+    {
+      "path": "lib/services/books/inventory.ts",
+      "sha256": "a306130cbe4c3fc23f757182e34df84727981163a6aaf93b1f42d77644ffdaf8"
+    },
+    {
+      "path": "lib/services/books/invoice-revenue-rules.ts",
+      "sha256": "35f11a23ed651d8e7651c2872672f14c70b61804c77bd1f9f00b77bf97e8eba4"
+    },
+    {
+      "path": "lib/services/books/invoice-revenue.ts",
+      "sha256": "c002644104be68a4424ac457720276dd08e44b5da25c237a9266590f2ac90dab"
+    },
+    {
+      "path": "lib/services/books/journal-proposal-review.ts",
+      "sha256": "79ea0f87720c78b16cf7269fe6b757fb44a468b0a4fafe2d078b8a5fd39a42a4"
+    },
+    {
+      "path": "lib/services/books/journal-recovery-client.ts",
+      "sha256": "3b47290cb1b59571eba22c5d0012f25a5974840f5598ebb39783a85c248e789a"
+    },
+    {
+      "path": "lib/services/books/journal-recovery.ts",
+      "sha256": "eae4aa6bf62fc5f4b08d9ecc8dc8617cde28fca9131f61f733167f78e415e1a6"
+    },
+    {
+      "path": "lib/services/books/journal-resolution-archive.ts",
+      "sha256": "66236e925244e3dbf59f35c02f9d585228112057f788f6adeb5e37ae1ca93e69"
+    },
+    {
+      "path": "lib/services/books/journal-resolution-restore.ts",
+      "sha256": "a374f2030861b32e803ad403e0cecb697d4beffb09db6bed86a28c6653b52f26"
+    },
+    {
+      "path": "lib/services/books/labor-evidence.ts",
+      "sha256": "4c260bfee7e351511ec43107fe0f70f556ee52fac7728e5ee53baa5c670f8cd2"
+    },
+    {
+      "path": "lib/services/books/ledger.ts",
+      "sha256": "450b88b230f952bf02f43a488fecb0429095b056d6b3b9ccf6350e826caad442"
+    },
+    {
+      "path": "lib/services/books/legal-entities.ts",
+      "sha256": "a448472a2c3c0f3cf109ee4cdf9c7560026f6096dcd30dafc1f37819260dfdce"
+    },
+    {
+      "path": "lib/services/books/mirror-rules.ts",
+      "sha256": "064d5c80ce12729757d8a4272d540c995989a1ebec09d1b1c4e9a76c16345b5f"
+    },
+    {
+      "path": "lib/services/books/module.ts",
+      "sha256": "b6dc555194dad61a1b813b2c5f7400892782a20908b3734e1eb49f9594425b02"
+    },
+    {
+      "path": "lib/services/books/navigation.ts",
+      "sha256": "c850bb935ac0c699dcf9eac12aa391e892181899488706f2f8e28c099c008513"
+    },
+    {
+      "path": "lib/services/books/opening-balances.ts",
+      "sha256": "9f4d1f4e12cfec4271e8778b6f1de0a45bbc6b7395f1eb1a100d329fe289bffb"
+    },
+    {
+      "path": "lib/services/books/opening-sources.ts",
+      "sha256": "84531d6518de55446ad152b7a293d49d6446718008e0ea47894cab3d327425b8"
+    },
+    {
+      "path": "lib/services/books/overhead-budgets.ts",
+      "sha256": "bc4a1600e882f829e84ad05fb5c4d7e371f30df17dfcee12bf2a1f0a4f533abf"
+    },
+    {
+      "path": "lib/services/books/paging.ts",
+      "sha256": "9386c374e37113b28a6ef9e376eaffbb5d8aac05394c21e191bb5ece6cff7c11"
+    },
+    {
+      "path": "lib/services/books/payroll-allocation-input.ts",
+      "sha256": "ef6a3e9ee220c8f57f49f2bb3f917b9499abddc80435c22ddab93f380e0a2e6c"
+    },
+    {
+      "path": "lib/services/books/payroll-allocation-preview.ts",
+      "sha256": "4b0a14587f9663f9506883494879dc5db618c7b0b1f67a6aaa3573fa0d4cf35d"
+    },
+    {
+      "path": "lib/services/books/payroll-archive-source.ts",
+      "sha256": "d822f1fa0292af0b6ced12373fa9fee2a94c35ea7cb94f87a93017ecc5817906"
+    },
+    {
+      "path": "lib/services/books/payroll-construction-impact.ts",
+      "sha256": "dbc37e0b5a66d93a1c15bebe15b8b2cf7ed0c7fd0c3ba9dc4be5b333b2583195"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-construction-decisions.ts",
+      "sha256": "88f2b8fd12eabfb4d64b59514291a28cc892b4db2bbaa71d0a3627f331cd48ad"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-construction-policy.ts",
+      "sha256": "0d6233d331a2a57dac1e2ad99cc098eed51e063509edc681856ca90edbce9c37"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-context.ts",
+      "sha256": "47389150571e30f3bebafdab02a7a71771d7852d45a0dae42f5a239e2f2b06d2"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-lineage.ts",
+      "sha256": "1f9c043136c63304d8638247996a81172c6b54d0734a05a2c90565c6ca5af590"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-plan.ts",
+      "sha256": "ece1126f654d5eb10f709bd91e451e7cf75172326cadc5c389e4605f42fc53e1"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-posting.ts",
+      "sha256": "6a1ffb2c510d3d400b3b9f7ce4df2a63edbd8d3cb876b0eba0be06de44ec4d47"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-proposal.ts",
+      "sha256": "2631da859ad30400df7bafe91f88c50b57942617788eb44ec1155c11d485f3fd"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-proposals.ts",
+      "sha256": "69d04bddd65e2c5a44ea67fab0da6ee68256b03d02ec9ae8ec29d6270277371b"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-request.ts",
+      "sha256": "c668a91c49571573d3aadef21fedd4c7ecee150bf38a13d4899ab1af4820c7e6"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-source.ts",
+      "sha256": "8b20f768a7ce488f7e299678e0da3407e47e49a29a277b0aeb3752d5fbebfde2"
+    },
+    {
+      "path": "lib/services/books/payroll-correction-workspace.ts",
+      "sha256": "d3d793a5d2cfb1fc70ef7650188637bdbc3a546be68bf4181cd2dbe0a59db577"
+    },
+    {
+      "path": "lib/services/books/payroll-corrections.ts",
+      "sha256": "e34f06ffa989254efae08b5407232f19ad2b9d433f205b6a0eb3796d5115fe6c"
+    },
+    {
+      "path": "lib/services/books/payroll-document-access.ts",
+      "sha256": "5c9f937ee1cd85c8fe8717527995078b91b933f03eaf313aaf0a3e8d836485b2"
+    },
+    {
+      "path": "lib/services/books/payroll-document-download.ts",
+      "sha256": "a4576c8aac94acc5aed25d1081d2f0d2c87f688bcf9092cb8c5cc60e759ea202"
+    },
+    {
+      "path": "lib/services/books/payroll-documents.ts",
+      "sha256": "04a500877136307eeb6257ffbfe08f6d1b011467aa5a6f44fe949cae0812b864"
+    },
+    {
+      "path": "lib/services/books/payroll-draft-evidence.ts",
+      "sha256": "3620e38e43f78c209ede49a3f02322c93db9b6f2e9d3f977ca3dd018fe839d9a"
+    },
+    {
+      "path": "lib/services/books/payroll-draft-workspace.ts",
+      "sha256": "4b01ceb9d4e2dabfa7dde672f074505c343b7dc7c06cce2a9bb8846e0e499bf7"
+    },
+    {
+      "path": "lib/services/books/payroll-import-rules.ts",
+      "sha256": "960e4664f9c962db4d86d7370f65102db41489a90ea8f52a3f752ad0fb915ac1"
+    },
+    {
+      "path": "lib/services/books/payroll-imports.ts",
+      "sha256": "7597a97c8f4634fda03b43ba61957a6c443ff7d9a2bb4051fa0c714a3cd55cd0"
+    },
+    {
+      "path": "lib/services/books/payroll-labor-snapshot.ts",
+      "sha256": "e24184ee23f02566339cf8f1fca36670800f2782cd40341fb1342516c488e91a"
+    },
+    {
+      "path": "lib/services/books/payroll-liability-history.ts",
+      "sha256": "b9e10dd0cdaa85723ebcf2725991b558d26dd86e3d3b6d64ea2db0f83d3330f5"
+    },
+    {
+      "path": "lib/services/books/payroll-native-ownership.ts",
+      "sha256": "fbc950d922a1ff5742b84c148753bbe694695f73604af5ae501b837f1709003f"
+    },
+    {
+      "path": "lib/services/books/payroll-payment-fields.ts",
+      "sha256": "8e3d3cdaa4932cc28c61a7c90be04c71ae843e938d287baa1ab0a6ca647d728a"
+    },
+    {
+      "path": "lib/services/books/payroll-payment-review-rules.ts",
+      "sha256": "d76fb4a75b369a13fdcc36bb5136345717c195f2b3fbe5d2f6da31a71bd89f80"
+    },
+    {
+      "path": "lib/services/books/payroll-payment-reviews.ts",
+      "sha256": "fc12735bba2e696b40c7912ff440ee66f436c43c072b017ce697807700ee4461"
+    },
+    {
+      "path": "lib/services/books/payroll-payment-workspace.ts",
+      "sha256": "97ebcc91b07792a781bb820f878de256e74170f244bcc5d6dc6b72e38cba1519"
+    },
+    {
+      "path": "lib/services/books/payroll-posting-plan.ts",
+      "sha256": "ade34b4850662bdacbfb8371bba97ef3c1b45dc08b4cfaaf2d6cb3c3519dc961"
+    },
+    {
+      "path": "lib/services/books/payroll-posting-proposal-evidence.ts",
+      "sha256": "f2dbd4a1a96a9a0c7bc3158489883c4aaaa64585157deb34ad12430610df250a"
+    },
+    {
+      "path": "lib/services/books/payroll-posting-proposals.ts",
+      "sha256": "ff3398e84709ed3dc8391fa6cc830ac01efc064214dde2627ae8689203fa9d47"
+    },
+    {
+      "path": "lib/services/books/payroll-posting-receipt.ts",
+      "sha256": "fda690fa631c2e2c3a21fa2d60646a103e1a03c2d237ba9ae6b9d7f262c479aa"
+    },
+    {
+      "path": "lib/services/books/payroll-preview.ts",
+      "sha256": "a5d4872163eb7e9d0e868f9be167422b7fe726425e20669375ad8879f71a9632"
+    },
+    {
+      "path": "lib/services/books/payroll-project-payment-review.ts",
+      "sha256": "62d1fdb62218ad624ed3731b637b329d2ce52312c204058a094363b9cb97bd84"
+    },
+    {
+      "path": "lib/services/books/payroll-register-csv.ts",
+      "sha256": "57991921d9b957ecc10e9aff71f60d4dda8291042bae65d71277343eef5b0991"
+    },
+    {
+      "path": "lib/services/books/payroll-register-fields.ts",
+      "sha256": "f98351b5740b4306a8b9c8bd406c92dfab3da35215b067b20c78febb2222b55b"
+    },
+    {
+      "path": "lib/services/books/payroll-register-request.ts",
+      "sha256": "0a5b6ecbbd4844186d3f2516c9c5d2a4d10f74a14853b65abc3720521025199e"
+    },
+    {
+      "path": "lib/services/books/payroll-register-source.ts",
+      "sha256": "2a5f61cc6f4e53dda7ead6deb52dda50ad02e7e1fb1f409f11d086f4eafdd5f8"
+    },
+    {
+      "path": "lib/services/books/payroll-review-format.ts",
+      "sha256": "97be2c064a463d38d04b2c0ad953562dfa2aaf826fe92bcb55854802e0782cc3"
+    },
+    {
+      "path": "lib/services/books/payroll-settlement.ts",
+      "sha256": "c8e5373bbbba5cf63694e1866dd1805c9183a0a70e69fdf26207a18b53c128f0"
+    },
+    {
+      "path": "lib/services/books/payroll-support-versions.ts",
+      "sha256": "44dc61f4374555e173814eba5cb73f7d6b8f3e1d099982bf3da4f01382036f05"
+    },
+    {
+      "path": "lib/services/books/payroll-worker-labor.ts",
+      "sha256": "dfd142a71b3706e6cd3e71e19e9b2f1954dacdb357dcf7de2a0446d0d556d8f4"
+    },
+    {
+      "path": "lib/services/books/payroll-workflow-evidence.ts",
+      "sha256": "f4913e52cb0c1ae1095eb848c223ba3698ae6a102f57568afec0c41e4228e516"
+    },
+    {
+      "path": "lib/services/books/period-close.ts",
+      "sha256": "5f1e2f5477af4dd9c4020e053d5bc18fe4b238e970de29bfc75ad29f0796fc17"
+    },
+    {
+      "path": "lib/services/books/poc-revenue-allocations.ts",
+      "sha256": "b5871329edf2cd7cc3619dc3c4fc295430a12e201a1339bb9ce844bf2e5d2c24"
+    },
+    {
+      "path": "lib/services/books/posting-rules.ts",
+      "sha256": "fdf1582a980a170c821a39b542474963793356b2b985fd9c6b468ee9e5bcf738"
+    },
+    {
+      "path": "lib/services/books/posting-state.ts",
+      "sha256": "1bafe1103938c7b89c365faba8fca5107eb4048ca639d180aa5169a867f44413"
+    },
+    {
+      "path": "lib/services/books/posting-status.ts",
+      "sha256": "3005247cc9751f44e533cf2f3a1e5cd8ab71613fcb6f301b37f66643e412f477"
+    },
+    {
+      "path": "lib/services/books/projector.ts",
+      "sha256": "1bd83007a90fd4f66edfea4c0fe8ea87a647a2ed68691cc058d454bc7309a0fd"
+    },
+    {
+      "path": "lib/services/books/rebuild.ts",
+      "sha256": "5b0668dfedd257d138604bb77812620cfddcafe61e88566e04c898137de75c86"
+    },
+    {
+      "path": "lib/services/books/reconciliation-digest.ts",
+      "sha256": "5daaa65de233df3691bd977c4cf9aa98c9be027559d17e0e746305fbba8586e8"
+    },
+    {
+      "path": "lib/services/books/reconciliation-rules.ts",
+      "sha256": "8a97f8e3f74ade8cfbef58f4fb1a932d36f3d1a4dc1d63158a5d0a8a93904a71"
+    },
+    {
+      "path": "lib/services/books/reconciliation.ts",
+      "sha256": "0ee74498aba1d253b1ecbd962e7e607462b063697fbbf41d332397c2b287712a"
+    },
+    {
+      "path": "lib/services/books/registers.ts",
+      "sha256": "3ca0f21a31b7f343304f9d5467cbc26a9bbf3f97766bd7285b02d8c6a47c578d"
+    },
+    {
+      "path": "lib/services/books/restore-plan.ts",
+      "sha256": "8487db491ed0db3aa7003b93b97bdec0df8f41ceb1deab2563a6ea9e70b61740"
+    },
+    {
+      "path": "lib/services/books/restore-preflight.ts",
+      "sha256": "38ea93dd8b32fb863fd8bb0b93cc12c77153bd46246b752ade1c6c23c6a9cde3"
+    },
+    {
+      "path": "lib/services/books/retainage-history.ts",
+      "sha256": "c4fccf4015a0717d6011640fcc8253bbcc9368d0728ebab077ec467b0f07db90"
+    },
+    {
+      "path": "lib/services/books/revenue-basis.ts",
+      "sha256": "90b2589c1db8f1046836baafb8fbad4206094ea079b467859c30f15a03530e4e"
+    },
+    {
+      "path": "lib/services/books/revenue-policies.ts",
+      "sha256": "c11ae3c56cd6e7a853d42264531b91a34501970337a8bfc889e6f43e8852bb49"
+    },
+    {
+      "path": "lib/services/books/revenue-recognition.ts",
+      "sha256": "e6792cfe4c972d21acb1515a8839fc7a95c554a7a41bf7d5e290316213b12696"
+    },
+    {
+      "path": "lib/services/books/reversal-history.ts",
+      "sha256": "6a7c12164344fd343a935326ee789769b40cb997218681cbed87fe7445dccf22"
+    },
+    {
+      "path": "lib/services/books/settlement-allocation-loader.ts",
+      "sha256": "a9e9035bfec6b136f08cdea362bf6ab6fb7ce908589617ff9a2c8adb6deeb102"
+    },
+    {
+      "path": "lib/services/books/settlement-evidence.ts",
+      "sha256": "ab2ea9ace10624daf18676bb77a42c29e090d731ba8abf0bc310d9065c955c70"
+    },
+    {
+      "path": "lib/services/books/statement-detail.ts",
+      "sha256": "b870867247297e0068fc08abb67fcc7a6d94cf61aa96abcde64003ff46d16004"
+    },
+    {
+      "path": "lib/services/books/statements.ts",
+      "sha256": "048a215ce8d37f8e7f3661977f71e5e3dad27ea8bb7b8f234bdf94ae704748d7"
+    },
+    {
+      "path": "lib/services/books/subledger-settlements.ts",
+      "sha256": "9f7573a489e71fd07d7384b97e5b3587220c163dd9b1f1d42324800cab37ad76"
+    },
+    {
+      "path": "lib/services/books/tax-adjustment-lines.ts",
+      "sha256": "dfe9a186d0aff0bc6eeed666aad2c28b509ae971358a8b9a806293d7d111801c"
+    },
+    {
+      "path": "lib/services/books/tax-adjustment-rules.ts",
+      "sha256": "5bccea0d85f210df7d2075c35f8ce504517642420f4f4ef062645df6c453032e"
+    },
+    {
+      "path": "lib/services/books/tax-adjustments.ts",
+      "sha256": "830603b86b24f163f2ba4111edbb2cc39ea6adaf0a932ae90be39d1421bc6f00"
+    },
+    {
+      "path": "lib/services/books/tax-attachment-archive.ts",
+      "sha256": "0414f88ac02b40a9a07808c0d163a4d531a4aceb409ad0b55594dc3ebb9f4cda"
+    },
+    {
+      "path": "lib/services/books/tax-attachment-download.ts",
+      "sha256": "c2adca94687b1cca22042cc68d2c8ca54d4989d89682fdcab0130a74d40a5e7b"
+    },
+    {
+      "path": "lib/services/books/tax-attachment-rules.ts",
+      "sha256": "b74a1f9d5438bc809fc070a11ab5d5635d4b219611e815985338b16adcd31453"
+    },
+    {
+      "path": "lib/services/books/tax-attachments.ts",
+      "sha256": "4dde5b1d4adb5eae47916feb2301279ab8c0bbf25845e107df48141505a03e77"
+    },
+    {
+      "path": "lib/services/books/tax-register.ts",
+      "sha256": "2d6c4bc0a23322f9c4082fd03988e1ea862f2b38d619312c21de77d85b09d75a"
+    },
+    {
+      "path": "lib/services/books/tax-summary-rules.ts",
+      "sha256": "526f671e73f16f809427f30e459e32d9f332fba837d0ba467271bf187e87ac21"
+    },
+    {
+      "path": "lib/services/books/tie-out-rules.ts",
+      "sha256": "1be7f61fad8affbad902d7957beb32d23362812df816b16acfa23652b7cb91dc"
+    },
+    {
+      "path": "lib/services/books/types.ts",
+      "sha256": "89880a90de303e4395d1a14c2e349d0014460e0e11dff34c23eb220663ae30eb"
+    },
+    {
+      "path": "lib/services/books/ui-access.ts",
+      "sha256": "3c9e3cd945ad19f25c8b999c32a97532a2a2d2f2c974774e423f9c17b514b406"
+    },
+    {
+      "path": "lib/services/books/vendor-1099-filing-rules.ts",
+      "sha256": "3e4fd2a9cf00f2631812ea0ee7aef08e3b0766b779cc3c84f5e8ec9c6b3defa2"
+    },
+    {
+      "path": "lib/services/books/vendor-1099-packages.ts",
+      "sha256": "717fa575c8a24636948f72e336397982363ece491e173d237919b6e60fb7da8a"
+    },
+    {
+      "path": "lib/services/books/verifier.ts",
+      "sha256": "2ffca417062f0f4b8392307b7c372769aab3d9222412e2e26858a1ac63838c47"
+    },
+    {
+      "path": "lib/services/books/warranty-accounting.ts",
+      "sha256": "f4b80600cb734dc858b276dd72a9b3a8eaaa4ed26f8b8c0ed801573c702a8f40"
+    },
+    {
+      "path": "lib/services/books/wip-period-rules.ts",
+      "sha256": "ee37a8eb2c04786747c6d19e40b259ad7a47be7033fa0b8bcb38289dddb8c181"
+    },
+    {
+      "path": "lib/services/books/wip-project-scope.ts",
+      "sha256": "f826a4d328e7fe0cd5a20e4d97f0de1bb400cf9e870f930f8ecf498b056239b8"
+    },
+    {
+      "path": "lib/services/books/wip-review.ts",
+      "sha256": "549912f71cc93c84e4bf1d58972ca50c9258afaccf57b4d1b8b9c3035462a9d7"
+    },
+    {
+      "path": "lib/services/books/wip-source-evidence.ts",
+      "sha256": "1569ee74bb4826921a903b147299ce6003529531b3429ce2f6774036c045f97b"
+    },
+    {
+      "path": "lib/services/books/worker-pay-privacy.ts",
+      "sha256": "5b9d3ce18c81810ab1b3628879810ba50e6edd71285fb161bf6bdd7fccf5e27a"
+    },
+    {
+      "path": "lib/services/books/workspace.ts",
+      "sha256": "29c4be9b6f55ad16a003ff38d8a597b5a4885ef4b443add3377b700b92b92d15"
+    },
+    {
+      "path": "lib/services/reports/aging.ts",
+      "sha256": "183f83743a394b9739f37f3b01ff1ac63e6be525bdd2c80033b8bdc897716fcf"
+    },
+    {
+      "path": "lib/services/reports/ap-aging.ts",
+      "sha256": "44223d5815c8b66fdd7d81203860ea9a137446863a53aafb3ee04835016b1f72"
+    },
+    {
+      "path": "lib/services/reports/ar-aging.ts",
+      "sha256": "5b531f6e3276449ff6d2ba779365793d731d5b85f49ca9960221763559ed23f6"
+    },
+    {
+      "path": "lib/services/reports/cash-flow-forecast.ts",
+      "sha256": "dc15984d839235b8d3c9a844c0cbe2eb1aa05a4bec890c8cb2874d5a4cd7329e"
+    },
+    {
+      "path": "lib/services/reports/change-order-log.ts",
+      "sha256": "2330f9a90eae1fa55f92075a5d9d6f041baaf1df62d936f1c4df730a47a77393"
+    },
+    {
+      "path": "lib/services/reports/contingency-usage.ts",
+      "sha256": "d095494f6355bffb41876febe41b95eb8cf7ebef4c2773e97b8be575378d256c"
+    },
+    {
+      "path": "lib/services/reports/correspondence-log.ts",
+      "sha256": "596ce0787abf6335881817a06a02a6eefc03a96719caba20d953796125cd6e08"
+    },
+    {
+      "path": "lib/services/reports/csv.ts",
+      "sha256": "f77604ecede57e1c8a68c3f59c25a51aec6ca80c45498ca3b3d23132b5dc59c3"
+    },
+    {
+      "path": "lib/services/reports/dates.ts",
+      "sha256": "509cb80de6bbe9ecafa6783e88022c93a11948fcd86e09ae55ad286b11304c34"
+    },
+    {
+      "path": "lib/services/reports/draw-status.ts",
+      "sha256": "98abb75bbd3d6d9ae7e45c7bebb9e0a7d25104591e530a74a22cd0f21b26f973"
+    },
+    {
+      "path": "lib/services/reports/forecast-ctc.ts",
+      "sha256": "48b8d115ca3230d35e9bd56cfb7148c1a4768c125f3e1713b45c6cbe575af78c"
+    },
+    {
+      "path": "lib/services/reports/job-cost-detail.ts",
+      "sha256": "d1d38556e6a7e5be81b4b3a24d376e9f722b204cf7315cf7d8f1bd35c8b9354d"
+    },
+    {
+      "path": "lib/services/reports/osha-log.ts",
+      "sha256": "50ca584c2da3b486c219c253a6f9f4568d7fb0253d9bd795e56ff82f319a5fd4"
+    },
+    {
+      "path": "lib/services/reports/pay-app-register.ts",
+      "sha256": "a44b62088e659f7552fdcbb4a9b1a0637dae5a37cb4d113071ff53586d315de2"
+    },
+    {
+      "path": "lib/services/reports/pay-application-g702.ts",
+      "sha256": "fc4c00f8b3aea1a3137f00b83067b9115285645aec6233e6c78f16ebd2547159"
+    },
+    {
+      "path": "lib/services/reports/pay-application.ts",
+      "sha256": "43294cee4ac27fa176922101aab8a1d6cdad370d40bc02f6940bf3b197d6d29f"
+    },
+    {
+      "path": "lib/services/reports/payments-ledger.ts",
+      "sha256": "70316483e41800d591a3549ce9801321ea0838841fee46ae6eae28dfaf7064d5"
+    },
+    {
+      "path": "lib/services/reports/prequalification-register.ts",
+      "sha256": "0f0a1ae30a0e70bfbed05b8d8df2f9b93c135ac6c97b5a0b62e5e6e6299438fe"
+    },
+    {
+      "path": "lib/services/reports/project-profitability.ts",
+      "sha256": "22a8cd2e0ec0ccc004db99a00d838a4a9986c833a096f7785500e0420a854fca"
+    },
+    {
+      "path": "lib/services/reports/reconciliation-types.ts",
+      "sha256": "db6b29d4c651954c0915b1e3d9230cd18cf60e60365a9cf474282273cd07cfba"
+    },
+    {
+      "path": "lib/services/reports/reconciliation.ts",
+      "sha256": "d71f05104c27e11b35b0e09c08574088f8094fa983cda8c32d418d0d83f6046a"
+    },
+    {
+      "path": "lib/services/reports/settlement-statement.ts",
+      "sha256": "5b91847b6fef7f3af322354e2519bf3916073ae841cbbe519584bc4b9dd4070e"
+    },
+    {
+      "path": "lib/services/reports/time-phased-forecast.ts",
+      "sha256": "52a3ed75f6a8c8a3d94d383b7689d78fdd8e5ed1c20a1e96d3d2a24838c7dccd"
+    },
+    {
+      "path": "lib/services/reports/variance-analysis.ts",
+      "sha256": "10679d753dcff9b878c249dcb27d65e1545fbda8706e1553cd7b29bf55e4520c"
+    },
+    {
+      "path": "lib/services/reports/vendor-1099.ts",
+      "sha256": "336a370fd3da577bc7015d5320f23f6645574497ecce968f0c916ecd9fdef027"
+    },
+    {
+      "path": "lib/services/reports/vendor-tax-payment-rules.ts",
+      "sha256": "b4ec37220940643eebad50c66b46cdcbc4c8875225d59cf08798e47182a6e611"
+    },
+    {
+      "path": "lib/services/reports/wip-over-under.ts",
+      "sha256": "c9d076e2b813459cfa2eed9f189dd4fc9f0f05fb48d1c6300ac6b6289d038b12"
+    },
+    {
+      "path": "scripts/books-acceptance/api.cjs",
+      "sha256": "6bda1ed32bfbeffed8eddd3893205d4abebcf796e493590b791abb24b30cce8e"
+    },
+    {
+      "path": "scripts/books-acceptance/baseline.cjs",
+      "sha256": "e6b16b49db53a8b9f0a059ce45e8d1fd7e25c04e6a5152c31ce1163ae94d69ac"
+    },
+    {
+      "path": "scripts/books-acceptance/bootstrap.cjs",
+      "sha256": "fdd7c73e50dc43f08289d8a31977a94635ac4a8b57dda79e282869aab772ecf4"
+    },
+    {
+      "path": "scripts/books-acceptance/browser-seed.cjs",
+      "sha256": "9e62144d1c5097f43d0fd5d548a6e581f0243e287be4821bf69ac940c91553ab"
+    },
+    {
+      "path": "scripts/books-acceptance/browser.cjs",
+      "sha256": "93ec6e0bb455a2e992a6bb8a158d867f668251904692810d3a1e3581363fb7d1"
+    },
+    {
+      "path": "scripts/books-acceptance/catalog.cjs",
+      "sha256": "99bf08e99fee30f04f4e4df93279429fb4574cac7e9dffdda7798dfd7af61c32"
+    },
+    {
+      "path": "scripts/books-acceptance/engine-probe.cjs",
+      "sha256": "296abe7d292feb02ed1bcb5455c041256138a872b34d590f3435ae065ed04db7"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/AUTH-01.json",
+      "sha256": "aa1bf8554fcc91c577f593650d477b351706d2bd70e31ced644ad7e5722ec44c"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/BANK-01.json",
+      "sha256": "f2c685c9eb966828d37c86642ce57538cf7fdbe5767bacf6323147aa9265b2f8"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/BILL-01.json",
+      "sha256": "b97fb4a6c917f557b1375492fc1338c5ca75f1bed38378c2e37c7bc1f51affac"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/CAP-01.json",
+      "sha256": "d91c56eb6feba6ae4785f55bbf76e5841fad864119d0b4005d06470ca141d105"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/CASH-01.json",
+      "sha256": "3e734a713b9d92a8618ad97a4be25ed3a99f276d2e4f1190894007b5ab7d3716"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/CLOSE-01.json",
+      "sha256": "b297e6792688c9bf173e939f035b10a2c159b6642c24288b7c5e895bf7a321d8"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/CONSOL-01.json",
+      "sha256": "58a44f18aad4dafb63c39f473a7a5c8af59ae560b7d1f8cf0649b7eba07c8973"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/DIM-01.json",
+      "sha256": "f2e76f39b287e565b0ee254eee5baf797a8093341eb023b3adaca23b6113927f"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/ENTITY-01.json",
+      "sha256": "9745eaafc75bf38948dcb2b23d2ab52d03757caca7390db043ae9e19b519b2ae"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/GREEN-01.json",
+      "sha256": "327a8a42a848d7145dedfc813147245f7fbebce21d3817c87f805e1e0fa86288"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/HIST-01.json",
+      "sha256": "9a9b1d2f9b3514227e27507329db04132407884f182fdcca2319c2f000083d17"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/HOME-01.json",
+      "sha256": "1819f44d3dfd01ae982e54bcaa4b08a37e1214b2a047caac763f3d951d81715f"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/INTERCO-01.json",
+      "sha256": "4690f0c130d3129bb8ece1027f6e2040cdac0e8bab86d69f8425870902743b74"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/LOSS-01.json",
+      "sha256": "e48b159313ff246891e3c8fb3b2d47db24046f97bf32458ac1b5c0f9f8ddc541"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/MIG-01.json",
+      "sha256": "1e2c43bf3ca7af2335e55ea25c2177c64fc37468757dcd72cb8fc0fc35af26ae"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/RACE-01.json",
+      "sha256": "94a30a0564a382811c32551c620080f63d7b37e1addd6e35c3b427b1b3a2b099"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/RESTORE-01.json",
+      "sha256": "5b358bc96d0f93dd72230a7cc9781e0a6a61a88195c9ec771f40e6e1f40176a5"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/REV-01.json",
+      "sha256": "f34750a770a03fc7619f49c1ce41b1d45de6f26522372234999e420a7dc6bf39"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/STATUS-01.json",
+      "sha256": "86b05007215a644597a94060756980954a8155235a86096bc62b9c1497db84cb"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/TAX-01.json",
+      "sha256": "49028bdef4df5a382457013eb0ec86b593b17187de4d039931df88f669c0bb6c"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/WIP-01.json",
+      "sha256": "d8065251ea27064e3ac4784b1ca5e37d49211bb19c15393203381b09ea9a5390"
+    },
+    {
+      "path": "scripts/books-acceptance/expected/YEAR-01.json",
+      "sha256": "0cc1411c5cff26e219e7a50d539feca75afb8a857281cd536d7ac7812ad02b30"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/abandoned-close.spec.ts",
+      "sha256": "897b24443ebcb9aecbab11435cd105dec17565fabfcc411e2fa8d03d83a441c0"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/bank-funding.spec.ts",
+      "sha256": "205c83c80137df0a18f1d2e4bdc343d31b58892c3bd2cd5af5102cc251306ae1"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/bank-statement.spec.ts",
+      "sha256": "3c8bc4e75e22bd221f67fcbf71abf28e60760d830cf37f0b7298bfcad8601a2d"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/cash-basis.spec.ts",
+      "sha256": "fe72fa1119fc772266de6ad94da847e5f0ff75b3eec8a3d3cc38172af922d122"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/close-gates.spec.ts",
+      "sha256": "5a2cd814463078028e8127ffc684d3023722efa1dcbb8a27169ab9c9e00e0d3d"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/contract-wip.spec.ts",
+      "sha256": "d848d6ffb23bf832a128af2d326687e9fd2dd8adbf76ca28c7969ff9795d0992"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/cost-allocations.spec.ts",
+      "sha256": "dc84f1e23025b11031a75525220e1efec08d46fea8a768f7bc31a2becd6c6c66"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/feed-failure.spec.ts",
+      "sha256": "b86ae742a79d80bc3949310dd62640239be09afe1dbb493b59da6ebb23fe76dd"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/greenfield-launch.spec.ts",
+      "sha256": "28ac3905918359f6541637bf66483cc2ba3814be34a6b328633a9ceec23519a9"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/home-impairment.spec.ts",
+      "sha256": "4a3a20877a5a38f301f908d033a0184d742ca891e0c268a2f061d0ce104fde44"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/posting-status.spec.ts",
+      "sha256": "43d776dfe4a4b8d870dece333f9edff6048f66322f4c5586330914e956d29d5f"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/receivables-history.spec.ts",
+      "sha256": "2160abea35ba1d55b3bcad92bbf8b442cc946e0a3591da16e37a9ef4bcc78611"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/revenue-policies.spec.ts",
+      "sha256": "7e017a2e98eb897aebf12e54b843c1035057d71ee906dd0ad3a908b052850799"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/statements.spec.ts",
+      "sha256": "6290ca270371f01300db23c5876eacca8597dfb381bde73639b1232d1df5f4b4"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/support.ts",
+      "sha256": "480dd28aaf9eb3116864982030ab5151796b6471eff863d3124884b34905008a"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/two-companies.spec.ts",
+      "sha256": "bc29a556da82777148be4c0e4f0ee462bf98bd724a8e679880c2a56d48c8584a"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/vendor-1099.spec.ts",
+      "sha256": "4c50895059c6be90493c7c841c51add5a3e2e4a470e6e40465126dac80b22fa0"
+    },
+    {
+      "path": "scripts/books-acceptance/journeys/year-end.spec.ts",
+      "sha256": "f2a47daa73264d2554a51381c92859db5dfd6cecca54130532c042c4492ab049"
+    },
+    {
+      "path": "scripts/books-acceptance/playwright.config.ts",
+      "sha256": "6ae9e366be3acb420ecff64c16af305e30425f971dad2207d4faff36f67ba755"
+    },
+    {
+      "path": "scripts/books-acceptance/project-worker.cjs",
+      "sha256": "cc5548f48512677ca4540bb8c358695c3669fbab8fd74e407fb2b7702ddadc80"
+    },
+    {
+      "path": "scripts/books-acceptance/race/tax-attachment-contention.sql",
+      "sha256": "16ec3b153340b168bd0734847a44de28295054eb79a90e97a71d253e676d8101"
+    },
+    {
+      "path": "scripts/books-acceptance/runtime.cjs",
+      "sha256": "0b03bcf238e67e56e39df7285e0ce0ae183dbbc1fe38f324dfc20271aa02be5b"
+    },
+    {
+      "path": "scripts/books-acceptance/scenario-kit.cjs",
+      "sha256": "df0723bb5a7729145e42b7532f6405b843c1e76b2ba068712e8583d185b55cd3"
+    },
+    {
+      "path": "scripts/books-acceptance/scenario-runner.cjs",
+      "sha256": "acb0173b19ac9c6b41bb2fa52ef1057ccd01dc6d444cc813bc82d56d88b02d9c"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/auth-01.cjs",
+      "sha256": "d979386b60da66a7e91a86b8d7631d87edd7a8a21c580bc500ef148a1e20eb46"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/bank-01.cjs",
+      "sha256": "abab6c84ec67b63dc07b2e7eeaa5675e0a25d561c15e97845002512659182ebc"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/bill-01.cjs",
+      "sha256": "e0e5cfe52fdaddd156fc3701c619b3b7a8a23bedec6c21bf0492eb877e639b4c"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/cap-01.cjs",
+      "sha256": "d946e253404a8938c4acb21a12c9477d14cfb50671ddee5a842b4db8b8df1193"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/cash-01.cjs",
+      "sha256": "f212fae38ff0131e72bb0d54c14162d3dbe7515ebd46cde0a56faf861513d5db"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/close-01.cjs",
+      "sha256": "c40f7002fc2cd394e3fa28a2e87d9203d2284c3132bcd9fb963b305328391a5a"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/consol-01.cjs",
+      "sha256": "79a5747780fb2ba4fd0933aa0293791ae597e652dde0f0decc2a01d4e1065b02"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/dim-01.cjs",
+      "sha256": "a52a96f41e2c4bd2e4e2ecdff79d6cf7d29d876f7b2bf3dba0d583f0b64f524b"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/entity-01.cjs",
+      "sha256": "f22cef7b9d6d9e7f8970257ed38235a407c26e3423730016a91d9cbac9d7b04a"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/green-01.cjs",
+      "sha256": "6968ecd0aa5d45ef1a36d5397e38ee35e40496afb1eca2f0db9b1e52776d7ab0"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/hist-01.cjs",
+      "sha256": "ce973ea0e90b9330b117569dbe3a5a64e0e7a538057e020f4c102fa983787ca9"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/home-01.cjs",
+      "sha256": "a4e61be4c90e9bb64250ef2b6aa691874dfacc39e68fbf5abf9cc3be4252546d"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/interco-01.cjs",
+      "sha256": "196f06af990bc9ec3f01020b41f67e909ef821d8f525aa7dcd0c32acbdd1363b"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/loss-01.cjs",
+      "sha256": "1db27ec2ccd8dd227599f4f701178c6f0f9dd5e6b85315172e9b951090b14117"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/mig-01.cjs",
+      "sha256": "754468058fb7bb59f4d209c249918e9f04e6cee324e01a6d42591b8be4620abb"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/race-01.cjs",
+      "sha256": "e36c1f279444a9544cf2d30195dde1363fd8e7c470a29d1b82cbfa8d805fe598"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/restore-01.cjs",
+      "sha256": "cfff9bb3873f8d4b8751c189bf23866b53fb90c7e0cf6b788bbd071c5db6146d"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/rev-01.cjs",
+      "sha256": "176bdf831da5b732e7b7a88cf7a866a1e8459ce33106b3a411a919009c3cf71a"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/shared.cjs",
+      "sha256": "2f1bfa6458af7535e1e07d59c4c15cb082003267ff18fe98f428bc18c8471325"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/status-01.cjs",
+      "sha256": "c28a276892ba24ee114f0f1abfbe5b9a2b07d07692d699672d3023d6aa822898"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/tax-01.cjs",
+      "sha256": "f5221f86a2ae9c9381cb3a789f7d9e70184025218564916c35716bff90f598aa"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/wip-01.cjs",
+      "sha256": "0627a6b4024fac046676319e25dbcd689eebd2018eec07eaacab14fca6b947f2"
+    },
+    {
+      "path": "scripts/books-acceptance/scenarios/year-01.cjs",
+      "sha256": "d57199a5939a80befea9a95f5968b5c701ec7227f227323d544e145f71e553f2"
+    },
+    {
+      "path": "scripts/books-acceptance/upgrade-seed.cjs",
+      "sha256": "350088e69ad101dc2fdfef2968a942ecfdc2e560a1c61cd5b453491ea9c044fc"
+    },
+    {
+      "path": "scripts/books-acceptance/upgrade.cjs",
+      "sha256": "87ee14264cf932082ff9d07af39dbe2f0c22f9b61de196a89c7edbbabb2a5272"
+    },
+    {
+      "path": "scripts/books-acceptance/verify-catalog.cjs",
+      "sha256": "250c5ba3df140778ccf9406abcfc78ceeb467c6682d133c43958a41c75903e95"
+    }
+  ],
+  "booksMigrations": [
+    {
+      "name": "20260607183000_qbo_invoice_opening_payment_ledger.sql",
+      "sha256": "9d72ff60fc299f66441c75d28245a3f2309737c9609376e52ea22013ed756718"
+    },
+    {
+      "name": "20260711120100_vendor_tax.sql",
+      "sha256": "438b01f0db35fb80a9c34413bd50ee003994772c4e7ae497dcd484614fa49d9b"
+    },
+    {
+      "name": "20260719011735_accounting_connections.sql",
+      "sha256": "7c6b5750aa13cf6381d0809d685ecef4c87a854fd1225d0cccab4eacadb464a7"
+    },
+    {
+      "name": "20260719011822_accounting_sync_records.sql",
+      "sha256": "f3fd359e118c09a58ad50d7df314088d18450aa2e4efbea32499bc9818009108"
+    },
+    {
+      "name": "20260719011920_accounting_entity_map.sql",
+      "sha256": "580e9cecd4cef272eafcac93d82a33febdb4b56802973f84e18431353dc11ed2"
+    },
+    {
+      "name": "20260719012335_accounting_rbac_and_events.sql",
+      "sha256": "23c9311e8bad8aaca26e57632828cd169cbb95eb962d136d072f2a28c1fa8aea"
+    },
+    {
+      "name": "20260719012456_accounting_coding_backfill.sql",
+      "sha256": "cb8f0dbc1dffcebbb70ed1f23945b1ad26a38659aabb034478d3d9844c79d6e2"
+    },
+    {
+      "name": "20260719014231_accounting_security_hardening.sql",
+      "sha256": "313fd152ee6cb40701f502a1fe4ca15ab418424c29e0d55959908d85774b143d"
+    },
+    {
+      "name": "20260719014317_accounting_trigger_function_privileges.sql",
+      "sha256": "31e6af32057be0c216a3a44cfaaba4dff38c1e52394d26ef587c26075b4e4b60"
+    },
+    {
+      "name": "20260719020641_accounting_counterparty_links.sql",
+      "sha256": "08a66005a01df0001ad6690d3fb0e6611c39c58cf7fdd8539dc2709fb2f44fe9"
+    },
+    {
+      "name": "20260719021055_accounting_fk_indexes_and_qbo_trigger_lockdown.sql",
+      "sha256": "cd25a143d1428ffafae1141e9db3ea510ee8f5032337406e67eae98262d67c5a"
+    },
+    {
+      "name": "20260719021658_accounting_provider_fk_indexes.sql",
+      "sha256": "ab4ce2ec43620a3a15a3c4dcdbd86ff2d01549979a69e2a8f3e32585928a95e2"
+    },
+    {
+      "name": "20260724010343_accounting_abstraction_hardening.sql",
+      "sha256": "efe55226a05ad8b0b718d637582c6f0d819020475b27d8c98ddee6db628f0170"
+    },
+    {
+      "name": "20260724010430_accounting_neutral_backfill_completion.sql",
+      "sha256": "ef0f2968f49e5f80f0498baf8d139359d4d7c83205e6bec865747160f1bda313"
+    },
+    {
+      "name": "20260724010554_accounting_import_claims_explicit_client_denial.sql",
+      "sha256": "20ecb06d2cf668405e678e00d1b98b01c51be807f4c16d8821adde180cc02725"
+    },
+    {
+      "name": "20260724015507_accounting_drop_compat_views.sql",
+      "sha256": "793642fb2be161050e078124cb11bd56cd019c9be42cb60ff8553677bf5cddf2"
+    },
+    {
+      "name": "20260724021956_accounting_reconnect_identity_rebind.sql",
+      "sha256": "b3aab5f80498f18908ca96d590a63b2e0c5ad1edff333b44e0cdf9722bfd0dcf"
+    },
+    {
+      "name": "20260801143926_books_accounting_foundation.sql",
+      "sha256": "7005a16c4043ccc212d2e4a5284b5b24c6ddc4f54c0e07bab39dd315ff6d6d59"
+    },
+    {
+      "name": "20260801184150_books_service_only_privileges.sql",
+      "sha256": "68dbbb6669c21d0f9d7ecfd8ecb8db289bd5d047a6ac6371d745f52666586563"
+    },
+    {
+      "name": "20260801211117_books_workspace_opt_in.sql",
+      "sha256": "01e19f37f3a98c83d2da0140c224e684f89fb1368a9d525134ffff23baf63332"
+    },
+    {
+      "name": "20260801212527_disable_existing_arc_books_workspaces.sql",
+      "sha256": "25e22633a4ec32d279cb453af2959239833cbef539aac0c296a4d3bf3e9d6f3e"
+    },
+    {
+      "name": "20260804160000_accounting_batch_export.sql",
+      "sha256": "a493fa822d48d36a3ca498f79eb79a59319869f21533cdb3dc505b13d1332635"
+    },
+    {
+      "name": "20260807120000_books_c1_correctness_core.sql",
+      "sha256": "58c425b0e5ef387443e58b6dc2beed945594bb5da00e5d2415b83413294ef64d"
+    },
+    {
+      "name": "20260808170000_books_balance_trigger_row_type_fix.sql",
+      "sha256": "bfe8664e4bc776ae529126a1f29780f3e1c5c2a7594604781e54fb6fc4704f8c"
+    },
+    {
+      "name": "20260808180000_books_bank_rules.sql",
+      "sha256": "69133a66c145f12943db81b66e16016fa7ed6c97789fc5706bbf30ef2f567d93"
+    },
+    {
+      "name": "20260812120755_books_release_hardening.sql",
+      "sha256": "39b82208275fc5361ff5fe68971a6d0f18cb043f2e129a5f4d7f757a59b96404"
+    },
+    {
+      "name": "20260812145420_books_reviewer_role.sql",
+      "sha256": "363395fec60104833177e68b0b81a4e99d35b9852daf8ad335deba6bfffa3ec5"
+    },
+    {
+      "name": "20260812150201_books_sole_ledger_operations.sql",
+      "sha256": "e8640c18123f398041ef6ec3ab7966750cb8a2e5ef2f90c72e733f09d2d0845d"
+    },
+    {
+      "name": "20260812152631_receivables_books_tax_hardening.sql",
+      "sha256": "96d7f4e85a97566f42a54d906b9c0820f7e614eaad8ba52fad277422d8241fd1"
+    },
+    {
+      "name": "20260813011630_books_post_apply_advisor_hardening.sql",
+      "sha256": "13433426838f3c61420889be54c32a0d7320fb253c06ae1accf2a93bb4b71c12"
+    },
+    {
+      "name": "20260813011809_books_receivables_table_privilege_lockdown.sql",
+      "sha256": "5fae0ed1434ed1df61f6efc56f84ebda2946d094a5c5ba47cb810397b6b54867"
+    },
+    {
+      "name": "20260813030100_payment_ledger_balance_error_detail.sql",
+      "sha256": "15786932913a88f79675b99787777e13121b384a0297a62e4885c3f236e731ba"
+    },
+    {
+      "name": "20260817090000_accounting_invoice_item_safety.sql",
+      "sha256": "18b298b2b9e6803f1ea3d463d332f7eaefd1d562b06cb6a0d283678e989c11b7"
+    },
+    {
+      "name": "20260818120338_books_workflow_completeness.sql",
+      "sha256": "fb3f4feb672da6598fc60dcd71002751865c978d0eb4caae4cb0e10a7ba6e987"
+    },
+    {
+      "name": "20260818120515_books_workflow_fk_indexes.sql",
+      "sha256": "de71b612c2873688ad6481d2320a8fefad443418b56d5cc864bdef2a15c8eeb4"
+    },
+    {
+      "name": "20260821130000_accounting_sync_attempts.sql",
+      "sha256": "77e3eb19df41661d626d5f39696a90a37e13afdacab9a44d8d29d05700eb6777"
+    },
+    {
+      "name": "20260903113609_phase_g_accounting_sync_truthfulness.sql",
+      "sha256": "5245e61cc3299c3694fa8fb8acf7b8220035da2c2947086e732aa4d97f43c7fa"
+    },
+    {
+      "name": "20260903113824_phase_g_accounting_sync_attempt_fk_index.sql",
+      "sha256": "61be2b98866de29c900cedfd1beae2368c934f2a6e13c484bcb580289a24b003"
+    },
+    {
+      "name": "20260908010000_accounting_delivery_leases.sql",
+      "sha256": "f6d07f56c9ba49b4497f58fce73bc26b7d14ab6ba283b78031dad1226ea2089f"
+    },
+    {
+      "name": "20260908010036_books_bank_integrity.sql",
+      "sha256": "926d22c16a2c5f1ea550b58abf9f6dc2e810200306f1f6238d9fce6997d2e744"
+    },
+    {
+      "name": "20260908011000_accounting_batch_sealing.sql",
+      "sha256": "6331a2c3a58c9d734c6d7188f68a0bc9a2aa8b3504dedebc2c4c36beb69fc05a"
+    },
+    {
+      "name": "20260908011323_books_recurring_occurrences.sql",
+      "sha256": "5a57bc36f3be100d6bc9566f65a5e7222b03f9ba483d6736f29af63c0bad3267"
+    },
+    {
+      "name": "20260908011851_books_fiscal_overhead.sql",
+      "sha256": "a2a7afec9b901d88ac25a500416d469122f7327e2cf747a327e27e3d4b8f1172"
+    },
+    {
+      "name": "20260908012000_accounting_route_identity_guard.sql",
+      "sha256": "5370cddfb62c7a63863fdfdd811c8d36aa5cc3bdf17b7cb73ae1d10af93bc70f"
+    },
+    {
+      "name": "20260908012745_books_funding_accounts.sql",
+      "sha256": "ce4b54df79540467399b88cf15794db47a6b58f849e5a176399498982db81e17"
+    },
+    {
+      "name": "20260908013149_accounting_d2_acceptance.sql",
+      "sha256": "f561242e91844450ca8e8b98c765287760a51a1756fced370e0fff7b316f7b65"
+    },
+    {
+      "name": "20260908013633_books_settlement_reporting.sql",
+      "sha256": "8095d608f3f686b13a230cba93c4ef8779b68b35deffb5ef6ce34d84a3db8479"
+    },
+    {
+      "name": "20260908015013_books_clearing_support.sql",
+      "sha256": "9a21a28820785f9316e924567c4adb64bfbafa98e61f01bbe978a6bd9f518de9"
+    },
+    {
+      "name": "20260908015416_books_bank_cost_posting.sql",
+      "sha256": "57381e5fbd2f08aa4b9eaf2415a193ec2f5f8a767cbc6f8923ee0d8d1fa14c9b"
+    },
+    {
+      "name": "20260908015826_books_payroll_settlements.sql",
+      "sha256": "dcd668934eb3b9a688f7a03e296a9062ae6112af462f1d946f59ff1bdab5091c"
+    },
+    {
+      "name": "20260908020000_accounting_import_recovery.sql",
+      "sha256": "70ffe0a5ff6c3a889f30f1d6a3cbfe48dc77d9da3a48c78fa1f2c03a758c7b68"
+    },
+    {
+      "name": "20260908020733_books_owned_inventory.sql",
+      "sha256": "2e5e240f005f9604058582ca39ec49940a55b17c0a59bd15a38753f2fe296651"
+    },
+    {
+      "name": "20260908021851_books_land_inventory.sql",
+      "sha256": "b7a7034bebfdb519271dcfddfecd002e4043847b7b25d64aca73e40dd86ea416"
+    },
+    {
+      "name": "20260908023052_books_warranty_accounting.sql",
+      "sha256": "67828d9bedc18f21871c33d6af8225caeb198c69ec24d3be06ce19a799f2a33d"
+    },
+    {
+      "name": "20260908024655_books_opening_continuity.sql",
+      "sha256": "967cf05cdf9949a3a9847b4109d8d48164eff401b90116e667c8d3c3ddb966a7"
+    },
+    {
+      "name": "20260908030000_accounting_d2_routine_consumers.sql",
+      "sha256": "fa4d7b429aa86e4d69e36b5cb8653fdc7ac854a46b16adf94e84b6590757132b"
+    },
+    {
+      "name": "20260908031539_books_manual_payment_funding.sql",
+      "sha256": "cd5d8c5706ce17a4d96c245a796ad23904ea4a1a408387bf1fc946bbf6b95124"
+    },
+    {
+      "name": "20260908050000_accounting_d2_drop_gate.sql",
+      "sha256": "a1a7c00ab1c3c7ef622a84c2aef65480a6a7c4e4e2f4221055a5b80458f15116"
+    },
+    {
+      "name": "20260908051000_accounting_d2_coding_finalizer.sql",
+      "sha256": "6acc1f747e63fa1a45260be4505929c3a3498c792c4e41830d8d9bf08c1a7ee0"
+    },
+    {
+      "name": "20260908115801_books_asset_capacity_execute_hardening.sql",
+      "sha256": "22fc13ab9ff88b0c9f21adfdbb3e2a7a85ad337c33dddcc33de7ac93bcf6ff58"
+    },
+    {
+      "name": "20260910121322_accounting_d2_seven_day_acceptance.sql",
+      "sha256": "9711daae22c6fa30744572cb96f7edafb1904491e59f4cd932c359d09175422f"
+    },
+    {
+      "name": "20260924230342_accounting_d2_compatibility_mirror.sql",
+      "sha256": "60fccf964ed555aae6e30aeecc6c0ff7a6c29e696da606d9497ce77887e0b192"
+    },
+    {
+      "name": "20261003002108_books_close_control_integrity.sql",
+      "sha256": "7588cba911668260b97575f0766611b5ba2d0d99f68e7eba4d7eda9b7bfa19bd"
+    },
+    {
+      "name": "20261003010157_books_wip_review.sql",
+      "sha256": "a64d22be1f3e466801006436d2056b424166040dab1d366ba52e002186e27513"
+    },
+    {
+      "name": "20261003011254_books_historical_wip_preparation.sql",
+      "sha256": "a169841a51eeb6a8265aed22c808852e506c85c454098d3ed47a9830425bcd83"
+    },
+    {
+      "name": "20261003012630_books_completed_wip_carryforward.sql",
+      "sha256": "405875bdab76b21344295e4600821958288f55e71784798119b44eb5e01ae5f6"
+    },
+    {
+      "name": "20261003013441_books_wip_input_integrity.sql",
+      "sha256": "1ab7445810dcb914f71c75973ee0c9c0af7987175832656b0bdb19cbe75dd5eb"
+    },
+    {
+      "name": "20261003014320_books_expected_loss_provisions.sql",
+      "sha256": "ce1aea56c767fe4cbc74c8ccd3adf0bcff11352fa4bbc3020dd039fd4fba5121"
+    },
+    {
+      "name": "20261003020408_books_export_snapshot.sql",
+      "sha256": "7e836a853bea228d9b02d39a256bdd81638e1b1dac72a7b7550b1270a14e58db"
+    },
+    {
+      "name": "20261003020833_books_bank_statement_sequence.sql",
+      "sha256": "5d87bbf91f5ae79199fb35ca1b2ed656613bfdebe70997efc8026525fd969a88"
+    },
+    {
+      "name": "20261003021045_books_bank_statement_evidence.sql",
+      "sha256": "b63d88a2ece01b9a13c3f6d07c3deba02401d03588411d31ae751318347f7466"
+    },
+    {
+      "name": "20261003022656_books_projection_receipts.sql",
+      "sha256": "f6b83066dd1e4d44c7dfe77ccd52355bc9f8ea6ce55cf704e008ce7bc61d9607"
+    },
+    {
+      "name": "20261003023206_books_source_revision_invalidation.sql",
+      "sha256": "5fdd8958f7eb1d11fc3e6c7dbb6676604a25dcedd2b6dd74429d51767d26589d"
+    },
+    {
+      "name": "20261003115030_books_wip_revenue_allocations.sql",
+      "sha256": "bdd84bfd4e5dee1c52d726b8dff39996e7cb7ce7ba41402bfdc7ea241b06f362"
+    },
+    {
+      "name": "20261003122336_books_payment_allocation_revisions.sql",
+      "sha256": "cf356cec6e3ed0c5d2f2e334795c2c9f647307466d7b900d2e4cfd863d7b71f2"
+    },
+    {
+      "name": "20261003130622_books_invoice_income_evidence.sql",
+      "sha256": "370ae8aa46cadaec6a194cd1fd01759aca3fb41ebb88d85056ade913111f1949"
+    },
+    {
+      "name": "20261003135441_books_posted_account_classification.sql",
+      "sha256": "1c89b3a5742bcffeb250239c15a11b46d3606959a9ac5de81db7eb12abb2ca38"
+    },
+    {
+      "name": "20261003144925_books_fee_snapshot_evidence.sql",
+      "sha256": "63338b385aceff9a019853b8ba7a8e503a3ca28acdbdc884c30d4e33b01a7e68"
+    },
+    {
+      "name": "20261003161950_books_tax_adjustment_workpapers.sql",
+      "sha256": "ba2db72fd7feede86667f61105f49d4f4caca00d9c6cbb4b39825f8ecadc13e5"
+    },
+    {
+      "name": "20261003172517_books_tax_confirmation_withdrawal.sql",
+      "sha256": "872bf2b8881e70ee1cf2f172515dccc3a51454631e8fd3f01ea541dbdfce8a66"
+    },
+    {
+      "name": "20261003175333_books_tax_attachment_evidence.sql",
+      "sha256": "f52c72a47dde4367911ae2a7d4c581cb9fa567b6690e75ba7fd692075f5d23f3"
+    },
+    {
+      "name": "20261003182146_books_export_document_versions.sql",
+      "sha256": "e7a270bf88d64674eb1a6272975ee6cd3daaa3229ee40f76d720bb85718aa097"
+    },
+    {
+      "name": "20261003192751_books_tax_attachment_lock_order.sql",
+      "sha256": "e3af75bd602ba881f6c58c2b036fb3e4e298c54b954cb3e84450fcc73251b5c4"
+    },
+    {
+      "name": "20261003195833_books_time_cost_double_time_policy.sql",
+      "sha256": "8593fc3b93b8edd2981ad15a9882c3a61ffa086ebed8c519963a7d5cf6fa828f"
+    },
+    {
+      "name": "20261003203019_books_payroll_import_drafts.sql",
+      "sha256": "bf2bd924adadcae2199346c44b6b6343920dc33c3ce5c1bd70e6aa3091c4aef5"
+    },
+    {
+      "name": "20261003214553_books_payroll_liability_history.sql",
+      "sha256": "f8a895d6c17651556d97e389ad707b8bf66b71dbfe53a62552427e14d10c6b51"
+    },
+    {
+      "name": "20261003220020_books_payroll_workflow_evidence.sql",
+      "sha256": "db393d4496a681feb18bf57fbe60d6da189ce6a741055a4099de466b1f1c5f77"
+    },
+    {
+      "name": "20261003223805_books_payroll_payment_reviews.sql",
+      "sha256": "591325b300278336c54c65d9fd27919f7eafd6f628f226c5ed457b66c28a9788"
+    },
+    {
+      "name": "20261003231822_books_payroll_posting_verification.sql",
+      "sha256": "860202a941810c77b97e17012e6fed76d2304d4ee8191c281d2b0270e50ea9f6"
+    },
+    {
+      "name": "20261003233012_books_payroll_posting_proposals.sql",
+      "sha256": "1f85e43ad1a8a029b4d28fd72e71e49aeb1c335e8334c6c88b8875bea5af2732"
+    },
+    {
+      "name": "20261003235436_books_period_and_payroll_fences.sql",
+      "sha256": "9b76b70afb51b10e1f9a298d8cf1cdc31b36a550a98f4d67ec40c25f9983a430"
+    },
+    {
+      "name": "20261004001339_books_payroll_atomic_posting.sql",
+      "sha256": "2d7350bafa5d1d8a9ded7d288cb6880fe66a42f832d2b0dd9c02f8b3380dd250"
+    },
+    {
+      "name": "20261004004909_books_payroll_native_ownership.sql",
+      "sha256": "f148f903fc4e641acba53777be13ff6d2c8e8c70ff7b2499c03b1e490fd8c1e1"
+    },
+    {
+      "name": "20261004014207_books_payroll_correction_sources.sql",
+      "sha256": "ea400a1f9e774c082a132467618013b1f3eb40071b3db1407686a4c441e1964b"
+    },
+    {
+      "name": "20261004021236_books_payroll_correction_math.sql",
+      "sha256": "c73f609e5176376ce835029b5d035262c8218c50af0d1005251eba682751b5e4"
+    },
+    {
+      "name": "20261004022226_books_payroll_correction_context.sql",
+      "sha256": "5b7073f015f3f5e2c8dcfa4299ecced3bd90e738df20faf3f06a439f80437616"
+    },
+    {
+      "name": "20261004024219_books_payroll_correction_proposals.sql",
+      "sha256": "01ff690ea7677bfdfb5f9c4058515c661e1c7ec15d22c684547dbeb9209cbeb3"
+    },
+    {
+      "name": "20261004031113_books_payroll_correction_atomic_posting.sql",
+      "sha256": "fed7c71ed53dd67b61da42e294193699066fb693cd198a66ca2d2a2086457b8f"
+    },
+    {
+      "name": "20261004033518_books_payroll_correction_lineage.sql",
+      "sha256": "092c7bb277e2d083b9e5a184eb0cf0381bd47fef61ec7b0951b21e74fea13251"
+    },
+    {
+      "name": "20261004041617_books_payroll_correction_construction_policy.sql",
+      "sha256": "8cc9b59a4347c866fc6c92ddeeb7eb34d560a2f81e573315f03ff102c081e19b"
+    },
+    {
+      "name": "20261004042836_books_payroll_correction_construction_decisions.sql",
+      "sha256": "0b0254cea94ab0c08b46809b6ba43d752168931de0d797a08450b50e11bfc9bd"
+    },
+    {
+      "name": "20261004053644_books_payroll_workspace_reads.sql",
+      "sha256": "a4b5f34836075c3ac9248e7b5f9a816addf0e45f27965517510a6812472b505e"
+    },
+    {
+      "name": "20261004055553_books_private_payroll_documents.sql",
+      "sha256": "960319d5a033b702a77c48b1f2e9733ff7a2a42a2326ab58dd2b15a3bb49b840"
+    },
+    {
+      "name": "20261004064206_books_payroll_worker_directory.sql",
+      "sha256": "799b7d96dd7ee1cbbf32d5e2cc69917ab346b9660d409f68fa56ce4b58f41257"
+    },
+    {
+      "name": "20261004073018_books_payroll_draft_workspace.sql",
+      "sha256": "01f72d1e40f7b3655859ce1fb1e4e9e1913a0211556db074a96b6d8f7d308e54"
+    },
+    {
+      "name": "20261004074806_books_private_payroll_payment_documents.sql",
+      "sha256": "8cbc23a5c0856ea0252e6eb06a2281953fd2df39131535650be58f158531836e"
+    },
+    {
+      "name": "20261004080920_books_payroll_support_versions.sql",
+      "sha256": "6839d922f927a9faf46061b7ba164baae0c2b19df381028e28eb6e36d619f2cf"
+    },
+    {
+      "name": "20261004082928_books_payroll_payment_workspace.sql",
+      "sha256": "367e1b99354a623ec8dd0349b759c89e0a931fbc0c3d0d94f0fc977cec26a4d1"
+    },
+    {
+      "name": "20261004170526_books_native_legal_entity_registry.sql",
+      "sha256": "eb1de78e6185bd1e189941475f405a2a6f7d58c1e5ff9ef85da3a4d2e26b4301"
+    },
+    {
+      "name": "20261004172415_books_legal_entity_archive_identity.sql",
+      "sha256": "cd5f5b31214acc0fc2b1ecc58c460128d12e4232c6c136a897fa0383f0fe04e1"
+    },
+    {
+      "name": "20261004180803_books_export_lossless_row_identity.sql",
+      "sha256": "d950e389139f330b3e197645f2cc98552ccbec56d8193e053172903e492c0fd1"
+    },
+    {
+      "name": "20261004181652_books_legacy_entity_ownership_review.sql",
+      "sha256": "3a39c0abe3ae7bed9765a8cac7de89372657d68a444e9c1e2dc3d3133bd558ea"
+    },
+    {
+      "name": "20261004185829_books_entity_review_workspace.sql",
+      "sha256": "2d88f43b9ce1107ee564a788b9bab5a1f411a6ac6a8def8d36d77b7862df28cf"
+    },
+    {
+      "name": "20261004193127_books_core_ledger_owner_relationships.sql",
+      "sha256": "be3ccf15d228560bc17dd25e16348e71c160430a0d00d15de4daba44e3d12943"
+    },
+    {
+      "name": "20261004194104_books_exact_reversal_posting.sql",
+      "sha256": "729338edefa151f7bb60411126575617f67f04d7d60a20d2b05ac4c032b2bcea"
+    },
+    {
+      "name": "20261004195905_books_atomic_adjustment_pair.sql",
+      "sha256": "04b2b74242cbeff60e4b8d9e91409817f184ce77ba5b821105dfbfa346787981"
+    },
+    {
+      "name": "20261004201613_books_journal_proposal_review_receipts.sql",
+      "sha256": "d919601fac4d1c88b90d14cea6bfb6d79325005ae472123ea63c3aa5320ff5c4"
+    },
+    {
+      "name": "20261004203909_books_journal_preparation_intents.sql",
+      "sha256": "bfd0dc01d89b8cf00ebacc61d03942de282ecb3624a6da3d3e64823a4c8abe34"
+    },
+    {
+      "name": "20261004211129_books_journal_request_resolutions.sql",
+      "sha256": "3175e6dcfe1b73ac63e386646ab930c1899e0e85a45105c8c0fcc4d67f1bf50d"
+    },
+    {
+      "name": "20261004215338_books_entity_fiscal_calendars.sql",
+      "sha256": "a0970f7903c290ae7562b5570ddb58ec819c50631f6c96dac63681c892f74329"
+    },
+    {
+      "name": "20261004222659_books_entity_chart_versions.sql",
+      "sha256": "491ce3f1e0e441cf324883b108327401da126fbd454d1d166a141b912da9a509"
+    },
+    {
+      "name": "20261004230553_books_entity_chart_editor_context.sql",
+      "sha256": "45eb62fda1acdc963c4ea14009011eec1f4a25cb33188847a1b7b25ebe8df017"
+    },
+    {
+      "name": "20261004231952_books_project_legal_ownership.sql",
+      "sha256": "b5802afde111036c27ac6fdeea8eb7515209774400310c18f5c92fd6eccea26a"
+    },
+    {
+      "name": "20261004233548_books_project_owner_archive.sql",
+      "sha256": "77b6806a7ee9fe561e4940bbc397047d8c1ccf58b2f56efcf3fc5d97c100c361"
+    },
+    {
+      "name": "20261005000141_books_project_owner_workflow_reads.sql",
+      "sha256": "c4a80115ad9e95d161fb5e823ecdab624e59d29e91de5cbe9e8e6fef95bbdd6f"
+    },
+    {
+      "name": "20261005001726_books_project_owner_workspace.sql",
+      "sha256": "b4355dd3543cef0c9e5762a83849176ccadb4857113dc2aa3bb4b840f51d355e"
+    },
+    {
+      "name": "20261005005818_books_project_owner_request_resolutions.sql",
+      "sha256": "9b9df133889437e9d7fbcafca406a09672707cd834fa5d6fef290aef15f6673e"
+    },
+    {
+      "name": "20261005012051_books_native_project_posting_context.sql",
+      "sha256": "4c5945a33d9a0216b2105017693a91a6ae2d0ee83f286b0b50b35aa3d494bbbd"
+    },
+    {
+      "name": "20261005013437_books_native_adjustment_ledger.sql",
+      "sha256": "4f54a5dbbe310d60b1ccb153d43e0d5d6e902d4b3f4a2eb16d8244fe1ea5ae99"
+    },
+    {
+      "name": "20261005021730_books_native_invoice_economic_context.sql",
+      "sha256": "f335c9d6e7f14689fae1864202e31963091fb8400372cb6ae948d8e0545af350"
+    },
+    {
+      "name": "20261005023412_books_native_invoice_atomic_posting.sql",
+      "sha256": "554bc37d77594df7f3de6a9e5d30433ad0288a58e0ebebc2f0e78c6a186f88e6"
+    },
+    {
+      "name": "20261005031613_books_native_invoice_request_resolutions.sql",
+      "sha256": "e0aee75ebc4ecc66b7f065f46187af56309018b405af8d00394eda69cfc3eaa7"
+    },
+    {
+      "name": "20261005033613_accounting_application_authorization.sql",
+      "sha256": "9a51c07d337d425ebf26d5160878d0b22c79d947497b131b995131ce7af4b8ce"
+    },
+    {
+      "name": "20261005040543_books_native_invoice_income_selection.sql",
+      "sha256": "508d785d0cd6d66fe23dac56a49d7469ba4e1c220cd70f2d396f75c1e2e59ad8"
+    },
+    {
+      "name": "20261005042334_books_native_invoice_income_archive.sql",
+      "sha256": "ff8eb2293cfc4b6a6d194efdf46d6e6211340404cb4cb84d8642c65e1fd18f29"
+    },
+    {
+      "name": "20261005044458_books_native_invoice_income_resolutions.sql",
+      "sha256": "3801621321d08275dbc1781545ce43f81f78d99329df1e6b5b943d6f44b3b97c"
+    },
+    {
+      "name": "20261005111155_books_native_invoice_reversal_derivation.sql",
+      "sha256": "9ed7913e053c37099b5b4331b33634368a947887a3cc1a60e7950aa10d4a7bbb"
+    },
+    {
+      "name": "20261005112034_books_native_invoice_correction_proposals.sql",
+      "sha256": "1771bb2a405e0ec1e36fe58e57ae3d1e25ec2690e196dd4ca46d7e6ea62cba2e"
+    },
+    {
+      "name": "20261005114131_books_native_invoice_correction_pair_derivation.sql",
+      "sha256": "e7156ecd4fc4ae349b6f47c6efde4b0381f2de054d663e6c61e291d7feb7a6f2"
+    },
+    {
+      "name": "20261005115400_books_native_invoice_replacement_proposals.sql",
+      "sha256": "b8c89d082ac900bbd33ed85e08bd2bbd7af38d2522db275abebf604bcfea14d9"
+    },
+    {
+      "name": "20261005120313_books_native_invoice_exact_quantity_transport.sql",
+      "sha256": "de16f1a02195cdb7dcbb7c438a4534ef951f6896d7affa21a25c8ea5f3523a12"
+    },
+    {
+      "name": "20261005121818_books_invoice_quantity_export_text.sql",
+      "sha256": "8ccc705568384faeca88a834c3bb658e4a171ee5bba0bf5d80302f245e2b8b12"
+    },
+    {
+      "name": "20261005123119_books_native_invoice_correction_reviews.sql",
+      "sha256": "0942b428f034ed0a2c1218626704542bab03f1ff9e752c6d350b2ef38df655ff"
+    },
+    {
+      "name": "20261006014257_books_job_cost_source_id_casts.sql",
+      "sha256": "2375146484542cfb1bf9e7d60d91e522e6f7542aad8e61ac189a28d38f27ae4c"
+    },
+    {
+      "name": "20261006014500_books_immutable_service_role_privileges.sql",
+      "sha256": "09a4b542426acdf07b90794cc36a178af7743cba7d2e8071a4f50a674ddf7691"
+    },
+    {
+      "name": "20261006124534_books_deposit_batch_processor_fees.sql",
+      "sha256": "aa77ec16adca486c1f698f6bca0fad83d3811051334a268f97da61e2b71ffae0"
+    },
+    {
+      "name": "20261006124637_books_opening_bank_outstanding_items.sql",
+      "sha256": "89f7104a18cf02e31b365dfe90319123bb2d672975857b99cf92074e122652db"
+    },
+    {
+      "name": "20261006155617_books_period_close_recovery.sql",
+      "sha256": "3290c84a70eef601c569adb6b9a56170dc791526ea2a1c1341da09f76459a5cd"
+    },
+    {
+      "name": "20261006175218_books_projection_dependency_invalidation.sql",
+      "sha256": "822733f23e66e83998dd89e4cf01d8441d60d2e9a5487bf99b708ae2898eb485"
+    },
+    {
+      "name": "20261006190000_books_bank_outstanding_and_offsets.sql",
+      "sha256": "4d8d74ab245ccadd63a7835af6bfbc35bdeee4d878341db76d232da9cbe0c709"
+    },
+    {
+      "name": "20261006210000_books_posted_source_delete_guard.sql",
+      "sha256": "c56d4464f88b21b3c349353f196c07bbe5d8144d3d247aa5f14f8ca42028c4a2"
+    },
+    {
+      "name": "20261006220000_books_projection_progress.sql",
+      "sha256": "f9289129fcb905121fa3b0ba39bec40a5a9823e846877c491feac09b2e3b97c6"
+    },
+    {
+      "name": "20261006230000_books_close_review_aggregates.sql",
+      "sha256": "fe04eb1612a2a7bc8ad585c608ff50976f487c8bcd63e0b77dab53b451707d6f"
+    },
+    {
+      "name": "20261006240000_books_contract_effective_date_invalidation.sql",
+      "sha256": "a553216cc40b566be1b0f853ce2fd91da7c6dae2846b78de22de37f95b84818c"
+    },
+    {
+      "name": "20261006250000_books_line_dimension_scope.sql",
+      "sha256": "e2154e8b2b9da9332dcd782ffeb98fa52d92d2a4d37ec2b72b3662828c678fe5"
+    },
+    {
+      "name": "20261007010000_books_opening_items_as_documented.sql",
+      "sha256": "c4f784fbd672abb3ba9d2154fc870c077b95fc103e2bcb59ec0d0eab5fd6f7e3"
+    },
+    {
+      "name": "20261007120000_books_contract_wip_scope.sql",
+      "sha256": "6f1d26dcc15ef377492afaca73b052b6fea58bc9ed3433210fa18eb9c13e425b"
+    },
+    {
+      "name": "20261007140000_books_revenue_policies.sql",
+      "sha256": "38a7afc94d9a58903381af80b8091f8a0a4aa4c33b1c686f3923c5ea242150b6"
+    },
+    {
+      "name": "20261007180000_books_home_sale_relief.sql",
+      "sha256": "92b6ca8557b28f46ec1274762039a0017f722f44c9a960df6c8f412465fcffc2"
+    },
+    {
+      "name": "20261007190000_books_warranty_consumption_accounts.sql",
+      "sha256": "dc8e607a3ec403c60d944d833da588bc9413c7953f9e5b43c462932706fa6c69"
+    },
+    {
+      "name": "20261007200000_books_home_inventory_controls.sql",
+      "sha256": "0db18b2633c489ac341756a6edfd548fb976297c3b47f24c8b8827ff001ff080"
+    },
+    {
+      "name": "20261007210000_books_development_allocation_review.sql",
+      "sha256": "8d7b1b1c44c0a1b0ba613a795f8f155504b278edda6faa0f386f71bbfdf84f9e"
+    },
+    {
+      "name": "20261007220000_books_home_closing_reversal.sql",
+      "sha256": "50d146264b478833acb2ca251481eac6f07d8b69c5374aca71ea4a5becf48de5"
+    },
+    {
+      "name": "20261007230000_books_cost_allocations.sql",
+      "sha256": "4c6c34b82d3bd55373a19c7b78468595b6b55aedab7015985292b43f211fa3fd"
+    },
+    {
+      "name": "20261007235000_books_inventory_impairment.sql",
+      "sha256": "0bb8af467d7eec14158017d1fbf5916c8752e0044342605a60ae1b17b58477cc"
+    },
+    {
+      "name": "20261007235500_books_retire_native_entity_ledger.sql",
+      "sha256": "a2b351111e897193103639c136124cdd0e240f9b7082199c8c53818c6d55c33b"
+    },
+    {
+      "name": "20261007235800_books_legal_entities.sql",
+      "sha256": "1e9f9a9b2a639bf64ce2e9089f8144149dbeeb6edb60647ad7f916414b06db92"
+    },
+    {
+      "name": "20261007235900_books_intercompany_lot_sales.sql",
+      "sha256": "65177d1ee831a101cd06ac235ba339cd723dbbd98c5a91ea36aac3308ceeaa4b"
+    },
+    {
+      "name": "20261008001000_books_company_opening_balances.sql",
+      "sha256": "73837851219d0e78fcb867328086b2bbf4b247184020926d3246dcbe59610d99"
+    },
+    {
+      "name": "20261008020000_books_1099_packages.sql",
+      "sha256": "55c32d1ab0928517d36d21ad38bdd1d622f0f6a1a2528d844f6125da114945f9"
+    },
+    {
+      "name": "20261008030000_books_export_schema34.sql",
+      "sha256": "773834756932369fdb76887259c47054d33c4679f8444f04d6cd428b2fbfaa65"
+    }
+  ],
+  "migrationCount": 598,
+  "catalog": {
+    "implemented": [
+      "BILL-01",
+      "WIP-01",
+      "YEAR-01",
+      "CLOSE-01",
+      "BANK-01",
+      "STATUS-01",
+      "RACE-01",
+      "CAP-01",
+      "DIM-01",
+      "HIST-01",
+      "REV-01",
+      "HOME-01",
+      "LOSS-01",
+      "ENTITY-01",
+      "CASH-01",
+      "TAX-01",
+      "RESTORE-01",
+      "INTERCO-01",
+      "CONSOL-01",
+      "MIG-01",
+      "AUTH-01",
+      "GREEN-01"
+    ],
+    "notImplemented": {
+      "STORE-01": "blocked",
+      "PAY-01": "deferred",
+      "PAY-02": "deferred"
+    }
+  },
+  "trackerStatuses": {
+    "B00.1": "LOCALLY_VERIFIED",
+    "B00.2": "LOCALLY_VERIFIED",
+    "B00.3": "LOCALLY_VERIFIED",
+    "B01.1": "LOCALLY_VERIFIED",
+    "B01.2": "LOCALLY_VERIFIED",
+    "B01.3": "LOCALLY_VERIFIED",
+    "B02.1": "LOCALLY_VERIFIED",
+    "B02.2": "LOCALLY_VERIFIED",
+    "B03.1": "LOCALLY_VERIFIED",
+    "B03.2": "LOCALLY_VERIFIED",
+    "B03.3": "LOCALLY_VERIFIED",
+    "B04.1": "LOCALLY_VERIFIED",
+    "B04.2": "LOCALLY_VERIFIED",
+    "B04.3": "LOCALLY_VERIFIED",
+    "B05.1": "LOCALLY_VERIFIED",
+    "B05.2": "PARTIAL",
+    "B06.1": "PARTIAL",
+    "B06.2": "PARTIAL",
+    "B06.3": "PARTIAL",
+    "B06.4": "PARTIAL",
+    "B07.1": "LOCALLY_VERIFIED",
+    "B07.2": "LOCALLY_VERIFIED",
+    "B08.1": "LOCALLY_VERIFIED",
+    "B08.2": "BLOCKED_EXTERNAL",
+    "B08.3": "LOCALLY_VERIFIED",
+    "B09.1": "LOCALLY_VERIFIED",
+    "B09.2": "LOCALLY_VERIFIED",
+    "B09.3": "LOCALLY_VERIFIED",
+    "B10.1": "LOCALLY_VERIFIED",
+    "B10.2": "LOCALLY_VERIFIED",
+    "B10.3": "PARTIAL",
+    "B10.4": "LOCALLY_VERIFIED",
+    "B11.1": "LOCALLY_VERIFIED",
+    "B11.2": "LOCALLY_VERIFIED",
+    "B11.3": "LOCALLY_VERIFIED",
+    "B11.4": "LOCALLY_VERIFIED",
+    "B12.1": "LOCALLY_VERIFIED",
+    "B12.2": "LOCALLY_VERIFIED",
+    "B13.1": "LOCALLY_VERIFIED",
+    "B13.2": "PARTIAL",
+    "B13.3": "PARTIAL",
+    "B13.4": "PARTIAL",
+    "B13.5": "PARTIAL",
+    "B13.6": "PARTIAL",
+    "B13.7": "PARTIAL",
+    "B13.8": "PARTIAL",
+    "B14.1": "LOCALLY_VERIFIED",
+    "B14.2": "LOCALLY_VERIFIED",
+    "B14.3": "LOCALLY_VERIFIED",
+    "B14.4": "LOCALLY_VERIFIED",
+    "B14.5": "LOCALLY_VERIFIED",
+    "B15.1": "PARTIAL",
+    "B15.2": "BLOCKED_EXTERNAL",
+    "B15.3": "PARTIAL",
+    "B15.4": "PARTIAL",
+    "B16.1": "PARTIAL",
+    "B16.2": "PARTIAL",
+    "B16.3": "PARTIAL",
+    "B16.5": "NOT_STARTED",
+    "B16.4": "PARTIAL"
+  }
+}

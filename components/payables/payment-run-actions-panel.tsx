@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import * as React from "react"
 import { toast } from "sonner"
 
@@ -8,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
 export function PaymentRunActionsPanel({ run }: { run: { id: string; status: string; content_hash: string | null; can_approve: boolean; can_cancel: boolean; paymentCount: number } }) {
+  const router = useRouter()
   const [pending, startTransition] = React.useTransition()
   const [reason, setReason] = React.useState("")
   const decide = (decision: "approved" | "rejected") => startTransition(async () => {
@@ -16,14 +18,14 @@ export function PaymentRunActionsPanel({ run }: { run: { id: string; status: str
     const result = await decidePaymentRunAction({ run_id: run.id, decision, content_hash: run.content_hash, reason: reason || undefined })
     if (!result.success) { toast.error(result.error); return }
     toast.success(decision === "approved" ? "Approval recorded" : "Payment run rejected")
-    window.location.reload()
+    router.refresh()
   })
   const formAction = (kind: "cancel" | "retry") => startTransition(async () => {
     const form = new FormData(); form.set("run_id", run.id); if (kind === "cancel") form.set("reason", reason)
     const result = kind === "cancel" ? await cancelPaymentRunAction(form) : await retryPaymentRunReleaseAction(form)
     if (!result.success) { toast.error(result.error); return }
     toast.success(kind === "cancel" ? "Payment run canceled" : "Release queued")
-    window.location.reload()
+    router.refresh()
   })
   return <section className="border">
     <div className="border-b px-4 py-3"><h2 className="text-sm font-semibold">Actions</h2><p className="mt-0.5 text-xs text-muted-foreground">Approval and cancellation require a recent step-up verification.</p></div>
@@ -33,7 +35,7 @@ export function PaymentRunActionsPanel({ run }: { run: { id: string; status: str
         {run.can_approve ? <><Button disabled={pending} onClick={() => decide("approved")}>Approve</Button><Button disabled={pending} variant="destructive" onClick={() => decide("rejected")}>Reject</Button></> : null}
         {run.can_cancel ? <Button disabled={pending || reason.trim().length < 8} variant="outline" onClick={() => formAction("cancel")}>Cancel run</Button> : null}
         {run.status === "approved" ? <Button disabled={pending} variant="outline" onClick={() => formAction("retry")}>Retry release</Button> : null}
-        <Button disabled={pending || run.paymentCount === 0} variant="outline" onClick={() => startTransition(async () => { const result = await syncPaymentRunItemsAction(run.id); if (!result.success) { toast.error(result.error); return } toast.success(`${result.data.queued} payments queued${result.data.failed ? ` · ${result.data.failed} failed` : ""}`); window.location.reload() })}>Sync all</Button>
+        <Button disabled={pending || run.paymentCount === 0} variant="outline" onClick={() => startTransition(async () => { const result = await syncPaymentRunItemsAction(run.id); if (!result.success) { toast.error(result.error); return } toast.success(`${result.data.queued} payments queued${result.data.failed ? ` · ${result.data.failed} failed` : ""}`); router.refresh() })}>Sync all</Button>
       </div>
     </div>
   </section>

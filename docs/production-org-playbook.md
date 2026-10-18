@@ -274,17 +274,28 @@ construction from stalling.
 Turns a signed agreement into a released house, and keeps the release cadence even
 so trades are not feast-or-famine.
 
-**Lives on:** `/starts` (release board), `/starts/pipeline`, `/starts/trades`,
-`/purchasing`
+**Lives on:** `/starts` (release board, with the permits band), `/purchasing`, and
+each home's Permits workbench (`/projects/[id]/permits`)
 
 **Loop**
 
 1. Review start-package candidates — homes with an executed agreement and a lot.
-2. Clear the start gates (permits, plans, budget, selections locked).
-3. Release to the field on the even-flow cadence.
-4. Issue POs and manage vendor pricing.
+2. Chase permits: open the building application with the community's authority,
+   attach its documents, record each submission and correction round, and record the
+   decision on the issued permit and approved plans. The Starts desk's permits band
+   lists every decision past the authority's review time and every correction round
+   still unresolved; each row opens the home's permit.
+3. Clear the start gates (plans, budget, selections locked). The permit and
+   plot-plan gates clear on their own from the approved application for the lot's
+   pinned plan; nobody attests or waives them.
+4. Release to the field on the even-flow cadence.
+5. Issue POs and manage vendor pricing.
 
-**Mutates:** start packages, gate definitions, purchase orders.
+**Mutates:** start packages, gate definitions, permit applications, rounds and fee
+assessments (and links fee payables), purchase orders. Fee bills are entered by
+whoever holds bill rights (the office); counter-paid fees are recorded by
+permit holders (permit.write: the catalog has no separate expense key), and the
+coordinator links payables.
 
 **Reads:** backlog and the sales pipeline as the input to the release schedule.
 
@@ -414,3 +425,58 @@ an assignable role preset in the RBAC catalog — `org_sales_agent`,
 `org_starts_coordinator`, `org_purchasing_manager`,
 `org_design_studio_coordinator`, `org_warranty_manager`, `org_land_manager`,
 and `org_superintendent`. The earlier "no role presets" entry was stale.
+
+## Provisioning and deprovisioning
+
+**Provisioning never escalates.** Inviting someone is refused unless the inviter
+already holds every permission the target role and any granted overrides carry
+(org administrators are exempt), and a division-limited inviter can only invite
+into a subset of their own divisions. Inviting an email that is already an
+active or suspended member is refused; role and status change through the
+role-change and reactivate actions. Resetting a member's second factor follows
+the same rule against that member's role. Refusals land in
+`authorization_audit_log`.
+
+**Deprovisioning (suspend or remove) takes effect as follows:**
+
+- **Authority ends on the next request.** Membership is read from the database
+  on every authorization and there is no authority cache, so a suspended or
+  removed member is refused immediately.
+- **Sessions are revoked in the same call** (`revoke_user_sessions`), unless the
+  person is still active in another organization. Then this org's access still
+  ends per request; only the other org keeps the session.
+- **Queued authority is cancelled in the same call:** recurring invoice
+  schedules and scheduled reports they created are deactivated, pending outbox
+  jobs acting as them (scheduled invoice sends) are failed with a reason, their
+  payment approver roster rows are deleted, and their push device tokens are
+  removed. The counts are recorded in the `member_suspended` / `member_removed`
+  event. Reactivation does not resurrect any of it.
+- **The only caches** are the 600-second MFA gate proof cookies
+  (`MFA_GATE_TTL_SECONDS`), which carry no authority.
+- A member's MFA reset revokes all of their sessions, in every org, because the
+  factor is theirs and not the org's.
+
+## Required two-factor
+
+An owner or admin can require two-factor for the organization (Settings →
+Organization → Security). Arc signs everyone in itself; there is no SSO.
+
+- **Who it applies to.** Every member, the moment any organization they belong
+  to requires it: the factor belongs to the person, so one organization's rule
+  applies to their whole account.
+- **What happens.** A member with no factor is sent to set one up before any
+  page opens, and API calls answer 403 `mfa_enrollment_required`. A member with
+  a factor enters a code at every sign-in. The admin who turns the rule on is
+  held to it on their next page; other members already signed in fall under it
+  within 10 minutes (their cached "no policy" proof).
+- **Failure.** A wrong code is refused and the code page stays. If Arc cannot
+  read the factor or the policy, the request is refused with a retry message;
+  it never passes unchallenged.
+- **Recovery.** A member who loses their phone asks an admin to reset their
+  two-factor from the team list. The reset ends all of their sessions (none
+  can be refreshed, so an open tab ends when its sign-in token does, within the
+  hour) and they set it up again at their next sign-in. Only someone holding at least the
+  member's authority can reset it, and every reset is recorded. A sole admin
+  who loses their phone is reset by Arc support, which first opens the
+  organization through a stated, time-limited grant the owner can see.
+- While the policy is on, a member cannot turn their own two-factor off.

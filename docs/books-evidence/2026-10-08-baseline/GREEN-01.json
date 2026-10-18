@@ -1,0 +1,15 @@
+{
+  "scenario": "GREEN-01",
+  "status": "NOT_IMPLEMENTED",
+  "disposition": {
+    "status": "not_built",
+    "packages": [
+      "B15.1"
+    ],
+    "reason": "A zero-history company set up through the normal screens to its first invoice, bill and expense.",
+    "coveredSoFar": "Every scenario launches a greenfield company through the services, not the screens."
+  },
+  "subcases": [],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T11:52:15.206Z"
+}

@@ -801,7 +801,8 @@ async function searchSingleEntity(
       href: config.hrefTemplate.replace('{id}', row.id).replace('{project_id}', row.project_id || ''),
       created_at: row.created_at,
       updated_at: row.updated_at,
-      project_id: row.project_id,
+      // A home is its own project: its search document is scoped by its own id.
+      project_id: entityType === 'project' ? row.id : row.project_id,
       project_name: projectName,
     }
 

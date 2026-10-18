@@ -18,8 +18,14 @@ private struct DocumentsFolderView: View {
     let title: String
 
     @AppStorage("documents.gridLayout") private var isGrid = false
+    @State private var query = ""
+    @State private var downloadedOnly = false
+    @State private var searchAllFolders = false
+    @State private var loadIdentity = UUID()
+    @State private var downloadRevision = 0
     @State private var contents: MobileFiles?
     @State private var isLoading = false
+    @State private var isOffline = false
     @State private var errorMessage: String?
 
     @State private var galleryStart: MobileFile?
@@ -35,8 +41,27 @@ private struct DocumentsFolderView: View {
     private var organizationID: String? { dependencies.workspace.selectedOrganizationID }
     private var previewableFiles: [MobileFile] { (contents?.files ?? []).filter { $0.downloadUrl != nil } }
 
+    private var visibleFolders: [MobileFolder] {
+        (contents?.folders ?? []).filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var visibleFiles: [MobileFile] {
+        _ = downloadRevision
+        return (contents?.files ?? []).filter {
+            (query.isEmpty || $0.fileName.localizedCaseInsensitiveContains(query)) &&
+            (!downloadedOnly || store.isDownloaded($0))
+        }
+    }
+
     var body: some View {
         browser
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if isOffline {
+                    Label("Saved folder · downloaded files are available offline", systemImage: "wifi.slash")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(8).background(.bar)
+                }
+            }
             .fullScreenCover(item: $galleryStart) { start in
                 FileGalleryView(files: previewableFiles, start: start, store: store)
             }
@@ -67,11 +92,16 @@ private struct DocumentsFolderView: View {
     private var browser: some View {
         content
             .background(Color(.systemGroupedBackground))
+            .searchable(text: $query, prompt: searchAllFolders ? "Find a document in this project" : "Find a document in this folder")
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
+        .projectOfflineDownload(project: project)
             .toolbar { toolbarContent }
             .projectSwitcherPullOrRefresh { await load() }
-            .task { await load() }
+            .task(id: "\(organizationID ?? "")/\(dependencies.session.userID ?? "")/\(searchAllFolders)") {
+                contents = nil
+                await load()
+            }
     }
 
     @ViewBuilder
@@ -86,6 +116,9 @@ private struct DocumentsFolderView: View {
             }
         } else if let contents, contents.folders.isEmpty && contents.files.isEmpty {
             emptyState
+        } else if visibleFiles.isEmpty && visibleFolders.isEmpty {
+            ContentUnavailableView("No matching documents", systemImage: "doc.text.magnifyingglass",
+                                   description: Text(downloadedOnly ? "Download documents from their menu before going offline." : "Try another name or open a different folder."))
         } else if isGrid {
             gridContent
         } else {
@@ -97,6 +130,8 @@ private struct DocumentsFolderView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                Toggle("Search entire project", isOn: $searchAllFolders)
+                Toggle("Downloaded only", isOn: $downloadedOnly)
                 Picker("View", selection: $isGrid) {
                     Label("List", systemImage: "list.bullet").tag(false)
                     Label("Grid", systemImage: "square.grid.2x2").tag(true)
@@ -134,7 +169,7 @@ private struct DocumentsFolderView: View {
         List {
             if let contents, !contents.folders.isEmpty {
                 Section("Folders") {
-                    ForEach(contents.folders) { subfolder in
+                    ForEach(visibleFolders) { subfolder in
                         NavigationLink {
                             DocumentsFolderView(project: project, folder: subfolder.path, title: subfolder.name)
                         } label: {
@@ -150,7 +185,7 @@ private struct DocumentsFolderView: View {
             }
             if let contents, !contents.files.isEmpty {
                 Section("Files") {
-                    ForEach(contents.files) { file in
+                    ForEach(visibleFiles) { file in
                         Button { open(file) } label: { FileRow(file: file, store: store) }
                             .buttonStyle(.plain)
                             .swipeActions(edge: .trailing) {
@@ -179,7 +214,7 @@ private struct DocumentsFolderView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         ArcSectionHeader(title: "Folders")
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
-                            ForEach(contents.folders) { subfolder in
+                            ForEach(visibleFolders) { subfolder in
                                 NavigationLink {
                                     DocumentsFolderView(project: project, folder: subfolder.path, title: subfolder.name)
                                 } label: { FolderCard(folder: subfolder) }
@@ -192,7 +227,7 @@ private struct DocumentsFolderView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         ArcSectionHeader(title: "Files")
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], spacing: 16) {
-                            ForEach(contents.files) { file in
+                            ForEach(visibleFiles) { file in
                                 Button { open(file) } label: { FileGridCard(file: file, store: store) }
                                     .buttonStyle(.plain)
                                     .contextMenu { fileMenu(file) }
@@ -207,8 +242,21 @@ private struct DocumentsFolderView: View {
 
     @ViewBuilder
     private func fileMenu(_ file: MobileFile) -> some View {
-        Button { open(file) } label: { Label("Quick Look", systemImage: "eye") }
+        Button { open(file) } label: { Label("Open Document", systemImage: "eye") }
         Button { share(file) } label: { Label("Share", systemImage: "square.and.arrow.up") }
+        Button {
+            Task {
+                do {
+                    _ = try await store.ensureLocal(file)
+                    downloadRevision += 1
+                    banner = "Available offline"
+                } catch {
+                    banner = "Couldn't download this document. Try again with a connection."
+                }
+            }
+        } label: {
+            Label(store.isDownloaded(file) ? "Downloaded" : "Download for Offline", systemImage: "arrow.down.circle")
+        }
         Divider()
         Button(role: .destructive) { pendingDelete = file } label: { Label("Delete", systemImage: "trash") }
     }
@@ -342,12 +390,20 @@ private struct DocumentsFolderView: View {
 
     private func load() async {
         guard let organizationID else { return }
+        let identity = UUID()
+        loadIdentity = identity
+        let userID = dependencies.session.userID
         isLoading = true
-        defer { isLoading = false }
+        defer { if loadIdentity == identity { isLoading = false } }
         do {
-            contents = try await store.contents(projectID: project.id, folder: folder, organizationID: organizationID)
+            let result = try await store.contents(projectID: project.id, folder: folder, organizationID: organizationID, recursive: searchAllFolders)
+            try Task.checkCancellation()
+            guard loadIdentity == identity, self.organizationID == organizationID, dependencies.session.userID == userID else { return }
+            contents = searchAllFolders ? MobileFiles(folders: [], files: result.files.files) : result.files
+            isOffline = result.isOffline
             errorMessage = nil
         } catch {
+            guard !Task.isCancelled, loadIdentity == identity, self.organizationID == organizationID, dependencies.session.userID == userID else { return }
             if contents == nil {
                 errorMessage = (error as? APIError)?.userMessage ?? "Documents could not be loaded."
             }
@@ -516,7 +572,7 @@ private struct FileGalleryView: View {
             }
         }
         .task {
-            try? await store.ensureLocal(start)
+            _ = try? await store.ensureLocal(start)
             ready = true
         }
     }

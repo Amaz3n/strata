@@ -2,6 +2,7 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 const fs = require("node:fs")
 const path = require("node:path")
+const ts = require("typescript")
 
 const root = path.resolve(__dirname, "..")
 const source = (relative) => fs.readFileSync(path.join(root, relative), "utf8")
@@ -38,7 +39,7 @@ test("privileged document transport declares explicit document permissions", () 
   // repeating the check, so the guarantee is proven in two steps: every
   // transport reaches a gate, and that gate demands docs.upload. A route that
   // skips both — or a preparer that stops checking — still fails here.
-  const uploadGate = /requireProjectPermission\([^)]*"docs\.upload"\)|prepareProjectDocumentUpload\(/s
+  const uploadGate = /requireProjectPermission\([^)]*"docs\.upload"\)|prepareProjectDocumentUpload\(|createDocumentTransfer\(/s
   for (const relative of [
     "app/api/documents/upload-file/route.ts",
     "app/api/documents/upload-url/route.ts",
@@ -46,6 +47,12 @@ test("privileged document transport declares explicit document permissions", () 
   ]) {
     assert.match(source(relative), uploadGate, relative)
   }
+  const transferFile = "lib/services/document-upload-transfers.ts"
+  assert.match(exportedFunctionBody(transferFile, "createDocumentTransfer"), /await reserveTransfer\(input, mode\)/)
+  const transferSource = ts.createSourceFile(transferFile, source(transferFile), ts.ScriptTarget.Latest, true)
+  const reservation = transferSource.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "reserveTransfer")
+  assert.ok(reservation, "Transfer creation must reserve through the shared upload permission gate")
+  assert.match(reservation.getText(transferSource), /await prepareProjectDocumentUpload\(parsed\)/)
   assert.match(
     exportedFunctionBody("lib/services/files.ts", "prepareProjectDocumentUpload"),
     /requireProjectPermission\([^)]*"docs\.upload"\)/,

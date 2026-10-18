@@ -1,0 +1,202 @@
+{
+  "scenario": "STORE-01",
+  "status": "PASSED",
+  "subcases": [
+    {
+      "name": "private-documents",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "eeaf89e9-dcd5-4779-b515-ebae3f1399ac",
+        "foreignOrgId": "8a491cc2-a6e6-49ff-864b-8cba4dd513bc"
+      },
+      "checks": [
+        {
+          "label": "a document is private at both boundaries and its bytes are exact",
+          "pass": true,
+          "expected": {
+            "recorded": {
+              "checksumMatches": true,
+              "size": true
+            },
+            "unsignedStorageRead": 400,
+            "member": {
+              "status": 200,
+              "bytesExact": true,
+              "publicCache": false
+            },
+            "expiredLink": 403,
+            "anotherOrganization": true
+          },
+          "observed": {
+            "recorded": {
+              "checksumMatches": true,
+              "size": true
+            },
+            "unsignedStorageRead": 400,
+            "member": {
+              "status": 200,
+              "bytesExact": true,
+              "publicCache": false
+            },
+            "expiredLink": 403,
+            "anotherOrganization": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-09T02:06:20.262Z"
+    },
+    {
+      "name": "immutable-and-versions",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "43bc17e5-b7d4-43c7-ba5e-eba808f91a9e"
+      },
+      "checks": [
+        {
+          "label": "a stored path is never overwritten; each version keeps its bytes as the current one moves",
+          "pass": true,
+          "expected": {
+            "overwriteRefused": true,
+            "sameBytesRetryAllowed": true,
+            "originalUnchanged": true,
+            "versions": 2,
+            "current": true,
+            "firstVersionBytes": true,
+            "secondVersionBytes": true,
+            "separateObjects": true
+          },
+          "observed": {
+            "overwriteRefused": true,
+            "sameBytesRetryAllowed": true,
+            "originalUnchanged": true,
+            "versions": 2,
+            "current": true,
+            "firstVersionBytes": true,
+            "secondVersionBytes": true,
+            "separateObjects": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-09T02:06:25.850Z"
+    },
+    {
+      "name": "archive-with-documents",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "16313668-dbe8-424b-a619-b0cb6a326664"
+      },
+      "checks": [
+        {
+          "label": "a background archive finishes, downloads privately and carries the document's exact bytes",
+          "pass": true,
+          "expected": {
+            "status": "ready",
+            "attempts": 1,
+            "unsignedStorageRead": 400,
+            "download": {
+              "status": 200,
+              "noStore": true
+            },
+            "verifies": true,
+            "documentBytesExact": true,
+            "manifestPath": true
+          },
+          "observed": {
+            "status": "ready",
+            "attempts": 1,
+            "unsignedStorageRead": 400,
+            "download": {
+              "status": 200,
+              "noStore": true
+            },
+            "verifies": true,
+            "documentBytesExact": true,
+            "manifestPath": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-09T02:06:27.733Z"
+    },
+    {
+      "name": "restore-documents",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "b3b8fe56-3acb-4740-a321-257fcaeb55f1"
+      },
+      "checks": [
+        {
+          "label": "a document restored from the archive keeps its checksum and stays private",
+          "pass": true,
+          "expected": {
+            "lostBeforeRestore": true,
+            "checksumMatchesManifest": true,
+            "signedBytesExact": true,
+            "unsignedStorageRead": 400
+          },
+          "observed": {
+            "lostBeforeRestore": true,
+            "checksumMatchesManifest": true,
+            "signedBytesExact": true,
+            "unsignedStorageRead": 400
+          }
+        }
+      ],
+      "startedAt": "2026-10-09T02:06:33.879Z"
+    },
+    {
+      "name": "tax-attachment-evidence",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "f5955d14-de4c-4df3-9bfd-86a2f1bb203e"
+      },
+      "checks": [
+        {
+          "label": "the accountant receives the frozen bytes; an altered stored attachment stops review and download",
+          "pass": true,
+          "expected": {
+            "downloadExact": true,
+            "reviewAfterAlteration": true,
+            "downloadAfterAlteration": true
+          },
+          "observed": {
+            "downloadExact": true,
+            "reviewAfterAlteration": true,
+            "downloadAfterAlteration": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-09T02:06:36.654Z"
+    },
+    {
+      "name": "large-document-archive",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "9799f246-ae19-4e5d-a59b-e8ec128a15f9",
+        "peakGrowthMb": 32
+      },
+      "checks": [
+        {
+          "label": "an archive of a company with a document larger than the memory budget stays inside the budget, verifies, and carries the exact bytes",
+          "pass": true,
+          "expected": {
+            "status": "ready",
+            "documentMb": 240,
+            "growthWithinBudget": true,
+            "verifies": true,
+            "bytesExact": true
+          },
+          "observed": {
+            "status": "ready",
+            "documentMb": 240,
+            "growthWithinBudget": true,
+            "verifies": true,
+            "bytesExact": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-09T02:06:38.195Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-09T02:08:09.882Z"
+}

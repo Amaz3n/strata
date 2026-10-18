@@ -11,11 +11,63 @@ function Metric({ label, value, href }: { label: string; value: string; href?: s
   return href ? <Link className="p-4 hover:bg-muted/20" href={href}>{content}</Link> : <div className="p-4">{content}</div>
 }
 
+/** Margin and price falling is bad, cost rising is bad; the other direction is good. */
+function changeTone(row: { label: string; original: number | null }, change: number) {
+  if (row.original === null || change === 0) return "text-muted-foreground"
+  const good = row.label === "Cost" ? change < 0 : change > 0
+  return good ? "text-success" : "text-destructive"
+}
+
+function MarginTable({ m }: { m: ProductionHouseOverviewData["money"] }) {
+  const locked = m.originalSalePriceCents !== null && m.originalCostCents !== null && m.originalMarginCents !== null
+  const delta = (revised: number, original: number | null) => {
+    if (original === null) return "—"
+    const change = revised - original
+    return change === 0 ? "—" : `${change > 0 ? "+" : "−"}${money(Math.abs(change))}`
+  }
+  const rows: Array<{ label: string; original: number | null; revised: number; strong?: boolean }> = [
+    { label: "Sale price", original: m.originalSalePriceCents, revised: m.revisedSalePriceCents },
+    { label: "Cost", original: m.originalCostCents, revised: m.revisedCostCents },
+    { label: "Margin", original: m.originalMarginCents, revised: m.projectedMarginCents, strong: true },
+  ]
+  return (
+    <div className="mt-4">
+      <table className="w-full border text-sm tabular-nums">
+        <thead>
+          <tr className="border-b text-xs text-muted-foreground">
+            <th className="px-3 py-2 text-left font-medium" />
+            <th className="px-3 py-2 text-right font-medium">{locked ? `Original · ${m.originalMarginStage === "release" ? "release" : "sale"}` : "Original"}</th>
+            <th className="px-3 py-2 text-right font-medium">Revised</th>
+            <th className="px-3 py-2 text-right font-medium">Change</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {rows.map((row) => (
+            <tr key={row.label} className={row.strong ? "font-semibold" : undefined}>
+              <td className="px-3 py-2 text-left">{row.label}</td>
+              <td className="px-3 py-2 text-right">{row.original === null ? "—" : money(row.original)}</td>
+              <td className="px-3 py-2 text-right">{money(row.revised)}</td>
+              <td className={`px-3 py-2 text-right ${changeTone(row, row.revised - (row.original ?? row.revised))}`}>{delta(row.revised, row.original)}</td>
+            </tr>
+          ))}
+          <tr className="text-xs text-muted-foreground">
+            <td className="px-3 py-2 text-left">Margin %</td>
+            <td className="px-3 py-2 text-right">{m.originalMarginPercent === null ? "No original margin locked" : `${m.originalMarginPercent.toFixed(1)}%`}</td>
+            <td className="px-3 py-2 text-right">{m.projectedMarginPercent.toFixed(1)}%</td>
+            <td className="px-3 py-2 text-right" />
+          </tr>
+        </tbody>
+      </table>
+      <p className="mt-2 text-xs text-muted-foreground">Revised cost is the approved budget plus {money(m.vpoCents)} of approved variance orders, or posted cost once higher.</p>
+    </div>
+  )
+}
+
 export function ProductionHouseOverview({ data }: { data: ProductionHouseOverviewData }) {
   const i = data.identity
   const m = data.money
   return (
-    <div>
+    <div data-instant-shell="project-overview">
       <header className="border-b px-5 py-5 sm:px-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -33,6 +85,21 @@ export function ProductionHouseOverview({ data }: { data: ProductionHouseOvervie
           {i.planId ? <Link className="font-medium hover:underline" href={`/plans/${i.planId}`}>{i.planName}</Link> : <span>{i.planName}</span>}
           <span>{[i.elevation, i.swing].filter(Boolean).join(" · ") || "Standard elevation"}</span>
           <span>Plan v{i.version ?? "—"}</span>
+          {data.productRevisions ? (
+            <span className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">
+                {data.productRevisions.stage === "release" ? "Released at" : "Priced at"} {data.productRevisions.summary}
+              </span>
+              {data.productRevisions.changes.length > 0 ? (
+                <span
+                  className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-warning"
+                  title={data.productRevisions.changes.join("\n")}
+                >
+                  {data.productRevisions.changes.length} changed since
+                </span>
+              ) : null}
+            </span>
+          ) : null}
           <span>Released {i.startReleasedDate ?? "—"}</span>
           <span>Closing {i.projectedClosing ?? "—"}</span>
         </div>
@@ -52,7 +119,7 @@ export function ProductionHouseOverview({ data }: { data: ProductionHouseOvervie
             <Metric label="Generated budget / actual" value={`${money(m.budgetCents)} / ${money(m.actualCostCents)}`} href={`/projects/${i.projectId}/budget`} />
             <Metric label={`${m.vpoCount} VPOs${m.topVpoReason ? ` · ${m.topVpoReason}` : ""}`} value={money(m.vpoCents)} href="/purchasing?tab=variance" />
           </div>
-          <div className="mt-4 border-l-2 pl-4"><p className="text-2xl font-semibold tabular-nums">{money(m.projectedMarginCents)} · {m.projectedMarginPercent.toFixed(1)}%</p><p className="text-xs text-muted-foreground">Projected margin after direct cost and VPOs</p></div>
+          <MarginTable m={m} />
         </section>
       </div>
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { getDrawingUploadOperationForTransfer } from "@/lib/services/drawing-upload-operations"
 import { hasProjectPermission } from "@/lib/services/permissions"
 
 /**
@@ -17,7 +18,13 @@ export async function requireDrawingUploadForPath(input: {
   orgId: string
   userId: string
   storagePath: string
+  uploadId?: string
+  transferId?: string
 }): Promise<NextResponse | null> {
+  const segments = input.storagePath.split("/")
+  if (![5, 6].includes(segments.length) || segments[0] !== input.orgId || segments[2] !== "drawings" || segments[3] !== "uploads" || !segments[4] || segments.some(segment => segment === "." || segment === "..") || input.storagePath.includes("\\")) {
+    return NextResponse.json({ error: "Invalid upload path." }, { status: 400 })
+  }
   const projectId = input.storagePath.split("/")[1] ?? null
   if (!projectId) {
     return NextResponse.json({ error: "Invalid upload path." }, { status: 400 })
@@ -39,5 +46,24 @@ export async function requireDrawingUploadForPath(input: {
     return NextResponse.json({ error: "You do not have permission to upload drawings." }, { status: 403 })
   }
 
+  if (segments.length === 6) {
+    try {
+      const operation = await getDrawingUploadOperationForTransfer({ operationId: segments[4], projectId, orgId: input.orgId, userId: input.userId })
+      if (operation.storage_path !== input.storagePath || segments[5] !== `${operation.generation}.pdf` || !input.uploadId || operation.multipart_upload_id !== input.uploadId || !input.transferId || operation.transfer_id !== input.transferId) {
+        return NextResponse.json({ error: "Upload session does not match reservation." }, { status: 409 })
+      }
+    } catch {
+      return NextResponse.json({ error: "Upload reservation is no longer active." }, { status: 409 })
+    }
+  }
   return null
+}
+
+/** Local development uses authenticated streaming parts when storage CORS excludes localhost. */
+export function localDrawingPartProxyUrl(request: Request, session: { storagePath: string; uploadId: string; transferId?: string }, partNumber: number): string | null {
+  const url = new URL(request.url)
+  if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) && !url.hostname.endsWith(".local")) return null
+  url.pathname = "/api/drawings/multipart/part-proxy"
+  url.search = new URLSearchParams({ storagePath: session.storagePath, uploadId: session.uploadId, transferId: session.transferId ?? "", partNumber: String(partNumber) }).toString()
+  return url.toString()
 }

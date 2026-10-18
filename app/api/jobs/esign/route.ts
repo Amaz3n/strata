@@ -1,19 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createHmac, randomBytes } from "crypto"
-
-import { SignatureEmail } from "@/lib/emails/signature-email"
-import { buildUnifiedSigningUrl } from "@/lib/esign/unified-contracts"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
 import { recordESignEvent } from "@/lib/services/esign-events"
-import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
+import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-
-function requireDocumentSigningSecret() {
-  const secret = process.env.DOCUMENT_SIGNING_SECRET
-  if (!secret) throw new Error("Missing DOCUMENT_SIGNING_SECRET environment variable")
-  return secret
-}
 
 function getReminderSettings(metadata: any) {
   const settings = metadata?.reminder_settings && typeof metadata.reminder_settings === "object"
@@ -25,31 +15,23 @@ function getReminderSettings(metadata: any) {
   }
 }
 
-async function issueSigningLink(supabase: any, orgId: string, requestId: string) {
-  const token = randomBytes(32).toString("hex")
-  const tokenHash = createHmac("sha256", requireDocumentSigningSecret()).update(token).digest("hex")
-  const nowIso = new Date().toISOString()
-  const { error } = await supabase
-    .from("document_signing_requests")
-    .update({ token_hash: tokenHash, sent_at: nowIso, status: "sent" })
-    .eq("org_id", orgId)
-    .eq("id", requestId)
-
-  if (error) throw new Error(`Failed to issue reminder link: ${error.message}`)
-  return buildUnifiedSigningUrl(token)
-}
-
 async function sendAutomaticReminders(supabase: any) {
   const now = new Date()
-  const { data: envelopes, error } = await supabase
-    .from("envelopes")
-    .select("id, org_id, document_id, status, metadata, documents!inner(title)")
-    .in("status", ["sent", "partially_signed"])
-    .limit(250)
-
-  if (error) throw new Error(error.message)
-  const reminderEnvelopes = (envelopes ?? []).filter((envelope: any) => getReminderSettings(envelope.metadata).enabled)
-  if (reminderEnvelopes.length === 0) return { attempted: 0, sent: 0, failed: 0 }
+  const reminderEnvelopes: any[] = []
+  let cursor: string | null = null
+  while (true) {
+    let query = supabase.from("envelopes")
+      .select("id, org_id, document_id, status, metadata")
+      .in("status", ["sent", "partially_signed"])
+      .eq("metadata->reminder_settings->>enabled", "true")
+      .order("id", { ascending: true }).limit(250)
+    if (cursor) query = query.gt("id", cursor)
+    const { data: page, error } = await query
+    if (error) throw new Error(error.message)
+    reminderEnvelopes.push(...(page ?? []))
+    if (!page || page.length < 250) break
+    cursor = page[page.length - 1].id
+  }
 
   let attempted = 0
   let sent = 0
@@ -78,7 +60,7 @@ async function sendAutomaticReminders(supabase: any) {
       const lastActiveAt = request.viewed_at ?? request.sent_at
       if (!request.sent_to_email || !lastActiveAt || lastActiveAt > cutoff) continue
 
-      const { data: lastDelivery } = await supabase
+      const { data: lastDelivery, error: deliveryError } = await supabase
         .from("esign_reminder_deliveries")
         .select("sent_at")
         .eq("org_id", envelope.org_id)
@@ -89,47 +71,19 @@ async function sendAutomaticReminders(supabase: any) {
         .limit(1)
         .maybeSingle()
 
+      if (deliveryError) { failed += 1; continue }
       if (lastDelivery?.sent_at && lastDelivery.sent_at > cutoff) continue
 
       attempted += 1
       try {
-        const signingLink = await issueSigningLink(supabase, envelope.org_id, request.id)
-        const { data: org } = await supabase.from("orgs").select("name, logo_url, slug").eq("id", envelope.org_id).maybeSingle()
-        const documentTitle = Array.isArray(envelope.documents)
-          ? envelope.documents[0]?.title ?? "Document"
-          : envelope.documents?.title ?? "Document"
-        const recipientName = Array.isArray(request.envelope_recipients)
-          ? request.envelope_recipients[0]?.name
-          : request.envelope_recipients?.name
-        const html = await renderEmailTemplate(
-          SignatureEmail({
-            documentTitle,
-            signingLink,
-            recipientName: recipientName ?? undefined,
-            orgName: org?.name ?? null,
-            orgLogoUrl: org?.logo_url ?? null,
-            eventLabel: "Signature Reminder",
-            headline: "Signature still needed",
-            bodyText: "This is a reminder that your signature is still needed.",
-            detailLabel: "Signature",
-            detailText: "Open the document to review all pages, complete required fields, and sign electronically.",
-            buttonText: "Review and Sign",
-          }),
-        )
-        await sendEmail({
-          to: [request.sent_to_email],
-          subject: `Reminder: Signature requested - ${documentTitle}`,
-          html,
-          from: getOrgSenderEmail(org?.slug, org?.name),
+        const deliveryKey = `${request.id}:${lastDelivery?.sent_at ?? request.sent_at}`
+        const queued = await enqueueOutboxJob({
+          orgId: envelope.org_id,
+          jobType: "send_esign_reminder",
+          payload: { signing_request_id: request.id, envelope_id: envelope.id, delivery_key: deliveryKey },
+          dedupeByPayloadKeys: ["delivery_key"],
         })
-        await supabase.from("esign_reminder_deliveries").insert({
-          org_id: envelope.org_id,
-          envelope_id: envelope.id,
-          signing_request_id: request.id,
-          recipient_email: request.sent_to_email,
-          delivery_type: "automatic",
-          status: "sent",
-        })
+        if (!queued.enqueued && queued.reason !== "duplicate") throw new Error("Could not queue signing reminder")
         sent += 1
       } catch (sendError: any) {
         failed += 1
@@ -146,7 +100,7 @@ async function sendAutomaticReminders(supabase: any) {
     }
   }
 
-  return { attempted, sent, failed }
+  return { attempted, queued: sent, failed }
 }
 
 async function handler(request: NextRequest) {

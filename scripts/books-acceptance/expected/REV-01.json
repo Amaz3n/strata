@@ -1,0 +1,337 @@
+{
+  "scenario": "REV-01",
+  "reviewedFrom": "B11.1 and B11.2 definitions of done (advisor-plans/013) and docs/books-revenue-recognition.md §2/§4b/§4c/§4d.",
+  "subcases": {
+    "explicit-policy-by-kind": {
+      "derivation": "Fixed-price, time-and-materials and all three cost-plus jobs earn over time (cost-to-cost), so their billing is deferred in 2350 until earned; a home sold under a purchase agreement earns at closing, so its invoice is revenue when invoiced; a standalone service invoice (no project) is revenue when invoiced. Each job's policy is recorded when it first posts, inferred from its billing settings and labeled as not reviewed.",
+      "expected": {
+        "policies": {
+          "Fixed price": {
+            "method": "percentage_of_completion",
+            "billingMethod": "fixed_price",
+            "source": "inferred"
+          },
+          "Time and materials": {
+            "method": "percentage_of_completion",
+            "billingMethod": "time_and_materials",
+            "source": "inferred"
+          },
+          "Cost plus percentage": {
+            "method": "percentage_of_completion",
+            "billingMethod": "cost_plus_percent",
+            "source": "inferred"
+          },
+          "Cost plus fixed fee": {
+            "method": "percentage_of_completion",
+            "billingMethod": "cost_plus_fixed_fee",
+            "source": "inferred"
+          },
+          "Cost plus GMP": {
+            "method": "percentage_of_completion",
+            "billingMethod": "cost_plus_gmp",
+            "source": "inferred"
+          },
+          "Home closing": {
+            "method": "closing",
+            "billingMethod": "purchase_agreement",
+            "source": "inferred"
+          }
+        },
+        "postings": {
+          "Fixed price": "deferred until earned",
+          "Time and materials": "deferred until earned",
+          "Cost plus percentage": "deferred until earned",
+          "Cost plus fixed fee": "deferred until earned",
+          "Cost plus GMP": "deferred until earned",
+          "Home closing": "earned when invoiced",
+          "Standalone service": "earned when invoiced"
+        }
+      }
+    },
+    "settings-change-cannot-rewrite": {
+      "derivation": "A fixed-price job posts a July invoice as deferred billing and its policy is recorded. Its contract is then re-typed as a purchase agreement. Re-projecting posts nothing new for July, and an August invoice is still deferred: the recorded policy governs. The register flags that the settings now say 'at closing'.",
+      "expected": {
+        "julyInvoice": "deferred until earned",
+        "augustInvoice": "deferred until earned",
+        "entriesAddedByReprojection": 0,
+        "register": {
+          "method": "percentage_of_completion",
+          "source": "inferred",
+          "drift": true,
+          "settingsSay": "closing"
+        }
+      }
+    },
+    "approved-change-from-its-date": {
+      "inputs": {
+        "effectiveFrom": "2026-08-01"
+      },
+      "derivation": "July closes with the job earning over time. A change to 'at closing' dated July 20 is refused because July is closed under the current method. The same change dated August 1 is proposed by the owner, cannot be approved by the owner, and is approved by the accountant. The July invoice stays deferred; an August invoice earns when invoiced and names the policy. The approved policy cannot be edited. The register shows the approved policy from Aug 1 with the inferred baseline before it.",
+      "expected": {
+        "intoClosedMonth": "July 2026 is closed under the current method. Date the change after 2026-07-31, or reopen July 2026 first.",
+        "selfApproval": "A revenue policy is approved by someone other than the person who proposed it",
+        "julyInvoice": "deferred until earned",
+        "augustInvoice": "earned when invoiced",
+        "augustNamesPolicy": true,
+        "rewrite": "refused",
+        "register": {
+          "method": "closing",
+          "source": "approved",
+          "effectiveFrom": "2026-08-01",
+          "history": [
+            "approved",
+            "inferred"
+          ]
+        }
+      }
+    },
+    "superseded-contracts-reconstructible": {
+      "derivation": "A sale posts in July and its policy (at closing) is recorded; its agreement is later superseded by one effective in October. Re-projection posts nothing new: the recorded policy still decides July. A legacy sale whose only July-era agreement was already superseded, with no recorded policy, cannot be decided: its invoice is a finding naming the missing historical policy. Once a policy from the start is proposed and approved, it posts, earned when invoiced.",
+      "expected": {
+        "recordedJob": {
+          "posted": "earned when invoiced",
+          "entriesAdded": 0
+        },
+        "legacyBefore": {
+          "posted": "not posted",
+          "finding": true
+        },
+        "legacyAfter": "earned when invoiced"
+      }
+    },
+    "mixed-contracts-reviewed": {
+      "derivation": "A job with a construction contract (earns over time) and a lot-sale purchase agreement (earns at closing) in force together is refused until each contract has an approved policy; its invoices are findings with that cure. After approval, the construction invoice is deferred, the lot-sale invoice is earned when invoiced, and only the construction contract has a WIP position.",
+      "expected": {
+        "beforeReview": {
+          "build": "not posted",
+          "refusedWithCure": true
+        },
+        "afterReview": {
+          "build": "deferred until earned",
+          "sale": "earned when invoiced"
+        },
+        "wipScopes": [
+          "Construction"
+        ]
+      }
+    },
+    "cost-plus-earns-once": {
+      "inputs": {
+        "markupPercent": 10,
+        "vendorCents": 10000000,
+        "adjustmentCents": 500000
+      },
+      "derivation": "A cost-plus-10% job incurs a $100,000.00 vendor bill and a $5,000.00 manual billable adjustment in September; billed from costs that is 100,000 + 10,000 + 5,000 + 500 = $115,500.00, posted as deferred billing (2350). The job is complete: WIP is prepared with the expected total billable ($115,500.00) as the transaction price and the $100,000.00 job cost as the estimate, so it is 100% complete and earns $115,500.00. Revenue equals what was billed, earned once; 2350 nets to zero; job cost $100,000.00.",
+      "expected": {
+        "adjustmentSaved": true,
+        "invoicePosting": "deferred until earned",
+        "billed": 11550000,
+        "revenue": 11550000,
+        "contractLiabilities": 0,
+        "jobCost": 10000000
+      }
+    },
+    "billed-cost-corrections": {
+      "inputs": {
+        "markupPercent": 10,
+        "billACents": 1000000,
+        "billBCents": 500000,
+        "correctedALines": [
+          600000,
+          400000
+        ],
+        "billCCents": 200000
+      },
+      "derivation": "Bills A ($10,000) and B ($5,000) are billed at cost + 10%: $16,500.00. A is returned to pending (credited once: -$11,000), re-approved unchanged (billable again), returned to pending again (the unbilled rebill is voided; no second credit), and re-approved re-coded into two lines totalling $10,000 ($11,000 billable). B is returned to pending and its credit (-$5,500) is absorbed with a reason. A new bill C ($2,000) arrives. The next invoice carries A's credit, A's re-coded cost and C: -11,000 + 11,000 + 2,200 = $2,200.00; B's absorbed credit is not billed. Billed rows cannot be edited or deleted. Voiding the first invoice is refused because A's credit is already on the second.",
+      "expected": {
+        "firstInvoice": 1650000,
+        "secondInvoice": 220000,
+        "credits": [
+          {
+            "billable": -1100000,
+            "status": "billed",
+            "decision": "credit_customer"
+          },
+          {
+            "billable": -550000,
+            "status": "excluded",
+            "decision": "absorb"
+          }
+        ],
+        "absorbedDecision": "absorb",
+        "edit": "refused",
+        "remove": "refused",
+        "voidFirstInvoice": "Failed to void invoice: This cost's credit is already on another invoice; void or credit that invoice first"
+      }
+    },
+    "gmp-cap-and-settlement": {
+      "inputs": {
+        "markupPercent": 10,
+        "gmpCents": 5000000,
+        "firstCents": 4000000,
+        "secondCents": 1000000,
+        "changeOrderGmpCents": 1000000,
+        "thirdCents": 300000,
+        "smallCents": 3000000,
+        "smallLateCents": 200000
+      },
+      "derivation": "A $50,000.00 GMP (cost plus fee, not to exceed) bills $40,000 at cost + 10% = $44,000.00. A further $11,000 would reach $55,000: refused, then billed with an override recorded as an event. An approved change order raises the GMP by $10,000 to $60,000, so a further $3,300 ($58,300 billed) bills without an override. A second $50,000 GMP job bills $33,000 and then has a $2,200 cost still unbilled when it completes: settlement is refused until it is billed. Billed within the GMP is then $35,200, so savings are $14,800.00, split 50/50: the builder's $7,400.00 is billed once (one invoice even though two requests race); the owner's $7,400.00 was never billed and needs no invoice.",
+      "expected": {
+        "firstInvoice": 4400000,
+        "overCap": "refused",
+        "overriddenInvoice": 1100000,
+        "overrideEvents": 1,
+        "revisedGmp": 6000000,
+        "afterChangeOrder": "allowed",
+        "settleWithUnbilledCost": "Bill the 1 remaining cost inside the GMP before settling savings.",
+        "settlement": [
+          "refused: already settling or settled",
+          "settled"
+        ],
+        "builderInvoices": [
+          740000
+        ],
+        "recorded": {
+          "billed": 3520000,
+          "savings": 1480000,
+          "owner": 740000,
+          "builder": 740000
+        }
+      }
+    },
+    "shared-cost-allocated-once": {
+      "derivation": "A $1,000.01 July insurance pool (a $400 premium already charged to Riverside is on that job, not in the pool) is spread by labor hours 50/30/15 with 5 retained as company overhead: 500.005/300.003/150.0015/50.0005 dollars floor to 50000/30000/15000/5000 cents and the leftover cent goes to the largest remainder (Riverside). Nothing reaches a job until a second member approves; the proposer is refused. The spec home is owned inventory, so its share goes to 1160. $50 retained stays in the pool, so a further $100 allocation is refused. Job cost ties to the ledger.",
+      "inputs": {
+        "poolCents": 100001,
+        "chargedCents": 40000,
+        "secondCents": 10000,
+        "contractCents": 100000000,
+        "eacCents": 80000000
+      },
+      "expected": {
+        "poolBefore": 100001,
+        "jobCostBeforeReview": 0,
+        "selfApproval": "refused: approved by someone other than the proposer",
+        "shares": [
+          {
+            "to": "job",
+            "cents": 50001
+          },
+          {
+            "to": "job",
+            "cents": 30000
+          },
+          {
+            "to": "job",
+            "cents": 15000
+          },
+          {
+            "to": "retained",
+            "cents": 5000
+          }
+        ],
+        "jobs": {
+          "Riverside clinic": {
+            "ledger": 50001,
+            "rows": [
+              50001
+            ]
+          },
+          "Harbor offices": {
+            "ledger": 30000,
+            "rows": [
+              30000
+            ]
+          },
+          "Lot 7 spec home": {
+            "ledger": 15000,
+            "rows": [
+              15000
+            ]
+          }
+        },
+        "homeInventory": 15000,
+        "poolAfter": 5000,
+        "allocatingTwice": "refused: exceeds the unallocated pool",
+        "jobCostControl": "passed"
+      }
+    },
+    "reallocation-keeps-both-legs": {
+      "derivation": "The pool is first spread 50/30/20 (50001/30000/20000), then reallocated 60/40 to the two contract jobs (60001/40000). Approval reverses the original entry exactly (it stays, marked reversed, beside its reversal) and posts the new split; each job keeps its original row, the negative row and the new row, and ends on its new share; the home ends at zero. The original cannot be reallocated a second time.",
+      "inputs": {
+        "poolCents": 100001,
+        "chargedCents": 40000,
+        "secondCents": 10000,
+        "contractCents": 100000000,
+        "eacCents": 80000000
+      },
+      "expected": {
+        "allocations": [
+          {
+            "reference": "July insurance",
+            "status": "reallocated",
+            "entry": "reversed",
+            "reversal": "reversal"
+          },
+          {
+            "reference": "July insurance corrected",
+            "status": "approved",
+            "entry": "posted",
+            "reversal": null
+          }
+        ],
+        "jobs": {
+          "Riverside clinic": {
+            "ledger": 60001,
+            "rows": [
+              50001,
+              60001,
+              -50001
+            ]
+          },
+          "Harbor offices": {
+            "ledger": 40000,
+            "rows": [
+              30000,
+              40000,
+              -30000
+            ]
+          },
+          "Lot 7 spec home": {
+            "ledger": 0,
+            "rows": [
+              20000,
+              -20000
+            ]
+          }
+        },
+        "poolAfter": 0,
+        "reallocatingAgain": "refused: only an approved allocation can be reallocated",
+        "jobCostControl": "passed"
+      }
+    },
+    "allocation-treatments-agree": {
+      "derivation": "Spread 2:1, Riverside receives 66667 and Harbor 33334 (the leftover cent to the larger remainder). Riverside's July WIP cost to date is exactly its allocated cost; the allocation's job-cost rows carry the chosen cost code (01-500) so budget-versus-actual groups it; 6010 keeps only the $400 charged directly to a job while 5000 holds the full $1,000.01; job cost and the trial balance tie. Cash basis keeps the cost where it was paid (unit-tested in books-cash-profit-loss).",
+      "inputs": {
+        "poolCents": 100001,
+        "chargedCents": 40000,
+        "secondCents": 10000,
+        "contractCents": 100000000,
+        "eacCents": 80000000
+      },
+      "expected": {
+        "jobA": 66667,
+        "wipCostToDate": 66667,
+        "byCostCode": {
+          "01-500": 100001
+        },
+        "ledger": {
+          "6010": 40000,
+          "5000": 100001
+        },
+        "jobCostControl": "passed",
+        "trialBalance": "passed"
+      }
+    }
+  }
+}

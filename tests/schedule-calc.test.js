@@ -2,7 +2,7 @@ require("../scripts/register-ts-node-test")
 
 const assert = require("node:assert/strict")
 const test = require("node:test")
-const { calculateCriticalPath, calculateScheduleImpacts, wouldCreateDependencyCycle } = require("../lib/utils/schedule-calc")
+const { calculateCriticalPath, planScheduleMove, resolveTemplateDependencies, wouldCreateDependencyCycle } = require("../lib/utils/schedule-calc")
 
 function item(id, duration) {
   return { id, org_id: "org", project_id: "project", name: id, item_type: "task", status: "planned", start_date: "2026-01-01", end_date: `2026-01-${String(1 + duration).padStart(2, "0")}`, created_at: "", updated_at: "" }
@@ -43,17 +43,95 @@ test("dependency cycle guard rejects a path back to the predecessor", () => {
   assert.equal(wouldCreateDependencyCycle(existing, "c", "d"), false)
 })
 
+function plannable(id, start, end, extra = {}) {
+  return { id, start_date: start, end_date: end, status: "planned", constraint_type: "asap", ...extra }
+}
+function edge(from, to, type = "FS", lag = 0) {
+  return { item_id: to, depends_on_item_id: from, dependency_type: type, lag_days: lag }
+}
+const move = (id, start_date, end_date) => ({ id, start_date, end_date })
+const byId = (plan) => Object.fromEntries(plan.changes.map((change) => [change.id, [change.start_date, change.end_date, change.cause]]))
+
 for (const [type, lag, expectedStart, expectedEnd] of [
   ["FS", 2, "2026-01-08", "2026-01-13"],
   ["SS", 2, "2026-01-03", "2026-01-08"],
   ["FF", 2, "2026-01-03", "2026-01-08"],
-  ["SF", 2, "2025-12-29", "2026-01-03"],
+  ["SF", 20, "2026-01-16", "2026-01-21"],
 ]) {
-  test(`${type} drag propagation honors signed lag`, () => {
-    const impactItems = [item("a", 5), { ...item("b", 5), start_date: "2026-02-01", end_date: "2026-02-06" }]
-    const impacts = calculateScheduleImpacts(impactItems, [dependency(type, lag)], {
-      id: "a", start_date: "2026-01-01", end_date: "2026-01-06",
-    })
-    assert.deepEqual(impacts.find((impact) => impact.id === "b"), { id: "b", start_date: expectedStart, end_date: expectedEnd })
+  test(`${type} move pushes a late successor by signed lag`, () => {
+    const plan = planScheduleMove(
+      [plannable("a", "2026-01-01", "2026-01-06"), plannable("b", "2026-01-01", "2026-01-06")],
+      [edge("a", "b", type, lag)],
+      [move("a", "2026-01-01", "2026-01-06")],
+    )
+    assert.equal(plan.ok, true)
+    assert.deepEqual(byId(plan).b, [expectedStart, expectedEnd, "dependency"])
   })
 }
+
+test("a successor with two predecessors starts when the later one finishes, whatever the order", () => {
+  const items = [plannable("a", "2026-03-01", "2026-03-05"), plannable("b", "2026-03-01", "2026-03-05"), plannable("c", "2026-03-06", "2026-03-08")]
+  for (const edges of [[edge("a", "c"), edge("b", "c")], [edge("b", "c"), edge("a", "c")]]) {
+    const plan = planScheduleMove(items, edges, [move("a", "2026-03-10", "2026-03-14"), move("b", "2026-03-02", "2026-03-04")])
+    assert.deepEqual(byId(plan).c, ["2026-03-14", "2026-03-16", "dependency"])
+  }
+})
+
+test("a successor held by an untouched predecessor does not move earlier", () => {
+  const items = [plannable("a", "2026-03-01", "2026-03-05"), plannable("b", "2026-03-01", "2026-03-20"), plannable("c", "2026-03-20", "2026-03-22")]
+  const plan = planScheduleMove(items, [edge("a", "c"), edge("b", "c")], [move("a", "2026-03-10", "2026-03-12")])
+  assert.deepEqual(plan.changes.map((change) => change.id), ["a"])
+})
+
+test("changes ripple through a chain, skipping finished work and must-start pins", () => {
+  const items = [
+    plannable("a", "2026-04-01", "2026-04-02"), plannable("b", "2026-04-02", "2026-04-03"),
+    plannable("done", "2026-04-03", "2026-04-04", { status: "completed" }),
+    plannable("pinned", "2026-04-03", "2026-04-04", { constraint_type: "must_start_on" }),
+    plannable("tail", "2026-04-04", "2026-04-05"),
+  ]
+  const plan = planScheduleMove(items, [edge("a", "b"), edge("b", "done"), edge("b", "pinned"), edge("b", "tail")], [move("a", "2026-04-10", "2026-04-11")])
+  assert.deepEqual(byId(plan), {
+    a: ["2026-04-10", "2026-04-11", "requested"],
+    b: ["2026-04-11", "2026-04-12", "dependency"],
+    tail: ["2026-04-12", "2026-04-13", "dependency"],
+  })
+})
+
+test("a stored dependency loop is refused instead of looping", () => {
+  const items = [plannable("a", "2026-05-01", "2026-05-02"), plannable("b", "2026-05-02", "2026-05-03")]
+  const plan = planScheduleMove(items, [edge("a", "b"), edge("b", "a")], [move("a", "2026-05-05", "2026-05-06")])
+  assert.equal(plan.ok, false)
+})
+
+test("a move must name a known item, real calendar dates and end on or after start", () => {
+  const items = [plannable("a", "2026-05-01", "2026-05-02")]
+  assert.equal(planScheduleMove(items, [], [move("missing", "2026-05-01", "2026-05-02")]).ok, false)
+  assert.equal(planScheduleMove(items, [], [move("a", "2026-02-30", "2026-03-01")]).ok, false)
+  assert.equal(planScheduleMove(items, [], [move("a", "2026-05-03", "2026-05-02")]).ok, false)
+})
+
+test("planning is calendar-day arithmetic across a daylight-saving change", () => {
+  const items = [plannable("a", "2026-03-06", "2026-03-07"), plannable("b", "2026-03-07", "2026-03-09")]
+  const plan = planScheduleMove(items, [edge("a", "b")], [move("a", "2026-03-07", "2026-03-09")])
+  assert.deepEqual(byId(plan).b, ["2026-03-09", "2026-03-11", "dependency"])
+})
+
+test("a template's links resolve by key onto the items one home was given, with their type and lag", () => {
+  const placed = [
+    { key: "foundation", itemId: "f", dependsOn: undefined },
+    { key: "framing", itemId: "fr", dependsOn: [{ key: "foundation" }] },
+    { key: "dry-in", itemId: "d", dependsOn: [{ key: "framing", type: "SS", lag_days: 10 }] },
+  ]
+  assert.deepEqual(resolveTemplateDependencies(placed), [
+    { item_id: "fr", depends_on_item_id: "f", dependency_type: "FS", lag_days: 0 },
+    { item_id: "d", depends_on_item_id: "fr", dependency_type: "SS", lag_days: 10 },
+  ])
+})
+
+test("a template link to a missing or shared key, an unknown type or a loop is refused, never dropped", () => {
+  assert.throws(() => resolveTemplateDependencies([{ key: "framing", itemId: "fr", dependsOn: [{ key: "foundation" }] }]), /does not have/)
+  assert.throws(() => resolveTemplateDependencies([{ key: "a", itemId: "1" }, { key: "a", itemId: "2" }, { key: "b", itemId: "3", dependsOn: ["a"] }]), /more than one task/)
+  assert.throws(() => resolveTemplateDependencies([{ key: "a", itemId: "1" }, { key: "b", itemId: "2", dependsOn: [{ key: "a", type: "XX" }] }]), /unknown type/)
+  assert.throws(() => resolveTemplateDependencies([{ key: "a", itemId: "1", dependsOn: ["b"] }, { key: "b", itemId: "2", dependsOn: ["a"] }]), /loop/)
+})

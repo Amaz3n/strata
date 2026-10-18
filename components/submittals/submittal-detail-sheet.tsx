@@ -31,10 +31,10 @@ import { Separator } from "@/components/ui/separator"
 import { Calendar, Building2, FileText, Clock, Tag } from "@/components/icons"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { LinkedDrawings } from "@/components/drawings"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
-  uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
 import {
@@ -98,10 +98,11 @@ export function SubmittalDetailSheet({
   const [showItemForm, setShowItemForm] = useState(false)
   const [isPending, startTransition] = useTransition()
 
-  const loadAttachments = useCallback(async () => {
-    if (!submittal) return
+  const loadAttachments = useCallback(async (signal?: AbortSignal) => {
+    if (!submittal || signal?.aborted) return
     try {
       const links = await listAttachmentsAction("submittal", submittal.id)
+      if (signal?.aborted) return
       setAttachments(
         links.map((link) => ({
           id: link.file.id,
@@ -116,36 +117,42 @@ export function SubmittalDetailSheet({
         }))
       )
     } catch (error) {
-      console.error("Failed to load attachments:", error)
+      if (!signal?.aborted) console.error("Failed to load attachments:", error)
     }
   }, [submittal])
 
-  const loadItems = useCallback(async () => {
-    if (!submittal) return
+  const loadItems = useCallback(async (signal?: AbortSignal) => {
+    if (!submittal || signal?.aborted) return
     try {
-      setItems(await listSubmittalItemsAction(submittal.id))
+      const rows = await listSubmittalItemsAction(submittal.id)
+      if (!signal?.aborted) setItems(rows)
     } catch (error) {
+      if (signal?.aborted) return
       console.error("Failed to load submittal items:", error)
       setItems([])
     }
   }, [submittal])
 
-  const loadReviewSteps = useCallback(async () => {
-    if (!submittal) return
+  const loadReviewSteps = useCallback(async (signal?: AbortSignal) => {
+    if (!submittal || signal?.aborted) return
     try {
-      setReviewSteps(await listSubmittalReviewStepsAction(submittal.id))
+      const steps = await listSubmittalReviewStepsAction(submittal.id)
+      if (!signal?.aborted) setReviewSteps(steps)
     } catch (error) {
+      if (signal?.aborted) return
       console.error("Failed to load review steps:", error)
       setReviewSteps([])
     }
   }, [submittal])
 
-  const loadRevisions = useCallback(async () => {
-    if (!submittal) return
+  const loadRevisions = useCallback(async (signal?: AbortSignal) => {
+    if (!submittal || signal?.aborted) return
     try {
       const history = await listSubmittalRevisionsAction(submittal.project_id, submittal.submittal_number)
+      if (signal?.aborted) return
       setRevisions(history.filter((rev) => rev.id !== submittal.id))
     } catch (error) {
+      if (signal?.aborted) return
       console.error("Failed to load submittal revisions:", error)
       setRevisions([])
     }
@@ -153,6 +160,7 @@ export function SubmittalDetailSheet({
 
   useEffect(() => {
     if (open && submittal) {
+      const controller = new AbortController()
       ;(async () => {
         if (submittal.attachment_file_id) {
           try {
@@ -164,11 +172,12 @@ export function SubmittalDetailSheet({
               "legacy_attachment",
             ))
           } catch (error) {
-            console.warn("Failed to backfill legacy submittal attachment link", error)
+            if (!controller.signal.aborted) console.warn("Failed to backfill legacy submittal attachment link", error)
           }
         }
-        await Promise.all([loadAttachments(), loadItems(), loadRevisions(), loadReviewSteps()])
+        await Promise.all([loadAttachments(controller.signal), loadItems(controller.signal), loadRevisions(controller.signal), loadReviewSteps(controller.signal)])
       })()
+      return () => controller.abort()
     }
   }, [open, submittal, loadAttachments, loadItems, loadRevisions, loadReviewSteps])
 

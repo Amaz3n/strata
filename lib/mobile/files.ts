@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto"
+import { z } from "zod"
+import { persistProjectUpload, uploadRequestFingerprint, UploadRecordInsertError } from "@/lib/services/project-file-upload"
 import { MobileAPIError } from "@/lib/mobile/api"
 import type { MobileOrgContext } from "@/lib/mobile/auth"
 import type { MobileFileDTO, MobileFilesDTO, MobileFolderDTO } from "@/lib/mobile/contracts"
+import { authorize } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { listProjects } from "@/lib/services/projects"
 import { createFilesDownloadUrl, deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
@@ -20,9 +24,11 @@ const ALLOWED_CATEGORIES = new Set([
   "other",
 ])
 
-async function requireProject(context: MobileOrgContext, projectId: string) {
+async function requireProject(context: MobileOrgContext, projectId: string, permission = "docs.read") {
   const project = (await listProjects(context.orgId, context.serviceContext)).find((item) => item.id === projectId)
   if (!project) throw new MobileAPIError(404, "project_not_found", "Project not found.")
+  const decision = await authorize({ permission, userId: context.user.id, orgId: context.orgId, supabase: context.serviceSupabase, projectId, resourceType: "project", resourceId: projectId })
+  if (!decision.allowed) throw new MobileAPIError(403, "documents_forbidden", "You do not have permission for this document action.")
   return project
 }
 
@@ -44,22 +50,23 @@ export async function listMobileFiles(
   context: MobileOrgContext,
   projectId: string,
   folder: string,
+  recursive = false,
 ): Promise<MobileFilesDTO> {
   await requireProject(context, projectId)
   const currentFolder = normalizeFolder(folder)
 
-  const { data, error } = await context.serviceSupabase
-    .from("files")
-    .select("id, file_name, mime_type, size_bytes, category, folder_path, storage_path, daily_log_id, updated_at")
-    .eq("org_id", context.orgId)
-    .eq("project_id", projectId)
-    .is("archived_at", null)
-    .order("file_name", { ascending: true })
-    .limit(2000)
-  if (error) throw new MobileAPIError(500, "files_unavailable", "Documents could not be loaded.")
-
-  // Daily-log photo uploads live in the logs timeline, not the documents browser.
-  const rows = (data ?? []).filter((row) => !row.daily_log_id)
+  // Fetch every page before building the folder tree; a cap silently hid folders
+  // and made a project download appear complete when documents were omitted.
+  const rows: any[] = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await context.serviceSupabase.from("files")
+      .select("id, file_name, mime_type, size_bytes, category, folder_path, storage_path, daily_log_id, updated_at")
+      .eq("org_id", context.orgId).eq("project_id", projectId).is("archived_at", null).is("daily_log_id", null)
+      .order("file_name", { ascending: true }).order("id", { ascending: true }).range(from, from + 999)
+    if (error) throw new MobileAPIError(500, "files_unavailable", "Documents could not be loaded.")
+    rows.push(...(data ?? []))
+    if ((data?.length ?? 0) < 1000) break
+  }
 
   const prefix = currentFolder === "/" ? "/" : `${currentFolder}/`
   const folderCounts = new Map<string, number>()
@@ -85,7 +92,11 @@ export async function listMobileFiles(
     .map(([path, count]) => ({ path, name: path.split("/").filter(Boolean).pop() ?? path, file_count: count }))
     .sort((a, b) => a.name.localeCompare(b.name))
 
-  const files: MobileFileDTO[] = await Promise.all(filesHere.map((row) => mapFileRow(context, row)))
+  const files: MobileFileDTO[] = []
+  const selected = recursive ? rows : filesHere
+  for (let start = 0; start < selected.length; start += 50) {
+    files.push(...await Promise.all(selected.slice(start, start + 50).map(row => mapFileRow(context, row))))
+  }
 
   return { folders, files }
 }
@@ -127,14 +138,14 @@ export async function uploadMobileFile(
   projectId: string,
   formData: FormData,
 ): Promise<MobileFileDTO> {
-  await requireProject(context, projectId)
+  await requireProject(context, projectId, "docs.upload")
 
   const file = formData.get("file")
   const clientId = String(formData.get("client_id") ?? "").trim()
   if (!(file instanceof File) || file.size === 0) {
     throw new MobileAPIError(422, "invalid_file", "Select a file to upload.")
   }
-  if (!clientId) throw new MobileAPIError(422, "missing_client_id", "A client_id is required.")
+  if (!z.string().uuid().safeParse(clientId).success) throw new MobileAPIError(422, "invalid_client_id", "A UUID client_id is required.")
   if (file.size > MAX_FILE_BYTES) throw new MobileAPIError(422, "file_too_large", "Files must be under 100 MB.")
 
   const folder = normalizeFolder(typeof formData.get("folder") === "string" ? (formData.get("folder") as string) : "/")
@@ -142,87 +153,45 @@ export async function uploadMobileFile(
   const requestedCategory = typeof categoryRaw === "string" ? categoryRaw.trim() : ""
   const category = ALLOWED_CATEGORIES.has(requestedCategory) ? requestedCategory : "other"
 
-  // Idempotency: a row already created under this client_id wins.
-  const existing = await context.serviceSupabase
-    .from("files")
-    .select(FILE_SELECT)
-    .eq("org_id", context.orgId)
-    .eq("project_id", projectId)
-    .eq("id", clientId)
-    .is("archived_at", null)
-    .maybeSingle()
-  if (existing.data) return mapFileRow(context, existing.data)
-
+  const bytes = Buffer.from(await file.arrayBuffer())
   const mimeType = file.type || "application/octet-stream"
-  const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_") || `${clientId}`
-  const storagePath = `${context.orgId}/${projectId}/documents/${clientId}_${safeName}`
-  await uploadFilesObject({
-    supabase: context.serviceSupabase,
-    orgId: context.orgId,
-    path: storagePath,
-    bytes: Buffer.from(await file.arrayBuffer()),
-    contentType: mimeType,
-    upsert: true,
+  const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_") || clientId
+  const fingerprint = uploadRequestFingerprint(bytes, { projectId, folder, category, name: safeName, mimeType })
+  const storagePath = `${context.orgId}/${projectId}/documents/uploads/${randomUUID()}/${safeName}`
+  const { record: data } = await persistProjectUpload({
+    retrySafe: true, storagePath,
+    findExisting: async () => {
+      const result = await context.serviceSupabase.from("files").select(`${FILE_SELECT}, metadata`)
+        .eq("org_id", context.orgId).eq("project_id", projectId).eq("id", clientId).maybeSingle()
+      if (result.error) throw new Error(`Failed to reconcile upload: ${result.error.message}`)
+      return result.data
+    },
+    validateExisting: row => {
+      if (row.metadata?.request_fingerprint !== fingerprint) throw new MobileAPIError(409, "upload_conflict", "This upload ID belongs to different content.")
+    },
+    uploadObject: () => uploadFilesObject({ supabase: context.serviceSupabase, orgId: context.orgId,
+      path: storagePath, bytes, contentType: mimeType, upsert: false }).then(() => undefined),
+    insertRecord: async () => {
+      const result = await context.serviceSupabase.rpc("commit_document_upload", {
+        p_org_id: context.orgId, p_actor_id: context.user.id,
+        p_file: { id: clientId, project_id: projectId, file_name: safeName, storage_path: storagePath,
+          mime_type: mimeType, size_bytes: file.size, visibility: "private", category, folder_path: folder,
+          request_fingerprint: fingerprint, tags: [], source: "upload" },
+      })
+      if (result.error || !result.data) throw new UploadRecordInsertError(result.error?.message ?? "Upload failed", result.error?.code)
+      if (result.data.metadata?.request_fingerprint !== fingerprint) throw new MobileAPIError(409, "upload_conflict", "This upload ID belongs to different content.")
+      if (result.data.storage_path !== storagePath) await deleteFilesObjects({ supabase: context.serviceSupabase, orgId: context.orgId, paths: [storagePath] })
+      return result.data
+    },
+    cleanupObject: () => deleteFilesObjects({ supabase: context.serviceSupabase, orgId: context.orgId, paths: [storagePath] }),
   })
-
-  const { data, error } = await context.serviceSupabase
-    .from("files")
-    .insert({
-      id: clientId,
-      org_id: context.orgId,
-      project_id: projectId,
-      file_name: safeName,
-      storage_path: storagePath,
-      mime_type: mimeType,
-      size_bytes: file.size,
-      visibility: "private",
-      uploaded_by: context.user.id,
-      category,
-      folder_path: folder,
-      source: "upload",
-      tags: [],
-    })
-    .select(FILE_SELECT)
-    .single()
-  if (error || !data) {
-    await deleteFilesObjects({ supabase: context.serviceSupabase, orgId: context.orgId, paths: [storagePath] })
-    throw new MobileAPIError(500, "file_upload_failed", "The file could not be saved.")
-  }
-
-  const { data: version } = await context.serviceSupabase
-    .from("doc_versions")
-    .insert({
-      org_id: context.orgId,
-      file_id: data.id,
-      version_number: 1,
-      storage_path: storagePath,
-      file_name: safeName,
-      mime_type: mimeType,
-      size_bytes: file.size,
-      created_by: context.user.id,
-    })
-    .select("id")
-    .single()
-  if (version?.id) {
-    await context.serviceSupabase.from("files").update({ current_version_id: version.id }).eq("id", data.id)
-  }
-
-  await recordAudit({
-    orgId: context.orgId,
-    actorId: context.user.id,
-    action: "insert",
-    entityType: "file",
-    entityId: data.id,
-    after: data as any,
-  })
-
   return mapFileRow(context, data)
 }
 
 // Soft-deletes (archives) a document so it disappears from the register but the
 // underlying object and version history remain recoverable.
 export async function deleteMobileFile(context: MobileOrgContext, projectId: string, fileId: string): Promise<void> {
-  await requireProject(context, projectId)
+  await requireProject(context, projectId, "docs.delete")
 
   const { data: row } = await context.serviceSupabase
     .from("files")

@@ -1,0 +1,7 @@
+begin;
+select plan(3);
+select is((select count(*)::integer from pg_constraint where conname in('gl_accounts_parent_owner_fk','accounting_facts_supersedes_owner_fk','accounting_facts_reversal_owner_fk','journal_entries_fact_owner_fk','journal_entries_period_owner_fk','journal_entries_reversal_owner_fk','journal_lines_entry_owner_fk','journal_lines_account_owner_fk') and contype='f' and convalidated),8,'all core owner references are validated foreign keys');
+select is((select count(*)::integer from pg_constraint where conname in('gl_accounts_owner_identity_key','accounting_periods_owner_identity_key','accounting_facts_owner_identity_key','journal_entries_owner_identity_key') and contype='u'),4,'core parents expose organization-scoped identities');
+select ok(not exists(select 1 from pg_constraint k where k.conname in('gl_accounts_parent_owner_fk','accounting_facts_supersedes_owner_fk','accounting_facts_reversal_owner_fk','journal_entries_fact_owner_fk','journal_entries_period_owner_fk','journal_entries_reversal_owner_fk','journal_lines_entry_owner_fk','journal_lines_account_owner_fk') and (k.conkey[1]<>(select a.attnum from pg_attribute a where a.attrelid=k.conrelid and a.attname='org_id') or k.confkey[1]<>(select a.attnum from pg_attribute a where a.attrelid=k.confrelid and a.attname='org_id'))),'every core ownership relationship includes organization on both sides');
+select * from finish();
+rollback;

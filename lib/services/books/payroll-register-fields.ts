@@ -1,0 +1,17 @@
+export const payrollRegisterFields = [
+  "row_type",
+  "provider",
+  "provider_run_id",
+  "period_start",
+  "period_end",
+  "accrual_date",
+  "pay_date",
+  "employee_reference",
+  "gross",
+  "net",
+  "employee_taxes",
+  "employee_deductions",
+  "employer_taxes",
+  "employer_benefits",
+  "funding",
+] as const;

@@ -25,6 +25,7 @@ export interface SignatureEmailProps {
   orgName?: string | null
   orgLogoUrl?: string | null
   recipientName?: string | null
+  details?: { label: string; value: string }[]
   projectName?: string | null
   eventLabel?: string
   headline?: string
@@ -42,6 +43,7 @@ export function SignatureEmail({
   orgLogoUrl,
   recipientName,
   projectName,
+  details,
   eventLabel = "Signature Request",
   headline = "Document ready for signature",
   bodyText,
@@ -83,6 +85,7 @@ export function SignatureEmail({
             <span style={metaLabel}>Project:</span> <span style={metaValue}>{projectName}</span>
           </Text>
         ) : null}
+        {details?.map(detail => <Text key={detail.label} style={metaRow}><span style={metaLabel}>{detail.label}:</span> <span style={metaValue}>{detail.value}</span></Text>)}
         <Text style={metaRowLast}>
           <span style={metaLabel}>From:</span> <span style={metaValue}>{displayOrgName}</span>
         </Text>

@@ -1,0 +1,215 @@
+import { connection } from "next/server";
+import { resolveMeasurementContext } from "@/lib/services/measurement-context";
+import { DealTakeoverBar } from "@/components/pipeline/deal-takeover-bar";
+import { ImportPlanFile } from "@/components/precon/import-plan-file";
+import { getFileAction } from "@/app/(app)/documents/actions";
+import { notFound } from "next/navigation";
+import { Suspense } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { PageLayout } from "@/components/layout/page-layout";
+import { DrawingsSetsView } from "@/components/drawings";
+import { getProjectAction } from "@/app/(app)/projects/[id]/actions";
+import {
+  countDrawingSheets,
+  listDrawingSets,
+  listDrawingSheetsWithUrls,
+} from "@/lib/services/drawings";
+import { hasPermission } from "@/lib/services/permissions";
+import { getOrgProductTier } from "@/lib/services/context";
+import { getProjectPosture } from "@/lib/product-tier";
+import { isProjectModelEnabled } from "@/lib/project-model-access";
+import type { FloorplanTarget } from "@/lib/services/floorplan-models";
+
+type DrawingsProject = NonNullable<
+  Awaited<ReturnType<typeof getProjectAction>>
+>;
+
+// The register renders every sheet it is given, grouped by discipline. This is
+// the ceiling; countDrawingSheets tells the view when it truncated so the cap
+// is never silent.
+const SHEET_RENDER_CAP = 1000;
+
+interface ProjectDrawingsPageProps {
+  prospectId?: string;
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{
+    set?: string;
+    sheetId?: string;
+    condition?: string;
+    planVersion?: string;
+    sourceFile?: string;
+    estimate?: string;
+    destination?: string; target?: string; row?: string; takeoff?: string; view?: string; modelView?: string;
+  }>;
+}
+
+export default function ProjectDrawingsPage(props: ProjectDrawingsPageProps) {
+  return (
+    <Suspense fallback={
+      <PageLayout title={props.prospectId ? "Plans & quantities" : "Drawings"} fullBleed={Boolean(props.prospectId)}>
+        <div className="space-y-4 p-6" role="status" aria-label="Loading drawings">
+          <Skeleton className="h-8 w-48" />
+          <div className="grid gap-4 sm:grid-cols-3">
+            {Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-40" />)}
+          </div>
+        </div>
+      </PageLayout>
+    }>
+      <ProjectDrawingsRoute {...props} />
+    </Suspense>
+  );
+}
+
+async function ProjectDrawingsRoute({
+  params,
+  searchParams,
+  prospectId,
+}: ProjectDrawingsPageProps) {
+  await connection();
+  const { id } = await params;
+  const project = await getProjectAction(id);
+
+  if (!project) {
+    notFound();
+  }
+
+  return (
+    <PageLayout
+      fullBleed={Boolean(prospectId) || project.phase === "precon"}
+      title={project.phase === "precon" ? "Plans & quantities" : "Drawings"}
+      breadcrumbs={[
+        {
+          label: project.name,
+          href: prospectId ? `/pipeline/${prospectId}` : `/projects/${project.id}`,
+        },
+        { label: project.phase === "precon" ? "Plans & quantities" : "Drawings" },
+      ]}
+    >
+      <Suspense
+        fallback={
+          <div className="p-6 space-y-4">
+            <Skeleton className="h-8 w-48 mb-6" />
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-16 w-full rounded-md" />
+              ))}
+            </div>
+          </div>
+        }
+      >
+        <ProjectDrawingsData
+          prospectId={prospectId}
+          id={id}
+          project={project}
+          searchParams={searchParams}
+        />
+      </Suspense>
+    </PageLayout>
+  );
+}
+
+async function ProjectDrawingsData({
+  prospectId,
+  id,
+  project,
+  searchParams,
+}: {
+  prospectId?: string;
+  id: string;
+  project: DrawingsProject;
+  searchParams: Promise<{
+    set?: string;
+    sheetId?: string;
+    condition?: string;
+    planVersion?: string;
+    sourceFile?: string;
+    estimate?: string;
+    destination?: string; target?: string; row?: string; takeoff?: string; view?: string; modelView?: string;
+  }>;
+}) {
+  const query = await searchParams;
+  const measurementContext = await resolveMeasurementContext(id, query.destination ? query : prospectId ? { destination: "pricing_worksheet", target: prospectId, row: query.row } : {}, prospectId);
+  const sourceFile = query.sourceFile
+    ? await getFileAction(query.sourceFile)
+    : null;
+  const canImport =
+    sourceFile?.project_id === id &&
+    sourceFile.mime_type === "application/pdf" &&
+    (await hasPermission("drawing.upload"));
+
+  const [sets, sheets, totalSheetCount, canWriteTakeoff, canWriteModel, orgTier] = await Promise.all([
+    listDrawingSets({ project_id: id, limit: 100 }),
+    listDrawingSheetsWithUrls({ project_id: id, limit: SHEET_RENDER_CAP }),
+    countDrawingSheets({ project_id: id }),
+    // Read-only viewers still see measured quantities; only writing is gated.
+    hasPermission("takeoff.write"),
+    hasPermission("plan.write"),
+    getOrgProductTier(),
+  ]);
+
+  // The 3D model belongs to whatever the drawings describe: a plan version
+  // when measuring a plan, the project itself for a custom home. A production
+  // lot's drawings ARE its plan's, so it never gets a second model.
+  const planVersionId = prospectId ? undefined : query.planVersion;
+  const production = getProjectPosture(project.property_type, orgTier) === "production";
+  const modelEnabled = isProjectModelEnabled(project.org_id);
+  const modelTarget: FloorplanTarget | null = !modelEnabled
+    ? null
+    : planVersionId
+      ? { kind: "plan", housePlanVersionId: planVersionId }
+      : production
+        ? null
+        : { kind: "project", projectId: id };
+  const modelUnavailable =
+    modelEnabled && !modelTarget && production
+      ? { message: "This lot is built to a house plan, and the plan carries the one 3D model every lot shares.", href: "/plans", linkLabel: "Open plans" }
+      : null;
+  const initialView = modelEnabled && (query.view === "3d" || query.view === "split") ? query.view : undefined;
+
+  const initialSelectedSetId =
+    query.set && sets.some((set) => set.id === query.set)
+      ? query.set
+      : undefined;
+
+  return (
+    <div
+      className={
+        Boolean(prospectId) || project.phase === "precon"
+          ? "flex min-h-0 w-full flex-1"
+          : "-m-4 -mt-6 h-[calc(100vh-3.5rem)]"
+      }
+    >
+      <div className="flex min-h-0 w-full flex-col gap-4">
+        {sourceFile && canImport && (
+          <ImportPlanFile
+            prospectId={prospectId}
+            projectId={id}
+            fileId={sourceFile.id}
+            fileName={sourceFile.file_name}
+          />
+        )}
+        {prospectId && <DealTakeoverBar dealId={prospectId} title="Plans & quantities" />}
+        <DrawingsSetsView
+          measurementContext={measurementContext}
+          prospectId={prospectId}
+          estimateId={query.estimate}
+          preconstruction={Boolean(prospectId) || project.phase === "precon"}
+          initialSets={sets}
+          initialSheets={sheets}
+          totalSheetCount={totalSheetCount}
+          selectedProjectId={project.id}
+          initialSelectedSetId={initialSelectedSetId}
+          initialSheetId={query.sheetId}
+          canWriteTakeoff={canWriteTakeoff}
+          initialConditionId={measurementContext?.conditionId ?? query.condition}
+          takeoffPlanVersionId={planVersionId}
+          modelTarget={modelTarget}
+          modelUnavailable={modelUnavailable}
+          canWriteModel={canWriteModel}
+          initialView={initialView}
+          initialModelViewId={query.modelView ?? null}
+        />
+      </div>
+    </div>
+  );
+}

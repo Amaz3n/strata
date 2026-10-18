@@ -4,6 +4,15 @@ import Testing
 
 struct FoundationTests {
     @Test
+    func installedAppIncludesAuthenticationConfiguration() throws {
+        let url = try #require(Bundle.main.object(forInfoDictionaryKey: "ArcSupabaseURL") as? String)
+        let key = try #require(Bundle.main.object(forInfoDictionaryKey: "ArcSupabasePublishableKey") as? String)
+        #expect(URL(string: url)?.scheme == "https")
+        #expect(!key.isEmpty && !key.hasPrefix("$("))
+        #expect(Bundle.main.object(forInfoDictionaryKey: "ArcAPIBaseURL") as? String != nil)
+    }
+
+    @Test
     func environmentsUseVersionedMobileAPI() {
         for environment in AppEnvironment.allCases {
             #expect(environment.apiBaseURL.path.hasSuffix("/api/mobile/v1"))

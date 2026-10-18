@@ -1,0 +1,20 @@
+1..19
+ok 1 - altered amount is rejected
+ok 2 - valid evidence is approved
+ok 3 - reviewer is attributed
+ok 4 - browser role cannot bypass service authorization
+ok 5 - begin close
+ok 6 - review is frozen during close
+ok 7 - new evidence cannot replace reviewed figures during close
+ok 8 - late cost invalidates prepared source evidence
+ok 9 - reopened period can prepare a corrected position
+ok 10 - new dated costs drive earned revenue
+ok 11 - preparation preserves attribution
+ok 12 - final WIP position can be reviewed and closed
+ok 13 - completed final estimate carries forward
+ok 14 - carryforward retains the prior approved period
+ok 15 - late cost prevents carrying the old estimate forward
+ok 16 - integer rounding preparation succeeds
+ok 17 - earned revenue rounds exact cents
+ok 18 - prepared earned revenue is immutable
+ok 19 - EAC cannot understate incurred costs

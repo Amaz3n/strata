@@ -1,7 +1,8 @@
 import "server-only"
 
+import { generationOptions, classifyAiError, isAvailabilityError, isTerminalAiError } from "@/lib/services/ai/policy"
 import { consumeObjectStream } from "@/lib/services/ai/consume-object-stream"
-import { generateObject, streamObject, generateText, NoObjectGeneratedError } from "ai"
+import { generateObject, streamObject, generateText } from "ai"
 import type { z } from "zod"
 
 import {
@@ -15,7 +16,7 @@ import {
 } from "@/lib/services/ai-config"
 import { rasterizePdfToImages } from "@/lib/services/ai/pdf-raster"
 import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai/provider"
-import { recordAiUsage, type AiTokenUsage } from "@/lib/services/ai/usage"
+import { recordAiUsage, toTokenUsage, usageFromError, type AiTokenUsage } from "@/lib/services/ai/usage"
 import { isFeatureEnabledForOrg } from "@/lib/services/feature-flags"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -43,7 +44,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
  */
 
 const DEFAULT_TIMEOUT_MS = 60_000
-const DEFAULT_MAX_ATTEMPTS_PER_TIER = 2
+const DEFAULT_MAX_ATTEMPTS_PER_TIER = 1
 const AI_ENABLED_FLAG_KEY = "ai_enabled"
 
 /** A file part for vision calls — images and PDFs alike. */
@@ -100,6 +101,10 @@ export interface RunAiObjectInput<T> {
   totalTimeoutMs?: number
   /** Attempts at a single tier before escalating. */
   maxAttemptsPerTier?: number
+  /** Hard output budget for small background classifiers. */
+  maxOutputTokens?: number
+  /** Override the feature/model reasoning policy. */
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high"
   /**
    * Deterministic gate. Return `{ok:false}` and the gateway escalates rather
    * than handing back a result that code already knows is wrong.
@@ -107,41 +112,17 @@ export interface RunAiObjectInput<T> {
   verify?: (value: T) => VerifyOutcome
   /** Allow moving up a tier on failure. Off for cost-capped background work. */
   allowEscalation?: boolean
+  /** Optional local diagnostics; never changes retry or validation decisions. */
+  onFailure?: (error: unknown) => void
+  /** One cross-provider recovery for transient failures, even on cost-capped work. */
+  allowFallback?: boolean
   /** Skip the per-org AI kill switch. Only for platform-internal calls. */
   ignoreKillSwitch?: boolean
 }
 
-function toTokenUsage(usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined): AiTokenUsage {
-  return {
-    inputTokens: usage?.inputTokens ?? null,
-    outputTokens: usage?.outputTokens ?? null,
-    totalTokens: usage?.totalTokens ?? null,
-  }
-}
-
-const EMPTY_USAGE: AiTokenUsage = { inputTokens: null, outputTokens: null, totalTokens: null }
-
-function classifyError(error: unknown): { reason: AiFailureReason; kind: string } {
-  if (NoObjectGeneratedError.isInstance(error)) {
-    return { reason: "invalid_output", kind: "no_object_generated" }
-  }
-  const name = error instanceof Error ? error.name : ""
-  const message = error instanceof Error ? error.message : String(error)
-  if (name === "AbortError" || name === "TimeoutError" || /timeout|aborted/i.test(message)) {
-    return { reason: "timeout", kind: "timeout" }
-  }
-  if (/rate.?limit|429/i.test(message)) return { reason: "provider_error", kind: "rate_limit" }
-  if (/quota|billing/i.test(message)) return { reason: "provider_error", kind: "quota" }
-  return { reason: "provider_error", kind: "provider_error" }
-}
-
-function isRetryable(kind: string) {
-  return kind === "rate_limit" || kind === "timeout" || kind === "provider_error" || kind === "no_object_generated"
-}
-
-/** Exponential backoff with jitter, so a rate limit does not resolve into a stampede. */
-function backoffMs(attempt: number) {
-  return Math.min(4_000, 250 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250)
+function classifyError(error: unknown): { reason: AiFailureReason; kind: ReturnType<typeof classifyAiError> } {
+  const kind = classifyAiError(error)
+  return { kind, reason: kind === "timeout" ? "timeout" : kind === "no_object_generated" ? "invalid_output" : "provider_error" }
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +249,7 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
     maxAttemptsPerTier = DEFAULT_MAX_ATTEMPTS_PER_TIER,
     verify,
     allowEscalation = true,
+    allowFallback = true,
     ignoreKillSwitch = false,
   } = input
 
@@ -275,7 +257,7 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
     return { ok: false, reason: "disabled", message: "AI features are turned off for this organization.", meta: null }
   }
 
-  const deadline = input.totalTimeoutMs ? Date.now() + input.totalTimeoutMs : Infinity
+  const deadline = Date.now() + (input.totalTimeoutMs ?? timeoutMs)
   const supabase = createServiceSupabaseClient()
   const startTier = input.tier ?? AI_FEATURE_BASE_TIER[feature]
 
@@ -287,9 +269,16 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
   }
   let lastMeta: AiCallMeta | null = null
   const rasterCache = new Map<number, PreparedFiles | null>()
+  const unavailableProviders = new Set<AiProvider>()
+  const attemptedModels = new Set<string>()
+  let availabilityFallback = false
 
   while (tier) {
     const config = await getAiFeatureTierConfig({ supabase, feature, tier })
+    if (unavailableProviders.has(config.provider) || attemptedModels.has(`${config.provider}:${config.model}`)) {
+      tier = nextTier(tier)
+      continue
+    }
     const apiKey = getApiKeyForProvider(config.provider)
 
     if (!apiKey) {
@@ -298,10 +287,13 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
         message: `${config.provider} is not configured for ${feature}.`,
       }
       // No key at this tier is not something a retry fixes; try the next rung.
-      tier = allowEscalation ? nextTier(tier) : null
+      unavailableProviders.add(config.provider)
+      availabilityFallback = allowFallback
+      tier = allowEscalation || allowFallback ? nextTier(tier) : null
       continue
     }
 
+    attemptedModels.add(`${config.provider}:${config.model}`)
     const model = resolveLanguageModel(config.provider, apiKey, config.model)
     const prepared = await prepareFilesForProvider(files, config.provider, rasterCache)
     // Truncation is disclosed to the model, not swallowed: a bill whose last
@@ -342,7 +334,12 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
           ],
           // The gateway owns retries; SDK retries would multiply every attempt.
           maxRetries: 0,
-          abortSignal: AbortSignal.timeout(Math.min(timeoutMs, remainingMs)),
+          ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
+          ...generationOptions(config.provider, config.model, feature, input.reasoningEffort),
+          // Reserve time for one recovery instead of spending the entire budget
+          // waiting on a provider that may be overloaded.
+          abortSignal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs,
+            nextTier(tier) && (allowEscalation || (allowFallback && !availabilityFallback)) ? Math.floor(remainingMs / 2) : remainingMs))),
           experimental_telemetry: {
             isEnabled: true,
             functionId: `ai.${feature}`,
@@ -355,7 +352,7 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
           return consumeObjectStream(stream, input.onPartial)
         })()
 
-        const usage = toTokenUsage(result.usage)
+        const usage = toTokenUsage(result.usage, result.providerMetadata)
         const latencyMs = Date.now() - startedAt
         const meta: AiCallMeta = {
           provider: config.provider,
@@ -370,7 +367,7 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
 
         const verdict = verify ? verify(result.object) : { ok: true }
 
-        void recordAiUsage(supabase, {
+        await recordAiUsage(supabase, {
           orgId,
           feature,
           tier,
@@ -396,17 +393,18 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
           message: verdict.message ?? "The extracted values did not reconcile.",
         }
       } catch (error) {
+        try { input.onFailure?.(error) } catch { /* Diagnostics cannot affect generation. */ }
         const { reason, kind } = classifyError(error)
         const latencyMs = Date.now() - startedAt
         lastFailure = { reason, message: error instanceof Error ? error.message : String(error) }
 
-        void recordAiUsage(supabase, {
+        await recordAiUsage(supabase, {
           orgId,
           feature,
           tier,
           provider: config.provider,
           model: config.model,
-          usage: EMPTY_USAGE,
+          usage: usageFromError(error),
           latencyMs,
           attempt: totalAttempts,
           escalatedFrom: tier === startTier ? null : startTier,
@@ -417,14 +415,20 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
           entityId: entityId ?? null,
         })
 
-        if (!isRetryable(kind)) break
-        if (attempt < maxAttemptsPerTier) {
-          await new Promise((resolve) => setTimeout(resolve, backoffMs(attempt)))
+        if (isTerminalAiError(kind)) return { ok: false, reason, message: lastFailure.message, meta: lastMeta }
+        if (isAvailabilityError(kind)) {
+          unavailableProviders.add(config.provider)
+          if (!allowFallback || availabilityFallback) return { ok: false, reason, message: lastFailure.message, meta: lastMeta }
+          availabilityFallback = true
+          break
         }
+        // Only invalid output is retried at the same tier; infrastructure errors
+        // must not stampede an overloaded provider.
+        if (kind !== "no_object_generated") break
       }
     }
 
-    tier = allowEscalation ? nextTier(tier) : null
+    tier = allowEscalation || (allowFallback && unavailableProviders.has(config.provider)) ? nextTier(tier) : null
   }
 
   return { ok: false, reason: lastFailure.reason, message: lastFailure.message, meta: lastMeta }
@@ -500,6 +504,8 @@ export async function runAiText(input: {
           ],
         },
       ],
+      maxRetries: 0,
+      ...generationOptions(config.provider, config.model, feature),
       abortSignal: AbortSignal.timeout(timeoutMs),
       experimental_telemetry: {
         isEnabled: true,
@@ -508,7 +514,7 @@ export async function runAiText(input: {
       },
     })
 
-    const usage = toTokenUsage(result.usage)
+    const usage = toTokenUsage(result.usage, result.providerMetadata)
     const latencyMs = Date.now() - startedAt
     const meta: AiCallMeta = {
       provider: config.provider,
@@ -520,7 +526,7 @@ export async function runAiText(input: {
       usage,
     }
 
-    void recordAiUsage(supabase, {
+    await recordAiUsage(supabase, {
       orgId,
       feature,
       tier,
@@ -539,13 +545,13 @@ export async function runAiText(input: {
     return { ok: true, text: result.text.trim(), meta }
   } catch (error) {
     const { reason, kind } = classifyError(error)
-    void recordAiUsage(supabase, {
+    await recordAiUsage(supabase, {
       orgId,
       feature,
       tier,
       provider: config.provider,
       model: config.model,
-      usage: EMPTY_USAGE,
+      usage: usageFromError(error),
       latencyMs: Date.now() - startedAt,
       attempt: 1,
       escalatedFrom: null,

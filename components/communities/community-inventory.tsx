@@ -6,7 +6,7 @@ import { useEffect, useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import { bulkUpdateLotsAction, createLotRangeAction, listMatchingLotIdsAction } from "@/app/(app)/communities/actions"
-import { LotInspector, type LotMoney } from "@/components/communities/lot-inspector"
+import { LotInspector, type LotCapabilities, type LotMoney } from "@/components/communities/lot-inspector"
 import { LotPlatGrid } from "@/components/communities/lot-plat-grid"
 import { ChevronDown, ChevronUp, Plus, Search } from "@/components/icons"
 import { Button } from "@/components/ui/button"
@@ -233,6 +233,7 @@ export function CommunityInventory({
   projects,
   projectsTruncated,
   canWrite,
+  lotCapabilities,
   canReadMoney,
   view,
   sort,
@@ -249,6 +250,7 @@ export function CommunityInventory({
   /** True when more unlinked homes exist than the picker lists. */
   projectsTruncated: boolean
   canWrite: boolean
+  lotCapabilities: LotCapabilities
   canReadMoney: boolean
   view: "table" | "map"
   sort: SortKey
@@ -259,7 +261,7 @@ export function CommunityInventory({
   const [isPending, startTransition] = useTransition()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [selectionScope, setSelectionScope] = useState<"page" | "matching">("page")
-  const [inspecting, setInspecting] = useState<string | null>(null)
+  const [inspecting, setInspecting] = useState<string | null>(params.get("lot"))
   const [search, setSearch] = useState(params.get("q") ?? "")
 
   const status = params.get("status") ?? ALL
@@ -663,6 +665,7 @@ export function CommunityInventory({
         projects={projects}
         projectsTruncated={projectsTruncated}
         canWrite={canWrite}
+        capabilities={lotCapabilities}
         onOpenChange={(open) => {
           if (!open) setInspecting(null)
         }}

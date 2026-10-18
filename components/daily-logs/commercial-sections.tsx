@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Textarea } from "@/components/ui/textarea"
+import { ReceiveDeliveryButton } from "@/components/purchasing/receive-delivery-button"
 import type { DailyReport, ScheduleItem } from "@/lib/types"
 import type {
   DailyReportSectionKind,
@@ -23,6 +24,7 @@ import type {
 type SectionInput = DailyReportSectionInput
 
 interface CommercialSectionsProps {
+  projectId: string
   onPendingChange?: (pending: boolean) => void
   report?: DailyReport
   dateKey: string
@@ -426,6 +428,7 @@ function SectionForm({
 }
 
 export function CommercialSections({
+  projectId,
   onPendingChange,
   report,
   dateKey,
@@ -503,19 +506,24 @@ export function CommercialSections({
                 <span className="font-mono text-[10px] text-muted-foreground">{rows.length || "—"}</span>
               </button>
               {!locked && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 text-xs text-muted-foreground"
-                  onClick={() => {
-                    setOpen(kind)
-                    setAdding(kind)
-                    setEditing(null)
-                  }}
-                >
-                  <Plus className="mr-1 h-3.5 w-3.5" />
-                  Add
-                </Button>
+                <div className="flex items-center">
+                  {kind === "delivery" && (
+                    <ReceiveDeliveryButton projectId={projectId} className="h-7 text-xs text-muted-foreground" />
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs text-muted-foreground"
+                    onClick={() => {
+                      setOpen(kind)
+                      setAdding(kind)
+                      setEditing(null)
+                    }}
+                  >
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    Add
+                  </Button>
+                </div>
               )}
             </div>
             {expanded && (

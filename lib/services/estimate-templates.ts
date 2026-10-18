@@ -1,6 +1,9 @@
 import { z } from "zod"
 
+import { readAllRowsById } from "@/lib/land/paging"
+
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 
 /**
  * Saved estimate templates — a reusable set of sections + line items a builder
@@ -56,19 +59,28 @@ function mapTemplate(row: any): EstimateTemplateDto {
   }
 }
 
-export async function listEstimateTemplates(orgId?: string): Promise<EstimateTemplateDto[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const { data, error } = await supabase
-    .from("estimate_templates")
-    .select("id, name, description, lines, created_at, updated_at")
-    .eq("org_id", resolvedOrgId)
-    .order("name", { ascending: true })
+/** Original template records shared by settings and estimate workbench readers. */
+export async function listEstimateTemplateRecords(orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("org.member", context)
+  const rows = await readAllRowsById(
+    (afterId, limit) => {
+      let query = context.supabase
+        .from("estimate_templates")
+        .select("id, org_id, name, description, lines, is_default, created_at, updated_at")
+        .eq("org_id", context.orgId)
+        .order("id")
+        .limit(limit)
+      if (afterId) query = query.gt("id", afterId)
+      return query
+    },
+    { cap: 2_000, label: "Failed to load complete estimate template library" },
+  )
+  return rows.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+}
 
-  if (error) {
-    console.error("Failed to list estimate templates", error.message)
-    return []
-  }
-  return (data ?? []).map(mapTemplate)
+export async function listEstimateTemplates(orgId?: string): Promise<EstimateTemplateDto[]> {
+  return (await listEstimateTemplateRecords(orgId)).map(mapTemplate)
 }
 
 function toLinesPayload(lines: EstimateTemplateLine[]) {
@@ -86,7 +98,9 @@ function toLinesPayload(lines: EstimateTemplateLine[]) {
 
 export async function createEstimateTemplate(input: EstimateTemplateInput, orgId?: string): Promise<EstimateTemplateDto> {
   const parsed = estimateTemplateInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("org.member", context)
+  const { supabase, orgId: resolvedOrgId } = context
 
   const { data, error } = await supabase
     .from("estimate_templates")
@@ -111,7 +125,9 @@ export async function updateEstimateTemplate(
   orgId?: string,
 ): Promise<EstimateTemplateDto> {
   const parsed = estimateTemplateInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("org.member", context)
+  const { supabase, orgId: resolvedOrgId } = context
 
   const { data, error } = await supabase
     .from("estimate_templates")
@@ -133,7 +149,9 @@ export async function updateEstimateTemplate(
 }
 
 export async function deleteEstimateTemplate(id: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("org.member", context)
+  const { supabase, orgId: resolvedOrgId } = context
   const { error } = await supabase.from("estimate_templates").delete().eq("id", id).eq("org_id", resolvedOrgId)
   if (error) {
     throw new Error(`Failed to delete template: ${error.message}`)

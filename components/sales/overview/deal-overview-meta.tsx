@@ -4,13 +4,14 @@ import { ArrowUpRight } from "@/components/icons"
 import { BAND_X } from "@/components/overview/primitives"
 import { DealPeople } from "@/components/sales/deal-people"
 import { DealAttentionBlock } from "@/components/sales/overview/deal-overview-attention"
+import { DealOverviewAttribution } from "@/components/sales/overview/deal-overview-attribution"
 import { Fact, MetaBlock, Note } from "@/components/sales/overview/meta-block"
-import type { PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
+import { homePriceAdjustments, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
 import { formatDealDate } from "@/lib/sales/dates"
 import type { DealAttentionItem } from "@/lib/sales/deal-attention"
 import { daysUntil } from "@/lib/sales/next-action"
 import { STAGE_LABELS } from "@/lib/sales/stages"
-import type { Prospect, ProspectContact } from "@/lib/services/prospects"
+import type { Prospect, ProspectAttributionHistory, ProspectContact } from "@/lib/services/prospects"
 import type { SalesDeal, SalesDealReservation } from "@/lib/services/sales-deals"
 import { cn, formatMoneyCents } from "@/lib/utils"
 
@@ -20,6 +21,7 @@ export interface DealElsewhereLink {
 }
 
 interface DealOverviewMetaProps {
+  canEditProspect: boolean
   deal: SalesDeal
   reservation: SalesDealReservation | null
   pricing: PurchaseAgreementPricing | null
@@ -28,6 +30,7 @@ interface DealOverviewMetaProps {
   contacts: ProspectContact[]
   attention: DealAttentionItem[]
   links: DealElsewhereLink[]
+  attribution: ProspectAttributionHistory | null
 }
 
 /** `partially_refunded` → `Partially refunded`. Raw enum values read as a bug. */
@@ -63,6 +66,8 @@ export function DealOverviewMeta({
   contacts,
   attention,
   links,
+  canEditProspect,
+  attribution,
 }: DealOverviewMetaProps) {
   const now = new Date()
   const holdExpiresAt = reservation?.expiresAt ?? deal.holdExpiresAt
@@ -87,6 +92,7 @@ export function DealOverviewMeta({
   return (
     <section className={cn(BAND_X, "space-y-9 py-10")}>
       <DealAttentionBlock
+        canEditProspect={canEditProspect}
         items={attention}
         prospectId={prospect?.id ?? null}
         followUpAt={deal.nextFollowUpAt}
@@ -129,6 +135,14 @@ export function DealOverviewMeta({
                 positive
               />
             ) : null}
+            {homePriceAdjustments(pricing).map((line) => (
+              <Fact
+                key={`${line.kind}:${line.sourceId}`}
+                label={line.label}
+                value={line.amountCents < 0 ? `−${formatMoneyCents(-line.amountCents)}` : `+${formatMoneyCents(line.amountCents)}`}
+                positive={line.amountCents < 0}
+              />
+            ))}
             {/* The total is the last line in the block, the way a total is. */}
             <Fact label="Contract price" value={formatMoneyCents(pricing.totalCents)} emphasis />
             {optionsCents > 0 ? (
@@ -219,6 +233,8 @@ export function DealOverviewMeta({
           <Fact label="Timeframe" value={prospect.timeline_preference} />
         ) : null}
       </MetaBlock>
+
+      {prospect ? <DealOverviewAttribution history={attribution} /> : null}
 
       <MetaBlock title="People">
         <DealPeople

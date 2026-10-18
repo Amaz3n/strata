@@ -4,6 +4,7 @@ import { NextResponse } from "next/server"
 import { findOrgIdByInboundRecipients } from "@/lib/services/payables-email-ingest"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { findProjectByInboundRecipients } from "@/lib/services/project-email-ingest"
+import { processSigningDeliveryWebhook } from "@/lib/services/esign-delivery-events"
 
 /**
  * Resend inbound-email webhook (`email.received`) for the bills address
@@ -64,7 +65,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 })
   }
 
-  let event: { type?: string; data?: Record<string, unknown> }
+  let event: { type?: string; created_at?: unknown; data?: Record<string, unknown> }
   try {
     event = JSON.parse(payload)
   } catch {
@@ -72,6 +73,13 @@ export async function POST(request: Request) {
   }
 
   if (event.type !== "email.received") {
+    try {
+      await processSigningDeliveryWebhook({ eventId: request.headers.get("svix-id") ?? "",
+        type: event.type, createdAt: event.created_at, data: event.data })
+    } catch (error) {
+      console.error("Could not persist email delivery event", error)
+      return NextResponse.json({ error: "Delivery event could not be recorded" }, { status: 503 })
+    }
     return NextResponse.json({ received: true })
   }
 

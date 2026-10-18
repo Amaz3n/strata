@@ -6,6 +6,9 @@
  * are testable only if they do not need a database.
  */
 
+/** Findings about a company's projection run as a whole, rather than one source. */
+export const PROJECTION_RUN_SOURCE_TYPE = "books_projection_run"
+
 /**
  * Categories emitted by the ledger tie-outs.
  *
@@ -26,6 +29,12 @@ export const TIE_OUT_ITEM_CATEGORIES = [
   "tie_out_debt_register_control",
   "tie_out_fixed_assets_control",
   "tie_out_accumulated_depreciation_control",
+  "tie_out_land_inventory_control",
+  "tie_out_completed_homes_control",
+  "tie_out_warranty_reserve_control",
+  "tie_out_impairment_control",
+  "tie_out_intercompany_control",
+  "tie_out_cash_control",
 ] as const
 
 /**
@@ -40,6 +49,36 @@ export const PROJECTION_ITEM_CATEGORIES = [
   "projection_blocked_by_closed_period",
   "projection_failed",
 ] as const
+
+/**
+ * What the full ledger proof found, as findings the close shows with their cure.
+ * Only a full proof writes or resolves them: a narrowed proof cannot say a
+ * finding is gone, and the reconciliation sweep cannot reproduce them at all.
+ */
+export const LEDGER_PROOF_CATEGORY = "ledger_proof"
+
+const PROOF_CURES: Record<string, string> = {
+  journal_divergence: "This entry no longer matches its source. Reverse it with the reason, then run posting: the source posts again from its unchanged record.",
+  unexpected_journal: "This entry has no source behind it. Reverse it with the reason, or record what it was for as a journal.",
+  missing_journal: "This source's posting was lost or reversed. Run posting to post it again.",
+}
+
+export function ledgerProofFindings(differences: Array<Record<string, unknown> & { type: string }>): ReconciliationFinding[] {
+  return differences.flatMap((difference) => {
+    const cure = PROOF_CURES[difference.type]
+    if (!cure) return []
+    const entryId = typeof difference.entry_id === "string" ? difference.entry_id : null
+    const factId = typeof difference.fact_id === "string" ? difference.fact_id : null
+    return [{
+      category: LEDGER_PROOF_CATEGORY,
+      entityType: entryId ? "journal_entry" : "accounting_fact",
+      entityId: entryId ?? factId ?? undefined,
+      findingKey: difference.type,
+      details: { severity: "critical", description: cure, cure, href: entryId ? `/books/ledger?entry=${entryId}` : "/books/close",
+        source_type: difference.source_type ?? null, source_id: difference.source_id ?? null },
+    }]
+  })
+}
 
 /**
  * One finding, as produced by a sweep. A finding is a *current* observation; its
@@ -173,6 +212,18 @@ export function planReconciliationItemSync(args: {
 }
 
 /**
+ * New findings worth telling the company about. A run-level finding (the pass
+ * ran out of time before this company, or stopped on it) is Arc's capacity, not
+ * the company's records: it stays an item on the close page, but a time-boxed
+ * pass that reaches a different subset each night would otherwise resolve and
+ * reopen it, and alert the owner, every night.
+ */
+export function notifiableFindingCount(plan: ReconciliationSyncPlan) {
+  return [...plan.insert, ...plan.carryForward.filter((row) => row.reopened).map((row) => row.finding)]
+    .filter((finding) => finding.entityType !== PROJECTION_RUN_SOURCE_TYPE).length
+}
+
+/**
  * A run that could not look everywhere is not a clean run.
  *
  * `PROJECT_CHECK_CAP` bounds how much of a large org one pass inspects, and a
@@ -194,7 +245,7 @@ export function reconciliationRunStatus(args: { itemCount: number; projectsSkipp
  * rather than buried in a generic failure list nobody reads.
  */
 export function classifyProjectionFailure(error: string) {
-  return error.includes("Cannot post into a closed accounting period")
+  return /cannot post into a closed accounting period|accounting period is closed and cannot accept postings/i.test(error)
     ? ("projection_blocked_by_closed_period" as const)
     : ("projection_failed" as const)
 }
@@ -255,4 +306,13 @@ export function planRetainageControlFindings(args: {
     })
   }
   return findings
+}
+
+/** An incremental pass can only resolve findings for sources it actually evaluated. */
+export function projectionFindingWasEvaluated(
+  item: { entityType: string | null; entityId: string | null },
+  evaluatedSourceKeys: ReadonlySet<string>,
+) {
+  return item.entityType !== null && item.entityId !== null
+    && evaluatedSourceKeys.has(`${item.entityType}:${item.entityId}`)
 }

@@ -1,3 +1,6 @@
+import { connection } from "next/server"
+import { Suspense } from "react"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { notFound } from "next/navigation";
 
 import { getProjectAction } from "@/app/(app)/projects/[id]/actions";
@@ -10,7 +13,8 @@ interface PageProps {
   params: Promise<{ id: string }>;
 }
 
-export default async function ForecastHistoryPage({ params }: PageProps) {
+async function ForecastHistoryPageContent({ params }: PageProps) {
+  await connection()
   const { id } = await params;
   const [project, snapshots, costCodes] = await Promise.all([
     getProjectAction(id),
@@ -38,4 +42,18 @@ export default async function ForecastHistoryPage({ params }: PageProps) {
       </div>
     </PageLayout>
   );
+}
+
+export default function ForecastHistoryPage(props: Parameters<typeof ForecastHistoryPageContent>[0]) {
+  return (
+    <Suspense
+      fallback={
+        <PageLayout title="Forecast History" fullBleed>
+          <PageLoadingSkeleton />
+        </PageLayout>
+      }
+    >
+      <ForecastHistoryPageContent {...props} />
+    </Suspense>
+  )
 }

@@ -1,4 +1,10 @@
 export const FEATURE_FLAGS = {
+  warrantyActorAnalytics: "warranty_actor_analytics",
+  warrantyCompletionTransactions: "warranty_completion_transactions",
+  warrantyCourtesyReservations: "warranty_courtesy_reservations",
+  startsConfirmationRecovery: "starts_confirmation_recovery",
+  notificationDeliveryReceipts: "notification_delivery_receipts",
+  productionConfigurationRules: "production_configuration_rules",
   aiEnabled: "ai_enabled",
   aiSearchEnabled: "ai_search_enabled",
   aiSearchPlannerV2: "ai_search_planner_v2",
@@ -30,6 +36,12 @@ export interface FeatureFlagDefinition {
 const REVIEW_AFTER = "2026-10-01"
 
 export const FEATURE_FLAG_DEFINITIONS: Record<FeatureFlagKey, FeatureFlagDefinition> = {
+  [FEATURE_FLAGS.warrantyActorAnalytics]: { key: FEATURE_FLAGS.warrantyActorAnalytics, label: "Scoped warranty analytics", description: "Actor-scoped database aggregates. Enable only after migration approval, full-schema policy and accounting-source acceptance.", owner: "platform", defaultEnabled: false, reviewAfter: "2026-11-01", removalCondition: "Remove after every warranty aggregate uses verified actor/home scoping.", config: {} },
+  [FEATURE_FLAGS.warrantyCompletionTransactions]: { key: FEATURE_FLAGS.warrantyCompletionTransactions, label: "Warranty completion transactions", description: "Atomic office completion with original event/audit and permanent replay receipts. Enable only after migration approval, full-schema concurrency and dedicated-QA acceptance.", owner: "platform", defaultEnabled: false, reviewAfter: "2026-11-01", removalCondition: "Remove after all office completion uses verified transaction receipts and legacy completion is retired.", config: {} },
+  [FEATURE_FLAGS.startsConfirmationRecovery]: { key: FEATURE_FLAGS.startsConfirmationRecovery, label: "Starts confirmation recovery", description: "Audited recovery of failed confirmation jobs for released homes. Enable after migration approval and dedicated-QA acceptance.", owner: "platform", defaultEnabled: false, reviewAfter: "2026-11-01", removalCondition: "Remove after all organizations use the verified recovery transaction.", config: {} },
+  [FEATURE_FLAGS.warrantyCourtesyReservations]: { key: FEATURE_FLAGS.warrantyCourtesyReservations, label: "Warranty courtesy reservations", description: "Reserve courtesy milestones atomically with request, event and audit evidence. Enable only after the migration and dedicated-QA acceptance.", owner: "platform", defaultEnabled: false, reviewAfter: "2026-11-01", removalCondition: "Remove after all courtesy scheduling uses verified permanent reservations and legacy generation is retired.", config: {} },
+  [FEATURE_FLAGS.notificationDeliveryReceipts]: { key: FEATURE_FLAGS.notificationDeliveryReceipts, label: "Notification delivery receipts", description: "Reserve stable alert deliveries with permanent receipts. Enable only after the receipt migration, recovery and dedicated-QA acceptance.", owner: "platform", defaultEnabled: false, reviewAfter: "2026-11-01", removalCondition: "Remove after stable alert deliveries use verified receipts across all organizations and legacy enqueue is retired.", config: {} },
+  [FEATURE_FLAGS.productionConfigurationRules]: { key: FEATURE_FLAGS.productionConfigurationRules, label: "Production configuration rules", description: "Required and incompatible options at selection, sale and release. Enable only after the configuration migration and QA acceptance.", owner: "platform", defaultEnabled: false, reviewAfter: "2026-11-01", removalCondition: "Remove the rollout gate after all organizations have the schema and validated configuration controls.", config: {} },
   [FEATURE_FLAGS.aiEnabled]: { key: FEATURE_FLAGS.aiEnabled, label: "AI platform", description: "Master gate for AI provider execution.", owner: "ai", defaultEnabled: true, reviewAfter: REVIEW_AFTER, removalCondition: "Remove after AI availability has one supported posture.", config: {} },
   [FEATURE_FLAGS.aiSearchEnabled]: { key: FEATURE_FLAGS.aiSearchEnabled, label: "AI Search", description: "Master switch for conversational AI search.", owner: "ai", defaultEnabled: true, reviewAfter: REVIEW_AFTER, removalCondition: "Remove when conversational search is universally supported or retired.", config: {} },
   [FEATURE_FLAGS.aiSearchPlannerV2]: { key: FEATURE_FLAGS.aiSearchPlannerV2, label: "AI Search Planner v2", description: "Second-generation search planner.", owner: "ai", defaultEnabled: true, reviewAfter: REVIEW_AFTER, removalCondition: "Remove after the legacy planner is deleted.", config: {} },

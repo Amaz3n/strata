@@ -1,13 +1,16 @@
 "use client"
 
-import { Button } from "@/components/ui/button"
+import { DeskErrorState } from "@/components/layout/desk-error-state"
 
-export default function ProjectPhotosError({ reset }: { reset: () => void }) {
+export default function ProjectPhotosError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
-    <div className="m-6 border p-8 text-center">
-      <h2 className="font-semibold">Photos could not be loaded</h2>
-      <p className="mt-2 text-sm text-muted-foreground">Check your connection and try again.</p>
-      <Button className="mt-4" variant="outline" onClick={reset}>Try again</Button>
-    </div>
+    <DeskErrorState
+      error={error}
+      retry={retry}
+      subject="Photos"
+      backHref="/projects"
+      backLabel="Back to projects"
+      hint="Check your connection and try again."
+    />
   )
 }

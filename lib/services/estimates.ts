@@ -1,6 +1,8 @@
+import { estimateAlternateIssue, normalizeCommercialEstimateLines, calculateCommercialEstimateTotals, type EstimateCommercial } from "@/lib/financials/estimate-commercial"
 import { z } from "zod"
+import { authorizeEstimateDocumentWrite } from "./estimate-document-authorization"
+import { normalizeEstimateCommercial } from "@/lib/financials/estimate-commercial"
 
-import { calculateEstimateTotals } from "@/lib/financials/estimate-totals"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 
@@ -12,7 +14,7 @@ const estimateLineSchema = z.object({
   cost_code_id: z.string().uuid().optional(),
   item_type: z.enum(["line", "group"]).default("line"),
   description: z.string().min(1),
-  quantity: z.number().default(1),
+  quantity: z.number().min(0).default(1),
   unit: z.string().optional(),
   unit_cost_cents: z.number().int().default(0),
   markup_pct: z.number().default(0),
@@ -27,6 +29,9 @@ const estimateLineSchema = z.object({
   /** Sub bid this line's cost basis was pulled from (estimate builder "Use bid"). */
   source_bid_submission_id: z.string().uuid().optional(),
   metadata: z.record(z.any()).optional(),
+}).superRefine((line, context) => {
+  const issue = estimateAlternateIssue(line)
+  if (issue) context.addIssue({ code: z.ZodIssueCode.custom, message: issue, path: ["unit_cost_cents"] })
 })
 
 type EstimateLine = z.infer<typeof estimateLineSchema>
@@ -109,9 +114,12 @@ function stripNul(value: string | null | undefined): string | null | undefined {
   return typeof value === "string" ? value.split(String.fromCharCode(0)).join("") : value
 }
 
-const calculateTotals = calculateEstimateTotals
+const calculateTotals = calculateCommercialEstimateTotals
 
 export async function createEstimate({
+  precon,
+  source_budget_estimate_id,
+  pricing_worksheet_snapshot,
   project_id,
   prospect_id,
   recipient_contact_id,
@@ -132,6 +140,9 @@ export async function createEstimate({
   lines,
   orgId,
 }: {
+  precon?: EstimateCommercial
+  source_budget_estimate_id?: string
+  pricing_worksheet_snapshot?: { version: number; fingerprint: string; proposal_fingerprint?: string; range?: { low_cents: number; high_cents: number } }
   project_id?: string | null
   prospect_id?: string | null
   recipient_contact_id?: string | null
@@ -152,24 +163,43 @@ export async function createEstimate({
   lines: z.infer<typeof estimateLineSchema>[]
   orgId?: string
 }) {
-  const parsedLines = estimateLineSchema.array().min(1).parse(lines)
+  const parsedLines = normalizeCommercialEstimateLines(estimateLineSchema.array().min(1).parse(lines), precon)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
-  const totals = calculateTotals(parsedLines, tax_rate ?? 0, contingency_percent ?? 0)
+  const totals = calculateTotals(parsedLines, tax_rate ?? 0, contingency_percent ?? 0, precon)
 
   // A prospect that has entered pricing owns a precon-phase project; estimates
   // land on it so takeoff conditions can sync into them before the job is won.
   let resolvedProjectId = project_id ?? null
   if (!resolvedProjectId && prospect_id) {
-    const { data: preconProject } = await supabase
+    const { data: preconProject, error: projectError } = await supabase
       .from("projects")
       .select("id")
       .eq("org_id", resolvedOrgId)
       .eq("prospect_id", prospect_id)
       .eq("phase", "precon")
       .maybeSingle()
+    if (projectError) throw new Error(`Unable to verify the pricing workspace: ${projectError.message}`)
     resolvedProjectId = preconProject?.id ?? null
+  }
+
+  if (prospect_id && !resolvedProjectId) {
+    const { data: prospect, error } = await supabase.from("prospects").select("id").eq("org_id", resolvedOrgId).eq("id", prospect_id).maybeSingle()
+    if (error || !prospect) throw new Error("Prospect not found in this organization.")
+  }
+  const advancesConstructionPricing = precon?.purpose !== "preconstruction_agreement"
+
+  let sourceBudget: Record<string, any> | null = null
+  if (source_budget_estimate_id) {
+    const { data: source, error: sourceError } = await supabase.from("estimates")
+      .select("id, version, org_id, project_id, prospect_id, status, metadata, is_current_version")
+      .eq("org_id", resolvedOrgId).eq("id", source_budget_estimate_id).single()
+    if (sourceError || !source || source.status !== "approved" || source.is_current_version === false || source.metadata?.precon?.purpose !== "budget" ||
+        source.prospect_id !== (prospect_id ?? null) || source.project_id !== resolvedProjectId) {
+      throw new Error("Prepare the agreement from an approved budget belonging to this opportunity.")
+    }
+    sourceBudget = { estimate_id: source.id, version: source.version, accepted_options: source.metadata?.accepted_options ?? null }
   }
 
   const { data: estimate, error: estimateError } = await supabase
@@ -187,6 +217,9 @@ export async function createEstimate({
       total_cents: totals.total,
       valid_until: valid_until ?? null,
       metadata: {
+        ...(pricing_worksheet_snapshot ? { pricing_worksheet: pricing_worksheet_snapshot } : {}),
+        ...(precon ? { precon } : {}),
+        ...(sourceBudget ? { source_budget: sourceBudget } : {}),
         tax_rate: tax_rate ?? 0,
         markup_percent: markup_percent ?? 0,
         contingency_percent: contingency_percent ?? 0,
@@ -225,8 +258,8 @@ export async function createEstimate({
     after: { ...estimate, items: itemsPayload },
   })
 
-  // Pricing a prospect moves it down the funnel on its behalf.
-  if (prospect_id) {
+  // A services agreement has its own lifecycle; it cannot qualify construction.
+  if (prospect_id && advancesConstructionPricing) {
     await updateProspectStatusOnEstimateCreation({
       supabase,
       orgId: resolvedOrgId,
@@ -359,7 +392,7 @@ export async function duplicateEstimate({ estimateId, orgId }: { estimateId: str
       tax_cents: existing.tax_cents,
       total_cents: existing.total_cents,
       currency: existing.currency,
-      metadata: { ...existing.metadata, duplicated_from: estimateId },
+      metadata: { ...existing.metadata, accepted_options: undefined, estimate_execution: undefined, signing_withdrawal: undefined, duplicated_from: estimateId },
       created_by: userId,
     })
     .select("*")
@@ -407,6 +440,20 @@ export async function duplicateEstimate({ estimateId, orgId }: { estimateId: str
  * Used after a client requests changes: the builder revises and re-sends a fresh
  * draft while the prior version is preserved (read-only) for history.
  */
+async function finalizeEstimateRevision(client: ReturnType<typeof createServiceSupabaseClient>, orgId: string, existing: any, newEstimateId: string) {
+  const { data, error } = await client.from("estimates").update({ is_current_version: false })
+    .eq("org_id", orgId).eq("id", existing.id).eq("status", existing.status)
+    .eq("is_current_version", existing.is_current_version !== false).select("id").maybeSingle()
+  if (error || !data) {
+    // Only the unpublished draft produced by this call is removed. A concurrent
+    // client signature or another revision remains untouched.
+    const service = createServiceSupabaseClient()
+    await service.from("estimate_items").delete().eq("org_id", orgId).eq("estimate_id", newEstimateId)
+    await service.from("estimates").delete().eq("org_id", orgId).eq("id", newEstimateId).eq("status", "draft")
+    throw new Error("This estimate changed while revising. Refresh and review its latest decision before continuing.")
+  }
+}
+
 export async function reviseEstimate({ estimateId, orgId }: { estimateId: string; orgId?: string }) {
   const supabase = createServiceSupabaseClient()
   const { supabase: scoped, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -423,8 +470,15 @@ export async function reviseEstimate({ estimateId, orgId }: { estimateId: string
     throw new Error("Estimate not found")
   }
 
-  if (["executed", "converted_to_project"].includes(existing.status)) {
-    throw new Error("This estimate is executed. Changes after execution go through a change order.")
+  if (["executed", "converted_to_project"].includes(existing.status) || (existing.status === "client_signed" && !existing.metadata?.signing_withdrawal)) {
+    throw new Error("This estimate has been signed. Complete or withdraw its signing process before creating another agreement; executed changes require a change order.")
+  }
+
+  if (existing.is_current_version === false) {
+    if (!existing.metadata?.signing_withdrawal) throw new Error("Revise the current estimate version.")
+    const { data: successor } = await scoped.from("estimates").select("*").eq("org_id", resolvedOrgId)
+      .eq("supersedes_estimate_id", existing.id).eq("is_current_version", true).maybeSingle()
+    if (successor) return successor
   }
 
   const versionGroupId = (existing.version_group_id as string | null) ?? existing.id
@@ -449,7 +503,7 @@ export async function reviseEstimate({ estimateId, orgId }: { estimateId: string
       total_cents: existing.total_cents,
       currency: existing.currency,
       valid_until: existing.valid_until,
-      metadata: existing.metadata,
+      metadata: { ...existing.metadata, accepted_options: undefined, estimate_execution: undefined, signing_withdrawal: undefined },
       created_by: userId,
     })
     .select("*")
@@ -481,11 +535,7 @@ export async function reviseEstimate({ estimateId, orgId }: { estimateId: string
   }
 
   // Mark the prior version as superseded so the portal/list show the latest as current.
-  await scoped
-    .from("estimates")
-    .update({ is_current_version: false })
-    .eq("id", existing.id)
-    .eq("org_id", resolvedOrgId)
+  await finalizeEstimateRevision(scoped, resolvedOrgId, existing, newEstimate.id)
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -521,6 +571,8 @@ export async function createEstimateVersion({
   estimateId: string
   input: {
     title: string
+    pricing_worksheet_snapshot?: { version: number; fingerprint: string; proposal_fingerprint?: string; range?: { low_cents: number; high_cents: number } }
+    precon?: EstimateCommercial
     recipient_contact_id?: string | null
     recipient_name?: string | null
     recipient_email?: string | null
@@ -539,13 +591,13 @@ export async function createEstimateVersion({
   }
   orgId?: string
 }) {
-  const parsedLines = estimateLineSchema.array().min(1).parse(input.lines)
+  let parsedLines = estimateLineSchema.array().min(1).parse(input.lines)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: loadError } = await supabase
     .from("estimates")
-    .select("id, project_id, prospect_id, opportunity_id, status, version, version_group_id, currency, metadata")
+    .select("id, project_id, prospect_id, opportunity_id, status, is_current_version, version, version_group_id, currency, metadata")
     .eq("id", estimateId)
     .eq("org_id", resolvedOrgId)
     .single()
@@ -554,13 +606,17 @@ export async function createEstimateVersion({
     throw new Error("Estimate not found")
   }
 
-  if (["executed", "converted_to_project"].includes(existing.status as string)) {
-    throw new Error("This estimate is executed. Changes after execution go through a change order.")
+  if (["executed", "converted_to_project"].includes(existing.status as string) || (existing.status === "client_signed" && !(existing.metadata as any)?.signing_withdrawal)) {
+    throw new Error("This estimate has been signed. Complete or withdraw its signing process before creating another agreement; executed changes require a change order.")
   }
+
+  if (existing.is_current_version === false) throw new Error("Revise the current estimate version.")
 
   const versionGroupId = (existing.version_group_id as string | null) ?? existing.id
   const newVersion = (existing.version ?? 1) + 1
-  const totals = calculateTotals(parsedLines, input.tax_rate ?? 0, input.contingency_percent ?? 0)
+  const commercial = input.precon ?? (existing.metadata as any)?.precon
+  parsedLines = normalizeCommercialEstimateLines(parsedLines, commercial)
+  const totals = calculateTotals(parsedLines, input.tax_rate ?? 0, input.contingency_percent ?? 0, commercial)
   const existingMetadata = (existing.metadata as Record<string, any> | null) ?? {}
 
   const { data: newEstimate, error: insertError } = await supabase
@@ -584,6 +640,11 @@ export async function createEstimateVersion({
       valid_until: input.valid_until ?? null,
       metadata: {
         ...existingMetadata,
+        ...(input.pricing_worksheet_snapshot ? { pricing_worksheet: input.pricing_worksheet_snapshot } : {}),
+        accepted_options: undefined,
+        signing_withdrawal: undefined,
+        estimate_execution: undefined,
+        precon: input.precon ?? existingMetadata.precon,
         tax_rate: input.tax_rate ?? 0,
         markup_percent: input.markup_percent ?? 0,
         contingency_percent: input.contingency_percent ?? 0,
@@ -622,11 +683,7 @@ export async function createEstimateVersion({
   }
 
   // Mark the prior version as superseded so the portal/list show the latest as current.
-  await supabase
-    .from("estimates")
-    .update({ is_current_version: false })
-    .eq("id", existing.id)
-    .eq("org_id", resolvedOrgId)
+  await finalizeEstimateRevision(supabase, resolvedOrgId, existing, newEstimate.id)
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -650,3 +707,74 @@ export async function createEstimateVersion({
 
 
 
+/** Withdraw the pending offer without erasing the client's signature evidence. */
+export async function withdrawSignedEstimateForRevision({ estimateId, reason, orgId }: { estimateId: string; reason: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  if (reason.trim().length < 5) throw new Error("Explain why this pending agreement is being withdrawn.")
+  const { data: existing, error } = await supabase.from("estimates").select("*")
+    .eq("org_id", resolvedOrgId).eq("id", estimateId).single()
+  if (error || !existing) throw new Error("Estimate not found")
+  if (existing.status !== "client_signed") throw new Error("Only an agreement awaiting builder signature can be withdrawn here. Executed changes require a change order.")
+  const metadata = { ...(existing.metadata ?? {}), signing_withdrawal: { reason: reason.trim(), withdrawn_at: new Date().toISOString(), withdrawn_by: userId } }
+  // The compare-and-set races safely with execution: execution also requires
+  // current=true and client_signed at its final write.
+  const { data: withdrawn, error: withdrawError } = await supabase.from("estimates")
+    .update({ is_current_version: false, metadata }).eq("id", estimateId).eq("org_id", resolvedOrgId)
+    .eq("status", "client_signed").select("id").maybeSingle()
+  if (withdrawError || !withdrawn) throw new Error("This agreement changed while withdrawing. Refresh before continuing.")
+  const { data: envelopes, error: envelopeError } = await supabase.from("envelopes")
+    .select("id, document_id").eq("org_id", resolvedOrgId).eq("source_entity_type", "estimate")
+    .eq("source_entity_id", estimateId).in("status", ["draft", "sent", "partially_signed"])
+  if (envelopeError) throw new Error(`Agreement withdrawn; retry to cancel its signing delivery: ${envelopeError.message}`)
+  for (const envelope of envelopes ?? []) {
+    const { error: voidError } = await supabase.from("envelopes").update({ status: "voided", updated_at: new Date().toISOString() })
+      .eq("org_id", resolvedOrgId).eq("id", envelope.id).in("status", ["draft", "sent", "partially_signed"])
+    if (voidError) throw new Error(`Agreement withdrawn; signing delivery needs retry: ${voidError.message}`)
+    const { error: requestError } = await supabase.from("document_signing_requests").update({ status: "voided" })
+      .eq("org_id", resolvedOrgId).eq("document_id", envelope.document_id).in("status", ["draft", "sent", "viewed"])
+    if (requestError) throw new Error(`Agreement withdrawn; signing request needs retry: ${requestError.message}`)
+  }
+  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "estimate_signing_withdrawn", entityType: "estimate", entityId: estimateId, payload: { reason: reason.trim() } })
+  return reviseEstimate({ estimateId, orgId: resolvedOrgId })
+}
+
+/** Autosave edits to the current draft without issuing or creating another version. */
+export async function saveEstimateDraft({ estimateId, expectedUpdatedAt, input }: {
+  estimateId: string
+  expectedUpdatedAt: string
+  input: import("@/lib/validation/estimates").EstimateInput
+}) {
+  const { orgId, service, document } = await authorizeEstimateDocumentWrite(estimateId)
+  if (normalizeEstimateCommercial(document.metadata).purpose !== normalizeEstimateCommercial({ precon: input.precon }).purpose) {
+    throw new Error("Prepare a separate document to change its type.")
+  }
+  if (document.status !== "draft" || document.sent_at || document.is_current_version === false) {
+    throw new Error("Only the current unpublished draft can be edited.")
+  }
+  const parsedLines = normalizeCommercialEstimateLines(estimateLineSchema.array().min(1).parse(
+    input.lines.map((line, index) => ({ ...line, sort_order: index, markup_pct: line.markup_pct ?? 0 })),
+  ), input.precon)
+  const totals = calculateTotals(parsedLines, input.tax_rate ?? 0, input.contingency_percent ?? 0, input.precon)
+  const { data, error } = await service.rpc("save_estimate_draft", {
+    p_org_id: orgId, p_estimate_id: estimateId, p_expected_updated_at: expectedUpdatedAt,
+    p_document: {
+      title: stripNul(input.title), recipient_contact_id: input.recipient_contact_id ?? null,
+      valid_until: input.valid_until ?? null, subtotal_cents: totals.subtotal,
+      tax_cents: totals.tax, total_cents: totals.total,
+      metadata: {
+        ...(input.precon ? { precon: input.precon } : {}),
+        tax_rate: input.tax_rate ?? 0, markup_percent: input.markup_percent ?? 0,
+        contingency_percent: input.contingency_percent ?? 0,
+        summary: stripNul(input.summary) ?? null, terms: stripNul(input.terms) ?? null,
+        inclusions: stripNul(input.inclusions) ?? null, exclusions: stripNul(input.exclusions) ?? null,
+        recipient: input.recipient_name || input.recipient_email ? { name: stripNul(input.recipient_name) ?? null, email: stripNul(input.recipient_email) ?? null } : null,
+        intro: null, display: null, photos: [],
+        ...buildPresentationMetadata(input),
+      },
+    },
+    p_items: buildItemsPayload(orgId, estimateId, parsedLines),
+  })
+  if (error || !data) throw new Error(error?.message ?? "Unable to save draft")
+  return data as { id: string; updated_at: string }
+}

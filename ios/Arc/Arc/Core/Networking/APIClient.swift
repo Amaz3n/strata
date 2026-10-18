@@ -85,6 +85,27 @@ struct APIClient: Sendable {
         }
     }
 
+    /// Returns a temporary file; the caller owns moving/removing it.
+    func downloadPDF(_ request: URLRequest) async throws -> URL {
+        var request = request
+        request.setValue("application/pdf", forHTTPHeaderField: "Accept")
+        let (url, response) = try await session.download(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            try? FileManager.default.removeItem(at: url)
+            throw APIError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let data = (try? Data(contentsOf: url)) ?? Data()
+            try? FileManager.default.removeItem(at: url)
+            throw makeAPIError(from: data, response: http)
+        }
+        guard http.mimeType == "application/pdf" else {
+            try? FileManager.default.removeItem(at: url)
+            throw APIError.invalidResponse
+        }
+        return url
+    }
+
     private func makeAPIError(from data: Data, response: HTTPURLResponse) -> APIError {
         let envelope = try? JSONDecoder.arc.decode(APIErrorEnvelope.self, from: data)
         let code = envelope?.error.code

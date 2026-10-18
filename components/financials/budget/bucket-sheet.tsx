@@ -62,12 +62,14 @@ import {
   type CostBucketDraft,
   type UnifiedBudgetRow,
 } from "./shared";
+import { formatDate } from "@/lib/reports/format";
 
 const SOURCE_TYPE_LABELS: Record<string, string> = {
   vendor_bill_line: "Bill",
   project_expense: "Expense",
   project_expense_line: "Expense",
   time_entry: "Labor",
+  payroll_import: "Payroll adjustment",
 };
 
 export function BudgetBucketSheet({
@@ -481,7 +483,7 @@ export function BudgetBucketSheet({
                           {co.approved_at && (
                             <span className="block text-xs text-muted-foreground">
                               Approved{" "}
-                              {new Date(co.approved_at).toLocaleDateString()}
+                              {formatDate(co.approved_at)}
                             </span>
                           )}
                         </div>
@@ -538,7 +540,7 @@ export function BudgetBucketSheet({
                     setCommitmentType(value as typeof commitmentType)
                   }
                 >
-                  <SelectTrigger size="sm">
+                  <SelectTrigger size="sm" aria-label="Commitment type">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -551,7 +553,7 @@ export function BudgetBucketSheet({
                 </Select>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="icon" className="h-8 w-8">
+                    <Button variant="outline" size="icon" className="h-8 w-8" aria-label="Commitment actions">
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -642,7 +644,8 @@ export function BudgetBucketSheet({
                                   <Button
                                     variant="ghost"
                                     size="icon"
-                                    className="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100"
+                                    className="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                                    aria-label={`Actions for ${c.title}`}
                                   >
                                     <MoreHorizontal className="h-3.5 w-3.5" />
                                   </Button>
@@ -736,9 +739,7 @@ export function BudgetBucketSheet({
                             {SOURCE_TYPE_LABELS[txn.source_type] ?? "Cost"}
                           </TableCell>
                           <TableCell className="px-3 text-xs tabular-nums text-muted-foreground">
-                            {new Date(
-                              `${txn.incurred_on}T00:00:00`,
-                            ).toLocaleDateString()}
+                            {formatDate(txn.incurred_on)}
                           </TableCell>
                           <TableCell className="px-3 text-right text-sm tabular-nums">
                             {formatCurrency(txn.cost_cents)}

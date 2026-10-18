@@ -1,7 +1,7 @@
 "use client";
 
 import { PresetTemplateWorkspace } from "@/components/settings/preset-template-workspace";
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import type { CostCode } from "@/lib/types";
@@ -90,7 +90,21 @@ export function EstimateTemplatesClient({
   initialTemplates,
   costCodes,
 }: Props) {
-  const [templates, setTemplates] = useState(initialTemplates);
+  const [library, setLibrary] = useState({
+    source: initialTemplates,
+    templates: initialTemplates,
+  });
+  if (library.source !== initialTemplates) {
+    setLibrary({ source: initialTemplates, templates: initialTemplates });
+  }
+  const templates = library.source === initialTemplates
+    ? library.templates
+    : initialTemplates;
+  const requestScope = useRef({ active: false, writing: false });
+  useEffect(() => {
+    requestScope.current.active = true;
+    return () => { requestScope.current.active = false; };
+  }, []);
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -136,6 +150,7 @@ export function EstimateTemplatesClient({
     );
 
   function save() {
+    if (!editingId || !requestScope.current.active || requestScope.current.writing) return;
     if (!name.trim()) {
       toast.error("Template name is required.");
       return;
@@ -158,47 +173,49 @@ export function EstimateTemplatesClient({
       })),
     };
 
+    requestScope.current.writing = true;
     startTransition(async () => {
       try {
-        if (editingId === "new") {
-          const created = unwrapAction(
-            await createEstimateTemplateAction(payload),
-          );
-          setTemplates((prev) =>
-            [...prev, created].sort((a, b) => a.name.localeCompare(b.name)),
-          );
-          toast.success("Template created");
-        } else if (editingId) {
-          const updated = unwrapAction(
-            await updateEstimateTemplateAction(editingId, payload),
-          );
-          setTemplates((prev) =>
-            prev
-              .map((t) => (t.id === updated.id ? updated : t))
-              .sort((a, b) => a.name.localeCompare(b.name)),
-          );
-          toast.success("Template saved");
-        }
+        const saved = editingId === "new"
+          ? unwrapAction(await createEstimateTemplateAction(payload))
+          : unwrapAction(await updateEstimateTemplateAction(editingId, payload));
+        if (!requestScope.current.active) return;
+        setLibrary((current) => current.source === initialTemplates ? {
+          ...current,
+          templates: [...current.templates.filter((item) => item.id !== saved.id), saved]
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        } : current);
+        toast.success(editingId === "new" ? "Template created" : "Template saved");
         setEditingId(null);
-      } catch (error: any) {
-        toast.error(error?.message ?? "Failed to save template.");
+      } catch (error) {
+        if (!requestScope.current.active) return;
+        toast.error(error instanceof Error ? error.message : "Failed to save template.");
+      } finally {
+        requestScope.current.writing = false;
       }
     });
   }
 
   function confirmDelete() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !requestScope.current.active || requestScope.current.writing) return;
     const target = deleteTarget;
+    requestScope.current.writing = true;
     startTransition(async () => {
       try {
         unwrapAction(await deleteEstimateTemplateAction(target.id));
-        setTemplates((prev) => prev.filter((t) => t.id !== target.id));
-        if (editingId === target.id) setEditingId(null);
+        if (!requestScope.current.active) return;
+        setLibrary((current) => current.source === initialTemplates ? {
+          ...current,
+          templates: current.templates.filter((item) => item.id !== target.id),
+        } : current);
+        setEditingId((current) => current === target.id ? null : current);
         toast.success("Template deleted");
-      } catch (error: any) {
-        toast.error(error?.message ?? "Failed to delete template.");
+      } catch (error) {
+        if (!requestScope.current.active) return;
+        toast.error(error instanceof Error ? error.message : "Failed to delete template.");
       } finally {
-        setDeleteTarget(null);
+        requestScope.current.writing = false;
+        if (requestScope.current.active) setDeleteTarget(null);
       }
     });
   }
@@ -468,6 +485,7 @@ export function EstimateTemplatesClient({
                       type="button"
                       variant="ghost"
                       size="sm"
+                      disabled={pending}
                       onClick={() => startEdit(template)}
                     >
                       <Edit className="mr-1.5 h-3.5 w-3.5" />
@@ -478,6 +496,8 @@ export function EstimateTemplatesClient({
                       variant="ghost"
                       size="icon"
                       className="text-muted-foreground hover:text-destructive"
+                      disabled={pending}
+                      aria-label={`Delete ${template.name}`}
                       onClick={() => setDeleteTarget(template)}
                     >
                       <Trash2 className="h-4 w-4" />
@@ -505,6 +525,7 @@ export function EstimateTemplatesClient({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              disabled={pending}
               onClick={confirmDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >

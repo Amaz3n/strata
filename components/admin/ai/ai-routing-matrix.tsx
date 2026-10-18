@@ -100,7 +100,7 @@ export function AiRoutingMatrix({
         <div>
           <h2 className="text-sm font-medium">Model routing</h2>
           <p className="text-xs text-muted-foreground">
-            Every feature runs at its entry tier and escalates a column to the right when a check fails.
+            Features use their entry tier. Validation failures can escalate; transient failures can switch providers within the time budget. Search uses Standard for routine queries, Heavy for analysis, and Fast for availability recovery.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">

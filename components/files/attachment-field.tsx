@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
+import { useDocumentTransfers } from "@/components/documents/transfer-provider"
 import { unwrapAction } from "@/lib/action-result"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -22,7 +23,6 @@ import {
   attachFileAction,
   detachFileLinkAction,
   listAttachmentsAction,
-  uploadFileAction,
 } from "@/app/(app)/documents/actions"
 
 /**
@@ -57,6 +57,7 @@ export function AttachmentField({
   pendingFiles?: File[]
   onPendingChange?: (files: File[]) => void
 }) {
+  const transfers = useDocumentTransfers()
   const linked = Boolean(entityType && entityId)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [uploading, setUploading] = useState(false)
@@ -107,6 +108,15 @@ export function AttachmentField({
     }
   }, [linked, legacyFileId, entityType, entityId, projectId, load])
 
+  useEffect(() => {
+    const changed = (event: Event) => {
+      const detail = (event as CustomEvent<{ projectId: string; attachment?: { entityType: string; entityId: string } }>).detail
+      if (detail.projectId === projectId && detail.attachment?.entityType === entityType && detail.attachment?.entityId === entityId) void load()
+    }
+    window.addEventListener("arc:documents-changed", changed)
+    return () => window.removeEventListener("arc:documents-changed", changed)
+  }, [projectId, entityType, entityId, load])
+
   const addFiles = useCallback(
     async (files: File[]) => {
       if (disabled || files.length === 0) return
@@ -116,16 +126,13 @@ export function AttachmentField({
       }
       setUploading(true)
       try {
-        for (const file of multiple ? files : [files[0]]) {
-          const fd = new FormData()
-          fd.append("file", file)
-          fd.append("projectId", projectId)
-          fd.append("category", "photos")
-          fd.append("visibility", "private")
-          if (folderPath) fd.append("folderPath", folderPath)
-          const uploaded = unwrapAction(await uploadFileAction(fd))
-          unwrapAction(await attachFileAction(uploaded.id, entityType as string, entityId as string, projectId))
-        }
+        if (!entityType || !entityId) return
+        const results = await Promise.allSettled((multiple ? files : [files[0]]).map(file =>
+          transfers.enqueue(file, { projectId, folderPath, visibility: "private",
+            attachment: { entityType, entityId } })))
+        const failed = results.find(result => result.status === "rejected")
+        if (failed?.status === "rejected") throw failed.reason
+
         await load()
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Failed to attach files")
@@ -133,7 +140,7 @@ export function AttachmentField({
         setUploading(false)
       }
     },
-    [disabled, linked, multiple, pendingFiles, onPendingChange, projectId, folderPath, entityType, entityId, load],
+    [disabled, linked, multiple, pendingFiles, onPendingChange, projectId, folderPath, entityType, entityId, load, transfers],
   )
 
   const removeLinked = useCallback(

@@ -1,7 +1,10 @@
 import { z } from "zod"
 
+import { readAllRowsById } from "@/lib/land/paging"
+
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import { COST_TYPES } from "@/lib/cost-types"
 import {
   CSI_MASTERFORMAT_DIVISIONS,
@@ -39,54 +42,47 @@ const updateCostCodeSchema = z.object({
   cost_type: z.enum(COST_TYPES).nullable().optional(),
 })
 
-async function assertParentCodeInOrg(
-  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
-  parentId: string,
-  orgId: string,
-) {
-  const { data, error } = await supabase
-    .from("cost_codes")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("id", parentId)
-    .maybeSingle()
-
-  if (error || !data) {
-    throw new Error("Parent cost code must belong to this organization")
-  }
-}
-
+/** Validate only the selected ancestry; whole-org reads may truncate large catalogs. */
 async function assertNoParentCycle(
   supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
   orgId: string,
-  codeId: string,
+  codeId: string | null,
   parentId: string,
 ) {
-  const { data, error } = await supabase.from("cost_codes").select("id,parent_id").eq("org_id", orgId)
-  if (error) {
-    throw new Error("Unable to validate cost code hierarchy")
-  }
-
-  const parentMap = new Map<string, string | null>()
-  for (const row of data ?? []) {
-    parentMap.set(String(row.id), row.parent_id ? String(row.parent_id) : null)
-  }
-
+  const visited = new Set<string>()
   let current: string | null = parentId
   while (current) {
-    if (current === codeId) {
-      throw new Error("This parent selection would create a circular hierarchy")
+    if (current === codeId || visited.has(current)) {
+      throw new Error("This parent selection would create or retain a circular hierarchy")
     }
-    current = parentMap.get(current) ?? null
+    if (visited.size >= 1_000) {
+      throw new Error("Unable to validate cost code hierarchy: ancestry exceeds the supported depth")
+    }
+    visited.add(current)
+    const { data, error }: {
+      data: { id: string; parent_id: string | null } | null
+      error: { message: string } | null
+    } = await supabase
+      .from("cost_codes")
+      .select("id,parent_id")
+      .eq("org_id", orgId)
+      .eq("id", current)
+      .maybeSingle()
+    if (error || !data || data.id !== current) {
+      throw new Error("Unable to validate cost code hierarchy: parent must belong to this organization")
+    }
+    current = data.parent_id ?? null
   }
 }
 
 export async function createCostCode(input: z.infer<typeof costCodeSchema>, orgId?: string) {
   const parsed = costCodeSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("org.admin", context)
+  const { supabase, orgId: resolvedOrgId, userId } = context
 
   if (parsed.parent_id) {
-    await assertParentCodeInOrg(supabase, parsed.parent_id, resolvedOrgId)
+    await assertNoParentCycle(supabase, resolvedOrgId, null, parsed.parent_id)
   }
 
   const { data, error } = await supabase
@@ -95,12 +91,13 @@ export async function createCostCode(input: z.infer<typeof costCodeSchema>, orgI
     .select("*")
     .single()
 
-  if (error) {
-    throw new Error(`Failed to create cost code: ${error.message}`)
+  if (error || !data) {
+    throw new Error(`Failed to create cost code: ${error?.message ?? "Missing saved cost code"}`)
   }
 
   await recordAudit({
     orgId: resolvedOrgId,
+    actorId: userId,
     action: "insert",
     entityType: "cost_code",
     entityId: data.id,
@@ -112,13 +109,14 @@ export async function createCostCode(input: z.infer<typeof costCodeSchema>, orgI
 
 export async function updateCostCode(input: z.infer<typeof updateCostCodeSchema>, orgId?: string) {
   const parsed = updateCostCodeSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("org.admin", context)
+  const { supabase, orgId: resolvedOrgId, userId } = context
 
   if (parsed.parent_id && parsed.parent_id === parsed.id) {
     throw new Error("A cost code cannot be its own parent")
   }
   if (parsed.parent_id) {
-    await assertParentCodeInOrg(supabase, parsed.parent_id, resolvedOrgId)
     await assertNoParentCycle(supabase, resolvedOrgId, parsed.id, parsed.parent_id)
   }
 
@@ -146,12 +144,13 @@ export async function updateCostCode(input: z.infer<typeof updateCostCodeSchema>
     .select("*")
     .single()
 
-  if (error) {
-    throw new Error(`Failed to update cost code: ${error.message}`)
+  if (error || !data) {
+    throw new Error(`Failed to update cost code: ${error?.message ?? "Missing saved cost code"}`)
   }
 
   await recordAudit({
     orgId: resolvedOrgId,
+    actorId: userId,
     action: "update",
     entityType: "cost_code",
     entityId: data.id,
@@ -169,18 +168,16 @@ export async function setCostCodeActive(id: string, isActive: boolean, orgId?: s
 export async function listCostCodes(orgId?: string, includeInactive = false) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
-  let query = supabase.from("cost_codes").select("*").eq("org_id", resolvedOrgId).order("code")
-
-  if (!includeInactive) {
-    query = query.eq("is_active", true)
-  }
-
-  const { data, error } = await query
-  if (error) {
-    throw new Error(`Failed to list cost codes: ${error.message}`)
-  }
-
-  return data ?? []
+  const rows = await readAllRowsById(
+    (afterId, limit) => {
+      let query = supabase.from("cost_codes").select("*").eq("org_id", resolvedOrgId).order("id").limit(limit)
+      if (!includeInactive) query = query.eq("is_active", true)
+      if (afterId) query = query.gt("id", afterId)
+      return query
+    },
+    { cap: 10_000, label: "Failed to load complete cost-code catalog" },
+  )
+  return rows.sort((a, b) => a.code.localeCompare(b.code) || a.id.localeCompare(b.id))
 }
 
 export async function seedNAHBCostCodes(orgId?: string) {

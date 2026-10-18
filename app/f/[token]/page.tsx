@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { headers } from "next/headers"
@@ -45,6 +46,7 @@ function formatExpiry(iso?: string): string | null {
 }
 
 async function PublicFileSharePageContent({ params }: Params) {
+  await connection()
   const { token } = await params
   const link = await getFileShareLinkByToken(token)
 
@@ -124,7 +126,7 @@ async function PublicFileSharePageContent({ params }: Params) {
           <div className="flex justify-end">
             <Button asChild>
               <a
-                href={`/f/${token}/download`}
+                href={`/f/${token}/download?visit=${link.visit_id}`}
                 download={link.file.file_name}
                 target="_blank"
                 rel="noopener noreferrer"
@@ -145,7 +147,7 @@ async function PublicFileSharePageContent({ params }: Params) {
 
 export default function PublicFileSharePage(props: Parameters<typeof PublicFileSharePageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton title="Shared file" />}>
       <PublicFileSharePageContent {...props} />
     </Suspense>
   )

@@ -8,13 +8,15 @@ import type { ReportCell, ReportColumn, ReportColumnType, ReportTone } from "@/l
 const MONEY = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
-  maximumFractionDigits: 0,
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
 })
 
 const MONEY_SIGNED = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
-  maximumFractionDigits: 0,
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
   signDisplay: "always",
 })
 

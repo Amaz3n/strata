@@ -19,18 +19,20 @@ export default function PresetTemplatePreview({
   useEffect(() => {
     let active = true;
     const timer = setTimeout(() => {
-      void pdf(<PresetTemplateDocument data={JSON.parse(serialized)} />)
-        .toBlob()
-        .then((blob) => {
+      void (async () => {
+        try {
+          const blob = await pdf(
+            <PresetTemplateDocument data={JSON.parse(serialized)} />,
+          ).toBlob();
           if (!active) return;
           const next = URL.createObjectURL(blob);
           urls.current.push(next);
           setUrl(next);
           setError(false);
-        })
-        .catch(() => {
+        } catch {
           if (active) setError(true);
-        });
+        }
+      })();
     }, 350);
     return () => {
       active = false;

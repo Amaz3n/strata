@@ -1,0 +1,134 @@
+{
+  "scenario": "RACE-01",
+  "reviewedFrom": "Concurrency invariants for a ledger: any interleaving of independent sessions must end in a state some serial order could produce, or refuse with an explicit retryable error; money is never written twice or half-written; a closed period's saved statements match its ledger; repair converges. Each contention runs on fresh data several times through the product's own services, whose RPCs execute in separate database sessions. Amounts are integer cents.",
+  "subcases": {
+    "double-close": {
+      "inputs": {
+        "rounds": 3,
+        "contractCents": 100000000,
+        "eacCents": 80000000,
+        "retainagePercent": 10,
+        "period": "2026-07",
+        "billCents": 20000000,
+        "invoiceGrossCents": 30000000,
+        "invoiceRetainageCents": 3000000
+      },
+      "derivation": "Two closes of the same period at once: exactly one succeeds, the other refuses; one recognition entry, one saved statement per type, the worked-example July ledger.",
+      "expectedWinners": 1,
+      "expectedRecognitionEntries": 1,
+      "expectedNetDebitCentsByAccount": {
+        "1100": 27000000,
+        "1110": 3000000,
+        "2000": -20000000,
+        "2350": -5000000,
+        "4000": -25000000,
+        "5000": 20000000
+      }
+    },
+    "close-versus-late-bill": {
+      "inputs": {
+        "orderings": [
+          "before",
+          "during",
+          "after"
+        ],
+        "freezeHoldSeconds": 2,
+        "contractCents": 100000000,
+        "eacCents": 80000000,
+        "period": "2026-07",
+        "billCents": 20000000,
+        "lateBillCents": 5000000
+      },
+      "derivation": "A July bill against July's close in three orderings. Before: the bill posts, so the close refuses (WIP was reviewed without it). During: the bill is projected while the close holds July frozen; the freeze refuses the operational posting and the close completes without it. After: the closed period refuses the posting. Whenever July is closed, nothing operational lands in it afterwards and its saved balance sheet equals the ledger; repair (reopen, re-review, close) converges to both bills in July.",
+      "expectedSnapshotMatchesLedger": true,
+      "expectedNoPostingAfterClose": true,
+      "expectedRepairedJobCostCents": 25000000,
+      "expectedCloseSucceeds": {
+        "before": false,
+        "during": true,
+        "after": true
+      }
+    },
+    "bank-double-match": {
+      "inputs": {
+        "rounds": 3,
+        "cents": 50000
+      },
+      "derivation": "One 500 bank debit matched to two different 500 checks at once, and two 500 bank debits matched to the same check at once: each time exactly one match is confirmed and no transaction or book line is over-matched.",
+      "expectedConfirmedPerContention": 1
+    },
+    "deposit-receipt-contention": {
+      "inputs": {
+        "rounds": 3,
+        "cents": 100000
+      },
+      "derivation": "One 1,000 receipt claimed by two 1,000 bank deposits at once: one deposit posts, the other refuses; cash 1,000, undeposited funds 0.",
+      "expectedWinners": 1,
+      "expectedNetDebitCentsByAccount": {
+        "1000": 100000,
+        "1100": 0,
+        "4900": -100000
+      }
+    },
+    "concurrent-projection-runs": {
+      "inputs": {
+        "rounds": 3,
+        "bills": 5,
+        "cents": 10000,
+        "runs": 3
+      },
+      "derivation": "Three projection runs at once over the same five new bills: each bill posts exactly once.",
+      "expectedEntriesPerBill": 1,
+      "expectedNetDebitCentsByAccount": {
+        "2000": -50000,
+        "5000": 50000
+      }
+    },
+    "proposal-double-approval": {
+      "inputs": {
+        "rounds": 3,
+        "date": "2026-07-31",
+        "cents": 250000
+      },
+      "derivation": "The same reviewed journal proposal approved twice at once posts one entry.",
+      "expectedPostedEntries": 1,
+      "expectedNetDebitCentsByAccount": {
+        "3010": -250000,
+        "6000": 250000
+      }
+    },
+    "late-mutation-before-receipt": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000
+      },
+      "derivation": "An independent session re-codes a bill after its journal is written but before the posting receipt is saved. The bill must not read 'posted' on the stale coding; the next run supersedes it, leaving one reversed and one posted entry on the new cost code.",
+      "expectedStateAfterInjectedRun": "pending",
+      "expectedStateAfterNextRun": "posted",
+      "expectedFinalCostCodeIsNew": true,
+      "expectedEntries": {
+        "posted": 1,
+        "reversed": 1
+      }
+    },
+    "entity-pair": {
+      "inputs": {
+        "rounds": 3,
+        "owedCents": 50000,
+        "repaymentCents": 30000
+      },
+      "derivation": "The land company owes the builder 500.00 and makes two 300.00 repayments at the same moment. Serialized per company pair: the first settles 300 (200 still owed), the second settles that 200 and records 100.00 the builder now owes the land company. Each company holds only one side with the other, and both agree.",
+      "expected": {
+        "builder": {
+          "dueFrom": 0,
+          "dueTo": 10000
+        },
+        "land": {
+          "dueFrom": 10000,
+          "dueTo": 0
+        },
+        "posted": 2
+      }
+    }
+  }
+}

@@ -3,19 +3,17 @@ import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
-  ArrowUpRight,
+  ArrowRight,
+  Check,
   FileText,
+  Loader2,
   Plus,
   Search,
   Upload,
-  Loader2,
-  Check,
-  Braces,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -25,14 +23,26 @@ import {
 import {
   emptyWaiverTemplate,
   waiverTemplateSchema,
-  templateFields,
   type CompanyWaiverTemplate,
   type WaiverTemplateDraft,
 } from "@/lib/templates/waiver-template";
 import {
+  documentFromBody,
+  newWaiverBlock,
+  documentText,
+} from "@/lib/templates/waiver-document";
+import {
   saveCompanyWaiverTemplate,
-  importCompanyWaiverTemplate,
+  archiveCompanyWaiverTemplate,
+  beginCompanyWaiverImport,
+  getCompanyWaiverImport,
 } from "@/app/(app)/settings/templates/waiver-actions";
+import {
+  replaceWaiverDocument,
+  waiverReviewGroups,
+  waiverActivationReviewMessage,
+} from "@/lib/templates/waiver-setup";
+import { WaiverSetupWorkspace } from "./waiver-setup-workspace";
 const Preview = dynamic(() => import("./waiver-template-live-preview"), {
   ssr: false,
 });
@@ -49,392 +59,648 @@ const types = {
   unconditional_progress: "Unconditional · Progress",
   unconditional_final: "Unconditional · Final",
 };
+const selectClass = "h-10 w-full border bg-background px-3 text-sm";
+const defaultRules = {
+  enabled: true,
+  projectIds: [] as string[],
+  customerName: "",
+  signerName: "",
+  signerTitle: "Authorized representative",
+};
 export function WaiverTemplateLibrary({
   initialTemplates,
   canManage,
+  projects = [],
+  orgId,
 }: {
   initialTemplates: CompanyWaiverTemplate[];
   canManage: boolean;
+  projects?: { id: string; name: string }[];
+  orgId: string;
 }) {
-  const [templates, setTemplates] = useState(initialTemplates),
-    [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false),
-    [draft, setDraft] = useState<WaiverTemplateDraft>(emptyWaiverTemplate),
-    [editing, setEditing] = useState<CompanyWaiverTemplate>(),
-    [source, setSource] = useState<string>(),
+  const [library, setLibrary] = useState({
+    source: initialTemplates,
+    templates: initialTemplates,
+  });
+  if (library.source !== initialTemplates) {
+    setLibrary({ source: initialTemplates, templates: initialTemplates });
+  }
+  const templates = library.source === initialTemplates
+    ? library.templates
+    : initialTemplates;
+  const [query, setQuery] = useState("");
+  const mounted = useRef(false);
+  const uploading = useRef(false);
+  const [draft, setDraft] = useState<WaiverTemplateDraft | null>(null),
+    [stage, setStage] = useState(0),
+    [source, setSource] = useState<string>();
+  const [busy, setBusy] = useState<"import" | "save" | null>(null),
+    [status, setStatus] = useState(""),
+    [error, setError] = useState(""),
     [original, setOriginal] = useState(false),
-    [sample, setSample] = useState(true),
-    [busy, setBusy] = useState<"import" | "save" | null>(null),
-    [warnings, setWarnings] = useState<string[]>([]),
-    [dirty, setDirty] = useState(false),
+    [compare, setCompare] = useState(false),
     [discard, setDiscard] = useState(false);
-  const [replacement, setReplacement] = useState<File>();
-  const fileInput = useRef<HTMLInputElement>(null),
-    bodyRef = useRef<HTMLTextAreaElement>(null);
+  const finalReview = useRef<HTMLDivElement>(null);
+  const [pendingImport, setPendingImport] = useState<string>();
+  const [mobilePreview, setMobilePreview] = useState(false);
+  const saved = useRef<CompanyWaiverTemplate | undefined>(undefined),
+    savedContent = useRef(""),
+    latest = useRef(draft),
+    sourceRef = useRef(source),
+    saving = useRef(false),
+    sequence = useRef(0),
+    fileInput = useRef<HTMLInputElement>(null);
+  latest.current = draft;
+  sourceRef.current = source;
   useEffect(() => {
-    if (!open || !dirty) return;
-    const before = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      sequence.current++;
     };
-    window.addEventListener("beforeunload", before);
-    return () => window.removeEventListener("beforeunload", before);
-  }, [open, dirty]);
+  }, []);
   function start(t?: CompanyWaiverTemplate) {
-    setEditing(t);
-    setDraft(
-      t
-        ? {
-            name: t.name,
-            title: t.title,
-            waiverType: t.waiverType,
-            body: t.body,
-            status: t.status,
-            reviewed: t.reviewed,
-            warnings: t.warnings,
-            applicability: t.applicability,
-            jurisdiction: t.jurisdiction,
-          }
-        : emptyWaiverTemplate(),
-    );
+    if (!mounted.current || busy || saving.current || uploading.current) return;
+    sequence.current++;
+    saved.current = t;
+    const next = t
+      ? { ...t, document: t.document ?? documentFromBody(t.body) }
+      : {
+          ...emptyWaiverTemplate(),
+          document: documentFromBody(""),
+          defaults: defaultRules,
+        };
+    setDraft(next);
+    savedContent.current = JSON.stringify(next);
+    setStage(t ? 1 : 0);
     setSource(t?.sourceFileId);
-    setWarnings(t?.warnings ?? []);
+    setError("");
+    setStatus(t ? "Saved" : "");
     setOriginal(false);
-    setDirty(false);
-    setOpen(true);
+    setCompare(false);
   }
   function patch(v: Partial<WaiverTemplateDraft>) {
-    setDraft((d) => ({ ...d, ...v, reviewed: false }));
-    setDirty(true);
+    setDraft((d) => (d ? { ...d, ...v, reviewed: false } : d));
+    setStatus("Unsaved changes");
+    setError("");
   }
-  function close() {
-    if (busy) return;
-    if (dirty) setDiscard(true);
-    else setOpen(false);
+  async function save(publish = false, report = false) {
+    const current = latest.current;
+    if (!current || !canManage || !mounted.current || saving.current || uploading.current) return false;
+    const parsed = waiverTemplateSchema.safeParse({
+      ...current,
+      status: publish ? "published" : "draft",
+    });
+    if (!parsed.success) {
+      if (publish || report) setError(parsed.error.issues[0].message);
+      return false;
+    }
+    const generation = sequence.current,
+      content = JSON.stringify(current);
+    saving.current = true;
+    setBusy("save");
+    setError("");
+    setStatus("Saving…");
+    try {
+      const result = await saveCompanyWaiverTemplate(
+        parsed.data,
+        saved.current?.id,
+        sourceRef.current,
+        saved.current?.editToken,
+      );
+      if (!mounted.current || generation !== sequence.current) return false;
+      saved.current = result;
+      savedContent.current = content;
+      setLibrary((current) => current.source === initialTemplates ? {
+        ...current,
+        templates: [result, ...current.templates.filter((t) => t.familyId !== result.familyId)],
+      } : current);
+      setStatus(
+        JSON.stringify(latest.current) === content
+          ? "Saved"
+          : "Unsaved changes",
+      );
+      if (publish) {
+        setDraft(null);
+        toast.success("Waiver template activated");
+      }
+      return true;
+    } catch (e) {
+      if (!mounted.current || generation !== sequence.current) return false;
+      setError(e instanceof Error ? e.message : "Unable to save");
+      setStatus("Not saved");
+      return false;
+    } finally {
+      saving.current = false;
+      if (mounted.current && generation === sequence.current) setBusy(null);
+    }
   }
-  async function upload(file?: File, confirmed = false) {
-    if (!file) return;
+  useEffect(() => {
+    if (
+      !canManage ||
+      !draft ||
+      JSON.stringify(draft) === savedContent.current ||
+      busy ||
+      error
+    )
+      return;
+    const timer = setTimeout(() => void save(), 1800);
+    return () => clearTimeout(timer);
+  }, [draft, source, busy, error, canManage]);
+  const hasDraft = !!draft;
+  useEffect(() => {
+    if (!hasDraft) return;
+    const leave = (e: BeforeUnloadEvent) => {
+      if (JSON.stringify(latest.current) !== savedContent.current) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", leave);
+    return () => window.removeEventListener("beforeunload", leave);
+  }, [hasDraft]);
+  async function upload(file?: File) {
+    if (!file || !canManage || !mounted.current || busy || saving.current || uploading.current) return;
     if (!file.size || file.size > 15 * 1024 * 1024) {
-      toast.error("Choose a PDF smaller than 15 MB");
+      setError("Choose a PDF smaller than 15 MB");
       return;
     }
-    if (dirty && !confirmed) {
-      setReplacement(file);
-      return;
-    }
+    const generation = sequence.current;
+    const replacement = saved.current && latest.current
+      ? JSON.stringify({ saved: saved.current, draft: latest.current })
+      : null;
+    uploading.current = true;
     setBusy("import");
+    setError("");
     try {
       const form = new FormData();
       form.append("file", file);
-      const result = await importCompanyWaiverTemplate(form);
-      setDraft(result.draft);
-      setSource(result.sourceFileId);
-      setWarnings(result.warnings);
-      setDirty(true);
-      toast.success(
-        "Draft ready. Compare it with the original before publishing.",
-      );
+      const result = await beginCompanyWaiverImport(form);
+      if (!mounted.current || generation !== sequence.current) return;
+      if (replacement)
+        sessionStorage.setItem(`arc-waiver-replacement:${orgId}`, replacement);
+      else sessionStorage.removeItem(`arc-waiver-replacement:${orgId}`);
+      sessionStorage.setItem(`arc-waiver-import:${orgId}`, result.sourceFileId);
+      setPendingImport(result.sourceFileId);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Unable to read PDF");
+      if (mounted.current && generation === sequence.current)
+        setError(e instanceof Error ? e.message : "Could not import PDF");
     } finally {
-      setBusy(null);
-      if (fileInput.current) fileInput.current.value = "";
+      uploading.current = false;
+      if (mounted.current && generation === sequence.current) {
+        setBusy(null);
+        if (fileInput.current) fileInput.current.value = "";
+      }
     }
   }
-  async function save(status: "draft" | "published") {
-    const validation = waiverTemplateSchema.safeParse({ ...draft, status });
-    if (!validation.success) {
-      toast.error(
-        validation.error.issues[0]?.message ?? "Check the template details",
-      );
-      return;
+  useEffect(() => {
+    const id = sessionStorage.getItem(`arc-waiver-import:${orgId}`);
+    if (id && canManage) {
+      setPendingImport(id);
+      setBusy("import");
     }
+  }, [orgId, canManage]);
+  useEffect(() => {
+    if (!pendingImport) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    setBusy("import");
+    const poll = async () => {
+      try {
+        const result = await getCompanyWaiverImport(pendingImport);
+        if (!active) return;
+        if (result.status === "failed") throw new Error(result.message);
+        if (result.status === "ready") {
+          sessionStorage.removeItem(`arc-waiver-import:${orgId}`);
+          const replacementJson = sessionStorage.getItem(
+            `arc-waiver-replacement:${orgId}`,
+          );
+          const replacement = replacementJson
+            ? (JSON.parse(replacementJson) as {
+                saved: CompanyWaiverTemplate;
+                draft: WaiverTemplateDraft;
+              })
+            : undefined;
+          saved.current = replacement?.saved;
+          savedContent.current = "";
+          setDraft(
+            replacement
+              ? replaceWaiverDocument(replacement.draft, result.draft)
+              : { ...result.draft, defaults: defaultRules },
+          );
+          sessionStorage.removeItem(`arc-waiver-replacement:${orgId}`);
+          setSource(result.sourceFileId);
+          setStage(1);
+          setStatus("Unsaved changes");
+          setPendingImport(undefined);
+          setBusy(null);
+        } else timer = setTimeout(poll, 2000);
+      } catch (e) {
+        if (active) {
+          sessionStorage.removeItem(`arc-waiver-import:${orgId}`);
+          setError(e instanceof Error ? e.message : "Import failed");
+          setPendingImport(undefined);
+          setBusy(null);
+        }
+      }
+    };
+    void poll();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [pendingImport, orgId]);
+  function close() {
+    if (busy) return;
+    if (JSON.stringify(draft) !== savedContent.current) setDiscard(true);
+    else setDraft(null);
+  }
+  async function archive() {
+    if (!saved.current || !canManage || !mounted.current || busy || saving.current || uploading.current) return;
+    const target = saved.current;
+    const generation = sequence.current;
+    saving.current = true;
     setBusy("save");
+    setError("");
     try {
-      const saved = await saveCompanyWaiverTemplate(
-        { ...draft, status },
-        editing?.id,
-        source,
-      );
-      setTemplates((ts) => [
-        saved,
-        ...ts.filter((t) => t.familyId !== saved.familyId),
-      ]);
-      setDirty(false);
-      setOpen(false);
-      toast.success(
-        status === "published" ? "Template published" : "Draft saved",
-      );
+      await archiveCompanyWaiverTemplate(target.id);
+      if (!mounted.current || generation !== sequence.current) return;
+      setLibrary((current) => current.source === initialTemplates ? {
+        ...current,
+        templates: current.templates.filter((t) => t.familyId !== target.familyId),
+      } : current);
+      setDraft(null);
+      toast.success("Template archived. Issued waivers are preserved.");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Unable to save template");
+      if (mounted.current && generation === sequence.current)
+        setError(e instanceof Error ? e.message : "Could not archive template");
     } finally {
-      setBusy(null);
+      saving.current = false;
+      if (mounted.current && generation === sequence.current) setBusy(null);
     }
-  }
-  function insert(key: string) {
-    const el = bodyRef.current;
-    const start = el?.selectionStart ?? draft.body.length,
-      end = el?.selectionEnd ?? start;
-    const token = `{{${key}}}`;
-    patch({ body: draft.body.slice(0, start) + token + draft.body.slice(end) });
-    requestAnimationFrame(() => {
-      el?.focus();
-      el?.setSelectionRange(start + token.length, start + token.length);
-    });
   }
   const filtered = templates.filter((t) =>
     `${t.name} ${types[t.waiverType]}`
       .toLowerCase()
       .includes(query.toLowerCase()),
   );
-  return (
-    <>
-      <div className="flex items-center justify-between gap-6 pb-6">
-        <div>
-          <h2 className="text-lg font-medium tracking-tight">Waivers</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Your wording. Ready for every project.
+  if (!draft)
+    return (
+      <div className="space-y-7">
+        {pendingImport && (
+          <p role="status" className="text-sm text-muted-foreground">
+            Reading your waiver. You can return here when it is ready.
           </p>
-        </div>
-        <Button disabled={!canManage} onClick={() => start()}>
-          <Plus className="mr-2 size-4" />
-          New template
-        </Button>
-      </div>
-      {templates.length > 0 && (
-        <div className="relative mb-5 max-w-xs">
-          <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
-          <Input
-            aria-label="Search waiver templates"
-            className="pl-9"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Find a template…"
-          />
-        </div>
-      )}
-      {templates.length === 0 ? (
-        <div className="grid min-h-[390px] grid-cols-[1.1fr_1fr] overflow-hidden border bg-muted/10">
-          <div className="flex flex-col items-start justify-center p-12">
-            <span className="mb-5 text-[10px] font-medium uppercase tracking-[.2em] text-muted-foreground">
-              A little setup. A lot less repetition.
-            </span>
-            <h3 className="max-w-xs text-3xl font-medium leading-tight tracking-tight">
-              Make your next waiver
-              <br />
-              the easy one.
+        )}
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        <header className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-medium tracking-tight">Waivers</h2>
+            <p className="mt-2 max-w-lg text-sm leading-6 text-muted-foreground">
+              Your forms, ready for the way you build. Set up the wording and
+              details once; Arc fills them for each project.
+            </p>
+          </div>
+          <Button disabled={!canManage || !!busy} onClick={() => start()}>
+            <Plus className="mr-2 size-4" />
+            Add waiver
+          </Button>
+        </header>
+        {templates.length ? (
+          <>
+            <div className="relative max-w-xs">
+              <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
+              <Input
+                className="pl-9"
+                aria-label="Search waivers"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Find a form…"
+              />
+            </div>
+            <div className="divide-y border-y">
+              {filtered.map((t) => (
+                <button
+                  key={t.id}
+                  className="flex w-full items-center gap-4 py-5 text-left hover:bg-muted/30"
+                  disabled={!!busy}
+                  onClick={() => start(t)}
+                >
+                  <div className="border p-3">
+                    <FileText className="size-5 text-muted-foreground" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium">{t.name}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {types[t.waiverType]} ·{" "}
+                      {t.applicability === "incoming"
+                        ? "From trades"
+                        : t.applicability === "both"
+                          ? "Both directions"
+                          : "To customers"}
+                      {t.jurisdiction ? ` · ${t.jurisdiction}` : ""}
+                      {t.defaults?.projectIds.length
+                        ? ` · ${t.defaults.projectIds.length} projects`
+                        : ""}
+                    </p>
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {t.status === "published"
+                      ? t.defaults?.enabled
+                        ? "Active · Default"
+                        : "Active"
+                      : "Draft"}
+                  </span>
+                  <ArrowRight className="size-4" />
+                </button>
+              ))}
+              {!filtered.length && (
+                <p className="py-10 text-sm text-muted-foreground">
+                  No matching forms.
+                </p>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex min-h-72 flex-col items-center justify-center border border-dashed px-8 py-12 text-center">
+            <FileText className="mb-5 size-8 text-muted-foreground" />
+            <h3 className="text-xl font-medium tracking-tight">
+              Start with the form you already use.
             </h3>
-            <p className="mt-4 max-w-sm text-sm leading-6 text-muted-foreground">
-              Bring the document your company already uses. Turn it into an
-              editable template with project details that fill themselves in.
+            <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
+              Import a PDF. Review the fields Arc finds. Choose when to use it.
+              Your next waiver starts ready.
             </p>
             <Button
-              variant="outline"
-              className="mt-7"
-              disabled={!canManage}
+              className="mt-6"
+              disabled={!canManage || !!busy}
               onClick={() => start()}
             >
-              Create your first template
-              <ArrowUpRight className="ml-3 size-4" />
+              <Upload className="mr-2 size-4" />
+              Import your first waiver
             </Button>
           </div>
-          <div
-            aria-hidden="true"
-            className="flex items-center justify-center overflow-hidden bg-muted/40 p-10"
+        )}
+      </div>
+    );
+  const doc = draft.document ?? documentFromBody(draft.body),
+    rules = draft.defaults ?? defaultRules;
+  return (
+    <div data-waiver-workspace className="flex min-h-[70vh] flex-col">
+      <header className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b bg-background py-4">
+        <div className="flex items-center gap-3">
+          <Button
+            size="icon"
+            variant="ghost"
+            aria-label="Back to waivers"
+            onClick={close}
           >
-            <div className="w-64 rotate-[-4deg] border bg-background p-7 shadow-lg transition-transform duration-300 hover:rotate-0 motion-reduce:transform-none">
-              <FileText className="mb-7 size-5 text-muted-foreground" />
-              <div className="text-lg font-medium">Waiver & release</div>
-              <div className="mt-5 inline-block rounded bg-primary/10 px-2 py-1 text-xs text-primary">
-                Project name
-              </div>
-              <div className="mt-5 space-y-2">
-                {[100, 95, 100, 70, 90, 100, 65].map((w, i) => (
-                  <div
-                    key={i}
-                    className="h-1 bg-muted"
-                    style={{ width: `${w}%` }}
-                  />
-                ))}
-              </div>
-              <div className="mt-10 border-t pt-2 text-[9px] text-muted-foreground">
-                Authorized signature
-              </div>
-            </div>
+            <ArrowLeft className="size-4" />
+          </Button>
+          <div>
+            <p className="text-sm font-medium">{draft.name || "New waiver"}</p>
+            <p className="mt-1 text-xs text-muted-foreground" role="status">
+              {busy === "import"
+                ? "Reading your document…"
+                : status || "Company template"}
+            </p>
           </div>
         </div>
-      ) : (
-        <div className="border-t">
-          {filtered.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => start(t)}
-              className="group flex w-full items-center gap-5 border-b px-3 py-5 text-left transition-colors hover:bg-muted/35"
+        <div className="flex gap-2">
+          {saved.current && (
+            <Button
+              variant="ghost"
+              disabled={!!busy || !canManage}
+              onClick={() => void archive()}
             >
-              <div className="flex size-11 items-center justify-center border bg-muted/20">
-                <FileText className="size-5 text-muted-foreground" />
-              </div>
-              <div className="flex-1">
-                <p className="font-medium">{t.name}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {types[t.waiverType]}
-                </p>
-              </div>
-              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                {t.status === "published" && <Check className="size-3.5" />}
-                {t.status === "published" ? "Published" : "Draft"}
-              </span>
-              <span className="w-24 text-right text-xs text-muted-foreground">
-                {new Date(t.createdAt).toLocaleDateString("en-US", {
-                  month: "short",
-                  day: "numeric",
-                })}
-              </span>
-              <ArrowUpRight className="size-4 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5 motion-reduce:transform-none" />
-            </button>
-          ))}
-          {filtered.length === 0 && (
-            <p className="py-14 text-center text-sm text-muted-foreground">
-              No templates match “{query}”.
-            </p>
+              Archive
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            onClick={() => void save(false, true)}
+            disabled={!!busy || !canManage}
+          >
+            Save draft
+          </Button>
+          {stage < 2 ? (
+            <Button
+              disabled={
+                !!busy || (stage === 0 && !draft.body && !doc.blocks.length)
+              }
+              onClick={() => setStage((s) => s + 1)}
+            >
+              Continue
+              <ArrowRight className="ml-2 size-4" />
+            </Button>
+          ) : (
+            <Button
+              disabled={!!busy || !canManage}
+              aria-describedby="waiver-activation-status"
+              onClick={() => {
+                const message = waiverActivationReviewMessage(draft);
+                if (message) {
+                  setError(message);
+                  finalReview.current?.scrollIntoView({ block: "center" });
+                  finalReview.current?.focus();
+                } else void save(true);
+              }}
+            >
+              {busy === "save" ? (
+                <Loader2 className="mr-2 size-4 animate-spin" />
+              ) : (
+                <Check className="mr-2 size-4" />
+              )}
+              Save and use automatically
+            </Button>
+          )}
+        </div>
+      </header>
+      {stage === 2 && (
+        <div
+          id="waiver-activation-status"
+          className="flex items-center justify-between gap-3 border-b py-3 text-xs text-muted-foreground"
+        >
+          <span>
+            {waiverActivationReviewMessage(draft) ??
+              "Review complete. Ready to save and use automatically."}
+          </span>
+          {waiverActivationReviewMessage(draft) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                finalReview.current?.scrollIntoView({ block: "center" });
+                finalReview.current?.focus();
+              }}
+            >
+              Review now
+            </Button>
           )}
         </div>
       )}
-      <Dialog
-        open={open}
-        onOpenChange={(v) => {
-          if (!v) close();
-        }}
-      >
-        <DialogContent
-          showCloseButton={false}
-          className="flex h-[94dvh] w-[96vw] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-[1440px]"
+      <nav aria-label="Waiver setup steps" className="flex gap-6 border-b py-4">
+        {["Bring your form", "Connect your information", "When to use it"].map(
+          (label, i) => (
+            <button
+              key={label}
+              className={`flex items-center gap-2 text-xs ${stage === i ? "font-medium text-foreground" : "text-muted-foreground"}`}
+              aria-current={stage === i ? "step" : undefined}
+              disabled={!!busy || (i > 0 && stage === 0 && !doc.blocks.length)}
+              onClick={() => setStage(i)}
+            >
+              <span
+                className={`flex size-5 items-center justify-center rounded-full border ${stage === i ? "border-foreground" : ""}`}
+              >
+                {i + 1}
+              </span>
+              {label}
+            </button>
+          ),
+        )}
+      </nav>
+      {error && (
+        <p
+          role="alert"
+          className="my-3 border border-destructive/30 p-3 text-sm text-destructive"
         >
-          <header className="flex h-17 shrink-0 items-center justify-between border-b px-6 py-4">
-            <div className="flex items-center gap-4">
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label="Back to templates"
-                onClick={close}
-                disabled={!!busy}
-              >
-                <ArrowLeft className="size-4" />
-              </Button>
-              <div>
-                <DialogTitle className="text-sm font-medium">
-                  {editing ? "Edit waiver template" : "New waiver template"}
-                </DialogTitle>
-                <DialogDescription className="text-xs">
-                  {dirty ? "Unsaved changes" : "Company template"}
-                </DialogDescription>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                disabled={
-                  !!busy ||
-                  !canManage ||
-                  !draft.name.trim() ||
-                  !draft.body.trim()
-                }
-                onClick={() => save("draft")}
-              >
-                Save draft
-              </Button>
-              <Button
-                disabled={
-                  !!busy ||
-                  !canManage ||
-                  !draft.reviewed ||
-                  !draft.name.trim() ||
-                  !draft.body.trim()
-                }
-                onClick={() => save("published")}
-              >
-                {busy === "save" ? (
-                  <Loader2 className="mr-2 size-4 animate-spin" />
-                ) : (
-                  <Check className="mr-2 size-4" />
-                )}
-                Publish template
-              </Button>
-            </div>
-          </header>
-          <div className="grid min-h-0 flex-1 grid-cols-[minmax(420px,.9fr)_minmax(480px,1.1fr)]">
-            <div className="overflow-y-auto border-r">
-              <fieldset
-                disabled={!!busy || !canManage}
-                className="space-y-7 p-8 disabled:opacity-60"
-              >
-                {!editing && (
-                  <div className="border border-dashed p-5">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-medium">
-                          Start with your PDF
-                        </p>
-                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          Arc reads the wording and prepares editable fields.
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => fileInput.current?.click()}
-                      >
-                        {busy === "import" ? (
-                          <Loader2 className="mr-2 size-4 animate-spin" />
-                        ) : (
-                          <Upload className="mr-2 size-4" />
-                        )}
-                        {busy === "import" ? "Reading…" : "Import PDF"}
-                      </Button>
-                    </div>
-                    <input
-                      ref={fileInput}
-                      type="file"
-                      accept="application/pdf"
-                      className="hidden"
-                      onChange={(e) => void upload(e.target.files?.[0])}
-                    />
-                  </div>
-                )}
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="space-y-2 text-xs font-medium">Used for
-                    <select className="h-9 w-full border bg-background px-2" value={draft.applicability ?? "outgoing"} onChange={e => patch({applicability: e.target.value as "incoming" | "outgoing" | "both"})}>
-                      <option value="outgoing">Builder to owner</option><option value="incoming">Trade to builder</option><option value="both">Both directions</option>
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-xs font-medium">Property state (blank for any)
-                    <Input maxLength={2} value={draft.jurisdiction ?? ""} onChange={e => patch({jurisdiction:e.target.value.toUpperCase()})} placeholder="FL" />
-                  </label>
+          {error}
+        </p>
+      )}
+      {stage === 0 ? (
+        <div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center py-16">
+          <h3 className="text-2xl font-medium tracking-tight">
+            Make your waiver work in Arc.
+          </h3>
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">
+            Arc reads the wording and identifies the information that changes.
+            You’ll review the result before it becomes available to your team.
+          </p>
+          <button
+            disabled={!!busy || !canManage}
+            className="mt-8 flex min-h-48 flex-col items-center justify-center gap-3 border border-dashed bg-muted/15 transition-colors hover:bg-muted/30"
+            onClick={() => fileInput.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (!busy && canManage) void upload(e.dataTransfer.files[0]);
+            }}
+          >
+            {busy === "import" ? (
+              <Loader2 className="size-7 animate-spin text-muted-foreground" />
+            ) : (
+              <Upload className="size-7 text-muted-foreground" />
+            )}
+            <span className="text-sm font-medium">
+              {busy === "import"
+                ? "Reading wording, layout, and fields…"
+                : "Drop a PDF here, or choose a file"}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              PDF · Up to 15 MB · Original kept for comparison
+            </span>
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="application/pdf"
+            className="hidden"
+            onChange={(e) => void upload(e.target.files?.[0])}
+          />
+          <Button
+            variant="link"
+            className="mt-4 self-start px-0 text-muted-foreground"
+            disabled={!!busy || !canManage}
+            onClick={() => {
+              patch({
+                document: {
+                  ...documentFromBody(""),
+                  blocks: [newWaiverBlock("paragraph")],
+                },
+              });
+              setStage(1);
+            }}
+          >
+            Start with a blank document
+          </Button>
+        </div>
+      ) : stage === 1 ? (
+        <WaiverSetupWorkspace
+          projects={projects}
+          onReplace={source ? () => setStage(0) : undefined}
+          draft={{ ...draft, document: doc }}
+          source={source}
+          disabled={!canManage || !!busy}
+          onChange={(next) => patch(next)}
+        />
+      ) : (
+        <>
+          <div className="flex gap-2 py-3 lg:hidden">
+            <Button
+              size="sm"
+              variant={!mobilePreview ? "secondary" : "ghost"}
+              onClick={() => setMobilePreview(false)}
+            >
+              Details
+            </Button>
+            <Button
+              size="sm"
+              variant={mobilePreview ? "secondary" : "ghost"}
+              onClick={() => setMobilePreview(true)}
+            >
+              Document
+            </Button>
+          </div>
+          <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <fieldset
+              disabled={!canManage || busy === "import"}
+              className={`${mobilePreview ? "hidden lg:block" : ""} min-w-0 space-y-6 py-7 lg:order-2 lg:pl-6`}
+            >
+              <>
+                <div>
+                  <h3 className="text-lg font-medium">
+                    When should Arc use this form?
+                  </h3>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    Choose where this form applies. Arc will fill project and
+                    payment details each time.
+                  </p>
                 </div>
-                <div className="space-y-2">
-                  <label htmlFor="waiver-name" className="text-xs font-medium">
-                    Template name
-                  </label>
-                  <Input
-                    id="waiver-name"
-                    maxLength={120}
-                    placeholder="e.g. Company progress waiver"
-                    value={draft.name}
-                    onChange={(e) => patch({ name: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label htmlFor="waiver-type" className="text-xs font-medium">
-                    Waiver type
-                  </label>
+                <label className="block space-y-2 text-xs font-medium">
+                  Who provides this waiver?
                   <select
-                    id="waiver-type"
-                    className="h-10 w-full border bg-background px-3 text-sm"
+                    className={selectClass}
+                    value={draft.applicability ?? "outgoing"}
+                    onChange={(e) =>
+                      patch({
+                        applicability: e.target.value as
+                          | "incoming"
+                          | "outgoing"
+                          | "both",
+                      })
+                    }
+                  >
+                    <option value="outgoing">
+                      Our company → customer / owner
+                    </option>
+                    <option value="incoming">
+                      Trade / supplier → our company
+                    </option>
+                    <option value="both">Both directions</option>
+                  </select>
+                </label>
+                <label className="block space-y-2 text-xs font-medium">
+                  Payment stage
+                  <select
+                    className={selectClass}
                     value={draft.waiverType}
                     onChange={(e) =>
                       patch({
-                        waiverType: e.target
-                          .value as WaiverTemplateDraft["waiverType"],
+                        waiverType: e.target.value as typeof draft.waiverType,
                       })
                     }
                   >
@@ -444,83 +710,207 @@ export function WaiverTemplateLibrary({
                       </option>
                     ))}
                   </select>
-                </div>
-                <div className="space-y-2">
-                  <label htmlFor="waiver-title" className="text-xs font-medium">
-                    Document heading
-                  </label>
+                  <p className="font-normal leading-5 text-muted-foreground">
+                    Conditional forms depend on payment. Unconditional forms
+                    require confirmation of received funds. Final forms close
+                    the stated scope.
+                  </p>
+                </label>
+                <label className="block space-y-2 text-xs font-medium">
+                  Property state
                   <Input
-                    id="waiver-title"
-                    maxLength={200}
-                    value={draft.title}
-                    onChange={(e) => patch({ title: e.target.value })}
+                    maxLength={2}
+                    placeholder="State code, e.g. FL"
+                    value={draft.jurisdiction ?? ""}
+                    onChange={(e) =>
+                      patch({ jurisdiction: e.target.value.toUpperCase() })
+                    }
                   />
-                </div>
-                <div className="space-y-3">
-                  <label htmlFor="waiver-body" className="text-xs font-medium">
-                    Document wording
-                  </label>
-                  <Textarea
-                    ref={bodyRef}
-                    id="waiver-body"
-                    maxLength={30000}
-                    className="min-h-[280px] resize-y text-sm leading-7"
-                    placeholder="Paste your waiver wording, or import a PDF above…"
-                    value={draft.body}
-                    onChange={(e) => patch({ body: e.target.value })}
-                  />
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Braces className="size-3.5" />
-                    Insert a field at your cursor
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {Object.entries(templateFields).map(([key, label]) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => insert(key)}
-                        className="rounded border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-foreground"
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {warnings.length > 0 && (
-                  <div className="border-l-2 border-warning pl-4 text-xs leading-6">
-                    <p className="font-medium">Check these details</p>
-                    {warnings.map((w, i) => (
-                      <p key={i}>{w}</p>
-                    ))}
-                  </div>
-                )}
-                <label className="flex cursor-pointer items-start gap-3 border-t pt-5 text-xs leading-5 text-muted-foreground">
+                  <p className="font-normal text-muted-foreground">
+                    Leave blank only if your reviewed form applies across
+                    states.
+                  </p>
+                </label>
+                <label className="flex gap-2 text-sm">
                   <input
                     type="checkbox"
-                    className="mt-1"
-                    checked={draft.reviewed}
-                    onChange={(e) => {
-                      setDraft((d) => ({ ...d, reviewed: e.target.checked }));
-                      setDirty(true);
-                    }}
+                    checked={rules.enabled}
+                    onChange={(e) =>
+                      patch({
+                        defaults: { ...rules, enabled: e.target.checked },
+                      })
+                    }
                   />
-                  <span>
-                    I reviewed the wording, fields, and waiver type
-                    {source ? " against the original document" : ""}. This
-                    template is ready for company use.
-                  </span>
+                  Prefer this form when its requirements match
                 </label>
-              </fieldset>
-            </div>
-            <div className="flex min-h-0 flex-col bg-muted/30">
-              <div className="flex h-12 shrink-0 items-center justify-between border-b px-5">
-                <div className="flex items-center gap-1">
+                <details>
+                  <summary className="cursor-pointer text-sm">
+                    Project or customer requirements
+                  </summary>
+                  <div className="mt-4 space-y-4">
+                    <label className="block space-y-2 text-xs">
+                      Customer / contracting party name
+                      <Input
+                        value={rules.customerName}
+                        placeholder="Any customer"
+                        onChange={(e) =>
+                          patch({
+                            defaults: {
+                              ...rules,
+                              customerName: e.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      Projects (none selected means all projects)
+                    </p>
+                    {projects.map((p) => (
+                      <label className="flex gap-2 text-xs" key={p.id}>
+                        <input
+                          type="checkbox"
+                          checked={rules.projectIds.includes(p.id)}
+                          onChange={(e) =>
+                            patch({
+                              defaults: {
+                                ...rules,
+                                projectIds: e.target.checked
+                                  ? [...rules.projectIds, p.id]
+                                  : rules.projectIds.filter(
+                                      (id) => id !== p.id,
+                                    ),
+                              },
+                            })
+                          }
+                        />
+                        {p.name}
+                      </label>
+                    ))}
+                  </div>
+                </details>
+                <details>
+                  <summary className="cursor-pointer text-sm">
+                    Signer defaults
+                  </summary>
+                  <div className="mt-4 space-y-3">
+                    <Input
+                      aria-label="Default signer name"
+                      placeholder="Signer name"
+                      value={rules.signerName}
+                      onChange={(e) =>
+                        patch({
+                          defaults: { ...rules, signerName: e.target.value },
+                        })
+                      }
+                    />
+                    <Input
+                      aria-label="Default signer title"
+                      placeholder="Signer title"
+                      value={rules.signerTitle}
+                      onChange={(e) =>
+                        patch({
+                          defaults: { ...rules, signerTitle: e.target.value },
+                        })
+                      }
+                    />
+                  </div>
+                </details>
+                <div className="bg-muted/40 p-4 text-sm leading-6">
+                  Arc will use this {types[draft.waiverType].toLowerCase()} form{" "}
+                  {draft.applicability === "incoming"
+                    ? "when requesting trade waivers"
+                    : "when preparing customer waivers"}
+                  {draft.jurisdiction
+                    ? ` for properties in ${draft.jurisdiction}`
+                    : ""}
+                  . Project details fill automatically. Missing required fields
+                  will be requested before a PDF is issued.
+                </div>
+                <div
+                  ref={finalReview}
+                  tabIndex={-1}
+                  className="space-y-4 border-t pt-5 focus:outline-none"
+                  aria-label="Final review"
+                >
+                  <h3 className="text-sm font-medium">Final review</h3>
+                  {waiverReviewGroups(draft).map((group) => (
+                    <div key={group.key} className="space-y-2">
+                      <details open={group.issues.some((i) => !i.resolved)}>
+                        <summary className="cursor-pointer text-xs font-medium">
+                          {group.label}
+                        </summary>
+                        <ul className="mt-2 list-disc space-y-2 pl-4 text-xs leading-5 text-muted-foreground">
+                          {group.issues.map((i) => (
+                            <li key={i.id}>{i.message}</li>
+                          ))}
+                        </ul>
+                      </details>
+                      <label className="flex items-start gap-2 text-xs leading-5">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={group.issues.every((i) => i.resolved)}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setDraft((current) =>
+                              current?.document
+                                ? {
+                                    ...current,
+                                    document: {
+                                      ...current.document,
+                                      issues: current.document.issues.map(
+                                        (i) =>
+                                          group.issues.some(
+                                            (item) => item.id === i.id,
+                                          )
+                                            ? { ...i, resolved: checked }
+                                            : i,
+                                      ),
+                                    },
+                                  }
+                                : current,
+                            );
+                            setError("");
+                            setStatus("Unsaved changes");
+                          }}
+                        />
+                        <span>I reviewed {group.label.toLowerCase()}.</span>
+                      </label>
+                    </div>
+                  ))}
+                  <label className="flex items-start gap-3 border-t pt-5 text-xs leading-6">
+                    <input
+                      className="mt-1.5"
+                      type="checkbox"
+                      checked={draft.reviewed}
+                      onChange={(e) => {
+                        setDraft({ ...draft, reviewed: e.target.checked });
+                        setError("");
+                        setStatus("Unsaved changes");
+                      }}
+                    />
+                    <span>
+                      I reviewed the wording, data fields, payment stage, and
+                      applicable requirements
+                      {source ? " against the original PDF" : ""}. This form is
+                      ready for our team.
+                    </span>
+                  </label>
+                </div>
+              </>
+            </fieldset>
+            <aside
+              className={`${mobilePreview ? "" : "hidden lg:flex"} min-w-0 flex-col border-r bg-muted/20 lg:order-1 lg:sticky lg:top-20 lg:h-[76vh]`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
+                <div className="flex gap-1">
                   <Button
                     size="sm"
                     variant={!original ? "secondary" : "ghost"}
                     onClick={() => setOriginal(false)}
                   >
-                    Live preview
+                    Arc document
                   </Button>
                   {source && (
                     <Button
@@ -528,63 +918,39 @@ export function WaiverTemplateLibrary({
                       variant={original ? "secondary" : "ghost"}
                       onClick={() => setOriginal(true)}
                     >
-                      Original PDF
+                      Original
                     </Button>
                   )}
                 </div>
-                {!original && (
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <input
-                      type="checkbox"
-                      checked={sample}
-                      onChange={(e) => setSample(e.target.checked)}
-                    />
-                    Example project
-                  </label>
+                {source && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setCompare(true)}
+                  >
+                    Compare
+                  </Button>
                 )}
               </div>
-              {original && source ? (
-                <Original url={`/api/settings/templates/${source}`} />
-              ) : (
-                <Preview draft={draft} sample={sample} />
-              )}
-            </div>
+              <div className="flex min-h-[420px] flex-1 flex-col">
+                {original && source ? (
+                  <Original url={`/api/settings/templates/${source}`} />
+                ) : (
+                  <>
+                    <Preview draft={draft} sample sourceFileId={source} />
+                  </>
+                )}
+              </div>
+            </aside>
           </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={!!replacement}
-        onOpenChange={(v) => {
-          if (!v) setReplacement(undefined);
-        }}
-      >
-        <DialogContent>
-          <DialogTitle>Replace this draft’s content?</DialogTitle>
-          <DialogDescription>
-            Importing another PDF will replace the wording and fields you have
-            entered.
-          </DialogDescription>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setReplacement(undefined)}>
-              Keep editing
-            </Button>
-            <Button
-              onClick={() => {
-                const file = replacement;
-                setReplacement(undefined);
-                void upload(file, true);
-              }}
-            >
-              Import and replace
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+        </>
+      )}
       <Dialog open={discard} onOpenChange={setDiscard}>
         <DialogContent>
-          <DialogTitle>Discard unsaved changes?</DialogTitle>
+          <DialogTitle>Leave this draft?</DialogTitle>
           <DialogDescription>
-            Your saved template will remain available.
+            Your last saved version is kept. The latest unsaved changes will be
+            discarded.
           </DialogDescription>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setDiscard(false)}>
@@ -592,16 +958,29 @@ export function WaiverTemplateLibrary({
             </Button>
             <Button
               onClick={() => {
+                sequence.current++;
                 setDiscard(false);
-                setOpen(false);
-                setDirty(false);
+                setDraft(null);
               }}
             >
-              Discard changes
+              Leave
             </Button>
           </div>
         </DialogContent>
       </Dialog>
-    </>
+      <Dialog open={compare} onOpenChange={setCompare}>
+        <DialogContent className="flex h-[90dvh] flex-col sm:max-w-[95vw]">
+          <DialogTitle>Compare your form</DialogTitle>
+          <DialogDescription>
+            Original on the left. Arc’s generated sample on the right. Confirm
+            every clause, field, and signing area.
+          </DialogDescription>
+          <div className="grid min-h-0 flex-1 grid-cols-2 gap-4">
+            {source && <Original url={`/api/settings/templates/${source}`} />}
+            <Preview draft={draft} sample sourceFileId={source} />
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

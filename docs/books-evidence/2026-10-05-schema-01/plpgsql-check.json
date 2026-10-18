@@ -1,0 +1,288 @@
+[
+  {
+    "function": "public.run_proposal_acceptance_conversion",
+    "issues": [
+      {
+        "level": "error",
+        "message": "record \"v_proposal\" has no field \"currency\"",
+        "statement": {
+          "lineNumber": "60",
+          "text": "SQL statement"
+        },
+        "context": "SQL statement \"insert into public.contracts (\n      org_id,\n      project_id,\n      proposal_id,\n      number,\n      title,\n      status,\n      total_cents,\n      currency,\n      signed_at,\n      effective_date,\n      terms,\n      signature_data,\n      snapshot\n    )\n    values (\n      p_org_id,\n      p_project_id,\n      p_proposal_id,\n      concat('C-', coalesce(nullif(regexp_replace(coalesce(v_proposal.number, ''), '^P-?', ''), ''), left(v_proposal.id::text, 6))),\n      coalesce(v_proposal.title, 'Contract'),\n      'active',\n      v_proposal.total_cents,\n      coalesce(v_proposal.currency, 'usd'),\n      v_signed_at,\n      v_effective_date,\n      v_proposal.terms,\n      p_signature_data,\n      coalesce(v_proposal.snapshot, '{}'::jsonb)\n        || case\n          when p_executed_file_id is null then '{}'::jsonb\n          else jsonb_build_object(\n            'esign',\n            jsonb_build_object(\n              'executed_file_id', p_executed_file_id,\n              'source', p_signature_data -\u003e\u003e 'source',\n              'envelope_id', p_signature_data -\u003e\u003e 'envelope_id',\n              'document_id', p_signature_data -\u003e\u003e 'document_id'\n            )\n          )\n        end\n    )\n    returning *\"",
+        "sqlState": "42703"
+      }
+    ]
+  },
+  {
+    "function": "public.ai_search_analytics_aggregate",
+    "issues": [
+      {
+        "level": "error",
+        "message": "malformed array literal: \"t.id = $2\"",
+        "statement": {
+          "lineNumber": "152",
+          "text": "assignment"
+        },
+        "query": {
+          "position": "35",
+          "text": "v_where_parts := v_where_parts || 't.id = $2'"
+        },
+        "detail": "Array value must start with \"{\" or dimension information.",
+        "context": "at assignment to variable \"v_where_parts\" declared on line 14",
+        "sqlState": "22P02"
+      }
+    ]
+  },
+  {
+    "function": "public.accounting_d2_parity_snapshot",
+    "issues": [
+      {
+        "level": "error",
+        "message": "relation \"public.{invoices,project_expenses,vendor_bills,projects,companies}\" does not exist",
+        "statement": {
+          "lineNumber": "9",
+          "text": "FOR over EXECUTE statement"
+        },
+        "query": {
+          "position": "25",
+          "text": "select to_jsonb(r) from public.\"{invoices,project_expenses,vendor_bills,projects,companies}\" r"
+        },
+        "sqlState": "42P01"
+      }
+    ]
+  },
+  {
+    "function": "public.assert_accounting_d2_ready",
+    "issues": [
+      {
+        "level": "error",
+        "message": "relation \"public.{invoices,project_expenses,vendor_bills,projects,companies}\" does not exist",
+        "statement": {
+          "lineNumber": "37",
+          "text": "EXECUTE"
+        },
+        "query": {
+          "position": "22",
+          "text": "select count(*) from public.\"{invoices,project_expenses,vendor_bills,projects,companies}\" r cross join lateral(select coalesce(jsonb_object_agg(key,value),'{}'::jsonb) payload from jsonb_each(to_jsonb(r)) where key like 'qbo_%' and value\u003c\u003e'null'::jsonb) legacy where legacy.payload\u003c\u003e'{}'::jsonb and not exists(select 1 from public.accounting_d2_legacy_archive a where a.org_id=r.org_id and a.entity_id=r.id and a.source_table='{invoices,project_expenses,vendor_bills,projects,companies}' and a.legacy_data=legacy.payload)"
+        },
+        "sqlState": "42P01"
+      }
+    ]
+  },
+  {
+    "function": "public.revise_precon_pricing_scope",
+    "issues": [
+      {
+        "level": "error",
+        "message": "column \"id\" does not exist",
+        "statement": {
+          "lineNumber": "39",
+          "text": "SQL statement"
+        },
+        "query": {
+          "position": "137",
+          "text": "update public.precon_workspaces set brief=jsonb_set(brief,'{pricing_worksheet}',worksheet),version=version+1,updated_by=p_user_id where id=w.id"
+        },
+        "sqlState": "42703"
+      }
+    ]
+  },
+  {
+    "function": "public.register_drawing_split_batch",
+    "issues": [
+      {
+        "level": "error",
+        "message": "there is no unique or exclusion constraint matching the ON CONFLICT specification",
+        "statement": {
+          "lineNumber": "30",
+          "text": "SQL statement"
+        },
+        "sqlState": "42P10"
+      }
+    ]
+  },
+  {
+    "function": "public.publish_catalog_package_contents",
+    "issues": [
+      {
+        "level": "error",
+        "message": "column \"action\" is of type public.audit_action but expression is of type text",
+        "statement": {
+          "lineNumber": "75",
+          "text": "SQL statement"
+        },
+        "query": {
+          "position": "126",
+          "text": "insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,after_data,source) values(p_org_id,p_actor_id,case when target is null then 'insert' else 'update' end,'selection_package',c.id,source,'catalog_package_publication') returning id"
+        },
+        "hint": "You will need to rewrite or cast the expression.",
+        "sqlState": "42804"
+      }
+    ]
+  },
+  {
+    "function": "public.reserve_warranty_courtesy_inspection",
+    "issues": [
+      {
+        "level": "error",
+        "message": "column \"action\" is of type audit_action but expression is of type text",
+        "statement": {
+          "lineNumber": "75",
+          "text": "SQL statement"
+        },
+        "query": {
+          "position": "127",
+          "text": "insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,after_data,source)\n values(p_org_id,p_actor_id,case when v_adopted then 'update' else 'insert' end,'warranty_request',req.id,\n  jsonb_build_object('coverage_id',c.id,'courtesy_milestone',p_milestone,'due_on',v_due,'adopted',v_adopted),'warranty_courtesy_reservation') returning id"
+        },
+        "hint": "You will need to rewrite or cast the expression.",
+        "sqlState": "42804"
+      }
+    ]
+  },
+  {
+    "function": "public.capture_books_export_snapshot_before_project_owners",
+    "issues": [
+      {
+        "level": "error",
+        "message": "relation \"public.{books_entity_chart_versions,books_entity_accounts,books_entity\" does not exist",
+        "statement": {
+          "lineNumber": "6",
+          "text": "EXECUTE"
+        },
+        "query": {
+          "position": "65",
+          "text": "select coalesce(jsonb_agg(to_jsonb(r) order by r.id),'[]') from public.\"{books_entity_chart_versions,books_entity_accounts,books_entity_account_definitions,books_entity_control_accounts,books_entity_chart_reviews}\" r where org_id=$1"
+        },
+        "sqlState": "42P01"
+      }
+    ]
+  },
+  {
+    "function": "public.cancel_catalog_publication",
+    "issues": [
+      {
+        "level": "error",
+        "message": "invalid input value for enum public.audit_action: \"create\"",
+        "statement": {
+          "lineNumber": "14",
+          "text": "SQL statement"
+        },
+        "query": {
+          "position": "126",
+          "text": "insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,after_data,source) values(p_org_id,p_actor_id,'create','catalog_publication_cancellation',cancellation_key,jsonb_build_object('kind',p_kind,'request_key',p_key,'reason',btrim(p_reason)),'catalog_publication_cancellation') returning id"
+        },
+        "sqlState": "22P02"
+      }
+    ]
+  },
+  {
+    "function": "public.register_catalog_publication",
+    "issues": [
+      {
+        "level": "error",
+        "message": "invalid input value for enum public.audit_action: \"create\"",
+        "statement": {
+          "lineNumber": "52",
+          "text": "SQL statement"
+        },
+        "query": {
+          "position": "126",
+          "text": "insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,after_data,source) values(p_org_id,p_actor_id,'create','catalog_publication_intent',intent_key,jsonb_build_object('kind',p_kind,'request_key',p_key),'catalog_publication_intent') returning id"
+        },
+        "sqlState": "22P02"
+      }
+    ]
+  },
+  {
+    "function": "public.publish_catalog_group_contents",
+    "issues": [
+      {
+        "level": "error",
+        "message": "column \"action\" is of type public.audit_action but expression is of type text",
+        "statement": {
+          "lineNumber": "54",
+          "text": "SQL statement"
+        },
+        "query": {
+          "position": "126",
+          "text": "insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,after_data,source) values(p_org_id,p_actor_id,case when target is null then 'insert' else 'update' end,'selection_group',g.id,source,'catalog_group_publication') returning id"
+        },
+        "hint": "You will need to rewrite or cast the expression.",
+        "sqlState": "42804"
+      }
+    ]
+  },
+  {
+    "function": "public.capture_books_export_snapshot_before_journal_resolutions",
+    "issues": [
+      {
+        "level": "error",
+        "message": "relation \"public.{closings,closing_checklist_items,lot_takedowns,lot_reservation\" does not exist",
+        "statement": {
+          "lineNumber": "116",
+          "text": "EXECUTE"
+        },
+        "query": {
+          "position": "115",
+          "text": "select coalesce(jsonb_agg((to_jsonb(t) || jsonb_build_object('id', t.id::text)) order by t.id), '[]'::jsonb) from public.\"{closings,closing_checklist_items,lot_takedowns,lot_reservations,budgets,budget_lines,commitments,commitment_lines,change_orders,file_links,project_financial_settings,divisions,communities,community_phases,lots,contracts,cost_codes,time_entries,warranty_requests,warranty_service_visits,warranty_backcharges,org_funding_sources,disbursements,payment_runs,payment_run_items,payment_run_fee_charges,receivable_adjustments,books_deposit_batches,books_deposit_batch_items,receivable_payment_groups,receivable_payment_group_items,books_tax_adjustment_workpapers,books_payroll_imports,books_payroll_payment_reviews,books_payroll_posting_proposals,books_payroll_postings,books_payroll_labor_ownership,books_payroll_correction_sources,books_payroll_correction_proposals,books_payroll_correction_postings,books_overhead_budgets,books_overhead_budget_lines,books_legal_entities,books_legal_entity_members,books_legal_entity_access_history,books_legal_entity_profiles,books_legal_entity_profile_reviews,books_settings,accounting_policies,accounting_account_mappings,gl_accounts,books_projection_receipts,accounting_facts,journal_entries,journal_lines,accounting_periods,accounting_reconciliation_runs,accounting_reconciliation_items,poc_snapshots,books_comparison_runs,books_comparison_items,opening_balance_batches,opening_balance_lines,opening_balance_approvals,bank_accounts,bank_transactions,bank_transaction_details,bank_receipts,bank_transaction_revisions,bank_transaction_matches,bank_reconciliations,bank_reconciliation_items,bank_rules,coding_rules,books_debt_instruments,books_debt_events,books_fixed_assets,books_fixed_asset_events,books_tax_jurisdictions,books_tax_filings,books_greenfield_launches,books_journal_proposals,books_cutover_runs,books_cutover_approvals,books_close_items,recurring_posting_templates,recurring_posting_lines,financial_statement_snapshots,tax_policy_versions,companies,contacts,projects,invoices,invoice_lines,payments,payment_allocations,payment_reversals,vendor_bills,bill_lines,project_expenses,project_expense_lines,job_cost_entries,billable_costs,retainage,doc_versions,files,books_legacy_entity_proposals,books_legacy_entity_reviews,audit_log}\" t where t.org_id = $1"
+        },
+        "sqlState": "42P01"
+      }
+    ]
+  },
+  {
+    "function": "public.capture_books_export_snapshot_before_entity_charts",
+    "issues": [
+      {
+        "level": "error",
+        "message": "relation \"public.{books_entity_calendar_years,books_entity_fiscal_periods,books_\" does not exist",
+        "statement": {
+          "lineNumber": "6",
+          "text": "EXECUTE"
+        },
+        "query": {
+          "position": "65",
+          "text": "select coalesce(jsonb_agg(to_jsonb(r) order by r.id),'[]') from public.\"{books_entity_calendar_years,books_entity_fiscal_periods,books_entity_calendar_reviews}\" r where org_id=$1"
+        },
+        "sqlState": "42P01"
+      }
+    ]
+  },
+  {
+    "function": "public.capture_books_export_snapshot_before_project_owner_resolutions",
+    "issues": [
+      {
+        "level": "error",
+        "message": "relation \"public.{books_project_entity_proposals,books_project_entity_reviews}\" does not exist",
+        "statement": {
+          "lineNumber": "6",
+          "text": "EXECUTE"
+        },
+        "query": {
+          "position": "65",
+          "text": "select coalesce(jsonb_agg(to_jsonb(r) order by r.id),'[]') from public.\"{books_project_entity_proposals,books_project_entity_reviews}\" r where org_id=$1"
+        },
+        "sqlState": "42P01"
+      }
+    ]
+  },
+  {
+    "function": "public.capture_books_export_snapshot_before_native_invoices",
+    "issues": [
+      {
+        "level": "error",
+        "message": "relation \"public.{books_native_period_holds,books_native_adjustment_facts,books_\" does not exist",
+        "statement": {
+          "lineNumber": "5",
+          "text": "EXECUTE"
+        },
+        "query": {
+          "position": "65",
+          "text": "select coalesce(jsonb_agg(to_jsonb(r) order by r.id),'[]') from public.\"{books_native_period_holds,books_native_adjustment_facts,books_native_adjustment_reviews,books_native_journal_entries,books_native_journal_lines}\" r where org_id=$1"
+        },
+        "sqlState": "42P01"
+      }
+    ]
+  }
+]

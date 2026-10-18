@@ -1,0 +1,24 @@
+1..23
+ok 1 - blocked accounting sync intent keeps its reason
+ok 2 - current sync state links to the attempt trace
+ok 3 - pending age has a durable clock
+ok 4 - a no-target intent can exist without inventing a connection
+ok 5 - a no-target intent can exist without inventing a provider
+ok 6 - Function public.enqueue_accounting_sync_atomic(uuid, uuid, text, text, uuid, text, text, text, text, jsonb, text) should exist
+ok 7 - browser roles cannot manufacture sync intent or accounting jobs
+ok 8 - the current state attempt link is an enforced foreign key
+ok 9 - the current state attempt foreign key has a covering index
+ok 10 - queueing commits the sync record and outbox job together
+ok 11 - queued intent is visibly pending
+ok 12 - queued intent has exactly one outbox job
+ok 13 - a repeated enqueue is a successful deduplicated decision
+ok 14 - repeated enqueue cannot create a second pending job
+ok 15 - a blocked re-enqueue remains durable
+ok 16 - blocked state names the actionable reason
+ok 17 - changing sync state never erases external identity
+ok 18 - no-target bill payment still leaves a durable needs-review row
+ok 19 - no-target state is represented directly instead of being dropped
+ok 20 - mapping a target promotes the formerly unmapped intent into queued work
+ok 21 - the obsolete no-target placeholder cannot survive beside connected state
+ok 22 - an invalid job cannot commit half of an enqueue decision
+ok 23 - failed atomic enqueue leaves no orphan sync record

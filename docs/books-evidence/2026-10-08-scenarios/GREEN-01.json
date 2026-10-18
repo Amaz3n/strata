@@ -1,0 +1,91 @@
+{
+  "scenario": "GREEN-01",
+  "status": "PASSED",
+  "reviewedFrom": "Greenfield launch (lib/services/books/greenfield.ts): a genuinely new set of books becomes official once readiness passes and the exact attestation is given; a zero opening posts no journal. Amounts are integer cents on each account's normal side.",
+  "subcases": [
+    {
+      "name": "zero-history-launch",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "0c119a0b-ee2f-4f13-bf44-bc6e1e1ca616"
+      },
+      "checks": [
+        {
+          "label": "launch waits for a period and no connected system, takes the exact attestation once, posts nothing for a zero opening, and the first documents post",
+          "pass": true,
+          "expected": {
+            "beforeSetup": {
+              "ready": false,
+              "blockers": [
+                "An external accounting connection is active; use the parallel cutover workflow",
+                "No accounting period exists"
+              ]
+            },
+            "afterSetup": {
+              "ready": true,
+              "blockers": []
+            },
+            "mistypedRefused": true,
+            "againRefused": true,
+            "settings": {
+              "ledger_authority": "arc",
+              "arc_ledger_mode": "official",
+              "external_sync_posture": "disconnected"
+            },
+            "journalsAfterLaunch": 0,
+            "onRecord": {
+              "launches": 1,
+              "audit": 1,
+              "event": 1
+            },
+            "trialBalance": {
+              "1000": -5000,
+              "1100": 100000,
+              "2000": 60000,
+              "4900": 100000,
+              "5000": 65000
+            },
+            "julyNetIncome": 35000
+          },
+          "observed": {
+            "beforeSetup": {
+              "ready": false,
+              "blockers": [
+                "An external accounting connection is active; use the parallel cutover workflow",
+                "No accounting period exists"
+              ]
+            },
+            "afterSetup": {
+              "ready": true,
+              "blockers": []
+            },
+            "mistypedRefused": true,
+            "againRefused": true,
+            "settings": {
+              "ledger_authority": "arc",
+              "arc_ledger_mode": "official",
+              "external_sync_posture": "disconnected"
+            },
+            "journalsAfterLaunch": 0,
+            "onRecord": {
+              "launches": 1,
+              "audit": 1,
+              "event": 1
+            },
+            "trialBalance": {
+              "1000": -5000,
+              "1100": 100000,
+              "2000": 60000,
+              "4900": 100000,
+              "5000": 65000
+            },
+            "julyNetIncome": 35000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T13:12:22.692Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T13:12:23.569Z"
+}

@@ -1,0 +1,398 @@
+{
+  "scenario": "CANCEL-01",
+  "reviewedFrom": "EP14-03 (docs/enterprise-production/completion-checklist.json): cancel before and after release with deposit refund and forfeiture, reservation release, trade orders, the lot back on the market and Books receipts reconciling; an interrupted or retried cancellation yields one final outcome. One production builder (production-seed.cjs), Mangrove (MG1650, $385,000) homes in Cypress Landing; RACE-03 already proves cancellation racing the signature and the start release and is not repeated.",
+  "subcases": {
+    "cancel-before-release-refunds-and-reopens": {
+      "checklist": [
+        "EP14-03",
+        "EP05-07"
+      ],
+      "derivation": "A buyer reserves lot 4 (no premium) with a $20,000 deposit received June 12, signs the Mangrove, chooses design picks, and every start gate clears: the package is ready, nothing is released or ordered. The cancellation plan says the package returns to open and $20,000 is available. Cancelled with a refund, the receipt settles completely: $20,000 refunded, nothing forfeited, one reversal of the deposit payment. The agreement is void, its closing cancelled, the reservation released, the prospect back to qualified and the home has no buyer. The package is open again and no purchase order exists. Books: the deposit liability on the home nets to zero and no revenue is recorded. The lot is on the sales desk's inventory again and a new buyer can hold it.",
+      "inputs": {
+        "lot": 4,
+        "depositCents": 2000000
+      },
+      "expected": {
+        "plan": {
+          "startPackage": "returns_to_open",
+          "availableCents": 2000000
+        },
+        "settlement": {
+          "status": "completed",
+          "refundCents": 2000000,
+          "forfeitCents": 0
+        },
+        "sale": {
+          "agreement": "void",
+          "closings": [
+            "cancelled"
+          ],
+          "reservation": "released",
+          "prospect": "qualified",
+          "buyerOnHome": false
+        },
+        "startPackage": "open",
+        "purchaseOrders": 0,
+        "money": {
+          "refundsCents": [
+            2000000
+          ],
+          "forfeitures": []
+        },
+        "books": {
+          "depositsHeld": 0,
+          "revenue": 0
+        },
+        "market": {
+          "onInventory": true,
+          "newBuyerHolds": "held"
+        }
+      }
+    },
+    "cancel-after-release-forfeits-and-keeps-building": {
+      "checklist": [
+        "EP14-03",
+        "EP05-07",
+        "EP07-04"
+      ],
+      "derivation": "A buyer on lot 5 (no premium) with a $20,000 deposit is signed, designed and released: the release orders the Mangrove's five trades ($251,600) plus the $8,700 of design picks, $260,300, and schedules the build. The plan now says the package keeps building. Cancelled with the deposit forfeited, the receipt settles completely: $20,000 forfeited, nothing refunded. The agreement is void, its closing cancelled, the reservation released, the prospect qualified and the home has no buyer. The house keeps building as a spec home (the default the product owner chose): the package stays released and the orders (none voided, none repriced), budget and schedule are exactly what release made them; the previous buyer's picks are flagged for purchasing rather than cancelled (next subcase). The forfeiture is billed on the home and paid by applying the deposit ($20,000, nothing due): the deposit liability nets to zero and $20,000 is revenue. The house is listed as spec inventory at the $385,000 asking price.",
+      "inputs": {
+        "lot": 5,
+        "depositCents": 2000000
+      },
+      "expected": {
+        "released": "released",
+        "plan": {
+          "startPackage": "keeps_building",
+          "availableCents": 2000000
+        },
+        "settlement": {
+          "status": "completed",
+          "refundCents": 0,
+          "forfeitCents": 2000000
+        },
+        "sale": {
+          "agreement": "void",
+          "closings": [
+            "cancelled"
+          ],
+          "reservation": "released",
+          "prospect": "qualified",
+          "buyerOnHome": false
+        },
+        "startPackage": "released",
+        "keepsBuilding": {
+          "ordersUnchanged": true,
+          "openOrders": 5,
+          "ordersCents": 26030000,
+          "budgetUnchanged": true,
+          "scheduleUnchanged": true
+        },
+        "money": {
+          "refundsCents": [],
+          "forfeitures": [
+            {
+              "totalCents": 2000000,
+              "dueCents": 0,
+              "status": "paid"
+            }
+          ]
+        },
+        "books": {
+          "depositsHeld": 0,
+          "revenue": 2000000
+        },
+        "specInventory": {
+          "isSpec": true,
+          "askingPriceCents": 38500000
+        }
+      }
+    },
+    "released-cancellation-flags-picks-for-purchasing": {
+      "checklist": [
+        "EP14-03",
+        "EP05-07",
+        "EP08-07"
+      ],
+      "derivation": "Settling the released home's cancellation flags every open order carrying the previous buyer's option or design-pick lines: Palmetto Framing (quartz countertops and wide-plank LVP, two lines) and Bright Electric (the recessed lighting package, one line), and tells the starts coordinator, the purchasing manager and the owner once each (three people) through the in-app notification (there is no email type for it); the sales consultant, who neither releases starts nor resolves purchasing exceptions, is not told. The purchasing queue lists both orders. A sales consultant cannot decide them. Purchasing keeps the framing picks for the spec home: the draft order keeps its lines and the flag reads kept. Bright Electric's order was issued meanwhile, so cancelling its pick raises a variance order removing the line (reason: sale cancelled) that waits in the variance queue for approval; deciding the same order again is refused. The queue shows the framing draft with $7,200 of picks and the issued electrical order with $1,500; the variance order is a $1,500 deduction, drafted for the variance approvers.",
+      "inputs": {
+        "forfeited": {
+          "lot": 5,
+          "depositCents": 2000000
+        }
+      },
+      "expected": {
+        "outcomes": {
+          "picksFlagged": 2,
+          "told": 3
+        },
+        "told": {
+          "starts": 1,
+          "purchasing": 1,
+          "sales": 0
+        },
+        "flagged": [
+          [
+            "Bright Electric",
+            1
+          ],
+          [
+            "Palmetto Framing",
+            2
+          ]
+        ],
+        "queue": [
+          [
+            "Palmetto Framing",
+            false,
+            720000
+          ],
+          [
+            "Bright Electric",
+            true,
+            150000
+          ]
+        ],
+        "salesCannotDecide": "refused",
+        "kept": {
+          "decision": "keep",
+          "status": "kept",
+          "framingLinesUnchanged": true
+        },
+        "cancelled": {
+          "decision": "cancel",
+          "status": "cancelled",
+          "raisedVariance": true
+        },
+        "decidedTwice": "refused: already decided",
+        "variance": [
+          {
+            "status": "draft",
+            "totalCents": -150000,
+            "reason": "sale_cancelled"
+          }
+        ],
+        "inTheVarianceQueue": true
+      }
+    },
+    "forfeited-home-resells-and-closes": {
+      "checklist": [
+        "EP14-03",
+        "EP09-05",
+        "EP10-02"
+      ],
+      "derivation": "The forfeited house on lot 5 is sold to a new buyer: reserved with a $10,000 deposit received June 22 and signed at the Mangrove's $385,000 on the same home. Its orders are approved and billed, it is completed with a $6,500 warranty reserve and closed. The settlement is $385,000 less only the new buyer's $10,000 deposit, $375,000 due: the forfeited deposit is no longer a deposit and is not applied. Revenue on the home is the $20,000 forfeiture plus the $385,000 price, $405,000. Nothing is left in inventory or in deposits, and the land, completed-home, warranty-reserve and customer-deposit controls pass.",
+      "inputs": {
+        "depositCents": 1000000,
+        "reserveCents": 650000,
+        "forfeited": {
+          "lot": 5,
+          "depositCents": 2000000
+        }
+      },
+      "expected": {
+        "sameHome": true,
+        "agreementCents": 38500000,
+        "closing": "closed",
+        "settlement": {
+          "finalPriceCents": 38500000,
+          "depositsApplied": [
+            1000000
+          ],
+          "balanceDueCents": 37500000
+        },
+        "books": {
+          "depositsHeld": 0,
+          "revenue": 40500000,
+          "inventoryLeft": {
+            "1160": 0,
+            "1170": 0
+          }
+        },
+        "controls": {
+          "land_inventory_control": "passed",
+          "completed_homes_control": "passed",
+          "warranty_reserve_control": "passed",
+          "customer_deposits_control": "passed"
+        }
+      }
+    },
+    "reservation-release-and-split-deposit": {
+      "checklist": [
+        "EP14-03",
+        "EP05-02",
+        "EP05-07"
+      ],
+      "derivation": "Two buyers reserve fresh lots with $15,000 deposits received June 9; nobody signs. The sales consultant may release a reservation but not move the buyer's money: refunding needs payment.release and is refused. The owner releases one with a refund (one $15,000 reversal, deposit liability zero, no revenue) and the other with a forfeiture (a $15,000 forfeiture invoice paid by the deposit, liability zero, $15,000 revenue). A third buyer with a $20,000 deposit signs; the agreement is cancelled with a split that keeps $5,000: the receipt settles with $15,000 refunded and $5,000 forfeited, the deposit liability is zero and $5,000 is revenue. The customer-deposit control passes.",
+      "inputs": {
+        "reservationDepositCents": 1500000,
+        "agreementDepositCents": 2000000,
+        "splitForfeitCents": 500000
+      },
+      "expected": {
+        "consultantMovesMoney": "refused: payment.release",
+        "refunded": {
+          "reservation": "released",
+          "money": {
+            "refundsCents": [
+              1500000
+            ],
+            "forfeitures": []
+          },
+          "books": {
+            "depositsHeld": 0,
+            "revenue": 0
+          }
+        },
+        "forfeited": {
+          "reservation": "released",
+          "money": {
+            "refundsCents": [],
+            "forfeitures": [
+              {
+                "totalCents": 1500000,
+                "dueCents": 0,
+                "status": "paid"
+              }
+            ]
+          },
+          "books": {
+            "depositsHeld": 0,
+            "revenue": 1500000
+          }
+        },
+        "split": {
+          "settlement": {
+            "status": "completed",
+            "refundCents": 1500000,
+            "forfeitCents": 500000
+          },
+          "money": {
+            "refundsCents": [
+              1500000
+            ],
+            "forfeitures": [
+              {
+                "totalCents": 500000,
+                "dueCents": 0,
+                "status": "paid"
+              }
+            ]
+          },
+          "books": {
+            "depositsHeld": 0,
+            "revenue": 500000
+          }
+        },
+        "depositsControl": "passed"
+      }
+    },
+    "interrupted-cancellation-settles-once": {
+      "checklist": [
+        "EP14-03",
+        "EP13-07"
+      ],
+      "derivation": "A signed buyer with a $20,000 deposit cancels with a refund while the refund write fails once (an injected database failure on the home's payment reversals). The void has committed, so the seller is told the sale was cancelled but the refund did not finish; the receipt is failed at the refund step, the agreement is void and nothing was refunded. Cancelling again is refused: the agreement is no longer open. The deal shows the failed cancellation; two retries of its settlement at once complete it once (the other finds it being settled, or completed), a later retry returns the completed receipt, and exactly one $20,000 refund exists. The deposit liability is zero. The void's event and audit are written once, under the person who cancelled, however many times the settlement ran.",
+      "inputs": {
+        "depositCents": 2000000
+      },
+      "expected": {
+        "first": "cancelled; refund failed (injected)",
+        "faultFired": 1,
+        "afterFailure": {
+          "receipt": [
+            {
+              "disposition": "refund",
+              "refundCents": 2000000,
+              "forfeitCents": 0,
+              "settlement": "failed",
+              "failedStep": "refunding the deposit"
+            }
+          ],
+          "agreement": "void",
+          "money": {
+            "refundsCents": [],
+            "forfeitures": []
+          }
+        },
+        "cancelAgain": "refused: the agreement is no longer open",
+        "dealShows": "failed",
+        "retriesAtOnce": {
+          "completed": 1,
+          "others": [
+            "refused: already being settled"
+          ]
+        },
+        "laterRetry": "done",
+        "after": {
+          "receipt": [
+            {
+              "disposition": "refund",
+              "refundCents": 2000000,
+              "forfeitCents": 0,
+              "settlement": "completed",
+              "failedStep": null
+            }
+          ],
+          "money": {
+            "refundsCents": [
+              2000000
+            ],
+            "forfeitures": []
+          },
+          "depositsHeld": 0,
+          "voidOnRecord": {
+            "events": 1,
+            "audits": 1
+          }
+        }
+      }
+    },
+    "lost-reply-and-simultaneous-voids": {
+      "checklist": [
+        "EP14-03",
+        "EP13-07"
+      ],
+      "derivation": "A signed buyer with a $20,000 deposit is cancelled with a refund and the void's reply is lost after it committed. The seller's retry is refused (the agreement is no longer open) instead of cancelling twice; the deal shows the cancellation pending, and settling it from there refunds $20,000 once: one cancellation, one refund, no deposit held, and the void's event and audit are on the record once though the reply that would have written them was lost (defect found here and fixed: they were written only from the void's reply). A second signed buyer's agreement is voided by two database sessions released together with the same reviewed plan: one voids it and the other waits on the agreement's lock and is refused, leaving one cancellation; its settlement refunds $20,000 once.",
+      "inputs": {
+        "depositCents": 2000000
+      },
+      "expected": {
+        "lostReply": {
+          "first": "lost reply",
+          "repliesDropped": 1,
+          "retry": "refused: the agreement is no longer open",
+          "dealShowedBeforeSettling": "pending",
+          "settledFromDeal": "completed",
+          "cancellations": 1,
+          "money": {
+            "refundsCents": [
+              2000000
+            ],
+            "forfeitures": []
+          },
+          "depositsHeld": 0,
+          "voidOnRecord": {
+            "events": 1,
+            "audits": 1
+          }
+        },
+        "simultaneous": {
+          "sessions": [
+            "done",
+            "refused: the agreement is no longer open"
+          ],
+          "cancellations": 1,
+          "agreement": "void",
+          "money": {
+            "refundsCents": [
+              2000000
+            ],
+            "forfeitures": []
+          },
+          "depositsHeld": 0
+        }
+      }
+    }
+  }
+}

@@ -1,3 +1,6 @@
+import { connection } from "next/server"
+import { Suspense } from "react"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -13,7 +16,8 @@ import {
 import { getProjectAction } from "../actions"
 import { PhotosLens } from "./photos-lens"
 
-export default async function ProjectPhotosPage({ params }: { params: Promise<{ id: string }> }) {
+async function ProjectPhotosPageContent({ params }: { params: Promise<{ id: string }> }) {
+  await connection()
   const { id } = await params
   const project = await getProjectAction(id)
   if (!project) notFound()
@@ -51,5 +55,19 @@ export default async function ProjectPhotosPage({ params }: { params: Promise<{ 
         canFileToDailyLog={canWriteDailyLogs}
       />
     </PageLayout>
+  )
+}
+
+export default function ProjectPhotosPage(props: Parameters<typeof ProjectPhotosPageContent>[0]) {
+  return (
+    <Suspense
+      fallback={
+        <PageLayout title="Photos" fullBleed>
+          <PageLoadingSkeleton />
+        </PageLayout>
+      }
+    >
+      <ProjectPhotosPageContent {...props} />
+    </Suspense>
   )
 }

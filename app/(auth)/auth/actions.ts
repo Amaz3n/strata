@@ -6,6 +6,8 @@ import { createHash, randomBytes } from "node:crypto"
 import { redirect } from "next/navigation"
 import { z } from "zod"
 
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { normalizeInternalReturnPath } from "@/lib/auth/return-path"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enforceAuthRateLimit } from "@/lib/services/auth-rate-limit"
@@ -25,6 +27,20 @@ export interface AuthState {
   error?: string
   message?: string
   mfaRequired?: boolean
+}
+
+/** Who just signed in, so the form can greet them before it navigates. Read only after the password verifies. */
+export interface SignInWelcome {
+  firstName: string | null
+  orgName: string | null
+}
+
+export interface SignInState {
+  error?: string
+  mfaRequired?: boolean
+  /** Set once the session is fully established; the form navigates here after its welcome. */
+  redirectTo?: string
+  welcome?: SignInWelcome
 }
 
 export type SignInAccountStatus = "password" | "setup"
@@ -68,7 +84,7 @@ const updatePasswordSchema = z.object({
   path: ["confirmPassword"],
 })
 
-export async function signInAction(_prevState: AuthState, formData: FormData): Promise<AuthState> {
+export async function signInAction(_prevState: SignInState, formData: FormData): Promise<SignInState> {
   const parsed = signInSchema.safeParse({
     email: formData.get("email"),
     password: formData.get("password"),
@@ -93,40 +109,73 @@ export async function signInAction(_prevState: AuthState, formData: FormData): P
     return { error: "Invalid email or password." }
   }
 
+  // The form greets the person and then navigates itself, so success returns
+  // the destination instead of redirecting from here.
+  const redirectTo = normalizeInternalReturnPath(formData.get("next"))
   const {
     data: { user },
   } = await supabase.auth.getUser()
 
-  if (user) {
-    const membershipState = await resolveMembershipState(supabase, user.id)
-    if (!membershipState.activeOrgId) {
-      await supabase.auth.signOut()
-      await clearOrgCookie()
-      if (membershipState.hasSuspendedMembership) {
-        return { error: "This account has been archived. Contact your organization admin to restore access." }
-      }
-      return { error: "No active organization is assigned to this account. Contact support for access." }
-    }
-
-    await setOrgCookie(membershipState.activeOrgId)
-    await recordDemoLoginIfTracked({
-      orgId: membershipState.activeOrgId,
-      userId: user.id,
-      email: user.email ?? parsed.data.email,
-    })
-
-    const { data: aalData, error: aalError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-    if (aalError) {
-      console.error("Failed to load MFA assurance level", aalError)
-    }
-
-    const requiresMfa = aalData?.nextLevel === "aal2" && aalData?.currentLevel !== "aal2"
-    if (requiresMfa) {
-      return { mfaRequired: true }
-    }
+  if (!user) {
+    return { redirectTo, welcome: { firstName: null, orgName: null } }
   }
 
-  redirect(normalizeInternalReturnPath(formData.get("next")))
+  // Read with the service client: the password is verified but a code may still
+  // be owed, and an organization that requires two-factor hides its rows from such
+  // a session. Whether this person belongs anywhere decides the next step, not access.
+  const [membershipState, profile] = await Promise.all([
+    resolveMembershipState(createServiceSupabaseClient(), user.id),
+    supabase.from("app_users").select("full_name").eq("id", user.id).maybeSingle(),
+  ])
+
+  if (!membershipState.activeOrgId) {
+    await supabase.auth.signOut()
+    await clearOrgCookie()
+    if (membershipState.hasSuspendedMembership) {
+      return { error: "This account has been archived. Contact your organization admin to restore access." }
+    }
+    return { error: "No active organization is assigned to this account. Contact support for access." }
+  }
+
+  if (profile.error) {
+    console.error("Failed to load profile for sign-in greeting", profile.error)
+  }
+
+  await setOrgCookie(membershipState.activeOrgId)
+  await recordDemoLoginIfTracked({
+    orgId: membershipState.activeOrgId,
+    userId: user.id,
+    email: user.email ?? parsed.data.email,
+  })
+
+  const welcome: SignInWelcome = {
+    firstName: firstNameOf(profile.data?.full_name),
+    orgName: membershipState.activeOrgName,
+  }
+
+  const { data: aalData, error: aalError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+  if (aalError) {
+    console.error("Failed to load MFA assurance level", aalError)
+  }
+
+  const requiresMfa = aalData?.nextLevel === "aal2" && aalData?.currentLevel !== "aal2"
+  if (requiresMfa) {
+    return { mfaRequired: true, redirectTo, welcome }
+  }
+
+  return { redirectTo, welcome }
+}
+
+function firstNameOf(fullName: unknown): string | null {
+  if (typeof fullName !== "string") return null
+  return fullName.trim().split(/\s+/)[0] || null
+}
+
+/** PostgREST returns an embedded to-one row as an object, or as an array when the relationship is ambiguous. */
+function embeddedName(value: unknown): string | null {
+  const row = Array.isArray(value) ? value[0] : value
+  if (row && typeof row === "object" && "name" in row && typeof row.name === "string") return row.name
+  return null
 }
 
 export async function lookupSignInAccountAction(emailInput: string): Promise<SignInAccountState> {
@@ -545,10 +594,10 @@ async function clearOrgCookie() {
   }
 }
 
-async function resolveMembershipState(supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>, userId: string) {
+async function resolveMembershipState(supabase: SupabaseClient, userId: string) {
   const { data: activeMembership, error: activeError } = await supabase
     .from("memberships")
-    .select("org_id")
+    .select("org_id, org:orgs(name)")
     .eq("user_id", userId)
     .eq("status", "active")
     .order("created_at", { ascending: true })
@@ -562,6 +611,7 @@ async function resolveMembershipState(supabase: Awaited<ReturnType<typeof create
   if (activeMembership?.org_id) {
     return {
       activeOrgId: activeMembership.org_id as string,
+      activeOrgName: embeddedName(activeMembership.org),
       hasSuspendedMembership: false,
     }
   }
@@ -580,6 +630,7 @@ async function resolveMembershipState(supabase: Awaited<ReturnType<typeof create
 
   return {
     activeOrgId: null,
+    activeOrgName: null,
     hasSuspendedMembership: Boolean(suspendedMembership?.id),
   }
 }

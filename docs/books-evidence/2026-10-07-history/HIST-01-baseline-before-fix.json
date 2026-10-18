@@ -1,0 +1,76 @@
+{
+  "scenario": "HIST-01",
+  "status": "FAILED",
+  "reviewedFrom": "B03.1-B03.3 definition of done (advisor-plans/013).",
+  "subcases": [
+    {
+      "name": "void-before-close",
+      "status": "FAILED",
+      "identities": {
+        "orgId": "1d74c1ce-e40f-48c3-ab56-7abde4f299f0",
+        "kept": "bbbbdf42-3ba4-473d-a6ab-61b1dd06c1d1",
+        "voided": "3e146178-a0b1-4048-b207-765a2651f5f1",
+        "agingKeys": [
+          "as_of",
+          "project_id",
+          "rows",
+          "totals"
+        ]
+      },
+      "checks": [
+        {
+          "label": "a void inside the open month leaves July without the invoice in the ledger, the aging and the tie-out",
+          "pass": false,
+          "expected": {
+            "ledgerAr": 100000,
+            "agingTotal": 100000,
+            "tieOut": {
+              "status": "passed",
+              "differenceCents": 0
+            }
+          },
+          "observed": {
+            "ledgerAr": 100000,
+            "agingTotal": null,
+            "tieOut": {
+              "status": "failed",
+              "differenceCents": -40000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T11:22:29.578Z"
+    },
+    {
+      "name": "unapprove-after-close",
+      "status": "FAILED",
+      "identities": {
+        "orgId": "93faa3a6-0280-48c9-9ae3-7f99e2195c06",
+        "bill": "a50d2b25-db83-4a2e-b078-c16821581416",
+        "agingKeys": [
+          "as_of",
+          "project_id",
+          "rows",
+          "totals"
+        ]
+      },
+      "checks": [
+        {
+          "label": "un-approving a bill in a closed month is refused and July's payables stay as closed",
+          "pass": false,
+          "expected": {
+            "unapprove": "refused: period closed",
+            "agingUnchanged": true
+          },
+          "observed": {
+            "unapprove": "allowed",
+            "agingUnchanged": false
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T11:22:34.427Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T11:22:35.084Z"
+}

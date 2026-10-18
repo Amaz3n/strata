@@ -42,8 +42,9 @@ const VECTORS_BIN_VERSION = 2
  *   3: dash-chain attribution and vectors.bin v2 stroke attributes
  *   4: positioned text runs (text-runs.json) written alongside vectors.bin,
  *      which floorplan interpretation needs to label rooms
+ *   5: original area-evidence.json paths alongside vectors for area takeoff
  */
-export const VECTOR_EXTRACT_ALGO = 4
+export const VECTOR_EXTRACT_ALGO = 5
 
 export interface ExtractedVectors {
   /** Filtered, normalized segments encoded per the vectors.bin contract. */

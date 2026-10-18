@@ -1,3 +1,4 @@
+import type { AgreementSigningState } from "@/lib/sales/agreement-signing-state"
 import {
   CLOSING_SOON_DAYS,
   HOLD_URGENT_DAYS,
@@ -60,6 +61,7 @@ function relativeLabel(days: number): string {
 }
 
 export interface DealAttentionInput {
+  signing?: AgreementSigningState | null
   deal: SalesDeal
   reservation: SalesDealReservation | null
   /** False when there is no phone and no email anywhere on the deal. */
@@ -75,7 +77,7 @@ export interface DealAttentionInput {
  * skip past on the files that still matter.
  */
 export function dealAttentionItems(
-  { deal, reservation, hasContactDetails, ownerAssigned, lastTouchAt }: DealAttentionInput,
+  { deal, reservation, hasContactDetails, ownerAssigned, lastTouchAt, signing }: DealAttentionInput,
   now: Date = new Date(),
 ): DealAttentionItem[] {
   const items: DealAttentionItem[] = []
@@ -175,8 +177,8 @@ export function dealAttentionItems(
   if (deal.contractStatus === "draft") {
     items.push({
       kind: "agreement",
-      title: "Agreement out for signature",
-      meta: "Awaiting buyer",
+      title: signing?.title ?? "Agreement signing status needs verification",
+      meta: signing ? signing.stage.replaceAll("_", " ") : "Not verified",
       group: "at_risk",
       href: deal.projectId ? `/projects/${deal.projectId}/documents` : null,
     })

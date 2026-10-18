@@ -1,97 +1,11 @@
 /**
- * Pure selection-side policy: what a post-cutoff change costs the trades, when
- * a change actually *is* post-cutoff, which package members a package applies
- * to, and whether a purchase agreement still locks structural options.
- *
- * The buyer-facing change order carries the price. The commitments carry the
- * cost. Nothing reconciles the two unless every cost delta is routed onto the
- * purchase order that owns its cost code, so that routing lives here where it
- * can be tested without a database.
+ * Pure selection-side policy: when a change actually *is* post-cutoff, which
+ * package members a package applies to, and whether a purchase agreement still
+ * locks structural options. Routing a change's cost onto the purchase orders
+ * that own it happens inside the change order's approval
+ * (`create_change_order_variance_orders`), so the buyer's price and the trades'
+ * cost land together.
  */
-
-export type SelectionCostDelta = {
-  selection_id: string
-  cost_code_id: string | null
-  cost_delta_cents: number
-  category_name: string
-  option_name: string
-}
-
-/** cost_code_id → the purchase order that carries it. */
-export type CommitmentByCostCode = ReadonlyMap<string, { commitmentId: string; companyId: string | null }>
-
-export type PlannedVarianceOrderLine = {
-  selection_id: string
-  cost_code_id: string
-  description: string
-  unit_cost_cents: number
-}
-
-export type PlannedVarianceOrder = {
-  commitment_id: string
-  company_id: string | null
-  total_cents: number
-  selection_ids: string[]
-  lines: PlannedVarianceOrderLine[]
-}
-
-export type UnroutedSelectionDelta = {
-  selection_id: string
-  cost_code_id: string | null
-  cost_delta_cents: number
-  description: string
-  reason: "no_cost_code" | "no_commitment"
-}
-
-export function describeSelectionChange(change: Pick<SelectionCostDelta, "category_name" | "option_name">) {
-  return `${change.category_name} — ${change.option_name}`
-}
-
-/**
- * Fan a set of executed selection changes out onto the purchase orders that
- * own their cost codes. A zero delta is not a variance and produces nothing;
- * a delta with nowhere to land is reported rather than dropped.
- */
-export function planSelectionVarianceOrders(input: {
-  changes: readonly SelectionCostDelta[]
-  commitmentByCostCode: CommitmentByCostCode
-}): { orders: PlannedVarianceOrder[]; unrouted: UnroutedSelectionDelta[] } {
-  const orders = new Map<string, PlannedVarianceOrder>()
-  const unrouted: UnroutedSelectionDelta[] = []
-
-  for (const change of input.changes) {
-    const deltaCents = Math.round(Number(change.cost_delta_cents ?? 0))
-    if (!Number.isFinite(deltaCents) || deltaCents === 0) continue
-    const description = describeSelectionChange(change)
-    if (!change.cost_code_id) {
-      unrouted.push({ selection_id: change.selection_id, cost_code_id: null, cost_delta_cents: deltaCents, description, reason: "no_cost_code" })
-      continue
-    }
-    const target = input.commitmentByCostCode.get(change.cost_code_id)
-    if (!target) {
-      unrouted.push({ selection_id: change.selection_id, cost_code_id: change.cost_code_id, cost_delta_cents: deltaCents, description, reason: "no_commitment" })
-      continue
-    }
-    const order = orders.get(target.commitmentId) ?? {
-      commitment_id: target.commitmentId,
-      company_id: target.companyId,
-      total_cents: 0,
-      selection_ids: [],
-      lines: [],
-    }
-    order.total_cents += deltaCents
-    order.selection_ids.push(change.selection_id)
-    order.lines.push({
-      selection_id: change.selection_id,
-      cost_code_id: change.cost_code_id,
-      description,
-      unit_cost_cents: deltaCents,
-    })
-    orders.set(target.commitmentId, order)
-  }
-
-  return { orders: Array.from(orders.values()), unrouted }
-}
 
 export type SelectionCutoffState = {
   /** Set once the selection itself is frozen, independent of its group. */

@@ -29,7 +29,8 @@ export const taskTradeSchema = z.enum([
 
 const baseTaskSchema = z.object({
   // Optional: tasks can be personal (no project) or attached to any project.
-  project_id: z.string().uuid().optional(),
+  // On an update, null detaches the task from its project (makes it personal).
+  project_id: z.string().uuid().nullable().optional(),
   title: z.string().min(2, "Title is required"),
   description: z.string().optional(),
   status: z.enum(["todo", "in_progress", "blocked", "done"]).default("todo"),
@@ -40,6 +41,8 @@ const baseTaskSchema = z.object({
   reminder_at: z.string().optional(),
   assignee_id: z.string().uuid().optional(),
   assignee_kind: z.enum(["user", "contact", "company"]).optional(),
+  clear_assignee: z.boolean().optional(),
+  mentioned_user_ids: z.array(z.string().uuid()).max(100).optional(),
   // Construction-specific
   location: z.string().optional(),
   trade: taskTradeSchema.optional(),
@@ -48,7 +51,9 @@ const baseTaskSchema = z.object({
   checklist: z.array(taskChecklistItemSchema).optional(),
 })
 
-const assigneeRefinement = (data: { assignee_id?: string; assignee_kind?: string }) => {
+const assigneeRefinement = (data: { assignee_id?: string; assignee_kind?: string; clear_assignee?: boolean }) => {
+  if (data.clear_assignee && (data.assignee_id || data.assignee_kind)) return false
+  if (data.assignee_id && !data.assignee_kind) return false
   if (data.assignee_kind) {
     return !!data.assignee_id
   }

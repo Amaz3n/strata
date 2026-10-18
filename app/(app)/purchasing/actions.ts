@@ -7,7 +7,27 @@ import { actionError, type ActionResult } from "@/lib/action-result"
 import { approveCommitmentChangeOrder, rejectVarianceOrder } from "@/lib/services/commitment-change-orders"
 import { approvePoCompletion, rejectPoCompletion, verifyPoCompletion } from "@/lib/services/po-completions"
 import { dismissPoException, generatePurchaseOrders, resolvePoException } from "@/lib/services/po-generation"
-import { createPriceAgreement, repriceAgreement, setAgreementEnd, voidPriceAgreement } from "@/lib/services/price-book"
+import { createPriceAgreement, getAgreementImpact, repriceAgreement, setAgreementEnd, voidPriceAgreement } from "@/lib/services/price-book"
+import { poExceptionResolutionSchema, poGenerationInputSchema, saleCancellationPickResolutionSchema } from "@/lib/validation/po-generation"
+import { resolveSaleCancellationPick } from "@/lib/services/sale-cancellation-picks"
+import { agreementEndSchema, agreementVoidSchema, priceAgreementInputSchema, repriceAgreementSchema } from "@/lib/validation/price-book"
+import { getPoExceptionCandidates, searchPurchasingEntities } from "@/lib/services/purchasing-workspace"
+
+export async function getPoExceptionCandidatesAction(input: unknown) {
+  try {
+    return { success: true as const, data: await getPoExceptionCandidates(input) }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function searchPurchasingEntitiesAction(input: unknown) {
+  try {
+    return { success: true as const, data: await searchPurchasingEntities(input) }
+  } catch (error) {
+    return actionError(error)
+  }
+}
 
 async function run<T>(operation: () => Promise<T>, projectId?: string): Promise<ActionResult<T>> {
   try {
@@ -16,6 +36,7 @@ async function run<T>(operation: () => Promise<T>, projectId?: string): Promise<
     if (projectId) {
       revalidatePath(`/projects/${projectId}`)
       revalidatePath(`/projects/${projectId}/financials`)
+      revalidatePath(`/projects/${projectId}/financials/budget`)
     }
     return { success: true, data }
   } catch (error) {
@@ -24,30 +45,38 @@ async function run<T>(operation: () => Promise<T>, projectId?: string): Promise<
 }
 
 export async function createPriceAgreementAction(input: unknown) {
-  return await run(() => createPriceAgreement(input as Parameters<typeof createPriceAgreement>[0]))
+  return await run(() => createPriceAgreement(priceAgreementInputSchema.parse(input)))
 }
 
 export async function repriceAgreementAction(agreementId: string, input: unknown) {
-  return await run(() => repriceAgreement(z.string().uuid().parse(agreementId), input as Parameters<typeof repriceAgreement>[1]))
+  return await run(() => repriceAgreement(z.string().uuid().parse(agreementId), repriceAgreementSchema.parse(input)))
 }
 
-export async function voidPriceAgreementAction(agreementId: string) {
-  return await run(() => voidPriceAgreement(z.string().uuid().parse(agreementId)))
+export async function voidPriceAgreementAction(agreementId: string, input: unknown) {
+  return await run(() => voidPriceAgreement(z.string().uuid().parse(agreementId), agreementVoidSchema.parse(input)))
 }
 
-export async function endPriceAgreementAction(agreementId: string, effectiveTo: string) {
-  return await run(() => setAgreementEnd(z.string().uuid().parse(agreementId), z.string().date().parse(effectiveTo)))
+export async function endPriceAgreementAction(agreementId: string, input: unknown) {
+  return await run(() => setAgreementEnd(z.string().uuid().parse(agreementId), agreementEndSchema.parse(input)))
+}
+
+export async function getAgreementImpactAction(agreementId: string) {
+  try {
+    return { success: true as const, data: await getAgreementImpact(z.string().uuid().parse(agreementId)) }
+  } catch (error) {
+    return actionError(error)
+  }
 }
 
 export async function generatePurchaseOrdersAction(input: unknown) {
   const projectId = typeof input === "object" && input !== null && typeof Reflect.get(input, "projectId") === "string"
     ? String(Reflect.get(input, "projectId"))
     : undefined
-  return await run(() => generatePurchaseOrders(input as Parameters<typeof generatePurchaseOrders>[0]), projectId)
+  return await run(() => generatePurchaseOrders(poGenerationInputSchema.parse(input)), projectId)
 }
 
 export async function resolvePoExceptionAction(exceptionId: string, input: unknown) {
-  return await run(() => resolvePoException(z.string().uuid().parse(exceptionId), input as Parameters<typeof resolvePoException>[1]))
+  return await run(() => resolvePoException(z.string().uuid().parse(exceptionId), poExceptionResolutionSchema.parse(input)))
 }
 
 export async function dismissPoExceptionAction(exceptionId: string, note: string) {
@@ -76,6 +105,10 @@ export async function rejectPoCompletionAction(completionId: string, reason: str
   return await run(() => rejectPoCompletion(z.string().uuid().parse(completionId), z.string().trim().min(1).max(1000).parse(reason)))
 }
 
-export async function approvePoCompletionAction(completionId: string) {
-  return await run(() => approvePoCompletion(z.string().uuid().parse(completionId)))
+export async function approvePoCompletionAction(completionId: string, evidence?: { inspectionId?: string | null; inspectionWaiverReason?: string | null }) {
+  return await run(() => approvePoCompletion(z.string().uuid().parse(completionId), undefined, evidence))
+}
+
+export async function resolveSaleCancellationPickAction(input: unknown, projectId: string) {
+  return await run(() => resolveSaleCancellationPick(saleCancellationPickResolutionSchema.parse(input)), z.string().uuid().parse(projectId))
 }

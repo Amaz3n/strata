@@ -2,7 +2,7 @@
  * Checking a vision model's symbol proposals against the sheet's own linework.
  *
  * Arc's doctrine on floor plans is that the model proposes and the vectors
- * decide (`floorplan-vision.ts`). Symbol counting never got the same treatment,
+ * decide. Symbol counting never got the same treatment,
  * and it is the place it matters most: a floor plan proposal that is slightly
  * wrong produces a wall in roughly the right place, while a symbol proposal that
  * is wrong produces a COUNT — a whole number that flows into an estimate and out

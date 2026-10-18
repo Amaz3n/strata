@@ -7,7 +7,9 @@ const {
   SCHEDULE_DIGEST_WINDOW_MS, addWeeks, cycleTrendDelta, median, mondayOfIsoWeek,
   normalizeWorkGroupKey, percentile, releaseSlotVariance, scheduleDigestKey,
 } = require("../lib/starts/even-flow-math")
-const { superintendentLoad } = require("../lib/starts/superintendent-load")
+const { resolveSuperintendentLimits, superintendentLoad, superintendentRemaining } = require("../lib/starts/superintendent-load")
+const { closeImpacts, lateCloses, startDateForWeek } = require("../lib/starts/close-impact")
+const { financingGateClear } = require("../lib/starts/gate-logic")
 
 test("gate applicability and readiness honor financed, purchasing, and release-produced gates", () => {
   assert.equal(isGateApplicable({ appliesWhen: "financed_only" }, { isFinanced: false, purchasingEnabled: true }), false)
@@ -88,6 +90,16 @@ test("the blocker is the longest-lead outstanding gate, not the first one", () =
   assert.equal(blocker.leadDays, gateLeadDays("permit"))
 })
 
+test("an unmet entitlement outranks the permit, which cannot be pulled before the plat records", () => {
+  const withEntitlements = [
+    ...blockerGates,
+    { key: "entitlements", label: "Entitlements & conditions met", checkKind: "auto", appliesWhen: "always", status: "pending" },
+  ]
+  assert.equal(pickBlocker(withEntitlements, bothOn).key, "entitlements")
+  const cleared = withEntitlements.map((gate) => (gate.key === "entitlements" ? { ...gate, status: "passed" } : gate))
+  assert.equal(pickBlocker(cleared, bothOn).key, "permit")
+})
+
 test("the blocker skips gates that do not apply to this house", () => {
   const withoutPermit = blockerGates.map((gate) => (gate.key === "permit" ? { ...gate, status: "passed" } : gate))
   // Financing outranks the plot plan, but only for a financed buyer.
@@ -112,4 +124,45 @@ test("final approval only surfaces as the blocker when it is genuinely last", ()
   assert.equal(pickBlocker(nearlyReady, bothOn).key, "final_approval")
   const waivedAndSatisfied = blockerGates.map((gate) => ({ ...gate, status: gate.key === "permit" ? "waived" : "passed" }))
   assert.equal(pickBlocker(waivedAndSatisfied, bothOn), null)
+})
+
+test("superintendent limits resolve person, then org, then the built-in ten and fifteen", () => {
+  assert.deepEqual(resolveSuperintendentLimits(null, null), { warn: 10, max: 15 })
+  assert.deepEqual(resolveSuperintendentLimits(null, { warn: 6, max: 8 }), { warn: 6, max: 8 })
+  assert.deepEqual(resolveSuperintendentLimits({ warn: 3, max: 4 }, { warn: 6, max: 8 }), { warn: 3, max: 4 })
+  const limits = { warn: 6, max: 8 }
+  assert.equal(superintendentLoad(5, limits), "clear")
+  assert.equal(superintendentLoad(6, limits), "stretched")
+  assert.equal(superintendentLoad(8, limits), "over")
+  assert.equal(superintendentRemaining(7, limits), 1)
+  assert.equal(superintendentRemaining(12, limits), 0)
+})
+
+test("close impact projects start plus cycle against the promised closing, worst first", () => {
+  const homes = [
+    { id: "spec", lotLabel: "1", closingDate: null, cycleDays: 120 },
+    { id: "tight", lotLabel: "2", closingDate: "2027-03-01", cycleDays: 120 },
+    { id: "late", lotLabel: "3", closingDate: "2027-02-01", cycleDays: 120 },
+  ]
+  const impacts = closeImpacts(homes, "2026-11-02")
+  assert.deepEqual(impacts.map((impact) => impact.id), ["late", "tight"], "a spec has no closing to miss")
+  assert.deepEqual(impacts[0], { id: "late", lotLabel: "3", closingDate: "2027-02-01", projectedClose: "2027-03-02", daysLate: 29, slackDays: 0 })
+  assert.deepEqual(impacts[1], { id: "tight", lotLabel: "2", closingDate: "2027-03-01", projectedClose: "2027-03-02", daysLate: 1, slackDays: 0 })
+  assert.deepEqual(lateCloses(closeImpacts(homes, "2026-10-10")).map((impact) => impact.id), ["late"])
+  assert.equal(startDateForWeek("2026-11-02", "2026-11-04"), "2026-11-04")
+  assert.equal(startDateForWeek("2026-11-09", "2026-11-04"), "2026-11-09")
+})
+
+test("financing is proved by a satisfied approval or proof of funds with its document, never by absence", () => {
+  const approved = { templateKey: "lender:loan_approval", status: "satisfied", evidenceFileId: "f", evidenceOnFile: true }
+  const clear = (milestones, isFinanced = false) => financingGateClear({ agreement: { milestones }, saleCancelled: false, isFinanced })
+  assert.equal(financingGateClear({ agreement: null, saleCancelled: false, isFinanced: false }), true, "a spec home has no buyer")
+  assert.equal(financingGateClear({ agreement: null, saleCancelled: false, isFinanced: true }), false, "a package flagged financed with no agreement is absence")
+  assert.equal(financingGateClear({ agreement: null, saleCancelled: true, isFinanced: false }), false, "a home whose sale was cancelled is not a spec home")
+  assert.equal(clear([]), false)
+  assert.equal(clear([approved]), true)
+  assert.equal(clear([{ ...approved, templateKey: "buyer:proof_of_funds" }]), true)
+  assert.equal(clear([{ ...approved, status: "waived" }]), false)
+  assert.equal(clear([{ ...approved, evidenceOnFile: false }]), false)
+  assert.equal(clear([{ ...approved, templateKey: "lender:appraisal" }]), false)
 })

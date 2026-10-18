@@ -1,3 +1,4 @@
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { connection } from "next/server"
@@ -438,6 +439,7 @@ function normalizeReleaseNoteInput(input: ReleaseNoteInput) {
 }
 
 export async function listReleaseNotesForAdmin(): Promise<AdminReleaseNote[]> {
+  await requireAnyPlatformPermission(["platform.feature_flags.manage"])
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("release_notes")
@@ -450,6 +452,7 @@ export async function listReleaseNotesForAdmin(): Promise<AdminReleaseNote[]> {
 }
 
 export async function createReleaseNote(input: ReleaseNoteInput) {
+  await requireAnyPlatformPermission(["platform.feature_flags.manage"])
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("release_notes")
@@ -462,6 +465,7 @@ export async function createReleaseNote(input: ReleaseNoteInput) {
 }
 
 export async function updateReleaseNote(id: string, input: ReleaseNoteInput) {
+  await requireAnyPlatformPermission(["platform.feature_flags.manage"])
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("release_notes")
@@ -475,6 +479,7 @@ export async function updateReleaseNote(id: string, input: ReleaseNoteInput) {
 }
 
 export async function deleteReleaseNote(id: string) {
+  await requireAnyPlatformPermission(["platform.feature_flags.manage"])
   const supabase = createServiceSupabaseClient()
   const { error } = await supabase.from("release_notes").delete().eq("id", id)
 

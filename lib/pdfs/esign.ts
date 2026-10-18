@@ -1,5 +1,9 @@
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib"
-import sharp from "sharp"
+import { PDFDocument, StandardFonts, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, type PDFFont, type PDFPage } from "pdf-lib"
+import { readFile } from "node:fs/promises"
+import path from "node:path"
+import { Readable } from "node:stream"
+import * as fontkit from "fontkit"
+import { validateSignaturePng } from "@/lib/esign/field-values"
 
 type FieldType = "signature" | "initials" | "text" | "date" | "checkbox" | "name"
 
@@ -11,6 +15,7 @@ export interface ESignField {
   y: number
   w: number
   h: number
+  metadata?: Record<string, unknown> | null
 }
 
 export interface ESignAuditTrailItem {
@@ -18,26 +23,92 @@ export interface ESignAuditTrailItem {
   value: string | null | undefined
 }
 
-function decodeDataUrl(dataUrl: string): Uint8Array {
-  const [, base64] = dataUrl.split(",")
-  if (!base64) {
-    throw new Error("Invalid data URL")
+const fontAssets = new Map<string, Promise<Buffer>>()
+function loadFontAsset(name: string) {
+  let bytes = fontAssets.get(name)
+  if (!bytes) {
+    bytes = readFile(path.join(process.cwd(), "lib/pdfs/fonts", name))
+    fontAssets.set(name, bytes)
   }
-  return Buffer.from(base64, "base64")
+  return bytes
 }
 
-async function trimSignatureImage(bytes: Uint8Array | Buffer) {
-  try {
-    return await sharp(bytes, { limitInputPixels: 20_000_000 })
-      .trim({ threshold: 12 })
-      .png()
-      .toBuffer()
-  } catch {
-    return bytes
+// pdf-lib 1.x expects fontkit's older stream API. fontkit 2 exposes the same
+// subset bytes synchronously; adapt that boundary without private PDF internals.
+const pdfFontkit = {
+  create(bytes: Uint8Array) {
+    const font = fontkit.create(bytes)
+    const createSubset = font.createSubset.bind(font)
+    font.createSubset = () => {
+      const subset = createSubset()
+      subset.encodeStream = () => Readable.from([subset.encode()])
+      return subset
+    }
+    return font
+  },
+}
+
+async function createFontSelector(pdf: PDFDocument) {
+  pdf.registerFontkit(pdfFontkit as unknown as Parameters<PDFDocument["registerFontkit"]>[0])
+  const sans = await pdf.embedFont(await loadFontAsset("DMSans-Regular.ttf"), { subset: true })
+  const serif = await pdf.embedFont(StandardFonts.TimesRoman)
+  const mono = await pdf.embedFont(StandardFonts.Courier)
+  let cjk: PDFFont | undefined
+  const supports = (font: PDFFont, text: string) => {
+    const characters = new Set(font.getCharacterSet())
+    return Array.from(text).every(char => /[\n\r\t]/.test(char) || characters.has(char.codePointAt(0)!))
+  }
+  return async (text: string, family: unknown = "sans"): Promise<PDFFont> => {
+    const preferred = family === "serif" ? serif : family === "mono" ? mono : sans
+    if (supports(preferred, text)) return preferred
+    if (supports(sans, text)) return sans
+    cjk ??= await pdf.embedFont(await loadFontAsset("NotoSansSC-Regular.otf"), { subset: true })
+    if (supports(cjk, text)) return cjk
+    throw new Error("This text includes characters not supported by the document fonts. Please contact the sender.")
   }
 }
 
-function wrapText(text: string, font: any, size: number, maxWidth: number) {
+/** Convert displayed PDF.js crop-box coordinates to the original PDF user space. */
+export function signingPageGeometry(page: PDFPage) {
+  const crop = page.getCropBox()
+  const media = page.getMediaBox()
+  const x = Math.max(crop.x, media.x)
+  const y = Math.max(crop.y, media.y)
+  const width = Math.min(crop.x + crop.width, media.x + media.width) - x
+  const height = Math.min(crop.y + crop.height, media.y + media.height) - y
+  if (width <= 0 || height <= 0) throw new Error("The PDF crop box does not intersect its page.")
+  const rotation = ((page.getRotation().angle % 360) + 360) % 360
+  if (![0, 90, 180, 270].includes(rotation)) throw new Error("Unsupported PDF page rotation.")
+  const transforms: Record<number, [number, number, number, number, number, number]> = {
+    0: [1, 0, 0, 1, x, y],
+    90: [0, 1, -1, 0, x + width, y],
+    180: [-1, 0, 0, -1, x + width, y + height],
+    270: [0, -1, 1, 0, x, y + height],
+  }
+  return { width: rotation % 180 ? height : width, height: rotation % 180 ? width : height, transform: transforms[rotation] }
+}
+
+export function formatSigningDate(value: string, format: unknown = "MM/DD/YYYY") {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) throw new Error("Invalid signing date.")
+  const [, year, month, day] = match
+  if (format === "YYYY-MM-DD") return value
+  if (format === "DD/MM/YYYY") return `${day}/${month}/${year}`
+  if (format === "MMM D, YYYY") return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(month) - 1]} ${Number(day)}, ${year}`
+  return `${month}/${day}/${year}`
+}
+
+function assertFieldGeometry(field: ESignField, pages: PDFPage[]) {
+  if (!Number.isInteger(field.page_index) || !pages[field.page_index] ||
+      ![field.x, field.y, field.w, field.h].every(Number.isFinite) ||
+      field.x < 0 || field.y < 0 || field.w <= 0 || field.h <= 0 ||
+      field.x + field.w > 1.000001 || field.y + field.h > 1.000001) {
+    throw new Error("A signing field is outside the document page. Ask the sender to correct its placement.")
+  }
+}
+
+function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
+  if (/[\r\n]/.test(text)) return text.split(/\r\n|\r|\n/).flatMap(line => wrapText(line, font, size, maxWidth))
   const words = text.split(/\s+/).filter(Boolean)
   const lines: string[] = []
   let current = ""
@@ -101,20 +172,21 @@ export async function generateExecutedPdf({
 }): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(pdfBytes)
   const pages = pdfDoc.getPages()
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
+  const selectFont = await createFontSelector(pdfDoc)
+  const font = await selectFont("Electronic Signature Certificate")
 
   for (const field of fields) {
+    assertFieldGeometry(field, pages)
     const page = pages[field.page_index]
-    if (!page) continue
-
-    const { width, height } = page.getSize()
+    const { width, height, transform } = signingPageGeometry(page)
     const x = field.x * width
     const y = height - (field.y + field.h) * height
     const w = field.w * width
     const h = field.h * height
 
     const value = resolveFieldValue(values, field.id)
-    if (value === null) continue
+    if (value === null || value === "") continue
+    page.pushOperators(pushGraphicsState(), concatTransformationMatrix(...transform))
 
     if (field.field_type === "checkbox") {
       const strokeWidth = Math.max(1, Math.round(Math.min(w, h) * 0.06))
@@ -150,13 +222,13 @@ export async function generateExecutedPdf({
         })
       }
 
+      page.pushOperators(popGraphicsState())
       continue
     }
 
     if (field.field_type === "signature" && typeof value === "string") {
-      const bytes = decodeDataUrl(value)
-      const trimmedBytes = await trimSignatureImage(bytes)
-      const image = await pdfDoc.embedPng(trimmedBytes)
+      const normalized = await validateSignaturePng(value)
+      const image = await pdfDoc.embedPng(Buffer.from(normalized.split(",")[1], "base64"))
       const scale = Math.min((w * 0.99) / image.width, (h * 0.99) / image.height)
       const drawWidth = image.width * scale
       const drawHeight = image.height * scale
@@ -166,19 +238,35 @@ export async function generateExecutedPdf({
         width: drawWidth,
         height: drawHeight,
       })
+      page.pushOperators(popGraphicsState())
       continue
     }
 
     if (typeof value === "string") {
-      const fontSize = Math.min(18, Math.max(10, Math.round(h * 0.6)))
-      page.drawText(value, {
-        x: x + 4,
-        y: y + (h - fontSize) / 2,
+      const text = field.field_type === "date" ? formatSigningDate(value, field.metadata?.dateFormat) : value
+      const fieldFont = await selectFont(text, field.metadata?.fontFamily)
+      const requestedSize = Number(field.metadata?.fontSize ?? 14)
+      let fontSize = Number.isFinite(requestedSize) ? Math.max(6, Math.min(18, requestedSize)) : 14
+      const padding = Math.min(2, w * 0.03, h * 0.03)
+      let lines = wrapText(text, fieldFont, fontSize, w - 2 * padding)
+      while ((lines.length * fontSize * 1.2 > h - 2 * padding || lines.some(line => fieldFont.widthOfTextAtSize(line, fontSize) > w - 2 * padding)) && fontSize > 6) {
+        fontSize = Math.max(6, fontSize - 0.5)
+        lines = wrapText(text, fieldFont, fontSize, w - 2 * padding)
+      }
+      if (lines.length * fontSize * 1.2 > h - 2 * padding || lines.some(line => fieldFont.widthOfTextAtSize(line, fontSize) > w - 2 * padding)) {
+        throw new Error("Text does not fit its signing field. Shorten it or ask the sender to enlarge the field.")
+      }
+      const lineHeight = fontSize * 1.2
+      const top = y + h - (h - lines.length * lineHeight) / 2
+      lines.forEach((line, index) => page.drawText(line, {
+        x: x + padding,
+        y: top - (index + 1) * lineHeight + fontSize * 0.15,
         size: fontSize,
-        font,
+        font: fieldFont,
         color: rgb(0.15, 0.15, 0.15),
-      })
+      }))
     }
+    page.pushOperators(popGraphicsState())
   }
 
   if (auditTrail?.length) {
@@ -234,7 +322,8 @@ export async function generateExecutedPdf({
     for (const item of auditTrail) {
       const label = `${item.label}:`
       const value = String(item.value ?? "Not recorded")
-      const valueLines = wrapText(value, font, valueSize, valueWidth)
+      const valueFont = await selectFont(value)
+      const valueLines = wrapText(value, valueFont, valueSize, valueWidth)
       const rowHeight = Math.max(lineHeight, valueLines.length * lineHeight) + 4
 
       if (cursorY - rowHeight < margin) {
@@ -257,7 +346,7 @@ export async function generateExecutedPdf({
           x: valueX,
           y: cursorY,
           size: valueSize,
-          font,
+          font: valueFont,
           color: rgb(0.25, 0.25, 0.25),
         })
         cursorY -= lineHeight

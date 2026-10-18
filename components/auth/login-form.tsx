@@ -1,495 +1,457 @@
 "use client"
 
-import Link from "next/link"
-import { useActionState, useEffect, useMemo, useRef, useState, useTransition } from "react"
-import { ArrowLeft } from "lucide-react"
+import { useRouter } from "next/navigation"
+import {
+  startTransition,
+  useActionState,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+  type CSSProperties,
+  type FormEvent,
+  type ReactNode,
+} from "react"
 
 import {
   lookupSignInAccountAction,
   sendFirstPasswordSetupAction,
   signInAction,
-  type AuthState,
-  type SignInAccountState,
+  type SignInState,
+  type SignInWelcome,
 } from "@/app/(auth)/auth/actions"
-import { AlertCircle, Building2, CheckCircle, Loader2, ShieldCheck } from "@/components/icons"
-import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import {
-  InputOTP,
-  InputOTPGroup,
-  InputOTPSlot,
-  InputOTPSeparator,
-} from "@/components/ui/input-otp"
+import { signalAuthArc } from "@/components/auth/auth-arc"
+import { RollingText } from "@/components/auth/rolling-text"
+import { User } from "@/components/icons"
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp"
 import { createClient } from "@/lib/supabase/client"
+import { cn } from "@/lib/utils"
 
 type Step = "email" | "password" | "setup" | "mfa"
+/** Signing in plays in two beats: the button draws its check, then the form gives way to the greeting. */
+type Welcome = { title: string; subtitle: string; leaving: boolean }
+type Notice = { tone: "error" | "success" | "info"; text: string }
 
-const initialState: AuthState = { error: undefined, message: undefined, mfaRequired: undefined }
+const initialState: SignInState = {}
 
+/** How long the check holds before the form gives way to the greeting. */
+const CHECK_HOLD_MS = 650
+/** How long the greeting holds before the app opens. */
+const GREETING_HOLD_MS = 1500
+const OTP_LENGTH = 6
+const ARCHIVED_ACCOUNT = "This account has been archived. Contact your organization admin to restore access."
+
+const COPY: Record<Step, { title: string; subtitle: string; action: string }> = {
+  email: { title: "Sign in to Arc", subtitle: "Use your work email.", action: "Continue" },
+  password: { title: "Welcome back", subtitle: "Enter your password.", action: "Sign in" },
+  setup: {
+    title: "Set up your account",
+    subtitle: "We'll email a secure link so you can create your password.",
+    action: "Email setup link",
+  },
+  mfa: { title: "Verify it's you", subtitle: "Enter the 6-digit code from your authenticator app.", action: "Verify" },
+}
+
+const AUX: Record<Step, string | null> = {
+  email: "New to Arc? Your admin can send you an invite.",
+  password: "Forgot password?",
+  setup: null,
+  mfa: "Use a different account",
+}
+
+/**
+ * One form that changes shape between steps instead of swapping screens: the
+ * email field becomes the account row, the button becomes the loader, and the
+ * words roll from one step to the next. The arc behind it (`AuthArc`) hears
+ * about pending work, errors and success through `signalAuthArc`.
+ */
 export function LoginForm({
-  className,
   inactiveAccount = false,
   inviteOnlySignup = false,
   routeMessage = null,
   returnTo = "/",
-  ...props
-}: React.ComponentProps<"div"> & {
+}: {
   inactiveAccount?: boolean
   inviteOnlySignup?: boolean
   routeMessage?: string | null
   returnTo?: string
 }) {
-  const [state, formAction, pending] = useActionState(signInAction, initialState)
+  const router = useRouter()
+  const [state, formAction, signingIn] = useActionState(signInAction, initialState)
   const [step, setStep] = useState<Step>("email")
   const [email, setEmail] = useState("")
-  const [accountState, setAccountState] = useState<SignInAccountState | null>(null)
-  const [lookupError, setLookupError] = useState<string | null>(null)
+  const [showPassword, setShowPassword] = useState(false)
+  const [error, setError] = useState<string | null>(inactiveAccount ? ARCHIVED_ACCOUNT : null)
+  const [errorSeq, setErrorSeq] = useState(0)
   const [setupMessage, setSetupMessage] = useState<string | null>(null)
-  const [setupError, setSetupError] = useState<string | null>(null)
+  const [welcome, setWelcome] = useState<Welcome | null>(null)
   const [isLookupPending, startLookupTransition] = useTransition()
   const [isSetupPending, startSetupTransition] = useTransition()
-  const emailInputRef = useRef<HTMLInputElement>(null)
-  const passwordInputRef = useRef<HTMLInputElement>(null)
-  const displayError =
-    (step === "password" ? state.error : null) ??
-    lookupError ??
-    (inactiveAccount ? "This account has been archived. Contact your organization admin to restore access." : null)
 
-  // Step transition: the panel slides forward on advance, back on "Change",
-  // and its height eases between steps so the card never jumps.
-  const stepRef = useRef<HTMLDivElement>(null)
-  const [stepHeight, setStepHeight] = useState<number>()
-  const directionRef = useRef(1)
-
-  // MFA state
+  // MFA
   const supabase = useMemo(() => createClient(), [])
   const [factorId, setFactorId] = useState<string | null>(null)
   const [code, setCode] = useState("")
-  const [mfaError, setMfaError] = useState<string | null>(null)
   const [isMfaPending, startMfaTransition] = useTransition()
   const [mfaLoading, setMfaLoading] = useState(false)
 
-  useEffect(() => {
-    const el = stepRef.current
-    if (!el) return
-    const sync = () => setStepHeight(el.offsetHeight)
-    sync()
-    const observer = new ResizeObserver(sync)
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [step])
+  const emailRef = useRef<HTMLInputElement>(null)
+  const passwordRef = useRef<HTMLInputElement>(null)
+  const identRef = useRef<HTMLLabelElement>(null)
+  const passwordFieldRef = useRef<HTMLLabelElement>(null)
+  const otpRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!state.mfaRequired) return
+  const busy = isLookupPending || signingIn || isSetupPending || isMfaPending || mfaLoading
+  const locked = step !== "email"
+  const copy = COPY[step]
+  const aux = AUX[step]
+  const leaving = welcome?.leaving ?? false
 
-    directionRef.current = 1
-    setStep("mfa")
-    setMfaLoading(true)
+  const notice: Notice | null = error
+    ? { tone: "error", text: error }
+    : step === "setup" && setupMessage
+      ? { tone: "success", text: setupMessage }
+      : step === "email" && routeMessage
+        ? { tone: "success", text: routeMessage }
+        : step === "email" && inviteOnlySignup
+          ? { tone: "info", text: "Account creation is managed by organization admins. Ask your admin for an invite." }
+          : null
 
-    const loadFactor = async () => {
-      const { data: factorsData, error: factorsError } = await supabase.auth.mfa.listFactors()
-      if (factorsError) {
-        setMfaError(factorsError.message)
-        setMfaLoading(false)
-        return
-      }
+  const fail = (message: string) => {
+    setError(message)
+    setErrorSeq((seq) => seq + 1)
+  }
 
-      const verifiedTotp = factorsData.totp.find((f) => f.status === "verified")
-      if (!verifiedTotp) {
-        setMfaError("No verified authenticator was found for this account.")
-        setMfaLoading(false)
-        return
-      }
+  const clearError = () => setError(null)
 
-      setFactorId(verifiedTotp.id)
-      setMfaLoading(false)
-    }
+  const enterWelcome = (welcome: SignInWelcome | undefined, destination: string) => {
+    const hour = new Date().getHours()
+    const greeting = hour < 5 ? "Working late" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"
+    setWelcome({
+      title: welcome?.firstName ? `${greeting}, ${welcome.firstName}.` : `${greeting}.`,
+      subtitle: `Opening ${welcome?.orgName ?? "Arc"}`,
+      leaving: false,
+    })
+    signalAuthArc({ type: "complete" })
+    window.setTimeout(() => setWelcome((current) => current && { ...current, leaving: true }), CHECK_HOLD_MS)
+    window.setTimeout(() => window.location.assign(destination), CHECK_HOLD_MS + GREETING_HOLD_MS)
+  }
 
-    loadFactor()
-  }, [state.mfaRequired, supabase.auth.mfa])
-
-  useEffect(() => {
-    if (step === "email") {
-      emailInputRef.current?.focus()
+  // The sign-in action answers with an error, a 2FA challenge, or where to go next.
+  const onActionResult = useEffectEvent((result: SignInState) => {
+    if (result.error) {
+      fail(result.error)
+      passwordRef.current?.select()
       return
     }
-
-    if (step === "password") {
-      window.requestAnimationFrame(() => passwordInputRef.current?.focus())
+    if (result.mfaRequired) {
+      setStep("mfa")
+      setMfaLoading(true)
+      supabase.auth.mfa.listFactors().then(({ data, error: factorsError }) => {
+        setMfaLoading(false)
+        if (factorsError) return fail(factorsError.message)
+        const verified = data.totp.find((factor) => factor.status === "verified")
+        if (!verified) return fail("No verified authenticator was found for this account.")
+        setFactorId(verified.id)
+      })
+      return
     }
-  }, [step])
+    if (result.redirectTo) enterWelcome(result.welcome, result.redirectTo)
+  })
 
-  const submitEmailLookup = () => {
-    if (isLookupPending) return
+  useEffect(() => {
+    onActionResult(state)
+  }, [state])
 
-    setLookupError(null)
-    setSetupError(null)
+  // A wrong answer shakes the field it belongs to and tints the arc.
+  const onNewError = useEffectEvent(() => {
+    const target = step === "password" ? passwordFieldRef.current : step === "mfa" ? otpRef.current : identRef.current
+    if (target) {
+      target.classList.remove("auth-shake")
+      void target.offsetWidth
+      target.classList.add("auth-shake")
+    }
+    signalAuthArc({ type: "error" })
+  })
+
+  useEffect(() => {
+    if (errorSeq > 0) onNewError()
+  }, [errorSeq])
+
+  useEffect(() => {
+    signalAuthArc({ type: "busy", on: busy })
+  }, [busy])
+
+  useEffect(() => {
+    if (step === "email") emailRef.current?.focus()
+    if (step === "password") {
+      router.prefetch("/auth/forgot-password")
+      const timer = window.setTimeout(() => passwordRef.current?.focus({ preventScroll: true }), 260)
+      return () => window.clearTimeout(timer)
+    }
+  }, [step, router])
+
+  const submitEmail = () => {
+    const input = emailRef.current
+    if (!input || !email.trim() || !input.checkValidity()) {
+      fail("Enter your work email, like you@company.com.")
+      input?.focus()
+      return
+    }
+    clearError()
     setSetupMessage(null)
-
     startLookupTransition(async () => {
       const result = await lookupSignInAccountAction(email)
-      setAccountState(result)
-
-      if (result.status === "password") {
-        setEmail(result.email)
-        directionRef.current = 1
-        setStep("password")
-        return
-      }
-
       setEmail(result.email)
-      directionRef.current = 1
-      setStep("setup")
+      setStep(result.status === "password" ? "password" : "setup")
     })
   }
 
   const sendSetupLink = () => {
-    if (!email || isSetupPending) return
-
-    setSetupError(null)
+    clearError()
     setSetupMessage(null)
     startSetupTransition(async () => {
       const result = await sendFirstPasswordSetupAction(email)
-      if (result.error) {
-        setSetupError(result.error)
-        return
-      }
+      if (result.error) return fail(result.error)
       setSetupMessage(result.message ?? "Check your email for a secure setup link.")
     })
   }
 
-  const goBackToEmail = () => {
-    directionRef.current = -1
-    setStep("email")
-    setAccountState(null)
-    setLookupError(null)
-    setSetupError(null)
-    setSetupMessage(null)
-    setCode("")
-    setMfaError(null)
-  }
-
   const submitMfa = () => {
-    if (!factorId || code.length !== 6 || isMfaPending) return
-
-    setMfaError(null)
+    if (!factorId || code.length !== OTP_LENGTH || isMfaPending) return
+    clearError()
     startMfaTransition(async () => {
-      const { error: verifyError } = await supabase.auth.mfa.challengeAndVerify({
-        factorId,
-        code,
-      })
-
+      const { error: verifyError } = await supabase.auth.mfa.challengeAndVerify({ factorId, code })
       if (verifyError) {
-        setMfaError(verifyError.message)
         setCode("")
+        fail(verifyError.message)
         return
       }
-
-      window.location.href = returnTo
+      enterWelcome(state.welcome, state.redirectTo ?? returnTo)
     })
   }
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut()
-    directionRef.current = -1
+  const backToEmail = () => {
     setStep("email")
-    setFactorId(null)
+    setShowPassword(false)
+    setSetupMessage(null)
     setCode("")
-    setMfaError(null)
+    setFactorId(null)
+    clearError()
   }
 
+  // Past the password the session exists, so "a different account" has to sign out first.
+  const switchAccount = async () => {
+    await supabase.auth.signOut()
+    backToEmail()
+  }
+
+  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (busy || welcome) return
+    if (step === "email") return submitEmail()
+    if (step === "setup") return sendSetupLink()
+    if (step === "mfa") return submitMfa()
+    clearError()
+    const data = new FormData(event.currentTarget)
+    startTransition(() => formAction(data))
+  }
+
+  const onAux = () => {
+    if (busy) return
+    if (step === "password") router.push("/auth/forgot-password")
+    if (step === "mfa") void switchAccount()
+  }
+
+  const onFieldInput = () => clearError()
+
   return (
-    <div className={cn("flex flex-col gap-6", className)} {...props}>
-      <div className="flex flex-col gap-2">
-        <h1 className="text-3xl font-semibold tracking-tight">{resolveTitle(step)}</h1>
-        {step === "mfa" && (
-          <p className="text-base leading-relaxed text-muted-foreground">
-            Enter the 6-digit code from your authenticator app.
+    <form onSubmit={onSubmit} noValidate aria-live="polite" className="grid">
+      <input type="hidden" name="next" value={returnTo} />
+
+      <div className="auth-enter grid gap-2.5" style={enterDelay(0)}>
+        <h1 className="text-[clamp(28px,3vw,34px)] leading-[1.12] font-medium tracking-[-0.035em]">
+          <RollingText text={leaving && welcome ? welcome.title : copy.title} />
+        </h1>
+        {/* Two stacked lines, so the step's subtitle rolls out while "Opening …" rolls in
+            in its own type — never one line changing typeface mid-animation. */}
+        <div className="grid text-(--auth-muted) *:col-start-1 *:row-start-1">
+          <p className="text-[15px]">
+            <RollingText text={leaving ? "" : copy.subtitle} />
           </p>
-        )}
-      </div>
-
-      {/* Negative margin gives focus rings room inside the clipped panel. */}
-      <div
-        className="-m-1 overflow-hidden transition-[height] duration-300 ease-out motion-reduce:transition-none"
-        style={{ height: stepHeight }}
-      >
-        <div
-          key={step}
-          ref={stepRef}
-          className={cn(
-            "p-1 duration-300 ease-out animate-in fade-in-0 motion-reduce:animate-none",
-            directionRef.current === 1 ? "slide-in-from-right-4" : "slide-in-from-left-4",
-          )}
-        >
-          {step === "email" && (
-            <div className="grid gap-4">
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  submitEmailLookup()
-                }}
-                className="grid gap-4"
-              >
-                <div className="grid gap-2">
-                  <Label htmlFor="email" className="text-sm">Work email</Label>
-                  <Input
-                    ref={emailInputRef}
-                    id="email"
-                    type="email"
-                    placeholder="you@company.com"
-                    autoComplete="email"
-                    className="h-11 md:text-base"
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    required
-                  />
-                </div>
-
-                {displayError && (
-                  <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
-                    <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                    <span>{displayError}</span>
-                  </div>
-                )}
-
-                {routeMessage && !displayError && (
-                  <div className="flex items-start gap-2 border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5 text-sm text-emerald-700 dark:text-emerald-300">
-                    <CheckCircle className="mt-0.5 size-4 shrink-0" />
-                    <span>{routeMessage}</span>
-                  </div>
-                )}
-
-                <Button type="submit" className="h-11 w-full text-base" disabled={isLookupPending}>
-                  {isLookupPending ? (
-                    <>
-                      <Loader2 className="size-4 animate-spin" />
-                      Checking account...
-                    </>
-                  ) : (
-                    "Continue"
-                  )}
-                </Button>
-              </form>
-
-              {inviteOnlySignup && (
-                <div className="border border-primary/20 bg-primary/5 px-3 py-2.5 text-sm text-primary">
-                  Account creation is managed by organization admins. Ask your admin for an invite.
-                </div>
-              )}
-            </div>
-          )}
-
-          {step === "password" && (
-            <form action={formAction} className="grid gap-4">
-              <input type="hidden" name="email" value={email} />
-              <input type="hidden" name="next" value={returnTo} />
-
-              <WorkspaceRow email={email} onChange={goBackToEmail} />
-
-              <div className="grid gap-2">
-                <div className="flex items-center">
-                  <Label htmlFor="password" className="text-sm">Password</Label>
-                  <Link
-                    href="/auth/forgot-password"
-                    className="ml-auto text-sm text-muted-foreground underline-offset-4 hover:underline"
-                  >
-                    Forgot password?
-                  </Link>
-                </div>
-                <Input
-                  ref={passwordInputRef}
-                  id="password"
-                  name="password"
-                  type="password"
-                  placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;"
-                  autoComplete="current-password"
-                  className="h-11 md:text-base"
-                  required
-                />
-              </div>
-
-              {displayError && (
-                <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
-                  <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                  <span>{displayError}</span>
-                </div>
-              )}
-
-              <Button type="submit" className="h-11 w-full text-base" disabled={pending}>
-                {pending ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Signing in...
-                  </>
-                ) : (
-                  "Sign in"
-                )}
-              </Button>
-            </form>
-          )}
-
-          {step === "setup" && (
-            <div className="grid gap-4">
-              <WorkspaceRow email={email} onChange={goBackToEmail} />
-
-              <div className="border border-primary/20 bg-primary/5 px-4 py-3">
-                <div className="flex items-start gap-3">
-                  <div className="grid size-9 shrink-0 place-items-center bg-primary/10 text-primary">
-                    <ShieldCheck className="size-4" />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium">Your account is ready for setup.</p>
-                    <p className="text-sm text-muted-foreground">
-                      We&apos;ll email a secure link so you can create your password and enter the workspace.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {setupError && (
-                <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
-                  <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                  <span>{setupError}</span>
-                </div>
-              )}
-
-              {setupMessage && (
-                <div className="flex items-start gap-2 border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5 text-sm text-emerald-700 dark:text-emerald-300">
-                  <CheckCircle className="mt-0.5 size-4 shrink-0" />
-                  <span>{setupMessage}</span>
-                </div>
-              )}
-
-              <Button type="button" className="h-11 w-full text-base" onClick={sendSetupLink} disabled={isSetupPending}>
-                {isSetupPending ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Sending setup link...
-                  </>
-                ) : (
-                  "Email setup link"
-                )}
-              </Button>
-            </div>
-          )}
-
-          {step === "mfa" && (
-            <div className="grid gap-4">
-              {mfaLoading ? (
-                <div className="flex items-center gap-2.5 py-2 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  Preparing authenticator challenge...
-                </div>
-              ) : (
-                <>
-                  <InputOTP
-                    maxLength={6}
-                    value={code}
-                    onChange={setCode}
-                    onComplete={submitMfa}
-                    disabled={isMfaPending || !factorId}
-                    autoFocus
-                  >
-                    <InputOTPGroup>
-                      <InputOTPSlot index={0} className="size-12 text-lg" />
-                      <InputOTPSlot index={1} className="size-12 text-lg" />
-                      <InputOTPSlot index={2} className="size-12 text-lg" />
-                    </InputOTPGroup>
-                    <InputOTPSeparator />
-                    <InputOTPGroup>
-                      <InputOTPSlot index={3} className="size-12 text-lg" />
-                      <InputOTPSlot index={4} className="size-12 text-lg" />
-                      <InputOTPSlot index={5} className="size-12 text-lg" />
-                    </InputOTPGroup>
-                  </InputOTP>
-
-                  {mfaError && (
-                    <div className="flex items-start gap-2 border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
-                      <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                      <span>{mfaError}</span>
-                    </div>
-                  )}
-
-                  <Button
-                    type="button"
-                    className="h-11 w-full text-base"
-                    onClick={submitMfa}
-                    disabled={!factorId || code.length !== 6 || isMfaPending}
-                  >
-                    {isMfaPending ? (
-                      <>
-                        <Loader2 className="size-4 animate-spin" />
-                        Verifying...
-                      </>
-                    ) : (
-                      "Verify code"
-                    )}
-                  </Button>
-
-                  <button
-                    type="button"
-                    onClick={handleSignOut}
-                    disabled={isMfaPending}
-                    className="inline-flex items-center gap-1.5 justify-self-start text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
-                  >
-                    <ArrowLeft className="size-3.5" />
-                    Use a different account
-                  </button>
-                </>
-              )}
-            </div>
-          )}
+          <p className="self-center font-mono text-xs tracking-[0.1em] uppercase">
+            <RollingText text={leaving && welcome ? welcome.subtitle : ""} />
+          </p>
         </div>
       </div>
 
-      <p className="text-center text-sm leading-relaxed text-muted-foreground">
-        By continuing, you agree to Arc&apos;s{" "}
-        <Link href="/terms" className="underline-offset-4 hover:text-foreground hover:underline">
-          Terms of Service
-        </Link>{" "}
-        and{" "}
-        <Link href="/privacy" className="underline-offset-4 hover:text-foreground hover:underline">
-          Privacy Policy
-        </Link>
-        .
-      </p>
-    </div>
+      <Fold open={!leaving} gap="lg" enter={1}>
+        <label ref={identRef} className="auth-field" data-locked={locked ? "" : undefined}>
+          <User className="auth-account-icon" aria-hidden />
+          <input
+            ref={emailRef}
+            className="auth-input"
+            name="email"
+            type="email"
+            aria-label="Work email"
+            autoComplete="email"
+            placeholder="you@company.com"
+            value={email}
+            readOnly={locked}
+            aria-invalid={step === "email" && error ? true : undefined}
+            onChange={(event) => {
+              setEmail(event.target.value)
+              onFieldInput()
+            }}
+          />
+          <span className="auth-kbd" aria-hidden>
+            ↵
+          </span>
+          <button
+            type="button"
+            className="auth-change text-[13px] text-(--auth-muted) hover:text-(--auth-ink) focus-visible:outline-1 focus-visible:outline-(--auth-accent)"
+            tabIndex={locked ? 0 : -1}
+            aria-hidden={!locked}
+            onClick={step === "mfa" ? () => void switchAccount() : backToEmail}
+          >
+            Change
+          </button>
+        </label>
+      </Fold>
+
+      <Fold open={step === "password" && !leaving} gap="md">
+        <label ref={passwordFieldRef} className="auth-field">
+          <input
+            ref={passwordRef}
+            className="auth-input"
+            name="password"
+            type={showPassword ? "text" : "password"}
+            aria-label="Password"
+            autoComplete="current-password"
+            placeholder="Password"
+            aria-invalid={step === "password" && error ? true : undefined}
+            onChange={onFieldInput}
+          />
+          <button
+            type="button"
+            className="auth-field-action text-[13px] text-(--auth-muted) hover:text-(--auth-ink) focus-visible:outline-1 focus-visible:outline-(--auth-accent)"
+            onClick={() => {
+              setShowPassword((shown) => !shown)
+              passwordRef.current?.focus({ preventScroll: true })
+            }}
+          >
+            <RollingText text={showPassword ? "Hide" : "Show"} />
+          </button>
+        </label>
+      </Fold>
+
+      <Fold open={step === "mfa" && !leaving} gap="md">
+        <div ref={otpRef}>
+          <InputOTP
+            maxLength={OTP_LENGTH}
+            value={code}
+            onChange={(value) => {
+              setCode(value)
+              onFieldInput()
+            }}
+            onComplete={submitMfa}
+            disabled={!factorId}
+            autoFocus={step === "mfa"}
+            aria-label="Six-digit code"
+            containerClassName="w-full"
+          >
+            <InputOTPGroup className={cn("w-full transition-[gap] duration-500", isMfaPending ? "gap-0" : "gap-2")}>
+              {Array.from({ length: OTP_LENGTH }, (_, index) => (
+                <InputOTPSlot
+                  key={index}
+                  index={index}
+                  className={cn(
+                    "auth-otp-pop h-14 w-auto flex-1 bg-(--auth-field) font-mono text-[22px] [border-color:var(--auth-hair-strong)] data-[active=true]:[border-color:var(--auth-accent)]",
+                    !isMfaPending && "border-l",
+                  )}
+                  style={{ animationDelay: `${120 + index * 45}ms` }}
+                />
+              ))}
+            </InputOTPGroup>
+          </InputOTP>
+        </div>
+      </Fold>
+
+      <Fold open={notice !== null && !leaving} gap="sm">
+        <p
+          className={cn(
+            "auth-note",
+            notice?.tone === "error" && "text-destructive",
+            notice?.tone === "success" && "text-success",
+            notice?.tone === "info" && "text-(--auth-muted)",
+          )}
+          role={notice?.tone === "error" ? "alert" : undefined}
+        >
+          <RollingText text={notice?.text ?? ""} />
+        </p>
+      </Fold>
+
+      <Fold open={!leaving} gap="md" enter={2}>
+        <button
+          type="submit"
+          className="auth-btn"
+          data-state={welcome ? "done" : busy ? "busy" : undefined}
+          aria-busy={busy}
+        >
+          <span className="auth-btn-label block">
+            <RollingText text={copy.action} />
+          </span>
+          <span className="auth-btn-glyph" aria-hidden>
+            <svg viewBox="0 0 22 22">
+              <path className="auth-btn-spin" d="M3 11 A8 8 0 0 1 19 11" />
+              <path className="auth-btn-check" pathLength={1} d="M5.5 11.5 L9.5 15.5 L16.5 7" />
+            </svg>
+          </span>
+        </button>
+      </Fold>
+
+      <Fold open={aux !== null && !leaving} gap="lg" enter={3}>
+        <button
+          type="button"
+          className={cn(
+            "justify-self-start text-left text-[13px] transition-colors focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-(--auth-accent)",
+            step === "email" ? "cursor-default text-(--auth-faint)" : "text-(--auth-muted) hover:text-(--auth-ink)",
+          )}
+          aria-disabled={step === "email"}
+          tabIndex={step === "email" ? -1 : 0}
+          onClick={onAux}
+        >
+          <RollingText text={aux ?? ""} />
+        </button>
+      </Fold>
+    </form>
   )
 }
 
-/** Which workspace you're signing into, with the account underneath it. */
-function WorkspaceRow({
-  email,
-  onChange,
+/** A row that opens and closes by animating its own height; closed rows are inert. */
+function Fold({
+  open,
+  gap,
+  enter,
+  children,
 }: {
-  email: string
-  onChange: () => void
+  open: boolean
+  gap: "sm" | "md" | "lg"
+  /** Position in the first-paint stagger, for rows that are open on arrival. */
+  enter?: number
+  children: ReactNode
 }) {
   return (
-    <div className="flex items-center gap-3 border border-border bg-muted/40 px-3.5 py-3">
-      <div className="grid size-10 shrink-0 place-items-center bg-primary/10 text-primary">
-        <Building2 className="size-5" />
+    <div className="auth-fold" data-open={open ? "" : undefined} data-gap={gap}>
+      <div inert={!open} className={cn("grid", enter !== undefined && "auth-enter")} style={enter !== undefined ? enterDelay(enter) : undefined}>
+        {children}
       </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-base font-medium">{email}</p>
-      </div>
-      <button
-        type="button"
-        onClick={onChange}
-        className="shrink-0 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-      >
-        Change
-      </button>
     </div>
   )
 }
 
-function resolveTitle(step: Step) {
-  if (step === "password") return "Enter your password"
-  if (step === "setup") return "Set up your account"
-  if (step === "mfa") return "Two-factor verification"
-  return "Welcome to Arc"
+function enterDelay(index: number): CSSProperties {
+  return { animationDelay: `${500 + index * 80}ms` }
 }

@@ -1,0 +1,5 @@
+1..4
+ok 1 - native project routing stays private
+ok 2 - anonymous cannot inspect native source routing
+ok 3 - authorized server can inspect scoped native routing
+ok 4 - native source routing preserves invoker authority

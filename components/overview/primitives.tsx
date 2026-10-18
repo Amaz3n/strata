@@ -231,7 +231,7 @@ export function BandHeader({
           {title}
         </h2>
         {count ? (
-          <span className="text-[10px] font-medium tabular-nums text-muted-foreground/65">
+          <span className="text-[10px] font-medium tabular-nums text-muted-foreground">
             {count}
           </span>
         ) : null}

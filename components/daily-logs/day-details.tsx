@@ -608,6 +608,7 @@ export function DayDetails(props: DayDetailsProps) {
         onDelete={props.onDeleteManpower}
       />
       <CommercialSections
+        projectId={projectId}
         onPendingChange={setSectionPending}
         report={report}
         dateKey={dateKey}

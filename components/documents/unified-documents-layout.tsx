@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
   DndContext,
@@ -58,24 +58,18 @@ import { MoveFilesDialog } from "./dialogs/move-files-dialog";
 import { RenameFileDialog } from "./dialogs/rename-file-dialog";
 import { VersionUploadDialog } from "./dialogs/version-upload-dialog";
 import type { EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
-
-const EnvelopeWizard = dynamic(
-  () => import("@/components/esign/envelope-wizard").then((module) => module.EnvelopeWizard),
-  { ssr: false },
-);
 import type { UnifiedDocumentsLayoutProps } from "./types";
 import { isBrowserRenderableImage, isWordPreviewable, type FileWithDetails } from "@/components/files/types";
 import {
   getFileAction,
   getFileDownloadUrlAction,
   listFileVersionsAction,
-  unarchiveFileAction,
-  uploadFileVersionAction,
+  bulkRestoreFilesAction,
+  undoDocumentMutationAction,
   makeVersionCurrentAction,
   updateFileVersionAction,
   deleteFileVersionAction,
   getVersionDownloadUrlAction,
-  createFolderAction,
   bulkMoveFilesAction,
   listFileTimelineAction,
 } from "@/app/(app)/documents/actions";
@@ -83,9 +77,14 @@ import type {
   FileWithUrls,
   FileTimelineEvent,
 } from "@/app/(app)/documents/types";
-import { uploadDocumentFileDirect } from "@/lib/services/files-client";
+import { useDocumentTransfers } from "./transfer-provider";
 
 import { unwrapAction } from "@/lib/action-result"
+
+const EnvelopeWizard = dynamic(
+  () => import("@/components/esign/envelope-wizard").then((module) => module.EnvelopeWizard),
+  { ssr: false },
+);
 
 const EXPLORER_OPEN_STORAGE_KEY = "documents-explorer-open";
 
@@ -104,23 +103,31 @@ export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
       initialFolderPermissions={props.initialFolderPermissions}
       initialPath={props.initialPath}
     >
-      <UnifiedDocumentsLayoutInner />
+      <UnifiedDocumentsLayoutInner preconstruction={props.preconstruction} />
     </DocumentsProvider>
   );
 }
 
-function UnifiedDocumentsLayoutInner() {
+function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruction?: boolean }) {
+  const pathname = usePathname();
+  const preconBase = pathname.match(/^\/pipeline\/prospects\/[^/]+/)?.[0];
   const searchParams = useSearchParams();
   const isMobile = useIsMobile();
   const {
     projectId,
     projectName,
     files,
+    folders,
     folderPermissions,
     currentPath,
     setCurrentPath,
     refreshFiles,
+    beginOptimisticMove,
   } = useDocuments();
+  // The organization document library has no project to link back to.
+  const projectBase = preconBase ?? (projectId ? `/projects/${projectId}` : undefined);
+  const documentsBase = projectBase ? `${projectBase}/documents` : "/documents";
+  const transfers = useDocumentTransfers();
   const { setBreadcrumbs } = usePageTitle();
   const requestedFileId = searchParams.get("fileId");
   const highlightedFileId = searchParams.get("highlight");
@@ -235,6 +242,14 @@ function UnifiedDocumentsLayoutInner() {
     }));
   }, []);
 
+  useEffect(() => {
+    if (!viewerFile) return;
+    const latest = files.find(file => file.id === viewerFile.id);
+    if (!latest || latest.storage_path === viewerFile.storage_path) return;
+    setViewerFile(latest);
+    void loadVersionsForFile(latest.id).catch(() => toast.error("Could not refresh version history"));
+  }, [files, viewerFile, loadVersionsForFile]);
+
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -262,88 +277,29 @@ function UnifiedDocumentsLayoutInner() {
 
   const uploadDroppedFiles = useCallback(
     async (droppedFiles: File[], targetPath: string | null) => {
-      if (droppedFiles.length === 0) return;
-
-      const normalizedTarget = targetPath ? normalizeFolderPath(targetPath) : null;
+      if (!droppedFiles.length) return;
       setIsDirectUploading(true);
-      const startedAt = performance.now();
-      const loadedByFile = new Map<string, number>();
-      const stageByFile = new Map<string, string>();
-      const formatSpeed = (loaded: number) => {
-        const elapsedSeconds = Math.max((performance.now() - startedAt) / 1000, 0.5);
-        const mbps = loaded / 1024 / 1024 / elapsedSeconds;
-        return `${mbps.toFixed(1)} MB/s`;
-      };
-      const formatProgress = () => {
-        const total = droppedFiles.reduce((sum, file) => sum + file.size, 0);
-        const loaded = droppedFiles.reduce(
-          (sum, file) => sum + (loadedByFile.get(file.name) ?? 0),
-          0,
-        );
-        const percent = total > 0 ? Math.round((loaded / total) * 100) : 0;
-        const hasFinalizing = Array.from(stageByFile.values()).some((stage) => stage === "finalizing");
-        const verb = hasFinalizing ? "Finalizing" : "Uploading";
-        if (droppedFiles.length === 1) {
-          return `${verb} ${droppedFiles[0].name}... ${percent}% (${formatSpeed(loaded)})`;
-        }
-        return `${verb} ${droppedFiles.length} files... ${percent}% (${formatSpeed(loaded)})`;
-      };
-      const toastId = toast.loading(formatProgress());
-
-      const uploadOne = async (file: File) => {
-        await uploadDocumentFileDirect(file, {
-          projectId,
-          folderPath: normalizedTarget ?? "",
-          onStage: (stage) => {
-            stageByFile.set(file.name, stage);
-            toast.loading(formatProgress(), { id: toastId });
-          },
-          onProgress: ({ loaded }) => {
-            loadedByFile.set(file.name, loaded);
-            toast.loading(formatProgress(), { id: toastId });
-          },
-        });
-      };
-
       try {
-        const results = await Promise.allSettled(droppedFiles.map(uploadOne));
-        const successCount = results.filter((result) => result.status === "fulfilled").length;
-        const failCount = results.length - successCount;
-
-        if (successCount > 0) {
-          await refreshFiles({ invalidateCache: true });
-        }
-
-        if (failCount === 0) {
-          toast.success(
-            `${successCount} file${successCount === 1 ? "" : "s"} uploaded`,
-            { id: toastId },
-          );
-          return;
-        }
-
-        const firstFailure = results.find(
-          (result): result is PromiseRejectedResult => result.status === "rejected",
-        );
-        const message =
-          firstFailure?.reason instanceof Error
-            ? firstFailure.reason.message
-            : "Some files failed to upload";
-
-        if (successCount > 0) {
-          toast.warning(
-            `${successCount} uploaded, ${failCount} failed. ${message}`,
-            { id: toastId },
-          );
-        } else {
-          toast.error(message, { id: toastId });
-        }
-      } finally {
-        setIsDirectUploading(false);
-      }
-    },
-    [projectId, refreshFiles],
+        const results = await Promise.allSettled(droppedFiles.map(file => transfers.enqueue(file, {
+          projectId, folderPath: targetPath ? normalizeFolderPath(targetPath) : "/",
+        })));
+        const succeeded = results.filter(result => result.status === "fulfilled").length;
+        if (succeeded) toast.success(`${succeeded} file${succeeded === 1 ? "" : "s"} uploaded`);
+        if (succeeded !== results.length) toast.error("Some uploads need attention. Open Transfers to retry.");
+      } finally { setIsDirectUploading(false); }
+    }, [projectId, transfers],
   );
+
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const changed = (event: Event) => {
+      if ((event as CustomEvent<{ projectId: string | undefined }>).detail.projectId !== projectId) return;
+      clearTimeout(timeout);
+      timeout = setTimeout(() => { void refreshFiles({ invalidateCache: true }); }, 250);
+    };
+    window.addEventListener("arc:documents-changed", changed);
+    return () => { clearTimeout(timeout); window.removeEventListener("arc:documents-changed", changed); };
+  }, [projectId, refreshFiles]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -599,6 +555,14 @@ function UnifiedDocumentsLayoutInner() {
     [selectedFileIds],
   );
 
+  const undoMutation = useCallback(async (receiptId: string) => {
+    try {
+      unwrapAction(await undoDocumentMutationAction(receiptId));
+      await refreshFiles({ invalidateCache: true });
+      toast.success("Change undone");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not undo change"); }
+  }, [refreshFiles]);
+
   const moveFilesToFolder = useCallback(
     async (
       fileIds: string[],
@@ -614,14 +578,14 @@ function UnifiedDocumentsLayoutInner() {
       );
 
       setIsMoving(true);
+      const settleMove = beginOptimisticMove(fileIds);
       try {
-        if (normalizedTarget) {
-          unwrapAction(await createFolderAction(projectId, normalizedTarget));
-        }
-        unwrapAction(await bulkMoveFilesAction(fileIds, normalizedTarget, true));
+        const result = unwrapAction(await bulkMoveFilesAction(fileIds, normalizedTarget, true));
         toast.success(
           `Moved ${fileIds.length} file${fileIds.length === 1 ? "" : "s"} to ${sourceLabel}`,
-          { id: toastId },
+          { id: toastId, duration: 10000, action: result.receiptId ? {
+            label: "Undo", onClick: () => { void undoMutation(result.receiptId!); },
+          } : undefined },
         );
         setSelectedFileIds(new Set());
         await refreshFiles({ invalidateCache: true });
@@ -629,10 +593,11 @@ function UnifiedDocumentsLayoutInner() {
         console.error("Failed to move files:", error);
         toast.error("Failed to move files", { id: toastId });
       } finally {
+        settleMove();
         setIsMoving(false);
       }
     },
-    [projectId, refreshFiles],
+    [beginOptimisticMove, refreshFiles, undoMutation],
   );
 
   const handleUploadToFolder = useCallback(
@@ -722,7 +687,7 @@ function UnifiedDocumentsLayoutInner() {
       if (ids.length === 0) return;
 
       try {
-        await Promise.all(ids.map((fileId) => unarchiveFileAction(fileId)));
+        unwrapAction(await bulkRestoreFilesAction(ids));
         toast.success(`Restored ${ids.length} file${ids.length === 1 ? "" : "s"}`);
         setSelectedFileIds(new Set());
         await refreshFiles({ includeMetadata: true, invalidateCache: true });
@@ -743,8 +708,7 @@ function UnifiedDocumentsLayoutInner() {
       if (ids.length === 1) {
         const file = files.find((row) => row.id === ids[0]);
         if (file) {
-          const url = unwrapAction(await getFileDownloadUrlAction(file.id));
-          await downloadUrlToFile(url, file.file_name);
+          await downloadUrlToFile(`/api/documents/download?fileId=${encodeURIComponent(file.id)}`, file.file_name);
           return;
         }
       }
@@ -761,12 +725,7 @@ function UnifiedDocumentsLayoutInner() {
 
   const uploadVersionForFile = useCallback(
     async (fileId: string, file: File, label?: string, notes?: string) => {
-      const formData = new FormData();
-      formData.append("fileId", fileId);
-      formData.append("file", file);
-      if (label) formData.append("label", label);
-      if (notes) formData.append("notes", notes);
-      unwrapAction(await uploadFileVersionAction(formData));
+      await transfers.enqueue(file, { projectId, version: { fileId, label, notes } });
       const versions = await listFileVersionsAction(fileId);
       setVersionsByFile((prev) => ({
         ...prev,
@@ -774,7 +733,7 @@ function UnifiedDocumentsLayoutInner() {
       }));
       await refreshFiles({ invalidateCache: true });
     },
-    [refreshFiles],
+    [projectId, transfers, refreshFiles],
   );
 
   const handleUploadVersion = useCallback(
@@ -885,8 +844,7 @@ function UnifiedDocumentsLayoutInner() {
 
   const handleDownload = useCallback(async (file: FileWithDetails) => {
     try {
-      const url = unwrapAction(await getFileDownloadUrlAction(file.id));
-      await downloadUrlToFile(url, file.file_name);
+      await downloadUrlToFile(`/api/documents/download?fileId=${encodeURIComponent(file.id)}`, file.file_name);
       toast.success(`Downloading ${file.file_name}`);
     } catch (error) {
       console.error("Download failed:", error);
@@ -1018,10 +976,10 @@ function UnifiedDocumentsLayoutInner() {
 
   useEffect(() => {
     const breadcrumbs: Array<{ label: string; href?: string; onClick?: () => void }> = [
-      ...(projectId ? [{ label: projectName, href: `/projects/${projectId}` }] : []),
+      ...(projectBase ? [{ label: projectName, href: projectBase }] : []),
       {
-        label: "Documents",
-        href: projectId ? `/projects/${projectId}/documents` : "/documents",
+        label: preconBase ? "Files" : "Documents",
+        href: documentsBase,
         onClick: () => {
           setPropertiesFileId(null);
           setCurrentPath("");
@@ -1037,7 +995,7 @@ function UnifiedDocumentsLayoutInner() {
       const path = `/${segments.slice(0, index + 1).join("/")}`;
       breadcrumbs.push({
         label: segment,
-        href: `${projectId ? `/projects/${projectId}/documents` : "/documents"}?path=${encodeURIComponent(path)}`,
+        href: `${documentsBase}?path=${encodeURIComponent(path)}`,
         onClick: () => {
           setPropertiesFileId(null);
           setCurrentPath(path);
@@ -1050,7 +1008,7 @@ function UnifiedDocumentsLayoutInner() {
     }
 
     setBreadcrumbs(breadcrumbs);
-  }, [activeBreadcrumbPath, projectId, projectName, propertiesFile, setBreadcrumbs, setCurrentPath]);
+  }, [activeBreadcrumbPath, documentsBase, preconBase, projectBase, projectName, propertiesFile, setBreadcrumbs, setCurrentPath]);
 
   const handleSendForSignature = useCallback(
     (fileId: string) => {
@@ -1072,7 +1030,8 @@ function UnifiedDocumentsLayoutInner() {
 
   const renderContent = () => {
     return (
-        <DocumentsContent
+      <DocumentsContent
+        preconstruction={preconstruction}
           onFileClick={handleFileClick}
           onDownloadFile={handleDownloadById}
           onFolderClick={handleFolderClick}
@@ -1101,7 +1060,7 @@ function UnifiedDocumentsLayoutInner() {
 
   return (
     <div
-      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background"
+      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-background"
       aria-busy={isDirectUploading}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
@@ -1110,8 +1069,11 @@ function UnifiedDocumentsLayoutInner() {
     >
       <FileDropOverlay isVisible={isDraggingOver} className="rounded-none" />
 
+      <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", preconstruction && "overflow-hidden bg-card [&_[data-slot=button]]:rounded-none")}>
+
       {isMobile ? (
         <DocumentsMobileLayout
+          preconstruction={preconstruction}
           onFileClick={handleFileClick}
           onDownloadFile={handleDownloadById}
           onUploadClick={handleUploadClick}
@@ -1139,6 +1101,7 @@ function UnifiedDocumentsLayoutInner() {
         />
       ) : (
       <DndContext
+        id="documents-layout"
         sensors={dragSensors}
         collisionDetection={documentsCollisionDetection}
         accessibility={{
@@ -1151,8 +1114,10 @@ function UnifiedDocumentsLayoutInner() {
         onDragEnd={handleFilesDragEnd}
       >
       <DocumentsDragProvider state={dragState}>
-      <div className="relative z-20 shrink-0 border-b bg-background px-4 py-3">
+      <div className={cn("relative z-20 shrink-0 border-b bg-background px-4 py-3", preconstruction && "border-border/60 bg-card px-5 py-4")}>
         <DocumentsToolbar
+          preconstruction={preconstruction}
+          plansHref={projectBase ? `${projectBase}/drawings` : undefined}
           onUploadClick={handleUploadClick}
           onCreateFolderClick={() => {
             setCreateFolderInitialPath(currentPath || "");
@@ -1189,27 +1154,36 @@ function UnifiedDocumentsLayoutInner() {
             }
           }}
           isDownloadingSelected={isDownloadingSelected}
-          explorerOpen={explorerOpen}
-          onToggleExplorer={() => setExplorerOpen((open) => !open)}
+          explorerOpen={explorerOpen && !(preconstruction && propertiesFile)}
+          onToggleExplorer={() => {
+            if (preconstruction && propertiesFile) {
+              setPropertiesFileId(null);
+              setExplorerOpen(true);
+              return;
+            }
+            setExplorerOpen((open) => !open);
+          }}
         />
       </div>
 
-      <div className="relative z-10 flex min-h-0 flex-1">
+      <div className="relative z-10 flex min-h-0 min-w-0 flex-1">
         <aside
           className={cn(
             "hidden shrink-0 overflow-hidden border-r bg-background lg:block",
+            preconstruction && "border-border/60 bg-muted/15",
+            preconstruction && propertiesFile && "lg:hidden",
             explorerRestored && "transition-[width,opacity] duration-200 ease-out",
             explorerOpen ? "w-[280px] opacity-100" : "w-0 border-r-0 opacity-0",
           )}
         >
           <DocumentsExplorer
-            className="h-full"
+            className={cn("h-full", preconstruction && "[&>div:first-child]:border-border/60 [&>div:first-child]:bg-transparent [&>div:first-child>p]:text-xs [&>div:first-child>p]:font-medium [&>div:first-child>p]:normal-case [&>div:first-child>p]:tracking-normal [&_button]:rounded-none")}
             onRenameFolder={handleRenameFolder}
             onDeleteFolder={handleDeleteFolder}
             onShareFolder={projectId ? handleShareFolder : undefined}
           />
         </aside>
-        <div className="relative flex min-h-0 flex-1 flex-col">
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           <ScrollArea className="h-full flex-1">
             {renderContent()}
           </ScrollArea>
@@ -1257,6 +1231,7 @@ function UnifiedDocumentsLayoutInner() {
       </DocumentsDragProvider>
       </DndContext>
       )}
+      </div>
 
       <UploadDialog
         open={uploadDialogOpen}

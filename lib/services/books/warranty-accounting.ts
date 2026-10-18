@@ -6,6 +6,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { collectBooksRows } from "@/lib/services/books/paging"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { loadWarrantyOrgTimeZone } from "@/lib/services/warranty-time-zone"
 
 async function warrantyContext() {
   const context = await requireOrgContext()
@@ -28,7 +29,7 @@ export async function getWarrantyCostSources(visitId: string) {
   const service = createServiceSupabaseClient()
   const { data: visit, error } = await service.from("warranty_service_visits").select("project_id").eq("org_id",context.orgId).eq("id",z.string().uuid().parse(visitId)).single()
   if (error) throw new Error(`Visit not found: ${error.message}`)
-  const sources = await collectBooksRows((from,to) => service.from("job_cost_entries").select("id,source_type,incurred_on,cost_cents,metadata").eq("org_id",context.orgId).eq("project_id",visit.project_id).eq("status","posted").gt("cost_cents",0).neq("source_type","inventory_event").order("id").range(from,to))
+  const sources = await collectBooksRows((from,to) => service.from("job_cost_entries").select("id,source_type,incurred_on,cost_cents,metadata").eq("org_id",context.orgId).eq("project_id",visit.project_id).eq("status","posted").gt("cost_cents",0).not("source_type","in","(inventory_event,opening_balance)").order("id").range(from,to))
   return sources.map(row => ({ id: row.id, incurredOn: row.incurred_on, amountCents: Number(row.cost_cents), label: typeof row.metadata?.description === "string" ? row.metadata.description : String(row.source_type).replaceAll("_", " ") }))
 }
 const approvalSchema = z.object({ visitId: z.string().uuid(), date: z.string().date(), evidenceUrl: z.string().url().startsWith("https://"), sources: z.array(z.object({ jobCostEntryId: z.string().uuid(), amountCents: z.number().int().safe().positive() })).min(1).max(100) })
@@ -71,8 +72,10 @@ export async function reconcileWarrantyRecoveriesForService(orgId: string, proje
   const backcharges = await collectBooksRows((from,to) => service.from("warranty_backcharges").select("warranty_request_id,project_id").eq("org_id",orgId).not("vendor_credit_bill_id","is",null).order("id").range(from,to))
   const requests = new Map(backcharges.filter(row => !projectIds || projectIds.has(row.project_id)).map(row => [row.warranty_request_id,row.project_id]))
   const failures: Array<{ sourceType: string; sourceId: string; error: string }> = []
+  // Entries are dated in the org's day, not the server's.
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: await loadWarrantyOrgTimeZone(service, orgId), year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
   for (const [requestId,projectId] of requests) {
-    const { error } = await service.rpc("reconcile_books_warranty_recovery", { p_org_id: orgId, p_request_id: requestId, p_date: new Date().toISOString().slice(0,10) })
+    const { error } = await service.rpc("reconcile_books_warranty_recovery", { p_org_id: orgId, p_request_id: requestId, p_date: today })
     if (error) failures.push({ sourceType: "warranty_reserve_recovery", sourceId: projectId, error: error.message })
   }
   return failures

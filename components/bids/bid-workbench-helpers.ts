@@ -1,61 +1,6 @@
 import { TZDate } from "@date-fns/tz"
 import { format, formatDistanceToNow } from "date-fns"
-import type {
-  BidScopeItem,
-  BidSubmission,
-  BidSubmissionItem,
-} from "@/lib/services/bids"
 import type { BidPackageStage } from "@/lib/bids/stage"
-
-export interface SubmissionTotals {
-  /** Sum of priced base/allowance/unit-price scope lines (alternates excluded). */
-  base: number
-  /** GC plugs added to cover excluded / no-bid base scope lines. */
-  plugs: number
-  /** Legacy lump-sum leveling adjustment. */
-  lump: number
-  /** base + plugs + lump — the apples-to-apples number. */
-  leveled: number
-}
-
-/** Computes a submission's base and leveled totals. When the submission has
- * per-scope items, base sums priced non-alternate lines and plugs cover the
- * excluded/no-bid ones; otherwise it falls back to the vendor's headline total
- * (quote-mode legacy). */
-export function computeSubmissionTotals(
-  submission: Pick<BidSubmission, "total_cents" | "leveled_adjustment_cents" | "items">,
-  scopeItems: BidScopeItem[],
-): SubmissionTotals {
-  const items = submission.items ?? []
-  const scopeById = new Map(scopeItems.map((scope) => [scope.id, scope]))
-  const lump = submission.leveled_adjustment_cents ?? 0
-
-  if (items.length === 0) {
-    const base = submission.total_cents ?? 0
-    return { base, plugs: 0, lump, leveled: base + lump }
-  }
-
-  let base = 0
-  let plugs = 0
-  for (const item of items) {
-    const scope = item.bid_scope_item_id ? scopeById.get(item.bid_scope_item_id) : undefined
-    if (scope?.item_type === "alternate") continue
-    if (item.response === "priced") {
-      base += item.amount_cents ?? 0
-    } else {
-      plugs += item.gc_plug_cents ?? 0
-    }
-  }
-  return { base, plugs, lump, leveled: base + plugs + lump }
-}
-
-/** The submission item that answers a given scope line, if any. */
-export function itemForScope(
-  submission: Pick<BidSubmission, "items">,
-  scopeItemId: string,
-): BidSubmissionItem | undefined {
-  return (submission.items ?? []).find((item) => item.bid_scope_item_id === scopeItemId)
-}
 
 /** Where a bid package lives. Precon-phase projects collect and level bids
  * but cannot award — the server refuses commitments until activation. */
@@ -63,7 +8,7 @@ export interface BidWorkbenchContext {
   projectId?: string | null
 }
 
-const DEFAULT_TZ = "America/New_York"
+export const DEFAULT_TZ = "America/New_York"
 
 /** Whole-dollar USD; em dash for missing values (denser than "$0.00"). */
 export function money(cents?: number | null): string {
@@ -129,6 +74,22 @@ export function formatDueDate(dueAt?: string | null, dueTz?: string | null): str
   }
 }
 
+/** The instant a wall-clock date and time mean in the package's timezone. */
+export function zonedDueAt(date: string, time: string, timeZone: string): string {
+  const [year, month, day] = date.split("-").map(Number)
+  const [hours, minutes] = time.split(":").map(Number)
+  const zoned = new TZDate(year, month - 1, day, Number.isFinite(hours) ? hours : 17, Number.isFinite(minutes) ? minutes : 0, timeZone)
+  // TZDate prints its own offset; the API expects UTC.
+  return new Date(zoned.getTime()).toISOString()
+}
+
+/** Splits a stored due instant back into the wall-clock date and time of its timezone. */
+export function dueParts(dueAt: string | null | undefined, timeZone: string): { date: string; time: string } {
+  if (!dueAt) return { date: "", time: "17:00" }
+  const zoned = new TZDate(new Date(dueAt), timeZone)
+  return { date: format(zoned, "yyyy-MM-dd"), time: format(zoned, "HH:mm") }
+}
+
 /** "in 3 days" / "2 days ago" relative to now. */
 export function relativeDueDate(dueAt?: string | null): string | null {
   if (!dueAt) return null
@@ -143,8 +104,6 @@ export function isDuePast(dueAt?: string | null): boolean {
   if (!dueAt) return false
   return new Date(dueAt).getTime() < Date.now()
 }
-
-export const STAGE_ORDER: BidPackageStage[] = ["setup", "bidding", "leveling", "awarded"]
 
 export const STAGE_LABELS: Record<BidPackageStage, string> = {
   setup: "Setup",
@@ -175,6 +134,9 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   bid_addendum_created: "Addendum issued",
   bid_award_created: "Bid awarded",
   bid_award_rescinded: "Award rescinded",
+  bid_awarded: "Awarded",
+  "bid_package.awarded_to_price_book": "Awarded to the price book",
+  bid_invite_removed: "Trade removed",
   bid_rfi_answered: "RFI answered",
 }
 

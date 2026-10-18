@@ -1,0 +1,242 @@
+{
+  "scenario": "BILL-01",
+  "reviewedFrom": "Standard accrual practice for general (no-project) invoices recognised on invoice; progress billing per docs/books-revenue-recognition.md \u00a74b. Customer receipts debit 1010 Undeposited funds until deposited (the policy document's \u00a74e still says 1000 \u2014 reconcile in B16.1). Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": {
+    "general-invoice-income-and-tax": {
+      "inputs": {
+        "lines": [
+          {
+            "account": "4110",
+            "cents": 60000
+          },
+          {
+            "account": "4120",
+            "cents": 40000
+          }
+        ],
+        "taxRatePercent": 8,
+        "issueDate": "2026-08-01"
+      },
+      "expectedNetDebitCentsByAccount": {
+        "1100": 108000,
+        "2250": -8000,
+        "4110": -60000,
+        "4120": -40000
+      },
+      "expectedInvoice": {
+        "status": "sent",
+        "totalCents": 108000,
+        "taxCents": 8000,
+        "balanceDueCents": 108000
+      }
+    },
+    "installments-credit-refund-count-once": {
+      "inputs": {
+        "payments": [
+          {
+            "date": "2026-08-10",
+            "cents": 50000
+          },
+          {
+            "date": "2026-08-20",
+            "cents": 47200
+          }
+        ],
+        "credit": {
+          "date": "2026-08-15",
+          "amountCents": 10800,
+          "taxCents": 800
+        },
+        "refund": {
+          "ofPayment": 2,
+          "cents": 5000
+        }
+      },
+      "derivation": "Credit memo reduces income in proportion to the invoice's income lines (60/40 of 10,000) plus the 800 tax; the refund reopens 5,000 of receivable and leaves undeposited funds.",
+      "expectedNetDebitCentsByAccount": {
+        "1010": 92200,
+        "1100": 5000,
+        "2250": -7200,
+        "4110": -54000,
+        "4120": -36000
+      },
+      "expectedInvoice": {
+        "status": "partial",
+        "balanceDueCents": 5000
+      },
+      "expectedReprojectionAddsNothing": true
+    },
+    "account-rename-preserves-posted-history": {
+      "inputs": {
+        "account": "4110",
+        "newName": "Design and preconstruction services"
+      },
+      "derivation": "Account codes and types are immutable; a rename must not change any posted amount, code or frozen classification."
+    },
+    "progress-invoice-retainage": {
+      "inputs": {
+        "contractCents": 5000000,
+        "retainagePercent": 10,
+        "grossCents": 100000,
+        "issueDate": "2026-08-05"
+      },
+      "expectedNetDebitCentsByAccount": {
+        "1100": 90000,
+        "1110": 10000,
+        "2350": -100000
+      },
+      "expectedInvoice": {
+        "totalCents": 90000,
+        "retainageHeldCents": 10000
+      }
+    },
+    "cross-month-credit-and-write-off": {
+      "inputs": {
+        "credit": {
+          "date": "2026-09-10",
+          "amountCents": 10800,
+          "taxCents": 800
+        },
+        "payment": {
+          "date": "2026-09-15",
+          "cents": 77200
+        },
+        "writeOff": {
+          "date": "2026-09-20",
+          "amountCents": 20000
+        }
+      },
+      "derivation": "The August invoice (108,000 = 60,000 + 40,000 income + 8,000 tax) is closed in August. September's credit reverses 10,000 of income on the invoice's own 60/40 split (6,000 / 4,000) even though 4110 was retired after posting, plus 800 tax. The receipt moves 77,200 to undeposited funds; the remaining 20,000 is written off to 6090 bad debt without touching income or tax again. August is not rewritten.",
+      "expected": {
+        "intoClosedRefused": true,
+        "augustUnchanged": true,
+        "september": {
+          "1010": 77200,
+          "1100": -108000,
+          "2250": 800,
+          "4110": 6000,
+          "4120": 4000,
+          "6090": 20000
+        },
+        "total": {
+          "1010": 77200,
+          "2250": -7200,
+          "4110": -54000,
+          "4120": -36000,
+          "6090": 20000
+        },
+        "invoice": {
+          "status": "paid",
+          "balanceDueCents": 0
+        }
+      }
+    },
+    "limits-and-retries": {
+      "inputs": {
+        "payment": {
+          "date": "2026-08-10",
+          "cents": 50000
+        },
+        "credit": {
+          "date": "2026-08-15",
+          "amountCents": 10800,
+          "taxCents": 800
+        }
+      },
+      "derivation": "After a 50,000 receipt and a 10,800 credit, 47,200 is owed. A credit or write-off of 47,201 exceeds it. Another builder's invoice cannot take this builder's receipt or credit, alone or split. Replaying the same receipt and credit keys returns the recorded intent without a second row.",
+      "expected": {
+        "refused": {
+          "creditOverBalance": true,
+          "writeOffOverBalance": true,
+          "receiptToAnotherBuilder": true,
+          "receiptSplitAcrossBuilders": true,
+          "creditOnAnotherBuilder": true
+        },
+        "retriesRecordOnce": {
+          "payments": 1,
+          "credits": 1
+        },
+        "retriedPaymentRefusedOrReplayed": "allowed",
+        "retriedCreditRefusedOrReplayed": "allowed",
+        "ledger": {
+          "1010": 50000,
+          "1100": 47200,
+          "2250": -7200,
+          "4110": -54000,
+          "4120": -36000
+        },
+        "anotherBuilderUntouched": {
+          "1100": 108000,
+          "2250": -8000,
+          "4110": -60000,
+          "4120": -40000
+        },
+        "balanceDueCents": 47200
+      }
+    },
+    "voids": {
+      "inputs": {
+        "payment": {
+          "date": "2026-08-10",
+          "cents": 50000
+        }
+      },
+      "derivation": "A void reverses the whole invoice (AR, income and tax net to zero). An invoice with a receipt must be credited or refunded instead.",
+      "expected": {
+        "voided": {},
+        "paidVoidRefused": true,
+        "ledger": {
+          "1010": 50000,
+          "1100": 58000,
+          "2250": -8000,
+          "4110": -60000,
+          "4120": -40000
+        },
+        "voidedStatus": "void"
+      }
+    },
+    "progress-tax-retainage-release": {
+      "inputs": {
+        "contractCents": 5000000,
+        "retainagePercent": 10,
+        "grossCents": 100000,
+        "taxRatePercent": 8
+      },
+      "derivation": "Gross 100,000 is taxed at 8% (8,000) before retainage; 10% of the gross (10,000) is withheld. The invoice total is 98,000. Last month: AR 98,000 + retainage receivable 10,000 = contract liabilities 100,000 + tax 8,000. This month the 10,000 release reclassifies 1110 to 1100 with no income or tax, and the 98,000 and 10,000 receipts move 108,000 into undeposited funds. On the cash basis, both collections are income when received: the release collection settles the withheld part of the original invoice, so income is the full 1,000.00 and tax 80.00, with cash of 1,080.00.",
+      "expected": {
+        "document": {
+          "totalCents": 98000,
+          "taxCents": 8000,
+          "retainageHeldCents": 10000,
+          "tiesToBillingPlusTax": true
+        },
+        "previousMonth": {
+          "1100": 98000,
+          "1110": 10000,
+          "2250": -8000,
+          "2350": -100000
+        },
+        "previousMonthUnchanged": true,
+        "release": {
+          "1100": 10000,
+          "1110": -10000
+        },
+        "currentMonth": {
+          "1010": 108000,
+          "1100": -98000,
+          "1110": -10000
+        },
+        "retainageLeft": 0,
+        "balances": [
+          0,
+          0
+        ],
+        "cashBasis": {
+          "income": 100000,
+          "salesTax": 8000,
+          "cashMovement": 108000
+        }
+      }
+    }
+  }
+}

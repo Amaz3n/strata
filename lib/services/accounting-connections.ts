@@ -1,3 +1,4 @@
+import { accountingDeliveryDeadline, withAccountingDeadline } from "@/lib/services/accounting-delivery"
 import { requirePermission } from "@/lib/services/permissions"
 import { accountingCommonSettingsUpdateSchema } from "@/lib/integrations/accounting/settings"
 import { randomUUID } from "crypto"
@@ -115,13 +116,13 @@ export async function requireAccountingConnectionForOrg(
 
 export async function updateAccountingConnectionSettings(connectionId: string, updates: Record<string, unknown>, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const connection = await requireAccountingConnectionForOrg(connectionId, resolvedOrgId)
   await requirePermission("org.admin", { supabase, orgId: resolvedOrgId, userId })
+  const connection = await requireAccountingConnectionForOrg(connectionId, resolvedOrgId)
   const provider = getProvider(connection.provider)
   const validated = provider.validateSettings ? provider.validateSettings(updates) : accountingCommonSettingsUpdateSchema.parse(updates)
   const before = connection.settings ?? {}
   const next = { ...before, ...validated }
-  const { data, error } = await supabase
+  const { data, error } = await createServiceSupabaseClient()
     .from("accounting_connections")
     .update({ settings: next })
     .eq("org_id", resolvedOrgId)
@@ -156,10 +157,13 @@ export async function updateAccountingConnectionSettings(connectionId: string, u
 }
 
 export async function updateAccountingConnectionLabel(connectionId: string, label: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("org.admin", context)
+  const resolvedOrgId = context.orgId
+  await requireAccountingConnectionForOrg(connectionId, resolvedOrgId)
   const normalized = label.trim()
   if (!normalized) throw new Error("Connection label is required")
-  const { data, error } = await supabase
+  const { data, error } = await createServiceSupabaseClient()
     .from("accounting_connections")
     .update({ label: normalized })
     .eq("org_id", resolvedOrgId)
@@ -183,14 +187,15 @@ export async function updateAccountingConnectionLabel(connectionId: string, labe
  * error — there is simply nothing to do.
  */
 export async function refreshAccountingConnectionToken(connectionId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const { data } = await supabase
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.admin", { supabase, orgId: resolvedOrgId, userId })
+  const { data, error } = await supabase
     .from("accounting_connections")
     .select("id,provider,label")
     .eq("org_id", resolvedOrgId)
     .eq("id", connectionId)
     .maybeSingle()
-  if (!data) throw new Error("Accounting connection not found")
+  if (error || !data) throw new Error("Accounting connection not found")
   if (!isAccountingProviderKey(data.provider)) throw new Error(`Unknown accounting provider ${data.provider}`)
 
   const provider = getProvider(data.provider)
@@ -207,13 +212,14 @@ export async function refreshAccountingConnectionToken(connectionId: string, org
 
 export async function disconnectAccountingConnection(connectionId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const { data: connection } = await supabase
+  await requirePermission("org.admin", { supabase, orgId: resolvedOrgId, userId })
+  const { data: connection, error: connectionError } = await supabase
     .from("accounting_connections")
     .select("id,provider,external_account_id,label")
     .eq("org_id", resolvedOrgId)
     .eq("id", connectionId)
     .maybeSingle()
-  if (!connection) throw new Error("Accounting connection not found")
+  if (connectionError || !connection) throw new Error("Accounting connection not found")
 
   // Revoke at the provider BEFORE dropping local status. Both adapters have
   // implemented `disconnect` since the interface was written and this layer
@@ -236,7 +242,7 @@ export async function disconnectAccountingConnection(connectionId: string, orgId
     }
   }
 
-  const { error } = await supabase
+  const { error } = await createServiceSupabaseClient()
     .from("accounting_connections")
     .update({
       status: "disconnected",
@@ -281,7 +287,9 @@ export async function disconnectAccountingConnection(connectionId: string, orgId
  * OAuth menu would be a button that can only fail.
  */
 export async function createFileAccountingConnection(input: { label: string; batchFormat: string; orgId?: string }) {
-  const { orgId, userId } = await requireOrgContext(input.orgId)
+  const context = await requireOrgContext(input.orgId)
+  await requirePermission("org.admin", context)
+  const { orgId, userId } = context
   const label = input.label.trim()
   if (label.length < 1 || label.length > 120) throw new Error("Give this connection a name between 1 and 120 characters")
   if (!isAccountingBatchFormat(input.batchFormat)) throw new Error("Choose a supported batch format")
@@ -339,19 +347,34 @@ export async function createFileAccountingConnection(input: { label: string; bat
  */
 export async function keepAliveAccountingConnections(limit = 10) {
   const providers = listProviders().filter((provider) => provider.keepAliveConnections)
+  const deadline = Math.min(Date.now() + 20_000, accountingDeliveryDeadline() ?? Infinity)
   let remaining = Math.max(0, limit)
   let scanned = 0
   let refreshed = 0
   let failed = 0
+  let attempted = 0
+  let deferred = 0
+  let budgetExhausted = false
+  const errors: string[] = []
 
   for (const provider of providers) {
     if (remaining === 0) break
-    const result = await provider.keepAliveConnections!(remaining)
-    scanned += result.scanned
-    refreshed += result.refreshed
-    failed += result.failed
-    remaining = Math.max(0, remaining - result.scanned)
+    if (Date.now() >= deadline) { budgetExhausted = true; break }
+    try {
+      const result = await withAccountingDeadline(deadline, () => provider.keepAliveConnections!(remaining))
+      scanned += result.scanned
+      refreshed += result.refreshed
+      failed += result.failed
+      attempted += result.attempted ?? result.scanned
+      deferred += result.deferred ?? 0
+      budgetExhausted ||= result.budgetExhausted ?? false
+      if (result.error) errors.push(result.error)
+      remaining = Math.max(0, remaining - result.scanned)
+    } catch (error) {
+      failed += 1
+      errors.push(error instanceof Error ? error.message : "Connection maintenance failed")
+    }
   }
 
-  return { scanned, refreshed, failed }
+  return { scanned, refreshed, failed, attempted, deferred, budgetExhausted: budgetExhausted || Date.now() >= deadline, ...(errors.length ? { error: errors.join("; ") } : {}) }
 }

@@ -1,4 +1,6 @@
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { getBusinessProfile } from "@/lib/services/business-profile";
+import { TradeHome } from "@/components/trade/trade-home";
+import { WorkspaceLoading } from "@/components/layout/workspace-loading"
 import { Suspense } from "react";
 import { connection } from "next/server";
 
@@ -24,7 +26,9 @@ async function HomePageContent({
   await connection();
 
   // Posture stays un-suspended: it is cheap and it decides which home this is.
-  const [tier, params] = await Promise.all([getOrgProductTier(), searchParams]);
+  const [tier, params, profile] = await Promise.all([getOrgProductTier(), searchParams, getBusinessProfile()]);
+
+  if (profile.kind === "trade") return <TradeHome />;
 
   if (tier === "production") {
     return (
@@ -64,7 +68,7 @@ async function ProductionHomeBand({ window }: { window?: string }) {
 
 export default function HomePage(props: Parameters<typeof HomePageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<WorkspaceLoading destination="home" />}>
       <HomePageContent {...props} />
     </Suspense>
   )

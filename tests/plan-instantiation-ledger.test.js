@@ -14,6 +14,7 @@ const COMMUNITY = "00000000-0000-4000-8000-000000000006"
 const VERSION_ONE = "00000000-0000-4000-8000-000000000011"
 const VERSION_TWO = "00000000-0000-4000-8000-000000000012"
 const PLAN = "00000000-0000-4000-8000-000000000013"
+const ELEVATION = "00000000-0000-4000-8000-000000000014"
 
 const SNAPSHOT = {
   budget_template: { id: "tpl-1", name: "Base", lines: [{ id: "line-1", cost_code_id: null, cost_type: "material", description: "Slab", amount_cents: 500_000, quantity: null, unit_cost_cents: null }] },
@@ -32,22 +33,23 @@ function version(id) {
   }
 }
 
-function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget } = {}) {
+function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget, deleteFails = false, deleteFailsFor = null } = {}) {
   const supabase = createFakeSupabase({
     orgs: [{ id: ORG, product_tier: "production" }],
     org_settings: [{ org_id: ORG, settings: {} }],
     projects: [{ id: PROJECT, org_id: ORG, metadata: projectMetadata }],
-    lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, project_id: PROJECT, house_plan_version_id: null, swing: "left" }],
+    lots: [{ id: LOT, org_id: ORG, community_id: COMMUNITY, project_id: PROJECT, house_plan_version_id: null, swing: "left", metadata: {}, updated_at: "2026-09-01T00:00:00+00:00" }],
     house_plan_versions: [version(VERSION_ONE), version(VERSION_TWO)],
     project_financial_settings: [],
     house_plan_takeoff_lines: [],
     community_plan_availability: [{ id: "cpa-1", org_id: ORG, community_id: COMMUNITY, house_plan_id: PLAN, is_available: true, elevation_id: null, effective_start: null, effective_end: null }],
     cost_codes: [],
-    house_plan_elevations: [],
+    house_plan_elevations: [{ id: ELEVATION, org_id: ORG, house_plan_id: PLAN, is_active: true }],
   })
   const context = { supabase, orgId: ORG, userId: ACTOR, productTier: "production" }
-  const calls = { budgets: [], schedules: [], inspections: [], selectionGroups: [] }
+  const calls = { budgets: [], schedules: [], inspections: [], selectionGroups: [], published: [], deletes: [], cleared: [] }
 
+  stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => supabase })
   stubModule("@/lib/services/context", {
     requireOrgContext: async () => context,
     runWithServiceOrgContext: async (_context, work) => work(),
@@ -74,7 +76,13 @@ function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget } = {}
     instantiateSelectionGroupsForProject: async () => { calls.selectionGroups.push(1); return { groups: 1, selections: 1 } },
   })
   stubModule("@/lib/storage/files-storage", {
-    buildOrgScopedPath: () => "path", createFilesDownloadUrl: async () => ({ downloadUrl: "" }), uploadFilesObject: async () => undefined,
+    deleteFilesObjects: async (params) => {
+      calls.deletes.push(params.paths)
+      if (deleteFails || calls.deletes.length - 1 === deleteFailsFor) throw new Error("Storage unavailable")
+    },
+  })
+  stubModule("@/lib/services/plan-drawing-copy", {
+    publishPlanDrawingCopy: async (params) => { calls.published.push(params); return { drawing_set_id: "set-1", queued: true } },
   })
   delete require.cache[require.resolve("@/lib/services/plan-instantiation")]
   return { supabase, calls, service: require("@/lib/services/plan-instantiation") }
@@ -90,6 +98,17 @@ function input(versionId, steps) {
 function ledger(supabase) {
   return supabase.store.projects[0].metadata.plan_instantiation ?? {}
 }
+
+test("a superseded version is built only where a plan change review kept the home on it", async () => {
+  const harness = buildInstantiationHarness()
+  harness.supabase.store.house_plan_versions[0].status = "superseded"
+  harness.supabase.store.plan_change_proposal_homes = []
+  await assert.rejects(harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"])), /Only released plan versions/)
+
+  harness.supabase.store.plan_change_proposal_homes.push({ id: "review-home-1", org_id: ORG, lot_id: LOT, from_version_id: VERSION_ONE, decision: "decline" })
+  await harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"]))
+  assert.equal(harness.calls.budgets.length, 1)
+})
 
 test("instantiation records what it produced, and a repeat is refused by default", async () => {
   const harness = buildInstantiationHarness()
@@ -128,6 +147,16 @@ test("a resuming worker treats an already-produced step as done, not as fatal", 
   assert.equal(harness.calls.budgets.length, 1)
 })
 
+test("a resuming worker refuses a step another plan version produced instead of counting it done", async () => {
+  const harness = buildInstantiationHarness()
+  await harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"]))
+
+  const resumed = await harness.service.instantiatePlanForProject({ ...input(VERSION_TWO, ["budget"]), resume: true })
+  assert.equal(resumed.success, false)
+  assert.match(resumed.errors.join(" "), /different plan version/)
+  assert.equal(harness.calls.budgets.length, 1, "and it does not cut a second budget either")
+})
+
 test("concurrent marks against one project do not lose each other", async () => {
   // The outbox retry path is exactly this shape: the old read-modify-write
   // dropped whichever mark landed second, and a dropped mark is how a release
@@ -156,4 +185,98 @@ test("a legacy ledger with no seq is upgraded rather than double-run", async () 
   assert.equal(harness.calls.budgets.length, 0)
   assert.equal(harness.calls.inspections.length, 0, "the snapshot has no checklists to seed")
   assert.equal(ledger(harness.supabase).seq, 1)
+})
+
+function drawingContext(harness) {
+  harness.supabase.store.files = [{ id: 'plan-pdf', org_id: ORG, file_name: 'plan.pdf', storage_path: 'source.pdf', mime_type: 'application/pdf', size_bytes: 100, checksum: 'hash' }]
+  return { supabase: harness.supabase, orgId: ORG, userId: ACTOR, project: harness.supabase.store.projects[0], version: version(VERSION_ONE), snapshot: { ...SNAPSHOT, drawing_source_file_id: 'plan-pdf' } }
+}
+test('the plan drawings go through the transactional copy, and a dry run copies nothing', async () => {
+  const harness = buildInstantiationHarness(), context = drawingContext(harness)
+  assert.deepEqual(await harness.service.queuePlanDrawings({ ...input(VERSION_ONE, ['drawings']), dryRun: true }, context), { drawing_set_id: 'dry-run', queued: false })
+  assert.equal(harness.calls.published.length, 0)
+  assert.deepEqual(await harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), { drawing_set_id: 'set-1', queued: true })
+  const [published] = harness.calls.published
+  assert.equal(published.planVersionId, VERSION_ONE)
+  assert.equal(published.projectId, PROJECT)
+  assert.equal(published.source.storage_path, 'source.pdf')
+})
+test('a release with no plan-set PDF refuses to queue drawings', async () => {
+  const harness = buildInstantiationHarness(), context = drawingContext(harness)
+  context.snapshot = { ...context.snapshot, drawing_source_file_id: null }
+  await assert.rejects(harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), /no plan-set PDF/)
+  assert.equal(harness.calls.published.length, 0)
+})
+
+function abandonedCopy(harness) {
+  return abandonedCopies(harness, 1)[0]
+}
+function abandonedCopies(harness, count) {
+  const copies = Array.from({ length: count }, (_, index) => ({
+    org_id: ORG, project_id: PROJECT, attempt_id: `00000000-0000-4000-8000-0000000000a${index}`, storage_path: `${ORG}/projects/${PROJECT}/plans/copy-${index}.pdf`,
+  }))
+  harness.supabase.rpc = async (name, args) => {
+    if (name === "claim_abandoned_plan_drawing_copies") return { data: copies, error: null }
+    if (name === "clear_abandoned_plan_drawing_copy") { harness.calls.cleared.push(args); return { data: true, error: null } }
+    throw new Error(`unexpected rpc ${name}`)
+  }
+  return copies
+}
+test('an abandoned copy loses its object before its manifest, and a failed delete keeps only that manifest', async () => {
+  const harness = buildInstantiationHarness(), copy = abandonedCopy(harness)
+  assert.deepEqual(await harness.service.cleanupAbandonedPlanDrawingCopies(), { claimed: 1, cleared: 1, failed: [] })
+  assert.deepEqual(harness.calls.deletes, [[copy.storage_path]])
+  assert.equal(harness.calls.cleared[0].p_attempt_id, copy.attempt_id)
+
+  const failing = buildInstantiationHarness({ deleteFails: true })
+  const failingCopy = abandonedCopy(failing)
+  const result = await failing.service.cleanupAbandonedPlanDrawingCopies()
+  assert.equal(result.cleared, 0)
+  assert.deepEqual(result.failed, [{ projectId: failingCopy.project_id, attemptId: failingCopy.attempt_id, message: 'Storage unavailable' }])
+  assert.equal(failing.calls.cleared.length, 0)
+})
+
+test('one failing abandoned copy does not stop the next from being cleaned', async () => {
+  const harness = buildInstantiationHarness({ deleteFailsFor: 0 })
+  const [first, second] = abandonedCopies(harness, 2)
+  const result = await harness.service.cleanupAbandonedPlanDrawingCopies()
+  assert.equal(result.claimed, 2)
+  assert.equal(result.cleared, 1)
+  assert.equal(result.failed[0].attemptId, first.attempt_id)
+  assert.deepEqual(harness.calls.cleared.map((call) => call.p_attempt_id), [second.attempt_id])
+})
+
+test("a plan the lot's community does not offer is refused, not warned about", async () => {
+  const harness = buildInstantiationHarness()
+  harness.supabase.store.community_plan_availability[0].is_available = false
+
+  await assert.rejects(harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"])), /not offered in the lot's community/)
+  assert.equal(harness.calls.budgets.length, 0)
+  assert.equal(harness.supabase.store.lots[0].house_plan_version_id, null, "the lot is not pinned to the plan")
+})
+
+test("an elevation the plan sheet does not carry is refused, and an inactive one cannot be built", async () => {
+  const harness = buildInstantiationHarness()
+  harness.supabase.store.community_plan_availability[0].elevation_id = "00000000-0000-4000-8000-0000000000ff"
+  await assert.rejects(harness.service.instantiatePlanForProject({ ...input(VERSION_ONE, ["budget"]), elevationId: ELEVATION }), /not offered/)
+
+  const inactive = buildInstantiationHarness()
+  inactive.supabase.store.house_plan_elevations[0].is_active = false
+  await assert.rejects(inactive.service.instantiatePlanForProject({ ...input(VERSION_ONE, ["budget"]), elevationId: ELEVATION }), /inactive/)
+})
+
+test("a recorded offering override lets the plan through, with the reason carried as a warning", async () => {
+  const harness = buildInstantiationHarness()
+  harness.supabase.store.community_plan_availability[0].is_available = false
+  await harness.service.recordPlanOfferingOverride({ lotId: LOT, housePlanId: PLAN, reason: "Buyer signed before the plan was withdrawn" })
+
+  const result = await harness.service.instantiatePlanForProject(input(VERSION_ONE, ["budget"]))
+  assert.equal(result.success, true)
+  assert.match(result.warnings.join(" "), /Buyer signed before the plan was withdrawn/)
+})
+
+test("an offering override needs a real reason", async () => {
+  const harness = buildInstantiationHarness()
+  await assert.rejects(harness.service.recordPlanOfferingOverride({ lotId: LOT, housePlanId: PLAN, reason: "ok" }), /Say why/)
+  assert.deepEqual(harness.supabase.store.lots[0].metadata, {})
 })

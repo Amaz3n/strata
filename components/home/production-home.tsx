@@ -1,6 +1,7 @@
 import Link from "next/link"
 
 import { AssignedTile } from "@/components/home/assigned-tile"
+import { FieldRecordsBand } from "@/components/home/field-records-band"
 import { NowActivities } from "@/components/home/now-activities"
 import { shortDate } from "@/components/home/short-date"
 import { LinkTile, type TileContent } from "@/components/home/stat-tile"
@@ -26,9 +27,9 @@ const WINDOWS: Array<{ key: FieldWindow; label: string }> = [
 
 const TILE_HREF: Record<string, string> = {
   starts: "/starts",
-  closings: "/sales?tab=closings",
+  closings: "/sales?due=closing_soon",
   construction: "/projects",
-  backlog: "/sales?tab=backlog",
+  backlog: "/reports/closing-backlog",
   purchasing: "/purchasing?tab=variance",
 }
 
@@ -56,7 +57,7 @@ export function ProductionHome({ data, showCustomProjects }: { data: ProductionH
           </p>
           <div className="mt-5 flex gap-4 text-sm">
             <Link className="font-medium underline underline-offset-4" href="/communities">Create a community</Link>
-            <Link className="text-muted-foreground underline underline-offset-4" href="/admin/provision">Open onboarding</Link>
+            <Link className="text-muted-foreground underline underline-offset-4" href="/settings/imports">Import production data</Link>
           </div>
         </div>
       </div>
@@ -76,6 +77,13 @@ export function ProductionHome({ data, showCustomProjects }: { data: ProductionH
           Custom projects are active · open the projects list
           <ArrowUpRight className="h-3 w-3" />
         </Link>
+      )}
+
+      {data.scopeTruncated && (
+        <p className="border-b px-5 py-2 text-[11px] text-muted-foreground">
+          This scope has more active houses than Home can total. The figures cover the first houses only. Narrow the
+          division or community to see them all.
+        </p>
       )}
 
       {tiles.length > 0 && (
@@ -172,6 +180,8 @@ export function ProductionHome({ data, showCustomProjects }: { data: ProductionH
           )}
         </section>
       </div>
+
+      {assigned && <FieldRecordsBand assigned={assigned} />}
     </div>
   )
 }

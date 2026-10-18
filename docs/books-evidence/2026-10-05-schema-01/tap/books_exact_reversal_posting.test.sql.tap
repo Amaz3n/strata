@@ -1,0 +1,4 @@
+1..3
+ok 1 - reversal validation and completion are invokers
+ok 2 - reversal posting validates money and completes original lifecycle
+ok 3 - reversal RPC remains private

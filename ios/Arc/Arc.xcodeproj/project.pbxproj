@@ -74,6 +74,12 @@
 		A10000000000000000000084 /* VarianceOrderStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000084 /* VarianceOrderStore.swift */; };
 		A10000000000000000000085 /* VarianceOrderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000085 /* VarianceOrderView.swift */; };
 		A10000000000000000000086 /* MyHousesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000086 /* MyHousesTests.swift */; };
+		A20000000000000000000001 /* FieldReferenceCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* FieldReferenceCache.swift */; };
+		A20000000000000000000002 /* TabletWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* TabletWorkspaceView.swift */; };
+		A20000000000000000000003 /* ProjectMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ProjectMediaView.swift */; };
+		A20000000000000000000004 /* NativeInvoiceComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* NativeInvoiceComposer.swift */; };
+		A20000000000000000000006 /* NativeWorkspaceRowsEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* NativeWorkspaceRowsEditor.swift */; };
+		A20000000000000000000005 /* NativeAttachmentComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* NativeAttachmentComposer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -160,6 +166,12 @@
 		B10000000000000000000084 /* VarianceOrderStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VarianceOrderStore.swift; sourceTree = "<group>"; };
 		B10000000000000000000085 /* VarianceOrderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VarianceOrderView.swift; sourceTree = "<group>"; };
 		B10000000000000000000086 /* MyHousesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHousesTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000001 /* FieldReferenceCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldReferenceCache.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* TabletWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabletWorkspaceView.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* ProjectMediaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMediaView.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* NativeInvoiceComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeInvoiceComposer.swift; sourceTree = "<group>"; };
+		B20000000000000000000006 /* NativeWorkspaceRowsEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWorkspaceRowsEditor.swift; sourceTree = "<group>"; };
+		B20000000000000000000005 /* NativeAttachmentComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAttachmentComposer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -205,6 +217,10 @@
 				B10000000000000000000080 /* GlobalTab.swift */,
 				B10000000000000000000002 /* AppDependencies.swift */,
 				B10000000000000000000012 /* AppEnvironment.swift */,
+				B20000000000000000000002 /* TabletWorkspaceView.swift */,
+				B20000000000000000000004 /* NativeInvoiceComposer.swift */,
+				B20000000000000000000006 /* NativeWorkspaceRowsEditor.swift */,
+				B20000000000000000000005 /* NativeAttachmentComposer.swift */,
 				B10000000000000000000003 /* AppRouter.swift */,
 				B10000000000000000000004 /* AppTab.swift */,
 				B10000000000000000000005 /* AppView.swift */,
@@ -256,6 +272,7 @@
 			children = (
 				B1000000000000000000001F /* OfflineModels.swift */,
 				B10000000000000000000020 /* OfflineStore.swift */,
+				B20000000000000000000001 /* FieldReferenceCache.swift */,
 				B10000000000000000000008 /* SyncEngine.swift */,
 				B10000000000000000000021 /* BackgroundUploadCoordinator.swift */,
 			);
@@ -454,6 +471,7 @@
 			children = (
 				B10000000000000000000059 /* ProjectInfoStore.swift */,
 				B1000000000000000000005A /* RfisView.swift */,
+				B20000000000000000000003 /* ProjectMediaView.swift */,
 				B1000000000000000000005B /* TeamView.swift */,
 			);
 			path = ProjectInfo;
@@ -598,6 +616,10 @@
 				A10000000000000000000001 /* ArcApp.swift in Sources */,
 				A10000000000000000000002 /* AppDependencies.swift in Sources */,
 				A10000000000000000000010 /* AppEnvironment.swift in Sources */,
+				A20000000000000000000002 /* TabletWorkspaceView.swift in Sources */,
+				A20000000000000000000004 /* NativeInvoiceComposer.swift in Sources */,
+				A20000000000000000000006 /* NativeWorkspaceRowsEditor.swift in Sources */,
+				A20000000000000000000005 /* NativeAttachmentComposer.swift in Sources */,
 				A10000000000000000000003 /* AppRouter.swift in Sources */,
 				A10000000000000000000004 /* AppTab.swift in Sources */,
 				A10000000000000000000005 /* AppView.swift in Sources */,
@@ -618,6 +640,7 @@
 				A10000000000000000000014 /* Observability.swift in Sources */,
 				A1000000000000000000001E /* OfflineModels.swift in Sources */,
 				A1000000000000000000001F /* OfflineStore.swift in Sources */,
+				A20000000000000000000001 /* FieldReferenceCache.swift in Sources */,
 				A10000000000000000000008 /* SyncEngine.swift in Sources */,
 				A10000000000000000000020 /* BackgroundUploadCoordinator.swift in Sources */,
 				A10000000000000000000021 /* DailyLogStore.swift in Sources */,
@@ -637,6 +660,7 @@
 				A10000000000000000000058 /* Components.swift in Sources */,
 				A10000000000000000000059 /* ProjectInfoStore.swift in Sources */,
 				A1000000000000000000005A /* RfisView.swift in Sources */,
+				A20000000000000000000003 /* ProjectMediaView.swift in Sources */,
 				A1000000000000000000005B /* TeamView.swift in Sources */,
 				A1000000000000000000005C /* PushManager.swift in Sources */,
 				A10000000000000000000060 /* PlatformStore.swift in Sources */,
@@ -717,14 +741,9 @@
 				DEVELOPMENT_TEAM = L2PS6KCB8C;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_ArcAPIBaseURL = "$(ARC_API_BASE_URL)";
-				INFOPLIST_KEY_ArcPushEnabled = "$(ARC_PUSH_ENABLED)";
-				INFOPLIST_KEY_ArcSentryDSN = "$(ARC_SENTRY_DSN)";
-				INFOPLIST_KEY_ArcSupabasePublishableKey = "$(ARC_SUPABASE_PUBLISHABLE_KEY)";
-				INFOPLIST_KEY_ArcSupabaseURL = "$(ARC_SUPABASE_URL)";
+				INFOPLIST_FILE = Config/AppInfo.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Arc;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
-				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Arc uses the camera to attach jobsite photos and receipts.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Arc attaches photos and receipts from your library.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -751,11 +770,7 @@
 				DEVELOPMENT_TEAM = L2PS6KCB8C;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_ArcAPIBaseURL = "$(ARC_API_BASE_URL)";
-				INFOPLIST_KEY_ArcPushEnabled = "$(ARC_PUSH_ENABLED)";
-				INFOPLIST_KEY_ArcSentryDSN = "$(ARC_SENTRY_DSN)";
-				INFOPLIST_KEY_ArcSupabasePublishableKey = "$(ARC_SUPABASE_PUBLISHABLE_KEY)";
-				INFOPLIST_KEY_ArcSupabaseURL = "$(ARC_SUPABASE_URL)";
+				INFOPLIST_FILE = Config/AppInfo.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Arc;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Arc uses the camera to attach jobsite photos and receipts.";

@@ -220,4 +220,11 @@ struct MyHousesTests {
         #expect((json["photo_file_ids"] as? [String])?.count == 1)
         #expect(json["client_id"] as? String == "22222222-2222-4222-8222-222222222222")
     }
+    @Test
+    func purchaseOrdersDecodeWithoutVarianceHistory() throws {
+        let payload = #"{"data":[{"id":"po-1","title":"Plumbing","company_name":"Plumber","contract_number":"1042","status":"issued","total_cents":10000}],"meta":{"request_id":"request-1","next_cursor":null}}"#
+        let envelope = try JSONDecoder.arc.decode(APIEnvelope<[MobileVarianceCommitment]>.self, from: Data(payload.utf8))
+        #expect(envelope.data.first?.id == "po-1")
+        #expect(envelope.data.first?.companyName == "Plumber")
+    }
 }

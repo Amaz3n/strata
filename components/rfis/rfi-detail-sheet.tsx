@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 import { formatLocalDate } from "@/lib/utils"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
 import type { Company, Contact, Rfi, Project, RfiResponse } from "@/lib/types"
@@ -41,10 +41,10 @@ import {
 import { Calendar, Building2, FileText, User, Clock, MessageSquare, CheckCircle } from "@/components/icons"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { LinkedDrawings } from "@/components/drawings"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
-  uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
 import {
@@ -113,6 +113,8 @@ export function RfiDetailSheet({
     },
   })
 
+  const responseType = useWatch({ control: responseForm.control, name: "response_type" })
+
   const decisionForm = useForm<RfiDecisionInput>({
     resolver: zodResolver(rfiDecisionSchema),
     defaultValues: {
@@ -122,30 +124,32 @@ export function RfiDetailSheet({
     },
   })
 
-  // Update form when RFI changes
+  const rfiId = rfi?.id
+  // A refreshed copy of the same RFI must not discard an unfinished response.
   useEffect(() => {
-    if (rfi) {
+    if (rfiId) {
       responseForm.reset({
-        rfi_id: rfi.id,
+        rfi_id: rfiId,
         body: "",
         response_type: "comment",
         created_via_portal: false,
         implies_scope_change: false,
       })
       decisionForm.reset({
-        rfi_id: rfi.id,
+        rfi_id: rfiId,
         decision_status: "approved",
         decision_note: "",
       })
     }
-  }, [rfi, responseForm, decisionForm])
+  }, [rfiId, responseForm, decisionForm])
 
-  const loadAttachments = useCallback(async () => {
-    if (!rfi) return
+  const loadAttachments = useCallback(async (signal?: AbortSignal) => {
+    if (!rfi || signal?.aborted) return
 
     setIsLoadingAttachments(true)
     try {
       const links = await listAttachmentsAction("rfi", rfi.id)
+      if (signal?.aborted) return
       setAttachments(
         links.map((link) => ({
           id: link.file.id,
@@ -160,31 +164,35 @@ export function RfiDetailSheet({
         }))
       )
     } catch (error) {
-      console.error("Failed to load attachments:", error)
+      if (!signal?.aborted) console.error("Failed to load attachments:", error)
     } finally {
-      setIsLoadingAttachments(false)
+      if (!signal?.aborted) setIsLoadingAttachments(false)
     }
   }, [rfi])
 
-  const loadResponses = useCallback(async () => {
-    if (!rfi) return
+  const loadResponses = useCallback(async (signal?: AbortSignal) => {
+    if (!rfi || signal?.aborted) return
     setIsLoadingResponses(true)
     try {
       const data = await listRfiResponsesAction(rfi.id)
+      if (signal?.aborted) return
       setResponses(data)
     } catch (error) {
+      if (signal?.aborted) return
       console.error("Failed to load RFI responses:", error)
       setResponses([])
     } finally {
-      setIsLoadingResponses(false)
+      if (!signal?.aborted) setIsLoadingResponses(false)
     }
   }, [rfi])
 
-  const loadLinkedChangeOrder = useCallback(async () => {
-    if (!rfi) return
+  const loadLinkedChangeOrder = useCallback(async (signal?: AbortSignal) => {
+    if (!rfi || signal?.aborted) return
     try {
-      setLinkedChangeOrder(unwrapAction(await getRfiLinkedChangeOrderAction(rfi.id)))
+      const order = unwrapAction(await getRfiLinkedChangeOrderAction(rfi.id))
+      if (!signal?.aborted) setLinkedChangeOrder(order)
     } catch (error) {
+      if (signal?.aborted) return
       console.error("Failed to load linked change order:", error)
       setLinkedChangeOrder(null)
     }
@@ -193,6 +201,7 @@ export function RfiDetailSheet({
   // Load attachments when sheet opens
   useEffect(() => {
     if (open && rfi) {
+      const controller = new AbortController()
       ;(async () => {
         if (rfi.attachment_file_id) {
           try {
@@ -204,11 +213,12 @@ export function RfiDetailSheet({
               "legacy_attachment",
             ))
           } catch (error) {
-            console.warn("Failed to backfill legacy RFI attachment link", error)
+            if (!controller.signal.aborted) console.warn("Failed to backfill legacy RFI attachment link", error)
           }
         }
-        await Promise.all([loadAttachments(), loadResponses(), loadLinkedChangeOrder()])
+        await Promise.all([loadAttachments(controller.signal), loadResponses(controller.signal), loadLinkedChangeOrder(controller.signal)])
       })()
+      return () => controller.abort()
     }
   }, [open, rfi, loadAttachments, loadResponses, loadLinkedChangeOrder])
 
@@ -654,7 +664,7 @@ export function RfiDetailSheet({
                         )}
                       />
 
-                      {responseForm.watch("response_type") === "answer" && (
+                      {responseType === "answer" && (
                         <FormField control={responseForm.control} name="implies_scope_change" render={({ field }) => (
                           <FormItem className="flex items-center gap-2 space-y-0"><FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl><FormLabel className="text-xs font-normal">This answer implies a scope or cost change</FormLabel></FormItem>
                         )} />
@@ -737,6 +747,7 @@ export function RfiDetailSheet({
             entityId={rfi.id}
             projectId={rfi.project_id}
             attachments={attachments}
+            readOnly={isLoadingAttachments}
             onAttach={handleAttach}
             onDetach={handleDetach}
             title="Attachments"

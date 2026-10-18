@@ -1,4 +1,5 @@
 "use client"
+import { SourcePostingStatus } from "@/components/books/source-posting-status"
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
@@ -28,13 +29,14 @@ import {
   updateInvoiceNotesAction,
   voidReceivableAdjustmentAction,
 } from "@/app/(app)/invoices/actions"
+import { RecordCustomerRefund } from "@/components/payments/record-customer-refund"
 import { recordPaymentAction } from "@/app/(app)/payments/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   attachFileAction,
   detachFileLinkAction,
   listAttachmentsAction,
-  uploadFileAction,
-} from "@/app/(app)/documents/actions"
+  } from "@/app/(app)/documents/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { copyText } from "@/lib/clipboard"
 import { projectBillingHref, resumeInvoiceHref } from "@/lib/financials/invoice-destinations"
@@ -45,6 +47,7 @@ import { DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provi
 import type { AttachedFile } from "@/components/files"
 import { InvoiceAttachmentsField } from "./invoice-attachments-field"
 import { InvoiceWaiverCard } from "./invoice-waiver-card"
+import { InvoiceVoidDateCard } from "./invoice-void-date-card"
 import { isInvoiceAttachment } from "@/lib/invoices/attachment-roles"
 import { useProductTerminology } from "@/components/layout/use-product-terminology"
 import { Button } from "@/components/ui/button"
@@ -383,7 +386,7 @@ function InvoiceInspectorBody({
   const [busy, setBusy] = useState<string | null>(null)
   const [paymentOpen, setPaymentOpen] = useState(false)
   const [adjusting, setAdjusting] = useState(false)
-  const [notesDraft, setNotesDraft] = useState(invoice.notes ?? "")
+  const [notesDraft, setNotesDraft] = useState(typeof invoice.metadata?.memo === "string" ? invoice.metadata.memo : "")
   const [attachments, setAttachments] = useState<AttachedFile[]>(() => mapAttachmentLinks(detail.attachments ?? []))
   const [voidingAdjustmentId, setVoidingAdjustmentId] = useState<string | null>(null)
 
@@ -637,6 +640,7 @@ function InvoiceInspectorBody({
   // One primary action per invoice, chosen by what the invoice actually needs.
   const primary = (() => {
     if (status === "void") return null
+    if (status === "draft" && invoice.metadata?.waiver_packet?.enabled && invoice.metadata.waiver_packet.delivery_mode === "after_physical_execution") return null
     if (status === "draft" && scheduledSendAt) {
       return { label: "Cancel scheduled send", onClick: handleCancelSchedule, key: "schedule" }
     }
@@ -831,7 +835,9 @@ function InvoiceInspectorBody({
                 </span>
               </Row>
               <div className="mt-3 border-t pt-3">
-                <Row label="Issued">{invoice.sent_at ? format(new Date(invoice.sent_at), "MMM d, yyyy") : "Not yet"}</Row>
+                {/* The invoice date is what the ledger posts; when it went out is separate. */}
+                <Row label="Issued">{wasIssued && invoice.issue_date ? formatDateOnly(invoice.issue_date, { withYear: true }) : "Not yet"}</Row>
+                {invoice.sent_at && format(new Date(invoice.sent_at), "yyyy-MM-dd") !== invoice.issue_date ? <Row label="Sent">{format(new Date(invoice.sent_at), "MMM d, yyyy")}</Row> : null}
                 <Row label="Due">{formatDateOnly(invoice.due_date, { withYear: true })}</Row>
                 <Row label="Source">
                   {provenanceHref ? (
@@ -892,7 +898,7 @@ function InvoiceInspectorBody({
                   size="sm"
                   variant="outline"
                   onClick={() => void handleSaveNotes()}
-                  disabled={busy === "notes" || notesDraft === (invoice.notes ?? "")}
+                  disabled={busy === "notes" || notesDraft === (invoice.metadata?.memo ?? "")}
                 >
                   {busy === "notes" ? "Saving…" : "Save notes"}
                 </Button>
@@ -916,7 +922,8 @@ function InvoiceInspectorBody({
                   {appliedPayments.map((payment) => {
                     const reversed = reversedByPayment.get(payment.id) ?? 0
                     return (
-                      <div key={payment.id} className="flex items-center justify-between gap-4 px-3 py-2.5 text-sm">
+                      <div key={payment.id} className="px-3">
+                      <div className="flex items-center justify-between gap-4 py-2.5 text-sm">
                         <span className="min-w-0 truncate text-xs text-muted-foreground">
                           {payment.received_at ? format(new Date(payment.received_at), "MMM d, yyyy") : "No date"}
                           {payment.reference ? ` · ${payment.reference}` : ""}
@@ -925,12 +932,15 @@ function InvoiceInspectorBody({
                           <span className="block font-mono font-medium tabular-nums text-success">
                             {formatMoneyFromCents(Math.max(0, payment.amount_cents - reversed))}
                           </span>
+                          {payment.provider === "manual" && !payment.metadata?.customer_deposit_application && invoice.metadata?.invoice_kind !== "earnest_deposit" && payment.amount_cents > reversed ? <RecordCustomerRefund paymentId={payment.id} availableCents={payment.amount_cents - reversed} externalProvider={accounting?.external?.label} onRecorded={onChanged} /> : null}
                           {reversed > 0 ? (
                             <span className="block text-[10px] text-destructive">
                               Reversed {formatMoneyFromCents(reversed)}
                             </span>
                           ) : null}
                         </span>
+                      </div>
+                      <SourcePostingStatus sourceType="payment" sourceId={payment.id} revision={`${payment.amount_cents}:${reversed}`} />
                       </div>
                     )
                   })}
@@ -1048,6 +1058,10 @@ function InvoiceInspectorBody({
         {section === "accounting" ? (
           <div className="space-y-6 p-4">
             <p className="text-xs text-muted-foreground">{labels.description}</p>
+            {status === "void" && typeof invoice.metadata?.voided_at !== "string" && invoice.metadata?.invoice_kind !== "earnest_deposit" ? (
+              <InvoiceVoidDateCard invoice={invoice} onChanged={onChanged} />
+            ) : null}
+            <SourcePostingStatus key={`${invoice.id}:${invoice.updated_at}`} sourceType="invoice" sourceId={invoice.id} revision={invoice.updated_at} />
             {labels.showExternalSync ? (
             <section className="space-y-2">
               <SectionHeading>{accounting?.external?.label ?? DEFAULT_ACCOUNTING_PROVIDER_LABEL} sync</SectionHeading>

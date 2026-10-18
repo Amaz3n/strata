@@ -323,8 +323,9 @@ export async function getChangeOrderSubCostSignalAction(changeOrderId: string) {
   return await getChangeOrderSubCostSignal({ changeOrderId })
 }
 
+/** Subcontracts only: a purchase order's change is a variance order raised from Purchasing, with a reason. */
 export async function listCommitmentsForChangeOrderAction(projectId: string) {
-  return await listProjectCommitments(projectId)
+  return (await listProjectCommitments(projectId)).filter((commitment) => commitment.commitment_type !== "purchase_order")
 }
 
 export async function listLinkableCommitmentChangeOrdersAction(projectId: string) {

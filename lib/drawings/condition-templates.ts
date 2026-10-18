@@ -35,6 +35,15 @@ export interface ConditionTemplate {
   updated_at: string
 }
 
+/** Distinct saved headings from the same library snapshot shown by the editor. */
+export function templateGroupNames(templates: ConditionTemplate[]): string[] {
+  const groups = new Set<string>()
+  for (const template of templates) {
+    if (template.group_name) groups.add(template.group_name)
+  }
+  return [...groups].sort((a, b) => a.localeCompare(b))
+}
+
 /** Shape the panel's "add from library" list wants: grouped, in display order. */
 export function groupTemplates(
   templates: ConditionTemplate[],

@@ -2,8 +2,7 @@ import "server-only"
 import { z } from "zod"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireBooksAuthorization } from "@/lib/services/books/access"
-import { buildGeneralLedger } from "@/lib/services/books/statements"
-import { clearingLedgerDigest, clearingSupportMatches } from "@/lib/services/books/clearing-support-rules"
+import { clearingLedgerDigest, clearingSupportMatches, type ClearingAccountPosition } from "@/lib/services/books/clearing-support-rules"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -17,11 +16,19 @@ export const clearingReviewSchema = z.object({
   ledgerDigest: z.string(), items: z.array(supportSchema), reviewerId: z.string().uuid(), reviewedAt: z.string(),
 })
 
+const CLEARING_CODES = ["1010", "2200", "2220", "2230"]
+
+/** Clearing balances at period end, summed in the database with a fingerprint of their lines. */
 export async function loadClearingPosition(orgId: string, periodEnd: string) {
-  const ledger = await buildGeneralLedger(orgId, "0001-01-01", periodEnd)
-  const lines = ledger.rows.filter(row => ["1010", "2200", "2220", "2230"].includes(row.account?.code ?? ""))
-  const balances = ["1010", "2200", "2220", "2230"].map(code => ({ code, balanceCents: lines.filter(row => row.account?.code === code).reduce((sum, row) => sum + (code === "1010" ? 1 : -1) * (row.debit_cents - row.credit_cents), 0) })).filter(row => row.balanceCents !== 0)
-  return { balances, ledgerDigest: clearingLedgerDigest(lines), lines }
+  const { data, error } = await createServiceSupabaseClient().rpc("books_account_positions", { p_org_id: orgId, p_as_of: periodEnd, p_codes: CLEARING_CODES })
+  if (error) throw new Error(`Failed to load clearing balances: ${error.message}`)
+  const positions: ClearingAccountPosition[] = z.array(z.object({ code: z.string(), debit_cents: z.coerce.number().int(), credit_cents: z.coerce.number().int(), line_count: z.coerce.number().int(), lines_digest: z.string() }))
+    .parse(data ?? []).map(row => ({ code: row.code, debitCents: row.debit_cents, creditCents: row.credit_cents, lineCount: row.line_count, linesDigest: row.lines_digest }))
+  const balances = CLEARING_CODES.map(code => {
+    const position = positions.find(row => row.code === code)
+    return { code, balanceCents: position ? (code === "1010" ? 1 : -1) * (position.debitCents - position.creditCents) : 0 }
+  }).filter(row => row.balanceCents !== 0)
+  return { balances, ledgerDigest: clearingLedgerDigest(positions) }
 }
 async function contextForClearing(periodId: string) {
   const context = await requireOrgContext()

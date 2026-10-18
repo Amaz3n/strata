@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 
@@ -14,7 +15,8 @@ async function DeadLetterData() {
 }
 
 async function DrawingsDeadLetterPageContent() {
-  await requireAnyPermissionGuard(["billing.manage", "platform.support.read"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.support.read"])
 
   return (
     <PageLayout
@@ -52,7 +54,18 @@ function DeadLetterSkeleton() {
 
 export default function DrawingsDeadLetterPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="Drawings pipeline"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "Ops", href: "/admin/ops" },
+        { label: "Drawings pipeline" },
+      ]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <DrawingsDeadLetterPageContent />
     </Suspense>
   )

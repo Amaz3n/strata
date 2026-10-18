@@ -1,5 +1,6 @@
 export type NotificationType =
   | "task_assigned"
+  | "task_mentioned"
   | "task_created"
   | "task_updated"
   | "task_completed"
@@ -31,6 +32,13 @@ export type NotificationType =
   | "selection_cutoff_reminder"
   | "selection_cutoff_missed"
   | "selection_cutoff_changed"
+  | "selection_approval_approved"
+  | "selection_approval_declined"
+  | "selection_approval_expired"
+  | "selection_signature_withdrawn"
+  | "design_studio_appointment_assigned"
+  | "design_studio_appointment_rescheduled"
+  | "design_studio_appointment_canceled"
   | "portal_message"
   | "project_email_change_trigger"
   | "file_created"
@@ -97,15 +105,34 @@ export type NotificationType =
   | "po_completion.rejected"
   | "variance_digest"
   | "selection_change_variance_unrouted"
+  | "selection_exception_opened"
+  | "selection_change_schedule_pending"
   | "takedown_due"
+  | "land_review_requested"
+  | "land_review_decided"
+  | "land_diligence_due"
+  | "entitlement_condition_due"
+  | "agreement_milestone_due"
+  | "permit_correction_due"
+  | "permit_decision_overdue"
   | "start_package_ready"
   | "start_released"
   | "start_release_failed"
   | "start_gate_waived"
+  | "released_sale_cancelled"
+  | "trade_response_received"
+  | "po_acknowledgment_received"
+  | "po_shortage_opened"
   | "project_superintendent_assigned"
   | "purchase_agreement_executed"
+  | "lead_assigned"
   | "warranty_visit_assigned"
   | "warranty_visit_confirmed"
+  | "warranty_visit_rescheduled"
+  | "warranty_visit_canceled"
+  | "warranty_visit_buyer_confirmed"
+  | "warranty_buyer_reschedule_requested"
+  | "warranty_request_routed"
   | "warranty_visit_completed"
   | "warranty_backcharge_disputed"
   | "warranty_sla_breached"
@@ -146,6 +173,7 @@ export type NotificationType =
   | "accounting_connection_expired"
   | "accounting_push_dead_lettered"
   | "accounting_sync_needs_review"
+  | "operations_pipeline_alert"
 
 /**
  * The order groups appear in Settings → Notifications, and the header each one
@@ -191,7 +219,12 @@ export const NOTIFICATION_EMAIL_CATEGORIES = [
   {
     key: "starts",
     label: "Starts & production",
-    description: "Lot start packages, release failures, and land takedowns coming due.",
+    description: "Lot start packages, release failures, and production work that stopped.",
+  },
+  {
+    key: "land",
+    label: "Land & entitlements",
+    description: "Land deal reviews, diligence and entitlement deadlines, and takedowns coming due.",
   },
   {
     key: "sales",
@@ -213,6 +246,12 @@ export const NOTIFICATION_EMAIL_CATEGORIES = [
 export type NotificationEmailCategory = (typeof NOTIFICATION_EMAIL_CATEGORIES)[number]["key"]
 
 export const EMAIL_NOTIFICATION_TYPES = [
+  {
+    key: "task_mentioned",
+    category: "project",
+    label: "Task mentions",
+    description: "Email me when someone tags me in a task.",
+  },
   {
     key: "vendor_bill_submitted",
     category: "payables",
@@ -498,6 +537,30 @@ export const EMAIL_NOTIFICATION_TYPES = [
     description: "Email me when a warranty service visit is assigned to me.",
   },
   {
+    key: "warranty_visit_rescheduled",
+    category: "warranty",
+    label: "Warranty visit moved",
+    description: "Email me when a warranty visit assigned to me is moved to a new time.",
+  },
+  {
+    key: "warranty_visit_canceled",
+    category: "warranty",
+    label: "Warranty visit canceled",
+    description: "Email me when a warranty visit assigned to me is canceled.",
+  },
+  {
+    key: "warranty_request_routed",
+    category: "warranty",
+    label: "Warranty request routed to me",
+    description: "Email me when a new warranty request is routed to me by a routing rule.",
+  },
+  {
+    key: "warranty_buyer_reschedule_requested",
+    category: "warranty",
+    label: "Homeowner asked for another time",
+    description: "Email me when a homeowner asks to move a warranty appointment I own.",
+  },
+  {
     key: "warranty_sla_breached",
     category: "warranty",
     label: "Warranty SLA breached",
@@ -510,6 +573,18 @@ export const EMAIL_NOTIFICATION_TYPES = [
     description: "Email me when nobody has contacted the homeowner within the first-response target.",
   },
   {
+    key: "lead_assigned",
+    category: "sales",
+    label: "New lead assigned",
+    description: "Email me when a website lead is routed to me.",
+  },
+  {
+    key: "agreement_milestone_due",
+    category: "sales",
+    label: "Contingency or lender/title deadline",
+    description: "Email me as a buyer's contingency or a lender or title milestone I own comes due or runs late.",
+  },
+  {
     key: "purchase_agreement_executed",
     category: "sales",
     label: "Purchase agreement executed",
@@ -520,6 +595,42 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "sales",
     label: "Selection deadline reminder",
     description: "Email me when selections are due in 14 or 7 days.",
+  },
+  {
+    key: "selection_approval_approved",
+    category: "sales",
+    label: "Selections approved",
+    description: "Email me when a buyer approves selections on a home I run.",
+  },
+  {
+    key: "selection_approval_declined",
+    category: "sales",
+    label: "Selections declined",
+    description: "Email me when a buyer declines selections sent for approval on a home I run.",
+  },
+  {
+    key: "selection_approval_expired",
+    category: "sales",
+    label: "Selection approval expired",
+    description: "Email me when selections sent for approval reach their deadline without an answer.",
+  },
+  {
+    key: "design_studio_appointment_assigned",
+    category: "sales",
+    label: "Design studio session booked",
+    description: "Email me when a design studio session is booked with me.",
+  },
+  {
+    key: "design_studio_appointment_rescheduled",
+    category: "sales",
+    label: "Design studio session moved",
+    description: "Email me when one of my design studio sessions moves to a new time.",
+  },
+  {
+    key: "design_studio_appointment_canceled",
+    category: "sales",
+    label: "Design studio session canceled",
+    description: "Email me when one of my design studio sessions is canceled.",
   },
   {
     key: "daily_log_mentioned",
@@ -600,16 +711,76 @@ export const EMAIL_NOTIFICATION_TYPES = [
     description: "Email me when a start release fails and needs attention.",
   },
   {
+    key: "operations_pipeline_alert",
+    category: "starts",
+    label: "Background work stopped",
+    description: "Email me when automated monitoring finds starts, imports or warranty work that failed or stopped running.",
+  },
+  {
+    key: "trade_response_received",
+    category: "starts",
+    label: "Trade answered their work",
+    description: "Email me when a trade declines work or asks for other dates on a home I coordinate.",
+  },
+  {
+    key: "po_acknowledgment_received",
+    category: "project",
+    label: "Vendor disputed a purchase order",
+    description: "Email me when a vendor disputes the quantity, date or scope of a purchase order on a home I purchase for.",
+  },
+  {
+    key: "po_shortage_opened",
+    category: "project",
+    label: "Delivery shortage",
+    description: "Email me when a purchase-order line is late, short, damaged or the wrong item and needs a purchasing decision.",
+  },
+  {
     key: "start_package_ready",
     category: "starts",
     label: "Start package ready",
     description: "Email me when a lot's start package has all gates cleared.",
   },
   {
-    key: "takedown_due",
+    key: "permit_correction_due",
     category: "starts",
+    label: "Permit corrections due",
+    description: "Email me as a response I own to a permit authority's corrections comes due or runs late.",
+  },
+  {
+    key: "permit_decision_overdue",
+    category: "starts",
+    label: "Permit decision overdue",
+    description: "Email me when a permit application I own is past the authority's review time.",
+  },
+  {
+    key: "takedown_due",
+    category: "land",
     label: "Land takedown due",
     description: "Email me as a contracted lot takedown approaches its close date.",
+  },
+  {
+    key: "land_review_requested",
+    category: "land",
+    label: "Land acquisition awaiting my approval",
+    description: "Email me when I am named an approver on a land acquisition review.",
+  },
+  {
+    key: "land_review_decided",
+    category: "land",
+    label: "Land acquisition decided",
+    description: "Email me when a land acquisition review I submitted or lead is approved or returned.",
+  },
+  {
+    key: "land_diligence_due",
+    category: "land",
+    label: "Land diligence deadline",
+    description: "Email me as a diligence item I own, or a deal's feasibility period, comes due.",
+  },
+  {
+    key: "entitlement_condition_due",
+    category: "land",
+    label: "Entitlement deadline",
+    description: "Email me as an entitlement condition comes due or an approval nears its target or expiry.",
   },
 ] as const satisfies ReadonlyArray<{
   key: NotificationType

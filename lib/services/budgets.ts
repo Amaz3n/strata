@@ -15,6 +15,7 @@ import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actu
 import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { COST_TYPES, type CostType } from "@/lib/cost-types"
+import { readAllRows } from "@/lib/land/paging"
 
 const budgetLineSchema = z.object({
   id: z.string().uuid().nullable().optional(),
@@ -112,8 +113,10 @@ export async function createBudget(
   }
 
   if (parsed.lines.length > 0) {
+    // Every row names its id: a batch insert lists the union of its keys, so a
+    // row without one would write NULL instead of taking the column default.
     const linesToInsert = parsed.lines.map((line, idx) => ({
-      id: line.id ?? undefined,
+      id: line.id ?? crypto.randomUUID(),
       org_id: resolvedOrgId,
       budget_id: budget.id,
       cost_code_id: line.cost_code_id ?? null,
@@ -147,6 +150,88 @@ export async function createBudget(
   })
 
   return budget
+}
+
+/** The release key of the one budget a release builds on a home. */
+export const RELEASE_BUDGET_KEY = "budget"
+
+/**
+ * The budget a release builds on a home, built so a replay finishes the job
+ * instead of cutting a second budget. The budget carries `metadata.release_key`,
+ * unique per home, and each line sits at its own `sort_order`: a re-run finds the
+ * budget by its key, adds only the lines it is missing and brings the total in
+ * line with them. A crash between the budget row and its lines, a cancel in the
+ * middle of the step and a worker that lost its lease all end the same way.
+ */
+export async function createReleaseBudget(
+  input: { project_id: string; lines: z.infer<typeof budgetLineSchema>[]; plan_version_id: string },
+  orgId?: string,
+) {
+  const parsed = createBudgetSchema.pick({ project_id: true, lines: true }).extend({ plan_version_id: z.string().uuid() }).parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("plan.instantiate", { supabase, orgId: resolvedOrgId, userId })
+
+  const findBudget = async () => {
+    const { data, error } = await supabase.from("budgets").select("id, total_cents, metadata")
+      .eq("org_id", resolvedOrgId).eq("project_id", parsed.project_id).eq("metadata->>release_key", RELEASE_BUDGET_KEY).maybeSingle()
+    if (error) throw new Error(`Failed to look up the release budget: ${error.message}`)
+    // The release builds from one plan version. A budget it began from another is not this release's to finish.
+    if (data && data.metadata?.release_version !== parsed.plan_version_id) {
+      throw new Error("The release budget was begun from a different plan version; cancel the release and decide what to do with it.")
+    }
+    return data
+  }
+  let budget = await findBudget()
+  let created = false
+  if (!budget) {
+    const { data: latestBudget, error: latestError } = await supabase.from("budgets").select("version")
+      .eq("org_id", resolvedOrgId).eq("project_id", parsed.project_id).order("version", { ascending: false }).limit(1).maybeSingle()
+    if (latestError) throw new Error(`Failed to determine next budget version: ${latestError.message}`)
+    const { data: inserted, error: insertError } = await supabase.from("budgets").insert({
+      org_id: resolvedOrgId, project_id: parsed.project_id, version: (latestBudget?.version ?? 0) + 1, status: "approved",
+      total_cents: parsed.lines.reduce((sum, line) => sum + line.amount_cents, 0),
+      metadata: { release_key: RELEASE_BUDGET_KEY, release_version: parsed.plan_version_id },
+    }).select("id, total_cents, metadata").single()
+    if (insertError?.code === "23505") {
+      budget = await findBudget()
+    } else if (insertError || !inserted) {
+      throw new Error(`Failed to create budget: ${insertError?.message}`)
+    } else {
+      budget = inserted
+      created = true
+    }
+  }
+  if (!budget) throw new Error("Failed to create budget: the release budget is unavailable")
+
+  const lines = await readAllRows((from, to) => supabase.from("budget_lines").select("sort_order, amount_cents")
+    .eq("org_id", resolvedOrgId).eq("budget_id", budget.id).order("sort_order").range(from, to),
+  { cap: 20001, label: "Failed to read release budget lines" })
+  if (lines.truncated) throw new Error("The release budget has more lines than a release can account for")
+  const present = lines.rows
+  const placed = new Set(present.map((line) => line.sort_order))
+  const missing = parsed.lines.flatMap((line, idx) => placed.has(idx) ? [] : [{
+    id: line.id ?? crypto.randomUUID(), org_id: resolvedOrgId, budget_id: budget.id, cost_code_id: line.cost_code_id ?? null,
+    description: line.description, amount_cents: line.amount_cents, sort_order: idx, metadata: line.metadata ?? {},
+    cost_type: line.cost_type ?? null,
+  }])
+  if (missing.length > 0) {
+    const { error: linesError } = await supabase.from("budget_lines").insert(missing)
+    if (linesError) throw new Error(`Failed to create budget lines: ${linesError.message}`)
+  }
+  const totalCents = present.reduce((sum, line) => sum + Number(line.amount_cents), 0)
+    + missing.reduce((sum, line) => sum + line.amount_cents, 0)
+  if (totalCents !== budget.total_cents) {
+    const { error: totalError } = await supabase.from("budgets").update({ total_cents: totalCents })
+      .eq("org_id", resolvedOrgId).eq("id", budget.id)
+    if (totalError) throw new Error(`Failed to total the release budget: ${totalError.message}`)
+  }
+  if (created) {
+    await recordAudit({ orgId: resolvedOrgId, action: "insert", entityType: "budget", entityId: budget.id,
+      after: { id: budget.id, project_id: parsed.project_id, status: "approved", total_cents: totalCents, lines: parsed.lines } })
+    await recordEvent({ orgId: resolvedOrgId, eventType: "budget_created", entityType: "budget", entityId: budget.id,
+      payload: { project_id: parsed.project_id, status: "approved", total_cents: totalCents } })
+  }
+  return { id: budget.id, totalCents, lineCount: present.length + missing.length }
 }
 
 export async function replaceBudgetLines({
@@ -327,15 +412,20 @@ export async function replaceBudgetLines({
 
 /**
  * Freezes the latest budget's current line amounts as its baseline ("Original").
- * Re-running overwrites the baseline (re-baseline). This does not lock editing —
- * the budget stays a living document; only the Original comparison point freezes.
+ * The baseline is write-once: a house's original margin is the number every
+ * later variance is measured against, so it can never be rewritten. A revised
+ * baseline is a new budget version, which starts without one. This does not
+ * lock editing — the budget stays a living document; only the Original
+ * comparison point freezes.
  */
+const BASELINE_ALREADY_LOCKED = "This budget's baseline is already locked. Create a new budget version to set a revised baseline."
+
 export async function lockBudgetBaseline(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   const { data: budget, error: budgetError } = await supabase
     .from("budgets")
-    .select("id, project_id, lines:budget_lines(id, cost_code_id, description, amount_cents)")
+    .select("id, project_id, baseline_locked_at, lines:budget_lines(id, cost_code_id, description, amount_cents)")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .order("version", { ascending: false })
@@ -344,6 +434,7 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
 
   if (budgetError) throw new Error(`Failed to load budget: ${budgetError.message}`)
   if (!budget) throw new Error("Create a budget before locking a baseline")
+  if (budget.baseline_locked_at) throw new Error(BASELINE_ALREADY_LOCKED)
 
   await requireBudgetAuth({
     permission: "budget.write",
@@ -362,7 +453,7 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
     amount_cents: line.amount_cents ?? 0,
   }))
 
-  const { error: updateError } = await supabase
+  const { data: locked, error: updateError } = await supabase
     .from("budgets")
     .update({
       baseline_lines: baselineLines,
@@ -371,9 +462,21 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", budget.id)
+    .is("baseline_locked_at", null)
+    .select("id")
+    .maybeSingle()
 
   if (updateError) throw new Error(`Failed to lock baseline: ${updateError.message}`)
+  if (!locked) throw new Error(BASELINE_ALREADY_LOCKED)
 
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "budget",
+    entityId: budget.id as string,
+    after: { baseline_locked: true, line_count: baselineLines.length },
+  })
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "budget_baseline_locked",

@@ -2,6 +2,6 @@
 
 import { PortalErrorState } from "@/components/portal/shell/portal-error"
 
-export default function SubPortalError({ reset }: { error: Error; reset: () => void }) {
-  return <PortalErrorState reset={reset} />
+export default function SubPortalError({ retry }: { error: Error; retry: () => void }) {
+  return <PortalErrorState retry={retry} />
 }

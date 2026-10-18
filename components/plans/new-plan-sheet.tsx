@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 import { createHousePlanAction, updateHousePlanAction, upsertElevationAction } from "@/app/(app)/plans/actions"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import { Home, Plus, Trash2 } from "@/components/icons"
 import { PlanImageAttachment } from "@/components/plans/plan-image-attachment"
 import { Button } from "@/components/ui/button"

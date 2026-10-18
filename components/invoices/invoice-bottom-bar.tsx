@@ -22,6 +22,7 @@ export function InvoiceBottomBar({
   totalCents,
   actions,
   busy,
+  progress,
   onDeselectAll,
   onSend,
   onRemind,
@@ -33,6 +34,8 @@ export function InvoiceBottomBar({
   totalCents: number
   actions: InvoiceBulkActions
   busy: string | null
+  /** Rows finished so far while a bulk run is in flight. */
+  progress: { done: number; total: number } | null
   onDeselectAll: () => void
   onSend: () => void
   onRemind: () => void
@@ -53,7 +56,11 @@ export function InvoiceBottomBar({
         <span className="mr-2 text-sm">
           <span className="font-medium tabular-nums">{selectedCount}</span>
           <span className="text-muted-foreground"> selected</span>
-          <span className="ml-2 font-mono text-xs tabular-nums text-muted-foreground">{money}</span>
+          {progress ? (
+            <span className="ml-2 font-mono text-xs tabular-nums text-muted-foreground">{progress.done} of {progress.total} done</span>
+          ) : (
+            <span className="ml-2 font-mono text-xs tabular-nums text-muted-foreground">{money}</span>
+          )}
         </span>
         <span className="mx-1 h-5 w-px bg-border" />
         {actions.sendable > 0 ? (

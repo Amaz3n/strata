@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
@@ -19,6 +20,7 @@ import {
 } from "@/lib/services/house-plans"
 import { listFloorplanModelStatuses, type FloorplanModelDto } from "@/lib/services/floorplan-models"
 import { listChecklistTemplates } from "@/lib/services/inspections"
+import { getPlanChangeReview, type PlanChangeProposalDto } from "@/lib/services/plan-change-proposals"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { listTemplates } from "@/lib/services/schedule"
 
@@ -26,6 +28,7 @@ import { listTemplates } from "@/lib/services/schedule"
 const PLAN_NOT_FOUND = "House plan not found"
 
 async function PlanDetailPageContent({ params }: { params: Promise<{ id: string }> }) {
+  await connection()
   const { id } = await params
 
   /**
@@ -40,6 +43,17 @@ async function PlanDetailPageContent({ params }: { params: Promise<{ id: string 
       return fallback
     }
   }
+
+  // The plan itself is the page. Missing plans are 404s; other failures belong
+  // in the error boundary. Start status reads as soon as its edition IDs exist.
+  const planPromise = getHousePlan(id).catch((error: unknown) => {
+    if (error instanceof Error && error.message === PLAN_NOT_FOUND) return null
+    throw error
+  })
+  const modelsPromise = planPromise.then((plan) => plan
+    ? listFloorplanModelStatuses((plan.versions ?? []).map((version) => version.id))
+      .catch(optional("floorplan models", new Map<string, FloorplanModelDto>()))
+    : new Map<string, FloorplanModelDto>())
 
   const [
     plan,
@@ -56,13 +70,10 @@ async function PlanDetailPageContent({ params }: { params: Promise<{ id: string 
     availability,
     cycle,
     permissionResult,
+    floorplanModels,
+    changeReview,
   ] = await Promise.all([
-    // The plan itself is the page. A missing plan is a 404; anything else is a
-    // real failure and belongs in the error boundary, not behind a blank sheet.
-    getHousePlan(id).catch((error: unknown) => {
-      if (error instanceof Error && error.message === PLAN_NOT_FOUND) return null
-      throw error
-    }),
+    planPromise,
     getPlanVersionDrift(id).catch(optional("edition drift", [])),
     getPlanBuildPerformance(id).catch(optional("build performance", [])),
     getPlanPricing(id).catch(
@@ -79,15 +90,18 @@ async function PlanDetailPageContent({ params }: { params: Promise<{ id: string 
     // Report-scoped; a plan.read user without report.read still gets the workbench.
     getCycleTimeReport({ groupBy: "plan" }).catch(optional("cycle time", [])),
     getCurrentUserPermissions(),
+    modelsPromise,
+    // The review sheet says it could not load rather than offering a new review over an open one.
+    getPlanChangeReview(id).then(
+      (review): { review: PlanChangeProposalDto | null; failed: boolean } => ({ review, failed: false }),
+      (error: unknown) => optional("plan change review", { review: null, failed: true })(error),
+    ),
   ])
   if (!plan) notFound()
   const permissions = permissionResult.permissions
   const elevated = permissions.includes("*") || permissions.includes("org.admin")
   // Status only: model geometry is fetched by the panel for the edition on
   // screen, so a plan with four editions does not ship four models.
-  const floorplanModels = await listFloorplanModelStatuses(
-    (plan.versions ?? []).map((version) => version.id),
-  ).catch(optional("floorplan models", new Map<string, FloorplanModelDto>()))
   return (
     <PageLayout
       title={`${plan.code} — ${plan.name}`}
@@ -111,6 +125,8 @@ async function PlanDetailPageContent({ params }: { params: Promise<{ id: string 
         floorplanModels={floorplanModels}
         canWrite={elevated || permissions.includes("plan.write")}
         canRelease={elevated || permissions.includes("plan.release")}
+        changeReview={changeReview}
+        canAdopt={elevated || permissions.includes("plan.adopt")}
       />
     </PageLayout>
   )
@@ -118,7 +134,7 @@ async function PlanDetailPageContent({ params }: { params: Promise<{ id: string 
 
 export default function PlanDetailPage(props: Parameters<typeof PlanDetailPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="Plan details" fullBleed><PageLoadingSkeleton /></PageLayout>}>
       <PlanDetailPageContent {...props} />
     </Suspense>
   )

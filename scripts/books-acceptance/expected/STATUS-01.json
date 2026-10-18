@@ -1,0 +1,241 @@
+{
+  "scenario": "STATUS-01",
+  "reviewedFrom": "Posting-status integrity: a source document reports 'posted' only when its current economic revision is in the ledger; an economic change shows as pending until reprojected and then supersedes the prior entry (reversed, not deleted); a non-economic edit never adds money; a replacement that cannot post leaves the prior monetary history in place and surfaces a finding that leads back to the source; the repair resolves exactly that finding. Amounts are integer cents.",
+  "subcases": {
+    "bill-harmless-edit": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "newDueDate": "2026-08-30"
+      },
+      "derivation": "Changing a due date is not an accounting event: no new journal, no reversal, status current after projection.",
+      "expectedStateAfterProjection": "posted",
+      "expectedNewEntries": 0,
+      "expectedNetDebitCentsByAccount": {
+        "2000": -100000,
+        "5000": 100000
+      }
+    },
+    "bill-economic-edits": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "newBillDate": "2026-07-20"
+      },
+      "derivation": "An approved bill's total is fixed (corrections go through credits), so its economic edits are re-coding and the accounting date: cost code, job, expense account and bill date. Each is pending until reprojected, then the prior entry is reversed and a replacement posted. Final: 1,000 on the second job, second cost code, expense account 5020, dated July 20.",
+      "expectedStateBeforeProjection": "pending",
+      "expectedStateAfterProjection": "posted",
+      "expectedNetDebitCentsByAccount": {
+        "2000": -100000,
+        "5020": 100000
+      },
+      "expectedFinalLine": {
+        "projectIsSecondJob": true,
+        "costCodeIsSecond": true,
+        "cents": 100000,
+        "entryDate": "2026-07-20"
+      },
+      "expectedReversedEntries": 4
+    },
+    "bill-closed-period-replacement-and-repair": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "contractCents": 500000,
+        "eacCents": 400000,
+        "newAccount": "5020"
+      },
+      "derivation": "July is closed. Re-coding the July bill to expense account 5020 must not post into July and must not retire the posted 1,000 in 5000: either the edit is refused, or the bill shows blocked with a finding that names it. Reopening July and reprojecting posts the re-coded bill, resolves the finding and July closes again.",
+      "expectedJulyLedgerWhileClosed": {
+        "2000": -100000,
+        "5000": 100000
+      },
+      "expectedNotPostedWhileClosed": true,
+      "expectedFindingLeadsToSource": true,
+      "expectedStateAfterRepair": "posted",
+      "expectedOpenFindingsAfterRepair": 0,
+      "expectedNetDebitCentsByAccount": {
+        "2000": -100000,
+        "5020": 100000
+      }
+    },
+    "expense-family": {
+      "inputs": {
+        "expenseDate": "2026-07-12",
+        "cents": 50000,
+        "paymentMethod": "check"
+      },
+      "derivation": "A 500 job expense paid from operating cash posts Dr 5000 / Cr 1000 once approved. Re-coding its line to another cost code is pending until reprojected, then supersedes the entry. Rejecting it retires the posting: the entry is reversed, the ledger is empty and the expense reads 'reversed', never 'pending' or 'posted'.",
+      "expectedStateAfterApproval": "posted",
+      "expectedLedgerAfterApproval": {
+        "1000": -50000,
+        "5000": 50000
+      },
+      "expectedStateBeforeRecodeProjection": "pending",
+      "expectedStateAfterRecode": "posted",
+      "expectedStateAfterRejection": "reversed",
+      "expectedNetDebitCentsByAccount": {}
+    },
+    "invoice-view-and-revision": {
+      "inputs": {
+        "issueDate": "2026-07-05",
+        "cents": 100000,
+        "revisedCents": 120000
+      },
+      "derivation": "A client viewing an issued invoice changes nothing economic: no new entries and the status is current after projection. Revising it voids the original (its posting reversed, never deleted) and the reissued replacement posts once at 1,200; the voided original reads 'reversed' (it carries no money), never 'pending' or 'posted'.",
+      "expectedStateAfterView": "posted",
+      "expectedNewEntriesAfterView": 0,
+      "expectedReplacementState": "posted",
+      "expectedNetDebitCentsByAccount": {
+        "1100": 120000,
+        "4900": -120000
+      },
+      "expectedOriginalState": "reversed"
+    },
+    "partial-run-scoped-resolution": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "contractCents": 500000,
+        "eacCents": 400000,
+        "newAccount": "5020"
+      },
+      "derivation": "Two July bills are re-coded while July is closed, so both are blocked with findings. After reopening, a projection run scoped to bill A resolves only bill A's finding; bill B stays blocked and its finding open — a partial run never reports the rest of the company clean. A full run then resolves bill B.",
+      "expectedAfterScopedRun": {
+        "billA": {
+          "state": "posted",
+          "openFindings": 0
+        },
+        "billB": {
+          "state": "blocked",
+          "openFindings": 1
+        }
+      },
+      "expectedAfterFullRun": {
+        "billA": {
+          "state": "posted",
+          "openFindings": 0
+        },
+        "billB": {
+          "state": "posted",
+          "openFindings": 0
+        }
+      }
+    },
+    "dependency-invalidation": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "contractCents": 500000
+      },
+      "derivation": "Using only the incremental (10-minute) projection, every economic input that lives outside the source row invalidates the source: it reads 'pending' as soon as the input changes and is current after one incremental run, with the ledger reflecting the change. Cases: a job-cost line re-coded after its bill posted; the project's billing model; a new contract on the project; a funding-source mapping that cures a failed payment; a chart account named on a bill deactivated; a reopened period retrying the bill its close had blocked.",
+      "expected": {
+        "job-cost-recode": {
+          "before": "pending",
+          "after": "posted",
+          "postedCostCodeIsNew": true
+        },
+        "billing-model": {
+          "before": "pending",
+          "after": "posted"
+        },
+        "new-contract": {
+          "before": "pending",
+          "after": "posted"
+        },
+        "funding-remap": {
+          "failedBeforeMapping": true,
+          "postedToMappedAccount": "1005"
+        },
+        "account-deactivated": {
+          "before": "pending",
+          "afterIsNotStalePosted": true,
+          "historyPreserved": true
+        },
+        "reopen-retries-blocked": {
+          "blocked": "blocked",
+          "afterReopenIncremental": "posted"
+        }
+      }
+    },
+    "access-and-empty": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000
+      },
+      "derivation": "A member with a project role on the first job only (org role org_user, project role pm with bill.read) reads that job's bill and is refused the second job's. The Books reviewer (books.read, no project bill.read) is refused a project bill. A bill with no project is company accounting: the project manager is refused, the Books reviewer and owner read it. With the Arc ledger disabled the service returns no status, so no surface shows a false 'pending'.",
+      "expected": {
+        "project-scope": {
+          "pmOwnProject": "posted",
+          "pmOtherProject": "refused",
+          "booksReviewerOnProjectBill": "refused"
+        },
+        "company-document": {
+          "pm": "refused",
+          "booksReviewer": "posted",
+          "owner": "posted"
+        },
+        "ledger-disabled": {
+          "owner": "none"
+        }
+      }
+    },
+    "posted-source-deletion": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000
+      },
+      "derivation": "An approved bill posts Dr cost / Cr AP on the incremental run. Deleting it is refused by the database guard while that journal is posted, so the bill and its entry remain. Returned to pending, it is still refused until the next incremental run reverses the entry (original 'reversed', reversal posted without a source). Then it deletes, the net of the entry and its reversal is zero, and a full run opens no finding for the missing source. The refused delete leaves the bill's job cost intact (1,000.00 still posted to the project).",
+      "expected": {
+        "posted": {
+          "state": "posted",
+          "delete": "refused: posted",
+          "stillExists": true,
+          "entries": [
+            "posted"
+          ],
+          "jobCostCents": 100000
+        },
+        "before-reversal": {
+          "delete": "refused: posted",
+          "stillExists": true
+        },
+        "after-reversal": {
+          "entries": [
+            "reversed"
+          ],
+          "delete": "deleted",
+          "stillExists": false,
+          "ledgerNet": {},
+          "openFindings": 0
+        }
+      }
+    },
+    "contract-takes-effect": {
+      "inputs": {
+        "issueDate": "2026-07-20",
+        "cents": 100000,
+        "contractCents": 1000000
+      },
+      "derivation": "A residential project invoice of 1,000.00 dated July 20 posts with no contract under percentage of completion: Dr 1100 / Cr 2350, and the job's revenue policy is recorded (inferred). A purchase agreement dated tomorrow is added; the next run leaves the posting unchanged. The day passes with no edit and the first ordinary run afterwards re-reads the job. Revised for B11.1 (2026-10-07): the July invoice was dated before the agreement and keeps the policy it posted under, so it still credits 2350; the register flags that the billing settings now say 'at closing' until a policy change is proposed and approved. (Before B11.1 the run re-posted the July invoice under the October agreement, crediting 4000 — a later change rewriting an earlier result.)",
+      "expected": {
+        "noContract": [
+          "2350"
+        ],
+        "beforeEffective": [
+          "2350"
+        ],
+        "afterEffective": [
+          "2350"
+        ],
+        "status": "posted",
+        "register": {
+          "method": "percentage_of_completion",
+          "source": "inferred",
+          "drift": true,
+          "settingsSay": "closing"
+        }
+      }
+    }
+  }
+}

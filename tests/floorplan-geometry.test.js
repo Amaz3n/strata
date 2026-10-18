@@ -9,6 +9,8 @@ const {
   resolveWalkCollision,
   roomFloorTint,
   wallIsExterior,
+  worldToLevelPoint,
+  placeLevel,
   EYE_HEIGHT_FT,
   FLOOR_ASSEMBLY_FT,
   WALK_RADIUS_FT,
@@ -200,6 +202,24 @@ test("openings grow joinery: trim for all, glass only for windows", () => {
   assert.equal(doorless.glass.indices.length, 0)
 })
 
+test("finish carpentry: baseboards face rooms, stop at doorways, and casings frame openings", () => {
+  const frame = { centerX: 10, centerY: 6, baseY: 0 }
+  assert.equal(buildLevelGeometry(level({ rooms: [], openings: [] }), frame).detail.indices.length, 0, "no rooms, nothing to trim")
+  const bare = buildLevelGeometry(level({ openings: [] }), frame).detail
+  assert.ok(bare.indices.length > 0, "baseboards exist")
+  let top = 0
+  for (let i = 1; i < bare.positions.length; i += 3) top = Math.max(top, bare.positions[i])
+  assert.ok(Math.abs(top - 0.375) < 1e-6, "a 4½-inch base")
+
+  const detail = buildLevelGeometry(level(), frame).detail
+  // The door in w5 (x = 10) runs y 4..7 → world z −2..1. Nothing low sits in that gap.
+  for (let i = 0; i < detail.positions.length; i += 3) {
+    const [x, y, z] = [detail.positions[i], detail.positions[i + 1], detail.positions[i + 2]]
+    if (Math.abs(x) < 0.5 && y < 0.4) assert.ok(z <= -1.95 || z >= 0.95, `baseboard crosses the doorway at z=${z}`)
+  }
+  assert.ok(detail.indices.length > bare.indices.length, "casings and door panels add to the base")
+})
+
 test("floors carry a per-vertex room tint keyed off the label", () => {
   const geometry = buildLevelGeometry(level(), { centerX: 10, centerY: 6, baseY: 0 })
   assert.ok(geometry.floor.colors, "floor mesh has vertex colours")
@@ -291,4 +311,18 @@ test("a level with walls but no traced rooms still builds", () => {
   assert.equal(geometry.floor.indices.length, 0)
   assert.equal(geometry.spawn, null)
   assert.equal(geometry.floorAreaSqft, 0)
+})
+
+test("worldToLevelPoint inverts placement and scene centring", () => {
+  const level = {
+    id: "L1",
+    placement: { xFt: 12, yFt: -4, rotationDeg: 30, elevationFt: 0, assemblyFt: 1, confirmed: true },
+    walls: [],
+    rooms: [],
+    objects: [{ id: "o", kind: "sofa", name: "Sofa", xFt: 7, yFt: 3, widthFt: 7, depthFt: 3, heightFt: 3, elevationFt: 0, rotationDeg: 0, color: "#888888" }],
+  }
+  const placed = placeLevel(level).objects[0]
+  const scene = { centerX: 5, centerY: 9 }
+  const [x, y] = worldToLevelPoint(level, scene, placed.xFt - scene.centerX, placed.yFt - scene.centerY)
+  assert.ok(Math.abs(x - 7) < 1e-9 && Math.abs(y - 3) < 1e-9)
 })

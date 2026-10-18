@@ -1,7 +1,7 @@
 "use client"
 
 import { type CSSProperties, useCallback, useMemo } from "react"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
 import type { Company, Contact, Project } from "@/lib/types"
@@ -102,7 +102,7 @@ export function RfiForm({
       resetForm()
     })()
 
-  const selectedCompanyId = form.watch("assigned_company_id") ?? ""
+  const selectedCompanyId = useWatch({ control: form.control, name: "assigned_company_id" }) ?? ""
 
   const externalContacts = useMemo(
     () =>

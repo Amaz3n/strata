@@ -29,3 +29,31 @@ export function SlotMeter({ target, released, targeted, className }: {
     </span>
   )
 }
+
+/**
+ * The division and org caps on a week, each as `name filled/target`. At the cap
+ * reads as a warning (the next release needs a reason), past it as overloaded.
+ */
+export function ThroughputCaps({ caps, className }: {
+  caps: Array<{ divisionId: string | null; scopeName: string; target: number; filled: number }>
+  className?: string
+}) {
+  if (!caps.length) return null
+  return (
+    <ul className={cn("space-y-0.5", className)} aria-label="Throughput caps">
+      {caps.map((cap) => (
+        <li
+          key={cap.divisionId ?? "org"}
+          className={cn(
+            "flex items-baseline justify-between gap-2 text-[10px] tabular-nums",
+            cap.filled > cap.target ? "text-destructive" : cap.filled === cap.target ? "text-warning" : "text-muted-foreground",
+          )}
+          title={`${cap.filled} released or releasing against the ${cap.scopeName} cap of ${cap.target}`}
+        >
+          <span className="truncate">{cap.scopeName}</span>
+          <span>{cap.filled}/{cap.target}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}

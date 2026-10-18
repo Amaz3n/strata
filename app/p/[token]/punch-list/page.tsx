@@ -1,4 +1,5 @@
-import { notFound } from "next/navigation"
+import { connection } from "next/server"
+import { notFound, unstable_rethrow } from "next/navigation"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { loadPunchItemsAction } from "./actions"
@@ -10,6 +11,7 @@ interface Params {
 
 
 export default async function PunchListPortalPage({ params }: Params) {
+  await connection()
   const { token } = await params
   try {
     await assertPortalActionAccess(token, {
@@ -17,7 +19,8 @@ export default async function PunchListPortalPage({ params }: Params) {
       requireProject: true,
       permission: "can_create_punch_items",
     })
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     notFound()
   }
 

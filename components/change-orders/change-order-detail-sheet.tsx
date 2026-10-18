@@ -1,5 +1,9 @@
 "use client"
 
+import Link from "next/link"
+import { TakeoffLineBadge } from "@/components/takeoff/takeoff-line-badge"
+import { SelectionChangeSummary } from "@/components/change-orders/selection-change-summary"
+import { Ruler } from "lucide-react"
 import { useState, useCallback, useEffect, useRef } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -47,10 +51,10 @@ import {
   type LinkableChangeOrderInvoice,
 } from "@/app/(app)/change-orders/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
-  uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
 
@@ -181,41 +185,47 @@ export function ChangeOrderDetailSheet({
   const [selectedCcoId, setSelectedCcoId] = useState("")
   const [linkingCco, setLinkingCco] = useState(false)
 
-  const loadLinkedInvoices = useCallback(async () => {
-    if (!changeOrder) return
+  const loadLinkedInvoices = useCallback(async (requestSignal?: AbortSignal) => {
+    if (!changeOrder || requestSignal?.aborted) return
     setLinkedInvoicesLoading(true)
     try {
       const invoices = await getChangeOrderLinkedInvoicesAction(changeOrder.id)
+      if (requestSignal?.aborted) return
       setLinkedInvoices((invoices as LinkedInvoice[]) ?? [])
     } catch {
+      if (requestSignal?.aborted) return
       setLinkedInvoices([])
     } finally {
-      setLinkedInvoicesLoading(false)
+      if (!requestSignal?.aborted) setLinkedInvoicesLoading(false)
     }
   }, [changeOrder])
 
-  const loadSubCostLinks = useCallback(async () => {
-    if (!changeOrder) return
+  const loadSubCostLinks = useCallback(async (requestSignal?: AbortSignal) => {
+    if (!changeOrder || requestSignal?.aborted) return
     setSubCostLoading(true)
     try {
       const [links, signal] = await Promise.all([
         listCommitmentChangeOrdersForChangeOrderAction(changeOrder.id),
         getChangeOrderSubCostSignalAction(changeOrder.id),
       ])
+      if (requestSignal?.aborted) return
       setLinkedCommitmentChangeOrders((links as CommitmentChangeOrderSummary[]) ?? [])
       setSubCostSignal(signal as ChangeOrderSubCostSignal)
     } catch {
+      if (requestSignal?.aborted) return
       setLinkedCommitmentChangeOrders([])
       setSubCostSignal(null)
     } finally {
-      setSubCostLoading(false)
+      if (!requestSignal?.aborted) setSubCostLoading(false)
     }
   }, [changeOrder])
 
   useEffect(() => {
     if (open && changeOrder) {
-      void loadLinkedInvoices()
-      void loadSubCostLinks()
+      const controller = new AbortController()
+      void loadLinkedInvoices(controller.signal)
+      void loadSubCostLinks(controller.signal)
+      return () => controller.abort()
     } else if (!open) {
       setLinkedInvoices([])
       setLinkedCommitmentChangeOrders([])
@@ -274,12 +284,13 @@ export function ChangeOrderDetailSheet({
     }
   }
 
-  const loadAttachments = useCallback(async () => {
-    if (!changeOrder) return
+  const loadAttachments = useCallback(async (requestSignal?: AbortSignal) => {
+    if (!changeOrder || requestSignal?.aborted) return
 
     setIsLoadingAttachments(true)
     try {
       const links = await listAttachmentsAction("change_order", changeOrder.id)
+      if (requestSignal?.aborted) return
       setAttachments(
         links.map((link) => ({
           id: link.file.id,
@@ -294,15 +305,17 @@ export function ChangeOrderDetailSheet({
         }))
       )
     } catch (error) {
-      console.error("Failed to load attachments:", error)
+      if (!requestSignal?.aborted) console.error("Failed to load attachments:", error)
     } finally {
-      setIsLoadingAttachments(false)
+      if (!requestSignal?.aborted) setIsLoadingAttachments(false)
     }
   }, [changeOrder])
 
   useEffect(() => {
     if (open && changeOrder) {
-      loadAttachments()
+      const controller = new AbortController()
+      void loadAttachments(controller.signal)
+      return () => controller.abort()
     }
   }, [open, changeOrder, loadAttachments])
 
@@ -696,6 +709,7 @@ export function ChangeOrderDetailSheet({
               </Badge>
             ) : null}
           </div>
+          {changeOrder.status === "draft" && !changeOrder.client_visible && ["draft", "pricing"].includes(changeOrder.lifecycle ?? "draft") && <Button asChild variant="outline" size="sm" className="mt-3"><Link href={`/projects/${changeOrder.project_id}/drawings?destination=change_order&target=${changeOrder.id}&takeoff=1`}><Ruler className="size-3.5" />Measure this change</Link></Button>}
         </SheetHeader>
 
         <ScrollArea className="flex-1 min-h-0">
@@ -729,6 +743,8 @@ export function ChangeOrderDetailSheet({
               </div>
             </div>
           </div>
+
+          <SelectionChangeSummary metadata={metadata} status={changeOrder.status} />
 
           {summaryText && (
             <div className="space-y-2">
@@ -792,6 +808,7 @@ export function ChangeOrderDetailSheet({
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1 space-y-1.5">
                           <p className="text-sm font-medium leading-5">{line.description}</p>
+                          <TakeoffLineBadge metadata={line.metadata} liveQuantity={line.quantity} projectId={changeOrder.project_id} />
                           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                             <span>
                               {line.quantity ?? 1} {line.unit ?? "units"} × {formatMoney(line.unit_cost_cents)}
@@ -1055,6 +1072,7 @@ export function ChangeOrderDetailSheet({
               entityId={changeOrder.id}
               projectId={changeOrder.project_id}
               attachments={attachments}
+              readOnly={isLoadingAttachments}
               onAttach={handleAttach}
               onDetach={handleDetach}
               title="Supporting Documents"
@@ -1356,13 +1374,13 @@ export function ChangeOrderDetailSheet({
           <DialogHeader>
             <DialogTitle>Create commitment change order</DialogTitle>
             <DialogDescription>
-              Select the subcontract or PO that should absorb this {ownerTermLower} change order.
+              Select the subcontract that should absorb this {ownerTermLower} change order.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             {commitmentOptions.length === 0 ? (
               <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                No commitments found for this project.
+                No subcontracts found for this project.
               </p>
             ) : (
               <div className="space-y-2">

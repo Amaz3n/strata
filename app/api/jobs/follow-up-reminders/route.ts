@@ -102,7 +102,7 @@ async function run(request: NextRequest) {
         contactEmail: primary?.email ?? null,
         contactPhone: primary?.phone ?? null,
         jobsite: jobsiteLabel(row.jobsite_location),
-        prospectLink: `${APP_URL}/pipeline`,
+        prospectLink: `${APP_URL}/pipeline/${row.id}`,
         orgName: org?.name ?? null,
         orgLogoUrl: org?.logo_url ?? null,
       }),

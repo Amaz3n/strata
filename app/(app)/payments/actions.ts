@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 
+import { recordCustomerRefund } from "@/lib/services/customer-refunds"
 import { recordMultiInvoicePayment, recordPayment } from "@/lib/services/payments"
 import { receivePaymentInputSchema, recordPaymentInputSchema } from "@/lib/validation/payments"
 import { PROJECT_BILLING_SEGMENT } from "@/lib/financials/invoice-destinations"
@@ -22,6 +23,8 @@ export async function recordPaymentAction(input: unknown) {
     const parsed = recordPaymentInputSchema.parse(input)
     const payment = await recordPayment(parsed)
     revalidatePath("/invoices")
+    revalidatePath("/billing")
+    revalidatePath("/directory", "layout")
     if (payment.project_id) revalidatePath(`/projects/${payment.project_id}/${PROJECT_BILLING_SEGMENT}`)
     return payment
   })
@@ -34,6 +37,18 @@ export async function recordMultiInvoicePaymentAction(input: unknown) {
     revalidatePath("/billing")
     revalidatePath("/billing/receive-payment")
     revalidatePath("/invoices")
+    revalidatePath("/directory", "layout")
+    return result
+  })
+}
+
+export async function recordCustomerRefundAction(input: unknown) {
+  return run(async () => {
+    const result = await recordCustomerRefund(input)
+    revalidatePath("/billing", "layout")
+    revalidatePath("/directory", "layout")
+    revalidatePath("/books", "layout")
+    if (result.projectId) revalidatePath(`/projects/${result.projectId}/${PROJECT_BILLING_SEGMENT}`)
     return result
   })
 }

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import {
@@ -39,6 +40,7 @@ const EMPTY_BID_PORTAL_DATA = {
 }
 
 async function BidPortalPageContent({ params }: BidPortalPageProps) {
+  await connection()
   const { token } = await params
 
   const access = await validateBidPortalToken(token)
@@ -81,7 +83,7 @@ async function BidPortalPageContent({ params }: BidPortalPageProps) {
           token={token}
           tokenType="bid"
           orgName={gateContext?.orgName ?? access.org.name}
-          projectName={gateContext?.projectName ?? access.project.name}
+          projectName={gateContext?.projectName ?? access.job.name}
           initialEmail={gateContext?.expectedEmail ?? ""}
           suggestedFullName={gateContext?.suggestedFullName ?? ""}
           emailLocked={gateContext?.emailLocked}
@@ -106,7 +108,7 @@ async function BidPortalPageContent({ params }: BidPortalPageProps) {
 
 export default function BidPortalPage(props: Parameters<typeof BidPortalPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton title="Bid invitation" />}>
       <BidPortalPageContent {...props} />
     </Suspense>
   )

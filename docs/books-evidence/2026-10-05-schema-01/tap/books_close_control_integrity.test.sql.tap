@@ -1,0 +1,8 @@
+1..7
+ok 1 - begin close freezes the period
+ok 2 - ordinary postings remain frozen
+ok 3 - source label cannot bypass entry kind
+ok 4 - closing date must equal period end
+ok 5 - closing source must identify this period
+ok 6 - year-end journal posts during review through the real RPC
+ok 7 - rejected attempts leave no journals

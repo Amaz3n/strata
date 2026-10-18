@@ -1,3 +1,4 @@
+import type { StatementDimension } from "@/lib/services/books/statements"
 import type { ProjectPosture } from "@/lib/product-tier"
 
 /**
@@ -31,6 +32,7 @@ export interface ReportColumn {
   /** Defaults to "text". Numeric types right-align and get `tabular-nums`. */
   type?: ReportColumnType
   /** Carried in exports but hidden on screen — ids, raw cents behind a formatted twin. */
+  aggregation?: "sum"
   exportOnly?: boolean
   /** Tailwind width/min-width class for the header cell. */
   className?: string
@@ -51,7 +53,24 @@ export type ReportCell =
       tone?: ReportTone
     }
 
+export interface ReportActivity {
+  operatingOnly?: boolean
+  unassignedOnly?: boolean
+  accountId: string
+  code: string
+  name: string
+  projectId?: string | null
+  projectName?: string | null
+  /** One slice of a sliced statement: lines carrying this value, or none when null. */
+  dimension?: { key: StatementDimension; value: string | null; label: string }
+  startDate: string
+  endDate: string
+}
+
 export interface ReportRow {
+  activity?: ReportActivity
+  activities?: Record<string, ReportActivity>
+  children?: ReportRow[]
   key: string
   /**
    * Absent keys are legal and render as "—". Columns are conditional (the
@@ -70,6 +89,9 @@ export interface ReportRow {
 }
 
 export interface ReportTable {
+  chart?: boolean
+  pageBreak?: boolean
+  locked?: boolean
   key: string
   title?: string
   description?: string
@@ -95,6 +117,9 @@ export interface ReportStat {
 }
 
 export interface ReportResult {
+  sources?: { slug: string; projectId?: string }[]
+  commentary?: string
+  provenance?: { source: string; status: string; generatedAt: string; scope: string }
   /** Provenance line under the title — "As of Jul 28, 2026 · 34 projects". */
   subtitle?: string
   stats?: ReportStat[]
@@ -122,6 +147,11 @@ export type ReportParamSpec =
   | { key: string; kind: "period"; label: string }
   | { key: string; kind: "select"; label: string; options: ReportParamOption[] }
   | { key: string; kind: "toggle"; label: string }
+  /** One of the organization's companies, or "" for all of them consolidated. */
+  | { key: string; kind: "legal_entity"; label: string }
+
+/** What the report screen renders: a company choice arrives as a resolved select. */
+export type ClientReportParamSpec = Exclude<ReportParamSpec, { kind: "legal_entity" }>
 
 export type ReportParams = Record<string, string>
 

@@ -27,16 +27,17 @@ struct ProjectRfisView: View {
             } else {
                 if !openRfis.isEmpty {
                     Section("Open (\(openRfis.count))") {
-                        ForEach(openRfis) { rfi in RfiRow(rfi: rfi) }
+                        ForEach(openRfis) { rfi in rfiLink(rfi) }
                     }
                 }
                 if !resolvedRfis.isEmpty {
                     Section("Answered & closed (\(resolvedRfis.count))") {
-                        ForEach(resolvedRfis) { rfi in RfiRow(rfi: rfi) }
+                        ForEach(resolvedRfis) { rfi in rfiLink(rfi) }
                     }
                 }
             }
         }
+        .fieldCreateAction(moduleID: "rfis", projectID: project.id) { await load(force: true) }
         .navigationTitle("RFIs")
         .navigationBarTitleDisplayMode(.inline)
         .projectSwitcherPullOrRefresh { await load(force: true) }
@@ -46,6 +47,12 @@ struct ProjectRfisView: View {
     private func load(force: Bool) async {
         guard let organizationID else { return }
         await store.loadRfis(projectID: project.id, organizationID: organizationID, force: force)
+    }
+
+    private func rfiLink(_ rfi: MobileRfi) -> some View {
+        NavigationLink {
+            FieldWorkspaceRecordView(moduleID: "rfis", projectID: project.id, recordID: rfi.id, title: rfi.subject)
+        } label: { RfiRow(rfi: rfi) }
     }
 }
 

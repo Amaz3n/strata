@@ -13,6 +13,14 @@ import {
   updatePlanVersion,
   upsertElevation,
 } from "@/lib/services/house-plans"
+import { listProductDefinitionHistory } from "@/lib/services/home-product-revisions"
+import { getProductChangeImpact } from "@/lib/services/product-change-impact"
+import {
+  createPlanChangeProposal,
+  decidePlanChangeHome,
+  submitPlanChangeProposal,
+  withdrawPlanChangeProposal,
+} from "@/lib/services/plan-change-proposals"
 import {
   elevationInputSchema,
   housePlanInputSchema,
@@ -20,6 +28,7 @@ import {
   planVersionInputSchema,
   takeoffLineInputSchema,
 } from "@/lib/validation/house-plans"
+import { createPlanChangeProposalSchema, decidePlanChangeHomeSchema } from "@/lib/validation/plan-change-proposals"
 
 async function run<T>(operation: () => Promise<T>, paths: string[]): Promise<ActionResult<T>> {
   try {
@@ -43,6 +52,15 @@ export async function upsertElevationAction(planId: string, input: unknown) {
   return run(() => upsertElevation(z.string().uuid().parse(planId), elevationInputSchema.parse(input)), [`/plans/${planId}`])
 }
 
+/** Which homes an edit to this elevation reaches, read before it is saved. */
+export async function getElevationChangeImpactAction(elevationId: string) {
+  return run(() => getProductChangeImpact({ entity: "elevation", id: z.string().uuid().parse(elevationId) }), [])
+}
+
+export async function listElevationRevisionsAction(elevationId: string) {
+  return run(() => listProductDefinitionHistory({ entityType: "house_plan_elevation", entityId: z.string().uuid().parse(elevationId) }), [])
+}
+
 export async function createPlanVersionAction(planId: string, input: unknown) {
   const parsed = z.object({ copyFromVersionId: z.string().uuid().optional().nullable(), label: z.string().trim().max(160).optional().nullable() }).parse(input)
   return run(() => createPlanVersion(z.string().uuid().parse(planId), parsed), [`/plans/${planId}`])
@@ -61,3 +79,19 @@ export async function releasePlanVersionAction(planId: string, versionId: string
   return run(() => releasePlanVersion(z.string().uuid().parse(versionId)), ["/plans", `/plans/${planId}`])
 }
 
+
+export async function createPlanChangeProposalAction(planId: string, input: unknown) {
+  return run(() => createPlanChangeProposal(createPlanChangeProposalSchema.parse({ ...z.object({}).passthrough().parse(input), planId })), [`/plans/${planId}`])
+}
+
+export async function submitPlanChangeProposalAction(planId: string, proposalId: string) {
+  return run(() => submitPlanChangeProposal(z.string().uuid().parse(proposalId)), [`/plans/${planId}`])
+}
+
+export async function withdrawPlanChangeProposalAction(planId: string, proposalId: string) {
+  return run(() => withdrawPlanChangeProposal(z.string().uuid().parse(proposalId)), [`/plans/${planId}`])
+}
+
+export async function decidePlanChangeHomeAction(planId: string, input: unknown) {
+  return run(() => decidePlanChangeHome(decidePlanChangeHomeSchema.parse(input)), [`/plans/${planId}`])
+}

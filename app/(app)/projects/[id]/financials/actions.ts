@@ -78,7 +78,6 @@ import type {
 import { requireOrgContext } from "@/lib/services/context"
 import { loadPayablePaymentDecorations } from "@/lib/services/org-payables"
 import { listBudgetTransfers } from "@/lib/services/budget-transfers"
-import { generatePurchaseOrders, listGenerationRuns, listPoExceptions } from "@/lib/services/po-generation"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -716,23 +715,6 @@ export async function fetchBudgetBucketCommitmentsAction(
         })
         .filter((commitment) => commitment.allocated_cents > 0)
         .sort((a, b) => (b.allocated_cents ?? 0) - (a.allocated_cents ?? 0))
-}
-
-export async function generateProjectPurchaseOrdersAction(projectId: string, mode: "dry_run" | "commit") {
-  return run(async () => {
-    const result = await generatePurchaseOrders({ projectId, mode })
-    revalidatePath(`/projects/${projectId}/financials`)
-    revalidatePath(`/projects/${projectId}/financials/budget`)
-    revalidatePath("/purchasing")
-    return result
-  })
-}
-
-export async function loadProjectPoGenerationAction(projectId: string) {
-  return run(async () => {
-    const [runs, exceptions] = await Promise.all([listGenerationRuns(projectId), listPoExceptions({ projectId, status: "open", pageSize: 1 })])
-    return { lastRun: runs[0] ?? null, openExceptions: exceptions.count }
-  })
 }
 
 export async function fetchSovBudgetEvidenceAction(projectId: string) {

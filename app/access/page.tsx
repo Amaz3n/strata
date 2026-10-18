@@ -1,5 +1,7 @@
 import Link from "next/link"
 import { redirect } from "next/navigation"
+import { connection } from "next/server"
+import { Suspense } from "react"
 
 import { ExternalPortalSignOutButton } from "@/components/portal/external-portal-sign-out-button"
 import { Button } from "@/components/ui/button"
@@ -9,11 +11,7 @@ export const metadata = {
   robots: { index: false, follow: false },
 }
 
-// This router requires an external-account session and immediately redirects
-// to that user's latest portal. Validate it in dev with the real session.
-export const instant = {
-  unstable_disableBuildValidation: true,
-}
+export const instant = true
 
 /**
  * The one stable, token-free URL for external accounts: the bookmark target, the
@@ -21,7 +19,8 @@ export const instant = {
  * shell's own switcher is the only place anyone chooses between workspaces, so a
  * second full-page chooser here was just a screen to click through.
  */
-export default async function ExternalAccessPage() {
+async function ExternalAccessContent() {
+  await connection()
   const workspace = await getExternalPortalWorkspaceContext()
 
   if (!workspace) {
@@ -57,5 +56,20 @@ export default async function ExternalAccessPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function ExternalAccessPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10" aria-busy="true">
+        <div className="w-full max-w-md space-y-2 border border-border bg-card p-6 sm:p-8">
+          <h1 className="text-xl font-semibold tracking-tight">Opening your workspace</h1>
+          <p role="status" className="text-sm leading-6 text-muted-foreground">Checking your account access…</p>
+        </div>
+      </div>
+    }>
+      <ExternalAccessContent />
+    </Suspense>
   )
 }

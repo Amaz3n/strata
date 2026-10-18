@@ -5,9 +5,11 @@ import { after } from "next/server"
 
 import {
   hasPendingDrawingJobs,
+  recoverDrawingJobs,
   runDrawingsPipeline,
 } from "@/lib/services/drawings-pipeline"
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
+import { queueDrawingStorageReconciliation } from "@/lib/services/drawing-storage-cleanup"
 import { DRAWING_LANES, parseDrawingLane } from "@/lib/drawings/processing-lanes"
 import { withCronRun } from "@/lib/services/job-runs"
 
@@ -21,6 +23,9 @@ async function handle(request: NextRequest) {
   const rawLane = request.nextUrl.searchParams.get("lane")
   const lane = parseDrawingLane(rawLane)
   if (rawLane && !lane) return NextResponse.json({ error: "Invalid lane" }, { status: 400 })
+  await recoverDrawingJobs()
+  // Lane kicks arrive in bursts; reconcile storage once per unscoped (cron/app) entry.
+  if (!lane) await queueDrawingStorageReconciliation()
   const pending = await hasPendingDrawingJobs(lane)
   if (!pending) {
     return NextResponse.json({ ok: true, message: "No pending drawing jobs" })

@@ -63,7 +63,11 @@ const money = (cents: number) =>
 
 /** Rates are shown to the cent — $4.05/SF, not $4/SF. */
 const rate = (cents: number) =>
-  (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 })
+  (cents / 100).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+  })
 
 export interface ConditionEditorDialogProps {
   open: boolean
@@ -219,7 +223,9 @@ export function ConditionEditorDialog({
           )
         : unwrapAction(await createTakeoffConditionAction({ ...scope, ...payload, uom }))
 
-      toast.success(isEdit ? "Condition updated" : `"${saved.name}" ready — measure it on the sheet`)
+      toast.success(
+        isEdit ? "Condition updated" : `"${saved.name}" ready — measure it on the sheet`,
+      )
       onSaved(saved)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to save condition")
@@ -246,11 +252,11 @@ export function ConditionEditorDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{isEdit ? "Edit condition" : "New condition"}</DialogTitle>
+          <DialogTitle>{isEdit ? "Edit takeoff item" : "New takeoff item"}</DialogTitle>
           <DialogDescription>
             {isEdit
               ? "The unit can't change — measurements already belong to it. Depths, heights and pitches can."
-              : "Name what you price, pick what it reports, then trace it on the sheet."}
+              : "Name what you are measuring and choose its unit. You can add pricing details now or later."}
           </DialogDescription>
         </DialogHeader>
 
@@ -282,9 +288,7 @@ export function ConditionEditorDialog({
                 </Button>
               ))}
             </div>
-            <p className="text-xs text-muted-foreground">
-              {CONDITION_UOM_DESCRIPTIONS[uom]}
-            </p>
+            <p className="text-xs text-muted-foreground">{CONDITION_UOM_DESCRIPTIONS[uom]}</p>
           </div>
 
           <FactorFields
@@ -330,86 +334,92 @@ export function ConditionEditorDialog({
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label>Cost code</Label>
-            <CostCodePicker
-              costCodes={costCodes}
-              selected={selectedCode}
-              onSelect={(code) => {
-                setCostCodeId(code?.id ?? null)
-                // Adopting a code's default is a courtesy, not an override:
-                // only fill an empty rate field.
-                if (code?.default_unit_cost_cents && rateDollars.trim() === "") {
-                  setRateDollars((code.default_unit_cost_cents / 100).toFixed(2))
-                }
-              }}
-            />
-          </div>
+          <details open={isEdit} className="border-t pt-3">
+            <summary className="cursor-pointer text-sm font-medium">
+              Pricing, waste & sharing{" "}
+              <span className="ml-1 text-xs font-normal text-muted-foreground">Optional</span>
+            </summary>
+            <div className="mt-4 space-y-4">
+              <div className="space-y-1.5">
+                <Label>Cost code</Label>
+                <CostCodePicker
+                  costCodes={costCodes}
+                  selected={selectedCode}
+                  onSelect={(code) => {
+                    setCostCodeId(code?.id ?? null)
+                    // Adopting a code's default is a courtesy, not an override:
+                    // only fill an empty rate field.
+                    if (code?.default_unit_cost_cents && rateDollars.trim() === "") {
+                      setRateDollars((code.default_unit_cost_cents / 100).toFixed(2))
+                    }
+                  }}
+                />
+              </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="condition-rate">
-                Rate per {MEASURE_UOM_LABELS[uom]}
-              </Label>
-              <Input
-                id="condition-rate"
-                value={rateDollars}
-                onChange={(event) => setRateDollars(event.target.value)}
-                placeholder={
-                  selectedCode?.default_unit_cost_cents
-                    ? (selectedCode.default_unit_cost_cents / 100).toFixed(2)
-                    : "0.00"
-                }
-                inputMode="decimal"
-                className="tabular-nums"
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="condition-rate">Rate per {MEASURE_UOM_LABELS[uom]}</Label>
+                  <Input
+                    id="condition-rate"
+                    value={rateDollars}
+                    onChange={(event) => setRateDollars(event.target.value)}
+                    placeholder={
+                      selectedCode?.default_unit_cost_cents
+                        ? (selectedCode.default_unit_cost_cents / 100).toFixed(2)
+                        : "0.00"
+                    }
+                    inputMode="decimal"
+                    className="tabular-nums"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="condition-waste">Waste %</Label>
+                  <Input
+                    id="condition-waste"
+                    value={wastePct}
+                    onChange={(event) => setWastePct(event.target.value)}
+                    inputMode="decimal"
+                    className="tabular-nums"
+                  />
+                </div>
+              </div>
+
+              <RateSuggestion
+                history={history}
+                loading={historyLoading}
+                uom={uom}
+                onAccept={(cents) => setRateDollars((cents / 100).toFixed(2))}
               />
+
+              <div className="flex items-start justify-between gap-4 border-t pt-4">
+                <div>
+                  <Label htmlFor="condition-share" className="text-sm">
+                    Show on the client estimate
+                  </Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Lets the client tap the estimate line and see this geometry on the plan.
+                  </p>
+                </div>
+                <Switch
+                  id="condition-share"
+                  checked={shareWithClients}
+                  onCheckedChange={setShareWithClients}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="condition-notes">Notes</Label>
+                <Textarea
+                  id="condition-notes"
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  rows={2}
+                  placeholder="Assumptions, exclusions, who to call"
+                />
+              </div>
             </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="condition-waste">Waste %</Label>
-              <Input
-                id="condition-waste"
-                value={wastePct}
-                onChange={(event) => setWastePct(event.target.value)}
-                inputMode="decimal"
-                className="tabular-nums"
-              />
-            </div>
-          </div>
-
-          <RateSuggestion
-            history={history}
-            loading={historyLoading}
-            uom={uom}
-            onAccept={(cents) => setRateDollars((cents / 100).toFixed(2))}
-          />
-
-          <div className="flex items-start justify-between gap-4 border-t pt-4">
-            <div>
-              <Label htmlFor="condition-share" className="text-sm">
-                Show on the client estimate
-              </Label>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                Lets the client tap the estimate line and see this geometry on the plan.
-              </p>
-            </div>
-            <Switch
-              id="condition-share"
-              checked={shareWithClients}
-              onCheckedChange={setShareWithClients}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="condition-notes">Notes</Label>
-            <Textarea
-              id="condition-notes"
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              rows={2}
-              placeholder="Assumptions, exclusions, who to call"
-            />
-          </div>
+          </details>
         </div>
 
         <DialogFooter>
@@ -418,7 +428,7 @@ export function ConditionEditorDialog({
           </Button>
           <Button onClick={() => void handleSave()} disabled={saving}>
             {saving && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
-            {isEdit ? "Save" : "Create condition"}
+            {isEdit ? "Save" : "Create item"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -595,14 +605,16 @@ function RateSuggestion({
               {rate(history.p25_cents ?? history.median_cents)}–
               {rate(history.p75_cents ?? history.median_cents)}
             </span>{" "}
-            per {history.unit?.toUpperCase() ?? MEASURE_UOM_LABELS[uom]} across {history.sample_count}{" "}
-            record{history.sample_count === 1 ? "" : "s"}
-            {lastDate ? ` · last ${new Date(lastDate).toLocaleDateString("en-US", { month: "short", year: "numeric" })}` : ""}
+            per {history.unit?.toUpperCase() ?? MEASURE_UOM_LABELS[uom]} across{" "}
+            {history.sample_count} record{history.sample_count === 1 ? "" : "s"}
+            {lastDate
+              ? ` · last ${new Date(lastDate).toLocaleDateString("en-US", { month: "short", year: "numeric" })}`
+              : ""}
           </p>
           {unitMismatch && (
             <p className="mt-1 text-[11px] text-warning">
-              Those records are priced per {history.unit?.toUpperCase()} — this condition measures in{" "}
-              {MEASURE_UOM_LABELS[uom]}.
+              Those records are priced per {history.unit?.toUpperCase()} — this condition measures
+              in {MEASURE_UOM_LABELS[uom]}.
             </p>
           )}
         </div>

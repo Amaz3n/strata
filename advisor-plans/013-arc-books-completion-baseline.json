@@ -1,0 +1,88 @@
+{
+  "recorded_at": "2026-10-04T14:08:54.655127+00:00",
+  "commit": "9f1549af",
+  "includes_uncommitted_workspace": true,
+  "planning_scope": "Scoped requirements and completion-plan reconciliation; no implementation acceptance run",
+  "sources": [
+    {
+      "path": "docs/books-implementation-progress.json",
+      "sha256": "96afab1066ef90bd43645fb9a04fa66d4a26dcec151eae6e5b99d0ed9b161fb2"
+    },
+    {
+      "path": "docs/books-full-schema-acceptance.json",
+      "sha256": "da67be3eb4907e587da17caf7b2f158474bd244b5fc06e4698340eeb29a90fb6"
+    },
+    {
+      "path": "docs/books-restore-runbook.json",
+      "sha256": "d52e36e49cc74571902e0fe06d3cc382f9fb9704b93fd1b31d207d18df1899e4"
+    },
+    {
+      "path": "docs/books-cash-report-policy.json",
+      "sha256": "26dd77d7fbb67e538991ca365edcce14b3a8ab10522278a19786ce7a38cb23cb"
+    },
+    {
+      "path": "docs/books-revenue-recognition.md",
+      "sha256": "9db81d8f1d34b6a09c285f500d368a895dc44492ac8560ca13b5cbe70083bba1"
+    },
+    {
+      "path": "docs/plans/arc-books-sole-ledger-release.md",
+      "sha256": "3e72f35870d685ea9a1981326146f5819d33117a7e04e802929cdc5fea2da482"
+    },
+    {
+      "path": "docs/plans/arc-books-gameplan.md",
+      "sha256": "be2077bfbc50be69d976ab7eaf95ccaa5522e402b435987b9cb42e229db9655b"
+    },
+    {
+      "path": "docs/plans/arc-books-ten-gameplan.md",
+      "sha256": "a968cc2e806cfe2219817a16d3e292554692fae6c5ddb1256c29ea940e9021f6"
+    },
+    {
+      "path": "advisor-plans/001-arc-books-qbo-independence.md",
+      "sha256": "60be5ec834641e15eaf37ce2735033206d121bfa7955038101538fda32caacc8"
+    },
+    {
+      "path": "lib/services/books/dimensions.ts",
+      "sha256": "650efb6af79df578f370c9b177e2922f608e996ebb2fb659b8c773b354b0a028"
+    },
+    {
+      "path": "lib/services/books/revenue-basis.ts",
+      "sha256": "6f8877fff1b0d33a8c1ef18397fb1f1ae8a3270ab849cc57337d1f046297da65"
+    },
+    {
+      "path": "lib/services/books/revenue-recognition.ts",
+      "sha256": "5f8d78b34ecbf5bf7812a804e3e69fe1a40816e377cf978bd2b1887f23e6317c"
+    },
+    {
+      "path": "lib/services/books/period-close.ts",
+      "sha256": "46ab174b28cec208101e6864080bdaf3b38f6ab2ae090cc3da831c4a245f6853"
+    },
+    {
+      "path": "lib/services/books/exports.ts",
+      "sha256": "07b1a9e048ed44a32d3d14d1e19afd27e6e45d9fca1a26b48f6afa9582aa43de"
+    },
+    {
+      "path": "lib/services/books/payroll-payment-reviews.ts",
+      "sha256": "2dd5753cb287f9e29757e82cee5c549267436697b3c17a1a64a35bcff5fd08ed"
+    },
+    {
+      "path": "lib/services/books/payroll-payment-workspace.ts",
+      "sha256": "50dfd37a0e194b95fe3ab2cbdc098807621bad8da750a0439b8991289bcc7706"
+    },
+    {
+      "path": "supabase/migrations/20261004082928_books_payroll_payment_workspace.sql",
+      "sha256": "17e2e6acc90e20e8b0bba9fa1fdf28aa08a694bdfc1fdbb0cab321c9d4bdeaf5"
+    },
+    {
+      "path": "components/time/payroll-payment-attribution.tsx",
+      "sha256": "7035345fa95ba590d08c221ccfd819a189e5ec0ca444fa58f957fed1c5a7e849"
+    },
+    {
+      "path": "app/(app)/projects/[id]/time/payroll/actions.ts",
+      "sha256": "e1580d60c27feb8da28363801e191303a2790fb343d67b34627017f23bf53d1d"
+    },
+    {
+      "path": "package.json",
+      "sha256": "1cd861b034cae24a0f7aa005eceade6609e45e81ae8f84ea33f8639f4cf21c32"
+    }
+  ]
+}

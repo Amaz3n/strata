@@ -17,9 +17,8 @@ reporting on the accrual basis, and mark up anything that is wrong, missing, or
 presented incorrectly. §6 lists three questions where we already believe review is
 needed — please do not treat that list as exhaustive.
 
-**Scope of the first release:** accrual basis, single entity, USD. Payroll tax filing,
-inventory, consolidation, and multi-currency are out of scope. Cash-basis statements are
-a known gap (most small builders file cash-basis) and are tracked separately.
+**Scope of the first release:** accrual basis with a cash-basis P&L (§4j), USD.
+Payroll tax filing and multi-currency are out of scope.
 
 ## 2. Two revenue bases, chosen per project
 
@@ -34,6 +33,38 @@ runs both.
 The choke point is `resolveRevenueRecognitionBasis()`. A closing-basis project never
 receives a percentage-of-completion entry.
 
+### Revenue policies are records (B11.1)
+
+Which method a job earns under is a dated record in `books_revenue_policies`,
+read through `loadRevenuePolicyResolver()` (`lib/services/books/revenue-basis.ts`)
+and `policyInForce()` (`lib/financials/revenue-policy.ts`), never the billing
+settings as they are today:
+
+- **Billing method and recognition method are separate.** Fixed price, time and
+  materials, and all three cost-plus models earn over time (cost to cost); a home
+  sold under a purchase agreement earns at closing; an invoice with no project (a
+  standalone service) earns when invoiced (`DEFAULT_REVENUE_METHOD`).
+- **Inferred, then recorded.** The first time a job posts, Arc records the method
+  its billing settings imply as an `inferred` policy "from the start". From then
+  on the record decides; changing the billing settings later is flagged on
+  Books → Revenue policies ("billing settings now say …") and changes nothing.
+- **Governed change.** A different method is proposed (books.manage) with an
+  effective date and rationale, and approved by someone else (books.close).
+  Documents dated before the effective date keep the policy they were posted
+  under, and a change dated into a closed month must confirm that month's method
+  (reopen it otherwise). Policies are never edited or deleted; an approved one is
+  recorded on each document it governs (`revenue_policy_id`).
+- **Precedence on a date:** an approved policy for the contract, then for the
+  project, then the inferred baseline for the contract, then for the project.
+- **Contracts that earn differently** on one job (a construction contract and a
+  lot sale) are allowed only when each contract's policy is approved; until then
+  their documents are findings with that cure. Each invoice then earns under the
+  policy of the contract it bills, and only over-time contracts have WIP.
+- **Superseded contracts stay reconstructible**: the recorded policy outlives the
+  contract. A job with no record whose only evidence for a date is a superseded
+  contract is a finding until a policy is attributed and approved.
+- The close reports jobs still on an unreviewed inferred policy (non-blocking).
+
 ## 3. Accounts used
 
 | Code | Name | Type |
@@ -42,7 +73,11 @@ receives a percentage-of-completion entry.
 | 1100 | Accounts receivable | Asset |
 | 1110 | Retainage receivable | Asset |
 | 1150 | Contract assets | Asset — **seeded, never posted (see §6b)** |
-| 1160 | Work in progress | Asset — **seeded, never posted (see §6a)** |
+| 1120 | Owned land | Asset — owned homes only (§4d) |
+| 1160 | Work in progress | Asset — owned homes only (§4d); contract jobs never post here (§6a) |
+| 1170 | Completed homes held for sale | Asset — owned homes only (§4d) |
+| 2260 | Warranty reserve | Liability — owned homes only (§4d) |
+| 2300 | Customer deposits | Liability |
 | 2000 | Accounts payable | Liability |
 | 2010 | Retainage payable | Liability |
 | 2350 | Contract liabilities | Liability |
@@ -64,6 +99,29 @@ Dr  5000  Job costs                     X
 Job cost is taken from the `job_cost_entries` subledger at **line** grain, not from the
 bill header, so a bill split across projects posts to each.
 
+**Shared cost (B11.4).** Equipment, overhead, insurance and supervision cost that
+was booked to a company expense account with no job is a *pool*. It reaches jobs only
+through a reviewed allocation (Books → Cost allocations): the preparer states the
+pool, the basis (equal, labor hours, direct cost, equipment hours or a custom
+schedule) and each job's weight, optionally keeping a share as company overhead;
+Arc splits the total to the cent (largest remainder) and a different member approves
+it. Approval posts one entry and one job-cost row per destination line:
+
+```
+Dr  5000  Job costs (per job; 1160/1170 for a home the builder owns)   share
+    Cr  6xxx  Pool expense account (no job)                                  Σ shares
+```
+
+An allocation can move no more than the pool holds on its date, so the same
+depreciation or premium cannot be allocated twice, and cost already charged to a job
+(time entries, bills, payroll) is never in a pool. A reallocation reverses the
+original exactly and posts the new split in one step; the original entry, its
+reversal, the negative job-cost rows and the new rows all stay. Because the rows sit
+in `job_cost_entries`, job cost, budget-versus-actual (by the chosen cost code) and
+WIP cost to date include the allocation. Allocated cost is not billable to a
+cost-plus client. Cash-basis statements show the cost once, when paid, under its
+original account; an allocation moves no cash and is set aside there.
+
 ### 4b. The customer is billed — invoice
 Gross billing $B with retainage $R withheld. **Billing is not revenue.**
 
@@ -72,6 +130,15 @@ Dr  1100  Accounts receivable           B − R
 Dr  1110  Retainage receivable          R
     Cr  2350  Contract liabilities            B
 ```
+
+**Credits, write-offs and voids (B02.2).** A credit memo reverses what its invoice
+posted: on a job, contract liabilities; on an invoice earned when issued, the
+invoice's own income accounts in proportion to its lines (even an account since
+retired from the chart), plus any tax it credits. A write-off is Dr 6090 Bad debt
+expense / Cr 1100 and leaves income and tax alone. Neither may exceed what is still
+owed, and neither may be dated, or voided, in a closed month: the cure is to date it
+in an open month or reopen the month. A void reverses the whole invoice on its own
+date and is refused once anything is received on it (credit or refund instead).
 
 ### 4c. Revenue is earned — percentage of completion
 Run at period close for every percentage-of-completion project.
@@ -96,6 +163,84 @@ After this entry, the 2350 balance for a project is `billings − earned`:
 a **credit** balance is billings in excess of earned revenue; a **debit** balance is
 costs and earnings in excess of billings. See §6b.
 
+#### Per contract (B04.1)
+
+A project with **two or more primary contracts in force** at a period end has one
+WIP position per contract, never one netted position for the job: one contract's
+profit must not hide another's loss. Each contract's position uses only its own
+costs, billings and estimate:
+
+- **Costs** belong to a contract when their cost code is on that contract's
+  schedule of values and no other's. A cost code on several contracts' schedules,
+  or on none, belongs to a contract only through a reviewed split
+  (`books_wip_cost_allocations`, append-only, shares in basis points; cents are
+  divided by cumulative rounding so the shares add back exactly).
+- **Billings** belong to the contract the invoice bills (its pay application,
+  draw, or a one-time assignment).
+- Anything without an owner blocks preparing the contracts it could belong to,
+  with the cure named; other contracts and projects are unaffected.
+
+Recognition, the 2350 debit and the expected-loss provision carry `contract_id`,
+the posting key names the contract, and the loss reserve is computed and held per
+contract. A project with one contract (or none) keeps one project position,
+unchanged. "In force" means signed (not draft or superseded), not an amendment of
+another contract, and effective by the period end — never the first row returned.
+Revenue a project recognized before it had a second contract belongs to no
+contract; recognition then refuses rather than counting it twice.
+
+**Presentation.** Invoices and credit memos on a job with several contracts carry
+the contract they bill, so every 2350 line of that job names its contract. The
+balance sheet nets 2350 within each contract only and presents debit nets as
+1150 contract assets and credit nets as 2350 contract liabilities; the ledger
+itself keeps one 2350 control account. The WIP schedule has a row per contract
+with billings in excess (liability) and costs in excess (asset) as separate
+columns, and its totals are the balance sheet's contract assets and liabilities,
+the revenue in 4000 and the loss reserve in 2360. The schedule saved at close is
+the one the report shows for that date. The WIP review shows who approved, when
+and why, and which positions changed since.
+
+**Expected contract loss (B12.1).** Each contract (or the project, with one) carries
+a reserve in 2360 equal to the reviewed expected loss (estimate at completion − contract
+value) less the part of that loss already in its margin (cost to date − revenue
+earned). The provision posts at close against the reviewed period-end WIP position
+as the difference from the ledger balance, so a retry or a re-close posts nothing
+twice; a recovering forecast releases only what is no longer needed, and completion
+leaves no reserve. One contract's profit never offsets another's loss. A project
+holding capitalized cost (an owned home) takes no provision: its loss is recognized
+through impairment instead, so it is recognized once.
+
+#### Cost-driven jobs (B11.2)
+
+Time-and-materials and cost-plus jobs bill their costs (with markup or fee) but
+earn by percentage of completion like any construction contract, so their
+billing is never revenue twice:
+
+- An invoice built from costs (`generateInvoiceFromCosts`) is deferred billing:
+  Dr 1100 / Cr 2350, exactly as §4b.
+- Earned revenue is cost to cost against the **expected total billable** (the
+  transaction price): for a cost-plus job, estimated cost plus markup and fee.
+  The WIP preparer enters it as the contract value. When the job is complete,
+  revenue equals what was billed and 2350 nets to zero.
+- **Billed costs are never rewritten.** A billed `billable_costs` row cannot
+  change or be deleted (`billable_costs_billed_fence`). When its source changes
+  (the vendor bill is returned to pending or re-coded) it is credited exactly
+  once (`credit_billed_cost`) with an explicit decision: credit the customer on
+  the next invoice (default) or absorb it, with who decided and why
+  (`decide_billable_correction`). The credit reverses exactly the billed markup.
+  The credited original frees its source, so the corrected cost bills again.
+  Voiding an invoice whose cost was already credited withdraws the unbilled credit,
+  and is refused when that credit is on another invoice.
+- **GMP:** the contract sum is cost plus fee, not to exceed the GMP (revised by
+  approved change orders). Billing past it is refused unless overridden, and the
+  override is recorded. At completion, savings are the GMP less everything billed
+  within it (inside-GMP costs with their markup, and earned fixed fee), so
+  settlement refuses while any inside-GMP cost is unbilled. The builder's share
+  is billed as one invoice. The owner's share needs none, because cost-plus never
+  billed it, and it is recorded on the contract. Settlement claims itself before
+  creating anything, so it happens once even when requested twice.
+- Payroll corrections keep billed T&M rates; other jobs stop for a billing
+  review (payroll is not in the first release).
+
 ### 4d. Revenue is earned — closing basis
 A production spec home books revenue at the sale, with no percentage-of-completion:
 
@@ -103,6 +248,58 @@ A production spec home books revenue at the sale, with no percentage-of-completi
 Dr  1100  Accounts receivable           B
     Cr  4000  Construction revenue            B
 ```
+
+**A home the builder owns (B11.3).** Once a project adopts inventory accounting its
+costs are an asset until the sale, not job cost:
+
+- **Land.** A lot bought for a community debits 1120 at its cost, lot by lot. Shared
+  development cost reaches lots only through a *reviewed allocation*: the preparer
+  states the basis (equal, front footage, square footage, sales value or a custom
+  schedule) and each lot's weight; Arc splits the total to the cent (largest
+  remainder) and a different member approves it before it posts. When the house
+  starts, the lot's basis moves from 1120 into the home's 1160.
+- **Construction.** Bills, expenses and labor on the home debit 1160 until
+  completion, then 1170. Eligible interest actually incurred is capitalized from
+  6060 into the home.
+- **One sale document.** Under the closing method an invoice is a sale document and
+  is earned when issued. The closing invoice bills the home's whole price, so
+  settlement is refused while an ordinary invoice on that home stands uncredited;
+  money taken before closing is collected as a deposit.
+- **Sale.** Settlement applies only that home's deposits (each at what is still
+  available: received, less refunds, less any earlier application), books the
+  revenue above, and relieves inventory to 5000 **by component** — land and
+  development, capitalized interest, construction — one cost-of-sales line each,
+  so a sold home reconciles to where its cost came from.
+- **Costs after the sale.** A cost dated on or before the sale that arrives later
+  is relieved on the sale date while that month is open. A cost dated into a
+  closed sale month cannot post (it waits as a closed-period finding, and the
+  closed month is never rewritten); if one is posted while the month is reopened
+  and the month closes before relief runs, it is relieved on the date it is found
+  and labeled `late_closed_home_cost`. A cost dated after the sale is the sold
+  home's period cost: it posts to cost of sales and is labeled `closed_home_cost`.
+- **Warranty.** The approved reserve estimate is provided at closing
+  (Dr 5050 / Cr 2260). An approved warranty visit consumes it: Dr 2260 and credit
+  the account the repair cost was booked to, so cost of sales is not overstated.
+- **Controls.** Three blocking close controls tie to the ledger: 1120 equals each
+  lot held as land at its recorded basis; 1170 equals the homes completed and not
+  yet sold (with each home's age); 2260 consumption equals the reserve consumed on
+  approved visits.
+- **Impairment (B12.2).** A home worth less than it cost is written down to net
+  realizable value (expected price − cost to complete − cost to sell), inventory
+  under ASC 330. One member prepares the review with its assumptions and evidence,
+  another approves it, and it posts Dr 5070 Inventory impairment / Cr 1160 or 1170.
+  A review prepared before the home's cost changed is refused. The write-down is the
+  home's new cost and is never written back up; a later review only writes down
+  further. At the sale it is its own (negative) cost-of-sales component, so cost of
+  sales plus write-downs is exactly what the home cost. A blocking close control ties
+  5070 (before year-end close) to the approved reviews. 5070 uses the `job_costs`
+  subtype until the next chart policy version adds a dedicated one.
+- **Reversal.** A recorded closing is reversed, not edited: the wire is refunded,
+  each deposit application is reversed (Dr 1100 / Cr 2300, the deposit back to the
+  buyer's liability), the sale is credited in full, each relieved component
+  returns to inventory, the remaining warranty provision is withdrawn and the lot
+  returns to started. The closing stays on record as cancelled with who reversed
+  it and why.
 
 ### 4e. Cash is collected
 ```
@@ -138,6 +335,45 @@ Dr  5030  Labor costs                   amount
 Income and expense accounts close to 3100 Retained earnings, classified by
 `account_type`, not by account-code prefix.
 
+### 4j. Cash-basis P&L and tax workpaper (B10)
+Income counts when collected and costs when paid, by the accounts the documents
+posted to; sales tax and capitalized purchases are separate. Every other cash
+flow is classified in a bridge so the P&L plus the bridge equals the actual change
+in cash and undeposited funds (opening balances are a position, not movement):
+
+| Bridge | What it holds | Income or expense beside it |
+|---|---|---|
+| Transfers between cash accounts | nets to zero | deposit-batch fees are cash expense |
+| Loans received and principal repaid | 2400/2500 | interest and fees paid are cash expense |
+| Owner contributions and distributions | 3000/3010/3020 | — |
+| Credit card payments | 2100 | — |
+| Customer deposits held and refunded | 2300; leaves when applied | receipt fees are cash expense |
+| Equipment bought and sold | 1500/1590 | a book gain or loss is listed, not cash |
+| Land and homes held for sale | 1120/1130/1160/1170 | — |
+| Prepaid expenses | 1200 | — |
+
+- **Collections** are allocated over the invoice's income and tax lines cumulatively
+  at each cutoff, as the invoice stood (after credit memos) at that cutoff, so months
+  add up to the year to the cent. A credit memo reduces what the invoice is made of;
+  a write-off does not (income never collected was never reported) and is listed.
+- **Deposits** are held, not income; applied to an invoice (at closing, or forfeited)
+  they are income that day. **Retainage** collected on a release invoice is income of
+  the original invoices, in proportion to what each withheld.
+- **Book-only entries** (depreciation, the cost of a home sold, inventory moves,
+  impairment, reserves, write-offs, a prepaid or asset expensed by journal) move no
+  cash: they are listed beside the P&L and never deducted. Whether and when any is
+  deductible is a reviewed adjustment on the tax workpaper, never inferred.
+- **Refused, with the cure:** anything else that moves cash or income without a
+  treatment — a journal paying an accrued liability, an expense accrued by journal,
+  payroll clearing, interest accrued on a loan. Record the payment against its bill
+  or invoice, or code the bank line to what it paid.
+
+The **tax workpaper** is prepared by one member and approved by another against the
+exact cash P&L it was prepared from; if the books change first, review is refused
+and the preparer withdraws and prepares a replacement. A replacement (including a
+reviewed "no adjustments" one) supersedes the approved workpaper, which keeps its
+reviewer and notes. The report, CSV, PDF and saved run reproduce the reviewed period.
+
 ## 5. Worked example
 
 Fixed-price contract **$1,000,000**. Total estimated cost **$800,000**. Retainage 10%.
@@ -172,9 +408,9 @@ the substance of question §6b.
 
 ## 6. Open questions — we believe these need your judgment
 
-### 6a. Costs expense directly to COGS; the WIP account is never used
-Account **1160 Work in progress is seeded but nothing posts to it**. Job costs debit
-5000 as incurred, and the billings-versus-earned difference is carried entirely in 2350.
+### 6a. Contract-job costs expense directly to COGS; WIP is used only for owned homes
+On contract jobs **nothing posts to 1160 Work in progress** (it holds only homes the
+builder owns, §4d). Contract job costs debit 5000 as incurred, and the billings-versus-earned difference is carried entirely in 2350.
 
 We believe this is defensible under ASC 606 — the contract asset / contract liability
 model replaced the older WIP-accumulation presentation — but it differs from what many

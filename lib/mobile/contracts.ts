@@ -185,6 +185,8 @@ export interface MobilePunchItemDTO {
   location: string | null
   due_date: string | null
   resolved_at: string | null
+  /** The record's revision: send it back as `expected_revision` on status updates. */
+  updated_at: string | null
 }
 
 export interface MobileExpenseDTO {

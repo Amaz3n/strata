@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ArcAPIBaseURL</key>
+	<string>$(ARC_API_BASE_URL)</string>
+	<key>ArcSupabaseURL</key>
+	<string>$(ARC_SUPABASE_URL)</string>
+	<key>ArcSupabasePublishableKey</key>
+	<string>$(ARC_SUPABASE_PUBLISHABLE_KEY)</string>
+	<key>ArcSentryDSN</key>
+	<string>$(ARC_SENTRY_DSN)</string>
+	<key>ArcPushEnabled</key>
+	<string>$(ARC_PUSH_ENABLED)</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

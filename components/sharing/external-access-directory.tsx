@@ -112,12 +112,14 @@ function ExternalAccessDirectory() {
 
     setIsRevoking(true)
     try {
-      unwrapAction(await revokeOrgExternalPersonAction({ token_ids: liveTokens }))
-      toast.success(`${person.name} removed from ${liveTokens.length} project${liveTokens.length === 1 ? "" : "s"}`)
+      const removed = unwrapAction(await revokeOrgExternalPersonAction({ token_ids: liveTokens }))
+      toast.success(`Removed ${removed} access record${removed === 1 ? "" : "s"} for ${person.name}`)
       setPendingRevoke(null)
       await refresh()
     } catch (revokeError) {
       toast.error(revokeError instanceof Error ? revokeError.message : "Couldn't remove access")
+      setPendingRevoke(null)
+      await refresh()
     } finally {
       setIsRevoking(false)
     }
@@ -167,7 +169,7 @@ function ExternalAccessDirectory() {
 
       {truncated ? (
         <p className="text-[11px] text-warning">
-          Showing the first 500 access records. Narrow the search to find someone specific.
+          Showing the first 500 access records. Manage additional access from each project's Share panel.
         </p>
       ) : null}
 
@@ -191,14 +193,14 @@ function ExternalAccessDirectory() {
       <AlertDialog open={!!pendingRevoke} onOpenChange={(open) => !open && setPendingRevoke(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove {pendingRevoke?.name} from everything?</AlertDialogTitle>
+            <AlertDialogTitle>Remove listed access for {pendingRevoke?.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              They lose access to all{" "}
-              {pendingRevoke?.projects.filter((project) => project.status !== "revoked").length} project
+              This removes the{" "}
+              {pendingRevoke?.projects.filter((project) => project.status !== "revoked").length} access record
               {pendingRevoke?.projects.filter((project) => project.status !== "revoked").length === 1
                 ? ""
                 : "s"}{" "}
-              in this organization — links stop working and their Arc account is cut off. This cannot be
+              shown here, including their linked account grants. Other access may remain. Removal cannot be
               undone; inviting them back means new links.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -211,7 +213,7 @@ function ExternalAccessDirectory() {
                 if (pendingRevoke) void confirmRevoke(pendingRevoke)
               }}
             >
-              {isRevoking ? "Removing…" : "Remove everywhere"}
+              {isRevoking ? "Removing…" : "Remove listed access"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -231,6 +233,7 @@ function PersonRow({
 }) {
   const [open, setOpen] = useState(false)
   const liveCount = person.projects.filter((project) => project.status === "active").length
+  const revocableCount = person.projects.filter((project) => project.status !== "revoked").length
 
   return (
     <div className="border border-border bg-card">
@@ -261,8 +264,8 @@ function PersonRow({
           size="icon"
           variant="ghost"
           className="size-7 shrink-0 text-muted-foreground hover:text-destructive"
-          title="Remove from every project"
-          disabled={disabled || liveCount === 0}
+          title="Remove listed access"
+          disabled={disabled || revocableCount === 0}
           onClick={() => onRequestRevoke(person)}
         >
           <Trash className="size-3.5" />

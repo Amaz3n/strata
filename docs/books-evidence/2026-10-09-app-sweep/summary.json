@@ -1,0 +1,43 @@
+{
+  "run_at": "2026-10-09T11:04:56.087Z",
+  "journey": "scripts/books-acceptance/journeys/app-sweep.spec.ts",
+  "seed": "browser-seed.cjs --journey app-sweep",
+  "app_commit": "abf88776",
+  "viewer": "organization owner, desktop",
+  "pages": 184,
+  "counts": {
+    "clean": 150,
+    "refused": 14,
+    "skipped": 20
+  },
+  "fixed_in_this_run": [
+    "owner permissions (20261009010000)",
+    "Date.now() during prerender on /books, /projects/[id]/drawings/model, /directory/[id]",
+    "pdf.js DOMMatrix server crash on waiver setup and invoice waiver step",
+    "duplicate React key on project payroll",
+    "warranty default seeding race"
+  ],
+  "refused_by_design": "/admin/* (Arc platform staff) and /trade/* (Arc Trade not enabled)",
+  "skipped": [
+    "/admin/customers/[orgId]/onboarding",
+    "/admin/customers/[orgId]/onboarding/import/[importer]",
+    "/communities/[id]",
+    "/communities/[id]/land",
+    "/communities/[id]/offering",
+    "/communities/[id]/settings",
+    "/design-studio/sheet/[projectId]",
+    "/drawings/sets/[setId]",
+    "/drawings/sheets/[sheetId]",
+    "/payables/payment-runs/[id]",
+    "/pipeline/[dealId]",
+    "/pipeline/[dealId]/files",
+    "/pipeline/[dealId]/plans",
+    "/pipeline/[dealId]/quotes/[packageId]",
+    "/plans/[id]",
+    "/projects/[id]/bids/[packageId]",
+    "/projects/[id]/drawings/sets/[setId]",
+    "/purchasing/bids/[packageId]",
+    "/sales/[dealId]",
+    "/starts/[id]"
+  ]
+}

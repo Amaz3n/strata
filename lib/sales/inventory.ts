@@ -14,7 +14,8 @@ export interface SellableHome {
   /** A started house with no buyer. False means the buyer picks the plan. */
   isSpec: boolean
   agingDays: number
-  askingPriceCents: number
+  /** Null when the community sheet has no price for the home: shown as unpriced, never as zero. */
+  askingPriceCents: number | null
 }
 
 /** A spec standing this long is a carrying-cost problem, not just inventory. */

@@ -97,7 +97,7 @@ async function PaymentReconciliationPageContent() {
 
 export default function PaymentReconciliationPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="Vendor payment reconciliation" breadcrumbs={[{ label: "Payables", href: "/payables" }, { label: "Reconciliation" }]}><PageLoadingSkeleton /></PageLayout>}>
       <PaymentReconciliationPageContent />
     </Suspense>
   )

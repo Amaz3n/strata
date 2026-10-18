@@ -1,7 +1,7 @@
-import { z } from "zod"
+import { z } from "zod";
 
-import { ACTIVITY_KINDS, INQUIRY_CHANNELS } from "@/lib/sales/activity"
-import { LOST_REASON_CODES } from "@/lib/sales/lost-reasons"
+import { ACTIVITY_KINDS, INQUIRY_CHANNELS } from "@/lib/sales/activity";
+import { LOST_REASON_CODES } from "@/lib/sales/lost-reasons";
 
 export const prospectStatusEnum = z.enum([
   "new",
@@ -14,8 +14,31 @@ export const prospectStatusEnum = z.enum([
   "executed",
   "won",
   "lost",
-])
-export type ProspectStatus = z.infer<typeof prospectStatusEnum>
+]);
+export type ProspectStatus = z.infer<typeof prospectStatusEnum>;
+
+/** Later stages are recorded by pricing, client approval, agreement, and handoff actions. */
+export const prospectManualStatusSchema = z.enum([
+  "new",
+  "contacted",
+  "qualified",
+  "lost",
+]);
+
+export function assertManualProspectStatus(
+  next: ProspectStatus | undefined,
+  current?: ProspectStatus,
+) {
+  if (
+    next !== undefined &&
+    next !== current &&
+    !prospectManualStatusSchema.safeParse(next).success
+  ) {
+    throw new Error(
+      "This stage is set by the pricing, client review, agreement, or handoff workflow.",
+    );
+  }
+}
 
 export const prospectJobsiteLocationSchema = z
   .object({
@@ -25,7 +48,7 @@ export const prospectJobsiteLocationSchema = z
     postal_code: z.string().trim().optional(),
   })
   .optional()
-  .nullable()
+  .nullable();
 
 export const prospectContactInputSchema = z.object({
   full_name: z.string().trim().min(2, "Contact name is required"),
@@ -33,14 +56,16 @@ export const prospectContactInputSchema = z.object({
   phone: z.string().trim().optional().nullable(),
   role: z.string().trim().optional().nullable(),
   company_name: z.string().trim().optional().nullable(),
+  /** A directory contact the user picked: the person is attached, not created again. */
+  contact_id: z.string().uuid().optional().nullable(),
   is_primary: z.boolean().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
-})
-export type ProspectContactInput = z.infer<typeof prospectContactInputSchema>
+});
+export type ProspectContactInput = z.infer<typeof prospectContactInputSchema>;
 
 export const createProspectInputSchema = z.object({
   name: z.string().trim().min(2, "Prospect name is required"),
-  status: prospectStatusEnum.default("new"),
+  status: z.enum(["new", "contacted", "qualified"]).default("new"),
   owner_user_id: z.string().uuid().optional().nullable(),
   community_id: z.string().uuid().optional().nullable(),
   source: z.string().trim().optional().nullable(),
@@ -51,10 +76,11 @@ export const createProspectInputSchema = z.object({
   tags: z.array(z.string().trim().min(1)).optional(),
   notes: z.string().trim().max(10000).optional().nullable(),
   primary_contact: prospectContactInputSchema.optional(),
-})
-export type CreateProspectInput = z.infer<typeof createProspectInputSchema>
+});
+export type CreateProspectInput = z.infer<typeof createProspectInputSchema>;
 
 export const updateProspectInputSchema = z.object({
+  expected_updated_at: z.string().datetime({ offset: true }).optional(),
   name: z.string().trim().min(2).optional(),
   status: prospectStatusEnum.optional(),
   owner_user_id: z.string().uuid().optional().nullable(),
@@ -68,8 +94,8 @@ export const updateProspectInputSchema = z.object({
   notes: z.string().trim().max(10000).optional().nullable(),
   lost_reason: z.string().trim().max(2000).optional().nullable(),
   next_follow_up_at: z.string().trim().min(1).optional().nullable(),
-})
-export type UpdateProspectInput = z.infer<typeof updateProspectInputSchema>
+});
+export type UpdateProspectInput = z.infer<typeof updateProspectInputSchema>;
 
 export const logProspectContactInputSchema = z.object({
   kind: z.enum(ACTIVITY_KINDS),
@@ -78,8 +104,10 @@ export const logProspectContactInputSchema = z.object({
 }).refine((input) => input.kind !== "note" || Boolean(input.note?.trim()), {
   message: "Enter a note before logging this activity",
   path: ["note"],
-})
-export type LogProspectContactInput = z.infer<typeof logProspectContactInputSchema>
+});
+export type LogProspectContactInput = z.infer<
+  typeof logProspectContactInputSchema
+>;
 
 /**
  * What a consultant can correct on a deal from the Sales desk: everything the
@@ -93,7 +121,13 @@ export type LogProspectContactInput = z.infer<typeof logProspectContactInputSche
 export const updateDealDetailsInputSchema = z.object({
   fullName: z.string().trim().min(2, "Buyer name is required"),
   phone: z.string().trim().max(50).optional().nullable(),
-  email: z.string().trim().email("Enter a valid email").optional().nullable().or(z.literal("")),
+  email: z
+    .string()
+    .trim()
+    .email("Enter a valid email")
+    .optional()
+    .nullable()
+    .or(z.literal("")),
   ownerUserId: z.string().uuid().optional().nullable(),
   communityId: z.string().uuid().optional().nullable(),
   source: z.string().trim().max(120).optional().nullable(),
@@ -103,14 +137,16 @@ export const updateDealDetailsInputSchema = z.object({
   coopAgentName: z.string().trim().max(160).optional().nullable(),
   coopBrokerage: z.string().trim().max(160).optional().nullable(),
   notes: z.string().trim().max(10000).optional().nullable(),
-})
-export type UpdateDealDetailsInput = z.infer<typeof updateDealDetailsInputSchema>
+});
+export type UpdateDealDetailsInput = z.infer<
+  typeof updateDealDetailsInputSchema
+>;
 
 export const markProspectLostInputSchema = z.object({
   reasonCode: z.enum(LOST_REASON_CODES),
   note: z.string().trim().max(1000).optional().nullable(),
-})
-export type MarkProspectLostInput = z.infer<typeof markProspectLostInputSchema>
+});
+export type MarkProspectLostInput = z.infer<typeof markProspectLostInputSchema>;
 
 /**
  * A model-home registration card: what a walk-in fills in on the clipboard.
@@ -119,8 +155,16 @@ export type MarkProspectLostInput = z.infer<typeof markProspectLostInputSchema>
  */
 export const productionInquiryInputSchema = z.object({
   buyerName: z.string().trim().min(2, "Buyer name is required"),
+  /** An existing directory contact chosen from the buyer search; their record supplies name, phone and email. */
+  existingContactId: z.string().uuid().optional().nullable(),
   phone: z.string().trim().max(50).optional().nullable(),
-  email: z.string().trim().email("Enter a valid email").optional().nullable().or(z.literal("")),
+  email: z
+    .string()
+    .trim()
+    .email("Enter a valid email")
+    .optional()
+    .nullable()
+    .or(z.literal("")),
   communityId: z.string().uuid().optional().nullable(),
   ownerUserId: z.string().uuid().optional().nullable(),
   channel: z.enum(INQUIRY_CHANNELS),
@@ -133,14 +177,22 @@ export const productionInquiryInputSchema = z.object({
   notes: z.string().trim().max(10000).optional().nullable(),
   /** Local calendar day of the visit, so the traffic tally lands on the right date. */
   loggedDate: z.string().date(),
-})
-export type ProductionInquiryInput = z.infer<typeof productionInquiryInputSchema>
+  /** A website delivery that could not be filed, which this registration files by hand. */
+  leadReceiptId: z.string().uuid().optional().nullable(),
+});
+export type ProductionInquiryInput = z.infer<
+  typeof productionInquiryInputSchema
+>;
 
-export const updateProspectContactInputSchema = prospectContactInputSchema.partial().extend({
-  contact_id: z.string().uuid().optional().nullable(),
-  promoted_contact_id: z.string().uuid().optional().nullable(),
-})
-export type UpdateProspectContactInput = z.infer<typeof updateProspectContactInputSchema>
+export const updateProspectContactInputSchema = prospectContactInputSchema
+  .partial()
+  .extend({
+    expected_updated_at: z.string().datetime({ offset: true }).optional(),
+    promoted_contact_id: z.string().uuid().optional().nullable(),
+  });
+export type UpdateProspectContactInput = z.infer<
+  typeof updateProspectContactInputSchema
+>;
 
 export const prospectFiltersSchema = z
   .object({
@@ -149,5 +201,5 @@ export const prospectFiltersSchema = z
     community_id: z.string().uuid().optional(),
     search: z.string().trim().optional(),
   })
-  .optional()
-export type ProspectFilters = z.infer<typeof prospectFiltersSchema>
+  .optional();
+export type ProspectFilters = z.infer<typeof prospectFiltersSchema>;

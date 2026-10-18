@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
@@ -18,6 +19,7 @@ interface Params {
 }
 
 async function EstimatePortalPageContent({ params }: Params) {
+  await connection()
   const { token } = await params
   const estimate = await loadEstimateByToken(token)
 
@@ -39,7 +41,7 @@ async function EstimatePortalPageContent({ params }: Params) {
 
 export default function EstimatePortalPage(props: Parameters<typeof EstimatePortalPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton title="Estimate" />}>
       <EstimatePortalPageContent {...props} />
     </Suspense>
   )

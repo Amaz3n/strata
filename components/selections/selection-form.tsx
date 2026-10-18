@@ -1,7 +1,6 @@
 "use client"
 
-import { useState } from "react"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
 import type { Project, SelectionCategory } from "@/lib/types"
@@ -12,7 +11,6 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   Form,
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -28,14 +26,6 @@ import {
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Badge } from "@/components/ui/badge"
 import { Calendar, Building2, List } from "@/components/icons"
-
-const statusOptions = [
-  { value: "pending", label: "Pending" },
-  { value: "selected", label: "Selected" },
-  { value: "confirmed", label: "Confirmed" },
-  { value: "ordered", label: "Ordered" },
-  { value: "received", label: "Received" },
-]
 
 interface SelectionFormProps {
   open: boolean
@@ -56,29 +46,26 @@ export function SelectionForm({
   onSubmit,
   isSubmitting,
 }: SelectionFormProps) {
-  const [statusValue, setStatusValue] = useState("pending")
-
   const form = useForm<SelectionInput>({
     resolver: zodResolver(selectionInputSchema),
     defaultValues: {
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
       category_id: categories[0]?.id ?? "",
-      status: "pending",
       due_date: "",
       notes: "",
     },
   })
+
+  const [categoryId, dueDate] = useWatch({ control: form.control, name: ["category_id", "due_date"] })
 
   const handleSubmit = form.handleSubmit(async (values) => {
     await onSubmit(values)
     form.reset({
       project_id: defaultProjectId ?? projects[0]?.id ?? "",
       category_id: categories[0]?.id ?? "",
-      status: "pending",
       due_date: "",
       notes: "",
     })
-    setStatusValue("pending")
   })
 
   return (
@@ -160,38 +147,6 @@ export function SelectionForm({
               <div className="grid gap-4 md:grid-cols-2">
                 <FormField
                   control={form.control}
-                  name="status"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Status</FormLabel>
-                      <Select
-                        onValueChange={(val) => {
-                          field.onChange(val)
-                          setStatusValue(val)
-                        }}
-                        value={field.value}
-                      >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select status" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {statusOptions.map((s) => (
-                            <SelectItem key={s.value} value={s.value}>
-                              {s.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormDescription>Workflow stage for this selection.</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
                   name="due_date"
                   render={({ field }) => (
                     <FormItem>
@@ -221,12 +176,11 @@ export function SelectionForm({
 
               <div className="rounded-lg border bg-muted/40 p-4 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Badge variant="outline">Status: {statusValue}</Badge>
-                  <Badge variant="outline">Category: {form.watch("category_id") ? "Selected" : "None"}</Badge>
+                  <Badge variant="outline">Category: {categoryId ? "Selected" : "None"}</Badge>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Calendar className="h-4 w-4" />
-                  {form.watch("due_date") ? `Due ${form.watch("due_date")}` : "No due date"}
+                  {dueDate ? `Due ${dueDate}` : "No due date"}
                 </div>
               </div>
             </div>
@@ -246,7 +200,6 @@ export function SelectionForm({
     </Sheet>
   )
 }
-
 
 
 

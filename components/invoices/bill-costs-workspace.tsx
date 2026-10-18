@@ -8,7 +8,7 @@ import type { Project } from "@/lib/types"
 import type { InvoiceDraft } from "@/lib/services/cost-plus"
 import type { ProjectBillingUpNext, UpNextRow } from "@/lib/services/billing-book"
 import type { BillingProfile } from "@/lib/financials/billing-profile"
-import { listUnbilledCostsAction } from "@/app/(app)/invoices/actions"
+import { decideBillingCorrectionAction, listUnbilledCostsAction } from "@/app/(app)/invoices/actions"
 import {
   generateInvoiceFromCostsAction,
   generateOwnerBillingPackageAction,
@@ -190,6 +190,21 @@ export function BillCostsWorkspace({
       ),
     [selectedCosts],
   )
+
+  // A credit for a cost already billed: credit the customer (the default) or
+  // absorb it, keeping what was billed. The decision and its reason are recorded.
+  const absorb = async (cost: UnbilledCost) => {
+    const note = window.prompt("Why does the company absorb this correction instead of crediting the customer?") ?? ""
+    if (note.trim().length < 10) { if (note) toast.error("Say why in a sentence"); return }
+    try {
+      unwrapAction(await decideBillingCorrectionAction({ billableCostId: cost.id, decision: "absorb", note }))
+      setCosts((current) => current?.filter((row) => row.id !== cost.id) ?? current)
+      setSelected((current) => { const next = new Set(current); next.delete(cost.id); return next })
+      toast.success("Correction absorbed", { description: "The customer keeps what was billed." })
+    } catch (error) {
+      toast.error("Could not record the decision", { description: error instanceof Error ? error.message : "Please try again." })
+    }
+  }
 
   const toggle = (id: string, checked: boolean) =>
     setSelected((current) => {
@@ -411,7 +426,13 @@ export function BillCostsWorkspace({
                             {cost.description || "Untitled cost"}
                             <span className="ml-2 text-xs text-muted-foreground">{SOURCE_LABEL[cost.sourceType] ?? cost.sourceType}</span>
                             {!ready ? <span className="ml-2 text-[11px] text-warning">not in this period</span> : null}
+                            {cost.correctionOf ? <span className="ml-2 text-[11px] text-warning">credits a billed cost</span> : null}
                           </span>
+                          {cost.correctionOf ? (
+                            <button type="button" className="shrink-0 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={(event) => { event.preventDefault(); absorb(cost) }}>
+                              Absorb instead
+                            </button>
+                          ) : null}
                           <span className="hidden w-24 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">{formatMoneyFromCents(cost.costCents)}</span>
                           <span className="hidden w-16 text-right text-xs tabular-nums text-muted-foreground md:block">
                             {cost.markupPercent ? `+${cost.markupPercent}%` : "—"}

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
@@ -10,6 +11,7 @@ interface Props {
 
 
 export default async function SubPortalDailyLogsPage({ params }: Props) {
+  await connection()
   const { token } = await params
 
   try {

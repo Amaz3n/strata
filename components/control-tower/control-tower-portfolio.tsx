@@ -36,6 +36,36 @@ const SORTS: Record<SortKey, (a: ScoredProject, b: ScoredProject) => number> = {
 const HEAD =
   "sticky top-0 z-10 h-9 bg-background px-3 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/80 shadow-[inset_0_-1px_0_var(--border)]"
 
+function SortHead({
+  label,
+  sort,
+  onSort,
+  sortKey,
+  className,
+}: {
+  label: string
+  sort: SortKey
+  onSort: (key: SortKey) => void
+  sortKey: SortKey
+  className?: string
+}) {
+  return (
+    <th scope="col" className={cn(HEAD, className)}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={cn(
+          "inline-flex items-center gap-1 uppercase tracking-[0.12em] transition-colors hover:text-foreground",
+          sort === sortKey && "text-foreground",
+        )}
+      >
+        {label}
+        {sort === sortKey && <ArrowDown aria-hidden className="h-2.5 w-2.5" />}
+      </button>
+    </th>
+  )
+}
+
 export function ControlTowerPortfolio({
   projects,
   total,
@@ -51,30 +81,6 @@ export function ControlTowerPortfolio({
   const hasWip = Boolean(wip && wip.project_count > 0)
 
   const rows = useMemo(() => [...projects].sort(SORTS[sort]), [projects, sort])
-
-  const SortHead = ({
-    label,
-    sortKey,
-    className,
-  }: {
-    label: string
-    sortKey: SortKey
-    className?: string
-  }) => (
-    <th scope="col" className={cn(HEAD, className)}>
-      <button
-        type="button"
-        onClick={() => setSort(sortKey)}
-        className={cn(
-          "inline-flex items-center gap-1 uppercase tracking-[0.12em] transition-colors hover:text-foreground",
-          sort === sortKey && "text-foreground",
-        )}
-      >
-        {label}
-        {sort === sortKey && <ArrowDown aria-hidden className="h-2.5 w-2.5" />}
-      </button>
-    </th>
-  )
 
   return (
     <section
@@ -108,17 +114,17 @@ export function ControlTowerPortfolio({
         <table className="w-full caption-bottom border-collapse text-sm">
           <thead>
             <tr>
-              <SortHead label="Job" sortKey="name" className="text-left" />
+              <SortHead sort={sort} onSort={setSort} label="Job" sortKey="name" className="text-left" />
               <th scope="col" className={cn(HEAD, "hidden text-left lg:table-cell")}>
                 What needs attention
               </th>
-              <SortHead label="Schedule" sortKey="schedule" className="text-left" />
-              <SortHead label="Budget" sortKey="budget" className="text-left" />
+              <SortHead sort={sort} onSort={setSort} label="Schedule" sortKey="schedule" className="text-left" />
+              <SortHead sort={sort} onSort={setSort} label="Budget" sortKey="budget" className="text-left" />
               {showMoney && (
-                <SortHead label="Overdue" sortKey="overdue" className="text-right" />
+                <SortHead sort={sort} onSort={setSort} label="Overdue" sortKey="overdue" className="text-right" />
               )}
               {showMoney && (
-                <SortHead label="Unbilled" sortKey="unbilled" className="text-right" />
+                <SortHead sort={sort} onSort={setSort} label="Unbilled" sortKey="unbilled" className="text-right" />
               )}
               {hasWip && (
                 <th scope="col" className={cn(HEAD, "hidden text-right xl:table-cell")}>
@@ -128,7 +134,7 @@ export function ControlTowerPortfolio({
               <th scope="col" className={cn(HEAD, "hidden text-right sm:table-cell")}>
                 Open
               </th>
-              <SortHead label="Risk" sortKey="risk" className="text-right" />
+              <SortHead sort={sort} onSort={setSort} label="Risk" sortKey="risk" className="text-right" />
             </tr>
           </thead>
           <tbody>

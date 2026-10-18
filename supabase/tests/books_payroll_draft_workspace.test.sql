@@ -1,0 +1,14 @@
+begin;
+select plan(10);
+select ok(not p.prosecdef,'Draft workspace uses invoker privileges') from pg_proc p where p.oid='public.read_books_project_payroll_drafts(uuid,uuid,uuid,timestamptz,uuid,integer)'::regprocedure;
+select is((select provolatile::text from pg_proc where oid='public.read_books_project_payroll_drafts(uuid,uuid,uuid,timestamptz,uuid,integer)'::regprocedure),'s','Draft read is stable');
+select ok(not has_function_privilege('anon','public.read_books_project_payroll_drafts(uuid,uuid,uuid,timestamptz,uuid,integer)','execute'),'Anonymous callers cannot read salary drafts');
+select ok(not has_function_privilege('authenticated','public.read_books_project_payroll_drafts(uuid,uuid,uuid,timestamptz,uuid,integer)','execute'),'Ordinary authenticated callers cannot read salary drafts');
+select ok(has_function_privilege('service_role','public.read_books_project_payroll_drafts(uuid,uuid,uuid,timestamptz,uuid,integer)','execute'),'Private service can read scoped drafts');
+select ok(has_table_privilege('service_role','public.projects','select'),'Service can read existing project scope');
+select ok(has_table_privilege('service_role','public.cost_codes','select'),'Service can read scoped cost-code labels');
+select throws_ok($$select read_books_project_payroll_drafts(null,'99400000-0000-4000-8000-000000000004')$$,'P0001','Invalid payroll draft scope or pagination','Null organization rejected');
+select throws_ok($$select read_books_project_payroll_drafts('99400000-0000-4000-8000-000000000001','99400000-0000-4000-8000-000000000004',null,null,null,51)$$,'P0001','Invalid payroll draft scope or pagination','Page larger than 50 rejected');
+select throws_ok($$select read_books_project_payroll_drafts('99400000-0000-4000-8000-000000000001','99400000-0000-4000-8000-000000000004',null,now(),null,50)$$,'P0001','Invalid payroll draft scope or pagination','Partial cursor rejected');
+select * from finish();
+rollback;

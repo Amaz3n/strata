@@ -1,0 +1,10 @@
+1..9
+ok 1 - posting overwrites a forged classification with its scoped chart type
+ok 2 - old posting keeps its original code after chart recoding
+ok 3 - a balanced reversal cannot substitute another account
+ok 4 - a balanced subset cannot retire the whole original entry
+ok 5 - reversal inherits original asset classification despite current expense coding
+ok 6 - complete reversal preserves every line
+ok 7 - browser cannot invoke accounting trigger functions
+ok 8 - legacy reversal explicitly marks classification as unknown
+ok 9 - legacy reversal does not claim current expense type as historical

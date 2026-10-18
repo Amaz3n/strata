@@ -1,0 +1,286 @@
+{
+  "scenario": "OPS-01",
+  "reviewedFrom": "EP13 scale and operations readiness (docs/enterprise-production/completion-checklist.json): EP13-03 tenant fairness and bulk controls, EP13-05 run deadlines and alert routing, EP13-06 failed-unit views with safe recovery.",
+  "subcases": {
+    "skewed-backlog-is-claimed-fairly": {
+      "derivation": "Three fresh tenants queue a job type no worker claims: A 40 jobs, all created before B's 4 and C's 4. Oldest-first, the first claim of 9 would be A's 9 and B and C would wait behind all 40. Claims take turns by organization: the first claim of 9 takes 3 rounds of A, B, C (3/3/3); the second takes one round of all three, which empties B and C, then A alone (7/1/1); A's remaining 30 follow as 9, 9, 9, 3. B and C are drained by the second claim. One more job per tenant claimed one at a time comes from three different tenants, because the rotation remembers who was served last. Nothing of theirs is left pending.",
+      "inputs": {
+        "backlog": [
+          40,
+          4,
+          4
+        ],
+        "claimSize": 9,
+        "claims": 6
+      },
+      "expected": {
+        "oldestFirstWouldServeSmallTenants": 0,
+        "claims": [
+          [
+            3,
+            3,
+            3
+          ],
+          [
+            7,
+            1,
+            1
+          ],
+          [
+            9,
+            0,
+            0
+          ],
+          [
+            9,
+            0,
+            0
+          ],
+          [
+            9,
+            0,
+            0
+          ],
+          [
+            3,
+            0,
+            0
+          ]
+        ],
+        "smallTenantsDrainedByClaim": 2,
+        "singleClaimsServeEachTenantOnce": true,
+        "leftPending": 0
+      }
+    },
+    "cancelled-cutover-stops-between-homes": {
+      "derivation": "Six houses on lots 21-26 (as of 2026-10-01, two open POs each). A separate session holds lot 24, the fourth house, so the commit is caught waiting there with three receipts: the operator's page shows 3 of 6 built and no cancellation yet. The operator cancels; the claim is live, so the request is recorded. When the hold is released the fourth home finishes (a home is never stopped inside), and at the next home the worker stops: the batch is failed with report.cancelled naming the operator, the homes built (equal to the receipts, at least 3 and fewer than 6) and the 6 rows; the claim and the request are cleared, the worker exits normally, its resume job is completed, one import_batch_cancelled event and one audit row are written. A second cancel is refused because nothing is running. Commit again resumes from the receipts as attempt 2: 6 homes, 6 budgets, 12 POs, reconciled, one home per lot.",
+      "inputs": {
+        "asOf": "2026-10-01",
+        "lots": [
+          "21",
+          "22",
+          "23",
+          "24",
+          "25",
+          "26"
+        ],
+        "holdLot": "24"
+      },
+      "expected": {
+        "progress": {
+          "built": 3,
+          "total": 6,
+          "cancelRequested": false
+        },
+        "request": "requested",
+        "cancelled": {
+          "status": "failed",
+          "claimed": false,
+          "cancelRequestCleared": true,
+          "stoppedBetweenHomes": true,
+          "homesMatchReceipts": true,
+          "reportCountsBuilt": true,
+          "cancelledBy": true,
+          "workerExitedCleanly": true,
+          "resumeJobs": [
+            "completed"
+          ],
+          "event": 1,
+          "audit": 1
+        },
+        "cancelAgain": "refused",
+        "commitAgain": {
+          "status": "committed",
+          "committedCount": 6,
+          "attempts": 2,
+          "reconciliation": {
+            "rows": 6,
+            "receipts": 6,
+            "homes": 6,
+            "budgets": 6,
+            "purchaseOrders": 12,
+            "clean": true,
+            "mismatches": []
+          }
+        },
+        "homes": [
+          {
+            "lot": "21",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "22",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "23",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "24",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "25",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          },
+          {
+            "lot": "26",
+            "homes": 1,
+            "attached": true,
+            "lotStatus": "started"
+          }
+        ]
+      }
+    },
+    "dead-run-is-timed-out-not-never-started": {
+      "derivation": "warranty-sla-sweep, whose previous run succeeded a minute ago, runs in its own process through withCronRun with work that never finishes. Before the work starts its job_runs row is 'running' with a deadline after its start (the 120 s function limit plus 120 s grace) and the cron correlation id. The process is SIGKILLed: the row stays 'running' and the page says running, because the deadline has not passed. Once the deadline passes, the page already reports timed out; reconciliation turns the row into timed_out with the deadline error, and it counts as a failure in the last 24 h. warranty-courtesy-inspections (daily) last started four days ago and has not run since: it is 'not-started'. The watchdog's alert kinds for the two are cron_timed_out and cron_not_started. specs-pipeline (every 5 min, 420 s deadline) has a run in flight started a minute ago, inside its deadline, the run before it timed out 8 minutes ago and its last success was two hours ago: the run in flight does not hide it, so the page reports timed out and the watchdog alerts cron_timed_out (reading only the newest row said running with no alert).",
+      "inputs": {
+        "diedJob": "warranty-sla-sweep",
+        "silentJob": "warranty-courtesy-inspections",
+        "inFlightJob": "specs-pipeline"
+      },
+      "expected": {
+        "opened": {
+          "status": "running",
+          "deadlineAfterStart": true,
+          "correlated": true
+        },
+        "afterKill": "running",
+        "pastDeadline": "timed-out",
+        "reconciled": true,
+        "row": {
+          "status": "timed_out",
+          "error": "past its deadline"
+        },
+        "reported": {
+          "died": {
+            "state": "timed-out",
+            "failuresLast24h": true,
+            "lastError": true
+          },
+          "silent": "not-started",
+          "staleWithRunInFlight": "timed-out"
+        },
+        "alerts": {
+          "died": "cron_timed_out",
+          "silent": "cron_not_started",
+          "staleWithRunInFlight": "cron_timed_out"
+        }
+      }
+    },
+    "failed-units-show-with-a-recovery-that-works": {
+      "derivation": "Four houses on lots 31-34 (as of 2026-10-02): the commit is killed waiting on lot 33 and, interrupted as often as the reaper allows (5), is failed keeping its homes. A notification whose delivery exhausted its 3 retries while the email provider was down is left failed. The operator's production-work view lists the cutover under Imports with Commit again and the notification under Notifications with Requeue, each with its error, its documented cure and the organization's name. Commit again finishes the cutover from its receipts (4 homes, reconciled). Requeue puts the delivery back pending with a fresh budget and no error, audited as platform_ops; the outbox then completes it (the notification type sends no email). Requeueing it again is refused, and neither unit is listed any more.",
+      "inputs": {
+        "asOf": "2026-10-02",
+        "lots": [
+          "31",
+          "32",
+          "33",
+          "34"
+        ],
+        "holdLot": "33"
+      },
+      "expected": {
+        "listed": {
+          "cutover": {
+            "recovery": "commit_again",
+            "hasCure": true,
+            "hasError": true,
+            "org": true
+          },
+          "notification": {
+            "recovery": "requeue_job",
+            "hasCure": true,
+            "hasError": true,
+            "org": true
+          }
+        },
+        "cutoverRecovery": {
+          "status": "committed",
+          "homes": 4,
+          "reconciled": true
+        },
+        "notificationRecovery": {
+          "requeued": "deliver_notification",
+          "queued": {
+            "status": "pending",
+            "retryCount": 0,
+            "lastError": null
+          },
+          "delivered": "completed",
+          "audit": 1
+        },
+        "requeueAgain": "refused",
+        "listedAfter": {
+          "cutover": false,
+          "notification": false
+        }
+      }
+    },
+    "members-cannot-forge-job-state": {
+      "derivation": "The organization's owner, through the data API: completing a queued job or spending its retries, putting back a job that exhausted its retries (the operator's recovery), deleting a job, inserting one completed or already processing, claiming jobs, reading every tenant's backlog or the pipeline findings, moving the claim rotation, writing or closing a job run, asking a cutover to cancel (directly or through the RPC), queueing release_payment_run or any other job type a member's session never queues, and editing the payload of a job the server queued are all refused, and that job's payload is unchanged. Queueing a search job still works, but its correlation id, creation time and run time are the server's: the forged correlation id is replaced, it is created now, and its run time is not ahead of the queue. Reordering its own pending search job (priority 5) works; backdating it is accepted but clamped to now. The queued job stays pending with no retries spent and the failed one stays failed.",
+      "inputs": {},
+      "expected": {
+        "forged": {
+          "completeAJob": "refused",
+          "spendItsRetries": "refused",
+          "requeueAFailedJob": "refused",
+          "deleteAJob": "refused",
+          "insertCompleted": "refused",
+          "insertClaimed": "refused",
+          "claimJobs": "refused",
+          "readEveryTenantsBacklog": "refused",
+          "rotateTheClaim": "refused",
+          "writeAJobRun": "refused",
+          "closeAJobRun": "refused",
+          "requestACancel": "refused",
+          "cancelThroughTheRpc": "refused",
+          "readPipelineFindings": "refused",
+          "queueAPaymentRelease": "refused",
+          "queueAServerOnlyJob": "refused",
+          "editAServerQueuedJob": "refused"
+        },
+        "serverQueuedJobUnchanged": true,
+        "plainEnqueue": "allowed",
+        "queuedBookkeeping": {
+          "correlationForged": false,
+          "createdNow": true,
+          "runAtNotAheadOfQueue": true
+        },
+        "reorderOwnPendingJob": "allowed",
+        "backdateOwnPendingJob": "allowed",
+        "job": {
+          "status": "pending",
+          "retryCount": 0,
+          "priority": 5,
+          "notBackdated": true
+        },
+        "failedJob": "failed"
+      }
+    },
+    "bulk-mutations-are-rate-limited": {
+      "derivation": "The organization's import-file budget is 300 per hour. A count three times that in the previous hour does not refuse: one file stages. With this hour's count at 300 the next file is refused before any batch is written, with the limit and the minutes left in the window; no batch is added.",
+      "inputs": {
+        "asOf": "2026-10-01",
+        "limit": 300
+      },
+      "expected": {
+        "earlierWindow": "allowed",
+        "stagedInEarlierWindow": 1,
+        "overBudget": "This organization has reached its limit of 300 import files staged per hour. Try again in N minutes.",
+        "stagedOverBudget": 0
+      }
+    }
+  }
+}

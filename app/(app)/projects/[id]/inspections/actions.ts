@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import {
   completeInspection,
+  mutateInspectionObligation,
   createInspection,
   createObservationFromInspectionItem,
   createPunchItemFromInspectionItem,
@@ -48,11 +49,14 @@ export async function updateInspectionItemAction(itemId: string, input: unknown)
 
 export async function completeInspectionAction(projectId: string, inspectionId: string) {
   return run(async () => {
-    const inspection = await completeInspection(inspectionId)
-    revalidatePath(`/projects/${projectId}/inspections`)
-    // Completing a linked inspection checks off its scheduled slot.
-    if (inspection.schedule_item_id) revalidatePath(`/projects/${projectId}/schedule`)
-    return inspection
+    try {
+      // A passing inspection completes its linked slot; the same action retries that handoff.
+      return await completeInspection(inspectionId)
+    } finally {
+      // A handoff failure can follow a recorded attempt. Refresh its recoverable state.
+      revalidatePath(`/projects/${projectId}/inspections`)
+      revalidatePath(`/projects/${projectId}/schedule`)
+    }
   })
 }
 
@@ -75,5 +79,16 @@ export async function createObservationFromInspectionItemAction(projectId: strin
     revalidatePath(`/projects/${projectId}/inspections`)
     revalidatePath(`/projects/${projectId}/safety`)
     return item
+  })
+}
+
+export async function mutateInspectionObligationAction(projectId: string, input: unknown) {
+  return run(async () => {
+    try { return await mutateInspectionObligation(projectId, input) }
+    finally {
+      revalidatePath(`/projects/${projectId}/inspections`)
+      revalidatePath(`/projects/${projectId}/schedule`)
+      revalidatePath(`/projects/${projectId}/closing`)
+    }
   })
 }

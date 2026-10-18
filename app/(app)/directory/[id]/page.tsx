@@ -1,7 +1,7 @@
 // Identity lives in the instant layout; overview data streams independently.
 export const instant = true;
 
-import { notFound } from "next/navigation";
+import { notFound, unstable_rethrow } from "next/navigation";
 import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
 import { z } from "zod";
@@ -250,7 +250,10 @@ async function PartyOverviewContent({ id }: { id: string }) {
   const isClient = capabilities.isClient;
 
   const [ledger, intelligence, readiness, clientReceivables] = await Promise.all([
-    isVendor ? loadVendorLedger(id).catch(() => null) : Promise.resolve(null),
+    isVendor ? loadVendorLedger(id).catch((error) => {
+      unstable_rethrow(error);
+      return null;
+    }) : Promise.resolve(null),
     isVendor ? loadVendorIntelligence(id) : Promise.resolve({ scorecard: null, taxReadiness: null }),
     isVendor ? loadPaymentReadiness(id) : Promise.resolve(null),
     isClient ? loadClientReceivables(id) : Promise.resolve(null),
@@ -278,6 +281,7 @@ async function PartyOverviewContent({ id }: { id: string }) {
         {isClient ? (
           <Section title="Receivables" count={clientReceivables?.projects.length ?? 0} stagger={2}>
             <ClientReceivablesTable summary={clientReceivables} />
+            {clientReceivables ? <PartyFinancialActivity summary={clientReceivables} className="border-x-0 border-b-0" /> : null}
           </Section>
         ) : null}
         {!isVendor && !isClient ? (

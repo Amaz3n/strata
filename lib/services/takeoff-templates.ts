@@ -20,11 +20,13 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { requireTakeoffCostCodes, requireTakeoffWriteScope } from "@/lib/services/takeoff-scope"
 import { nextConditionColor } from "@/lib/drawings/takeoff-palette"
 import type { ConditionUom } from "@/lib/drawings/measure"
 import {
   applyConditionTemplatesSchema,
   createConditionTemplateSchema,
+  conditionTemplateMutationTargetSchema,
   factorRuleViolation,
   saveConditionsAsTemplatesSchema,
   TEMPLATE_LIST_CAP,
@@ -35,6 +37,7 @@ import {
   type UpdateConditionTemplateInput,
 } from "@/lib/validation/takeoff"
 import { CONDITION_LIST_CAP, STALE_WRITE } from "@/lib/services/takeoff"
+import { readAllRowsById } from "@/lib/land/paging"
 
 const TEMPLATE_SELECT =
   "id, org_id, name, uom, depth_in, height_ft, pitch_rise, tons_per_cy, cost_code_id, color, waste_pct, unit_cost_cents, share_with_clients, notes, group_name, sort_order, created_by, created_at, updated_at"
@@ -82,6 +85,24 @@ function mapTemplate(row: any): ConditionTemplate {
   }
 }
 
+function verifiedTemplateCount(count: unknown, error: { message: string } | null): number {
+  if (error || typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+    throw new Error("Unable to verify the template library size. Reload before retrying.")
+  }
+  return count
+}
+
+const TEMPLATE_COPY_FIELDS = [
+  "org_id", "name", "uom", "depth_in", "height_ft", "pitch_rise", "tons_per_cy",
+  "cost_code_id", "color", "waste_pct", "unit_cost_cents", "share_with_clients",
+  "notes", "group_name", "sort_order", "created_by",
+] as const
+
+function isConfirmedTemplate(saved: ConditionTemplate, expected: Partial<ConditionTemplate>): boolean {
+  return typeof saved.id === "string" && Boolean(saved.id) &&
+    TEMPLATE_COPY_FIELDS.every((key) => !Object.hasOwn(expected, key) || saved[key] === expected[key])
+}
+
 // ============================================================================
 // CRUD
 // ============================================================================
@@ -90,27 +111,24 @@ export async function listConditionTemplates(orgId?: string): Promise<ConditionT
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("takeoff.read", { supabase, orgId: resolvedOrgId, userId })
 
-  const { data, error } = await supabase
-    .from("takeoff_condition_templates")
-    .select(TEMPLATE_SELECT)
-    .eq("org_id", resolvedOrgId)
-    .order("group_name", { ascending: true, nullsFirst: false })
-    .order("sort_order", { ascending: true })
-    .order("name", { ascending: true })
-    .limit(TEMPLATE_LIST_CAP)
-
-  if (error) throw new Error(`Failed to list condition templates: ${error.message}`)
-  return (data ?? []).map(mapTemplate)
-}
-
-/** The distinct group headings in use, for the editor's combobox. */
-export async function listTemplateGroups(orgId?: string): Promise<string[]> {
-  const templates = await listConditionTemplates(orgId)
-  const groups = new Set<string>()
-  for (const template of templates) {
-    if (template.group_name) groups.add(template.group_name)
-  }
-  return Array.from(groups).sort((a, b) => a.localeCompare(b))
+  // Read legacy over-cap libraries so their original rows can be inspected and
+  // removed. The creation limit remains separate from this validation bound.
+  const rows = await readAllRowsById(async (afterId, limit) => {
+    let query = supabase.from("takeoff_condition_templates").select(TEMPLATE_SELECT)
+      .eq("org_id", resolvedOrgId).order("id", { ascending: true }).limit(limit)
+    if (afterId) query = query.gt("id", afterId)
+    const result = await query
+    if (result.data?.some((row) => row.org_id !== resolvedOrgId)) {
+      throw new Error("Failed to load complete condition template library: organization mismatch")
+    }
+    return result
+  }, { cap: 10_000, pageSize: 500, label: "Failed to load complete condition template library" })
+  return rows.map(mapTemplate).sort((a, b) => {
+    if (a.group_name === null && b.group_name !== null) return 1
+    if (a.group_name !== null && b.group_name === null) return -1
+    return (a.group_name ?? "").localeCompare(b.group_name ?? "") ||
+      a.sort_order - b.sort_order || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
+  })
 }
 
 export async function createConditionTemplate(
@@ -118,20 +136,20 @@ export async function createConditionTemplate(
   orgId?: string,
 ): Promise<ConditionTemplate> {
   const parsed = createConditionTemplateSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
   await requirePermission("takeoff.write", { supabase, orgId: resolvedOrgId, userId })
 
-  const { count } = await supabase
+  const { count, error: countError } = await supabase
     .from("takeoff_condition_templates")
     .select("id", { count: "exact", head: true })
     .eq("org_id", resolvedOrgId)
-  if ((count ?? 0) >= TEMPLATE_LIST_CAP) {
+  const libraryCount = verifiedTemplateCount(count, countError)
+  if (libraryCount >= TEMPLATE_LIST_CAP) {
     throw new Error(`The library holds at most ${TEMPLATE_LIST_CAP} templates`)
   }
 
-  const { data, error } = await supabase
-    .from("takeoff_condition_templates")
-    .insert({
+  const payload = {
       org_id: resolvedOrgId,
       name: parsed.name,
       uom: parsed.uom,
@@ -146,9 +164,13 @@ export async function createConditionTemplate(
       share_with_clients: parsed.share_with_clients ?? false,
       notes: parsed.notes ?? null,
       group_name: parsed.group_name?.trim() || null,
-      sort_order: count ?? 0,
+      sort_order: libraryCount,
       created_by: userId,
-    })
+  }
+  await requireTakeoffCostCodes(context, [payload])
+  const { data, error } = await supabase
+    .from("takeoff_condition_templates")
+    .insert(payload)
     .select(TEMPLATE_SELECT)
     .single()
 
@@ -157,6 +179,10 @@ export async function createConditionTemplate(
   }
   if (error || !data) {
     throw new Error(`Failed to create condition template: ${error?.message}`)
+  }
+  const saved = mapTemplate(data)
+  if (!isConfirmedTemplate(saved, payload)) {
+    throw new Error("Created template could not be confirmed. Reload before retrying.")
   }
 
   await recordAudit({
@@ -168,7 +194,7 @@ export async function createConditionTemplate(
     after: data,
   })
 
-  return mapTemplate(data)
+  return saved
 }
 
 export async function updateConditionTemplate(
@@ -178,17 +204,24 @@ export async function updateConditionTemplate(
   seenUpdatedAt?: string | null,
 ): Promise<ConditionTemplate> {
   const parsed = updateConditionTemplateSchema.parse(updates)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const target = conditionTemplateMutationTargetSchema.parse({ templateId, seenUpdatedAt })
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
   await requirePermission("takeoff.write", { supabase, orgId: resolvedOrgId, userId })
 
-  const { data: existing } = await supabase
+  let existingQuery = supabase
     .from("takeoff_condition_templates")
     .select(TEMPLATE_SELECT)
     .eq("org_id", resolvedOrgId)
-    .eq("id", templateId)
-    .maybeSingle()
+    .eq("id", target.templateId)
+  if (target.seenUpdatedAt) existingQuery = existingQuery.eq("updated_at", target.seenUpdatedAt)
+  const { data: existing, error: existingError } = await existingQuery.maybeSingle()
 
-  if (!existing) throw new Error("Condition template not found")
+  if (existingError) throw new Error(`Failed to load condition template: ${existingError.message}`)
+  if (!existing && target.seenUpdatedAt) throw new Error(STALE_WRITE)
+  if (!existing || existing.id !== target.templateId || existing.org_id !== resolvedOrgId) throw new Error("Condition template not found")
+  if (typeof existing.updated_at !== "string") throw new Error("Template revision unavailable. Reload before retrying.")
+  conditionTemplateMutationTargetSchema.parse({ templateId: existing.id, seenUpdatedAt: existing.updated_at })
 
   const payload: Record<string, unknown> = {}
   for (const key of [
@@ -213,24 +246,30 @@ export async function updateConditionTemplate(
   if (Object.keys(payload).length === 0) return mapTemplate(existing)
 
   // Factors are legal only against the stored uom, which an update never sends.
-  const violation = factorRuleViolation({ ...mapTemplate(existing), ...payload } as any)
+  const expected = { ...mapTemplate(existing), ...payload }
+  const violation = factorRuleViolation(expected)
   if (violation) throw new Error(violation)
+  await requireTakeoffCostCodes(context, [expected])
 
-  let query = supabase
+  const query = supabase
     .from("takeoff_condition_templates")
     .update(payload)
     .eq("org_id", resolvedOrgId)
-    .eq("id", templateId)
-  if (seenUpdatedAt) query = query.eq("updated_at", seenUpdatedAt)
+    .eq("id", target.templateId)
+    .eq("updated_at", target.seenUpdatedAt ?? existing.updated_at)
 
   const { data, error } = await query.select(TEMPLATE_SELECT).maybeSingle()
 
-  if (!error && !data && seenUpdatedAt) throw new Error(STALE_WRITE)
+  if (!error && !data) throw new Error(STALE_WRITE)
   if (error?.code === "23505") {
     throw new Error(`The library already has a template called "${parsed.name}"`)
   }
   if (error || !data) {
     throw new Error(`Failed to update condition template: ${error?.message}`)
+  }
+  const saved = mapTemplate(data)
+  if (saved.id !== target.templateId || !isConfirmedTemplate(saved, expected)) {
+    throw new Error("Updated template could not be confirmed. Reload before retrying.")
   }
 
   await recordAudit({
@@ -243,7 +282,7 @@ export async function updateConditionTemplate(
     after: data,
   })
 
-  return mapTemplate(data)
+  return saved
 }
 
 /**
@@ -254,26 +293,40 @@ export async function updateConditionTemplate(
 export async function deleteConditionTemplate(
   templateId: string,
   orgId?: string,
+  seenUpdatedAt?: string | null,
 ): Promise<void> {
+  const target = conditionTemplateMutationTargetSchema.parse({ templateId, seenUpdatedAt })
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("takeoff.write", { supabase, orgId: resolvedOrgId, userId })
 
-  const { data: existing } = await supabase
+  let existingQuery = supabase
     .from("takeoff_condition_templates")
     .select(TEMPLATE_SELECT)
     .eq("org_id", resolvedOrgId)
-    .eq("id", templateId)
-    .maybeSingle()
+    .eq("id", target.templateId)
+  if (target.seenUpdatedAt) existingQuery = existingQuery.eq("updated_at", target.seenUpdatedAt)
+  const { data: existing, error: existingError } = await existingQuery.maybeSingle()
 
-  if (!existing) throw new Error("Condition template not found")
+  if (existingError) throw new Error(`Failed to load condition template: ${existingError.message}`)
+  if (!existing && target.seenUpdatedAt) throw new Error(STALE_WRITE)
+  if (!existing || existing.id !== target.templateId || existing.org_id !== resolvedOrgId) throw new Error("Condition template not found")
+  if (typeof existing.updated_at !== "string") throw new Error("Template revision unavailable. Reload before retrying.")
+  conditionTemplateMutationTargetSchema.parse({ templateId: existing.id, seenUpdatedAt: existing.updated_at })
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("takeoff_condition_templates")
     .delete()
     .eq("org_id", resolvedOrgId)
-    .eq("id", templateId)
+    .eq("id", target.templateId)
+    .eq("updated_at", target.seenUpdatedAt ?? existing.updated_at)
+    .select("id,org_id,updated_at")
+    .maybeSingle()
 
   if (error) throw new Error(`Failed to delete condition template: ${error.message}`)
+  if (!data) throw new Error(STALE_WRITE)
+  if (data.id !== target.templateId || data.org_id !== resolvedOrgId || data.updated_at !== existing.updated_at) {
+    throw new Error("Deleted template could not be confirmed. Reload before retrying.")
+  }
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -309,8 +362,10 @@ export async function applyConditionTemplates(
   orgId?: string,
 ): Promise<ApplyTemplatesResult> {
   const parsed = applyConditionTemplatesSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
   await requirePermission("takeoff.write", { supabase, orgId: resolvedOrgId, userId })
+  await requireTakeoffWriteScope(context, parsed)
 
   const { data: templateRows, error: templateError } = await supabase
     .from("takeoff_condition_templates")
@@ -321,25 +376,43 @@ export async function applyConditionTemplates(
   if (templateError) {
     throw new Error(`Failed to load condition templates: ${templateError.message}`)
   }
-  const templates = (templateRows ?? []).map(mapTemplate)
-  if (templates.length === 0) throw new Error("No templates to apply")
+  const selectedIds = new Set(parsed.template_ids)
+  if (
+    !templateRows || templateRows.length !== selectedIds.size ||
+    new Set(templateRows.map((row) => row.id)).size !== selectedIds.size ||
+    templateRows.some((row) => !selectedIds.has(row.id) || row.org_id !== resolvedOrgId)
+  ) {
+    throw new Error("Selected templates unavailable or changed. Reload before retrying.")
+  }
+  const templates = templateRows.map(mapTemplate)
 
   const scopeColumn = parsed.project_id ? "project_id" : "house_plan_version_id"
   const scopeId = parsed.project_id ?? (parsed.house_plan_version_id as string)
 
-  const { data: siblings } = await supabase
-    .from("takeoff_conditions")
-    .select("name, color")
-    .eq("org_id", resolvedOrgId)
-    .eq(scopeColumn, scopeId)
-    .limit(CONDITION_LIST_CAP + 1)
+  const [{ data: siblings, count: siblingCount, error: siblingError }] = await Promise.all([
+    supabase.from("takeoff_conditions")
+      .select("id, org_id, project_id, house_plan_version_id, name, color", { count: "exact" })
+      .eq("org_id", resolvedOrgId).eq(scopeColumn, scopeId).limit(CONDITION_LIST_CAP + 1),
+    requireTakeoffCostCodes(context, templates),
+  ])
+
+  if (
+    siblingError || !siblings || typeof siblingCount !== "number" ||
+    !Number.isSafeInteger(siblingCount) || siblingCount < 0 ||
+    siblings.length !== Math.min(siblingCount, CONDITION_LIST_CAP + 1) ||
+    new Set(siblings.map((row) => row.id)).size !== siblings.length ||
+    siblings.some((row) => typeof row.id !== "string" || !row.id || row.org_id !== resolvedOrgId || row[scopeColumn] !== scopeId) ||
+    siblings.some((row) => typeof row.name !== "string" || !row.name.trim() || typeof row.color !== "string" || !row.color)
+  ) {
+    throw new Error("Unable to verify existing takeoff conditions. Reload before retrying.")
+  }
 
   const existingNames = new Set(
-    (siblings ?? []).map((row: any) => String(row.name).trim().toLowerCase()),
+    siblings.map((row) => row.name.trim().toLowerCase()),
   )
-  const usedColors = (siblings ?? []).map((row: any) => row.color as string)
-  let slotsLeft = CONDITION_LIST_CAP - (siblings?.length ?? 0)
-  let sortOrder = siblings?.length ?? 0
+  const usedColors = siblings.map((row) => row.color)
+  let slotsLeft = CONDITION_LIST_CAP - siblingCount
+  let sortOrder = siblingCount
 
   const result: ApplyTemplatesResult = { created: 0, skipped: [], over_cap: [] }
   const rows: Record<string, unknown>[] = []
@@ -349,7 +422,7 @@ export async function applyConditionTemplates(
   const byId = new Map(templates.map((template) => [template.id, template]))
   for (const templateId of parsed.template_ids) {
     const template = byId.get(templateId)
-    if (!template) continue
+    if (!template) throw new Error("Selected template unavailable. Reload before retrying.")
 
     if (existingNames.has(template.name.trim().toLowerCase())) {
       result.skipped.push(template.name)
@@ -398,7 +471,15 @@ export async function applyConditionTemplates(
       .insert(rows)
       .select("id, name")
     if (error) throw new Error(`Failed to apply templates: ${error.message}`)
-    result.created = data?.length ?? 0
+    if (
+      !data || data.length !== rows.length || new Set(data.map((row) => row.id)).size !== rows.length ||
+      data.some((row) => typeof row.id !== "string" || !row.id) ||
+      data.some((row) => !rows.some((requested) => requested.name === row.name)) ||
+      new Set(data.map((row) => row.name)).size !== rows.length
+    ) {
+      throw new Error("Applied conditions could not be confirmed. Reload before retrying.")
+    }
+    result.created = data.length
 
     await recordEvent({
       orgId: resolvedOrgId,
@@ -436,39 +517,79 @@ export async function saveConditionsAsTemplates(
   orgId?: string,
 ): Promise<HarvestTemplatesResult> {
   const parsed = saveConditionsAsTemplatesSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
   await requirePermission("takeoff.write", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: conditionRows, error } = await supabase
     .from("takeoff_conditions")
     .select(
-      "id, name, uom, depth_in, height_ft, pitch_rise, tons_per_cy, cost_code_id, waste_pct, unit_cost_cents, share_with_clients, notes",
+      "id, org_id, project_id, house_plan_version_id, name, uom, depth_in, height_ft, pitch_rise, tons_per_cy, cost_code_id, waste_pct, unit_cost_cents, share_with_clients, notes",
     )
     .eq("org_id", resolvedOrgId)
     .in("id", parsed.condition_ids)
 
   if (error) throw new Error(`Failed to load conditions: ${error.message}`)
-  if (!conditionRows || conditionRows.length === 0) {
-    throw new Error("No conditions to save")
+  const selectedIds = new Set(parsed.condition_ids)
+  if (
+    !conditionRows || conditionRows.length !== selectedIds.size ||
+    new Set(conditionRows.map((row) => row.id)).size !== selectedIds.size ||
+    conditionRows.some((row) => !selectedIds.has(row.id) || row.org_id !== resolvedOrgId ||
+      Boolean(row.project_id) === Boolean(row.house_plan_version_id))
+  ) {
+    throw new Error("Selected conditions unavailable or changed. Reload before retrying.")
   }
 
-  const { data: library, count } = await supabase
+  const scopes = new Map<string, Pick<ApplyConditionTemplatesInput, "project_id" | "house_plan_version_id">>()
+  for (const row of conditionRows) {
+    const scope = { project_id: row.project_id, house_plan_version_id: row.house_plan_version_id }
+    scopes.set(row.project_id ? `project:${row.project_id}` : `plan:${row.house_plan_version_id}`, scope)
+  }
+  // Selection is bounded to 200. Deduplicate homes and limit concurrent gates;
+  // each mutation gate still uses the canonical, audit-logged authorization.
+  const uniqueScopes = [...scopes.values()]
+  for (let offset = 0; offset < uniqueScopes.length; offset += 10) {
+    await Promise.all(uniqueScopes.slice(offset, offset + 10).map((scope) => requireTakeoffWriteScope(context, scope)))
+  }
+  await requireTakeoffCostCodes(context, conditionRows)
+
+  const { data: library, count, error: libraryError } = await supabase
     .from("takeoff_condition_templates")
     .select("name", { count: "exact" })
     .eq("org_id", resolvedOrgId)
     .limit(TEMPLATE_LIST_CAP)
 
+  const libraryCount = verifiedTemplateCount(count, libraryError)
+  if (
+    !library ||
+    library.length !== Math.min(libraryCount, TEMPLATE_LIST_CAP) ||
+    library.some((row) => typeof row.name !== "string" || !row.name.trim())
+  ) {
+    throw new Error("Unable to verify the template library names. Reload before retrying.")
+  }
+
   const existingNames = new Set(
-    (library ?? []).map((row: any) => String(row.name).trim().toLowerCase()),
+    library.map((row) => row.name.trim().toLowerCase()),
   )
-  let slotsLeft = TEMPLATE_LIST_CAP - (count ?? 0)
-  let sortOrder = count ?? 0
+  let slotsLeft = TEMPLATE_LIST_CAP - libraryCount
+  let sortOrder = libraryCount
 
   const result: HarvestTemplatesResult = { created: 0, skipped: [] }
   const rows: Record<string, unknown>[] = []
 
-  for (const row of conditionRows) {
-    const name = String(row.name).trim()
+  const byId = new Map(conditionRows.map((row) => [row.id, row]))
+  for (const conditionId of parsed.condition_ids) {
+    const row = byId.get(conditionId)
+    if (!row) throw new Error("Selected condition unavailable. Reload before retrying.")
+    for (const key of ["depth_in", "height_ft", "pitch_rise", "tons_per_cy"] as const) {
+      const value = row[key]
+      if (value !== null && value !== undefined &&
+        ((typeof value !== "number" && typeof value !== "string") || numericOrNull(value) === null)) {
+        throw new Error("Selected condition factors unavailable. Reload before retrying.")
+      }
+    }
+    const source = createConditionTemplateSchema.parse({ ...mapTemplate(row), group_name: parsed.group_name })
+    const name = source.name
     if (existingNames.has(name.toLowerCase()) || slotsLeft <= 0) {
       result.skipped.push(name)
       continue
@@ -478,18 +599,18 @@ export async function saveConditionsAsTemplates(
     rows.push({
       org_id: resolvedOrgId,
       name,
-      uom: row.uom,
-      depth_in: row.depth_in,
-      height_ft: row.height_ft,
-      pitch_rise: row.pitch_rise,
-      tons_per_cy: row.tons_per_cy,
-      cost_code_id: row.cost_code_id,
+      uom: source.uom,
+      depth_in: source.depth_in ?? null,
+      height_ft: source.height_ft ?? null,
+      pitch_rise: source.pitch_rise ?? null,
+      tons_per_cy: source.tons_per_cy ?? null,
+      cost_code_id: source.cost_code_id ?? null,
       // Color is deliberately not carried: it belongs to a sheet, not a library.
       color: null,
-      waste_pct: row.waste_pct,
-      unit_cost_cents: row.unit_cost_cents,
-      share_with_clients: row.share_with_clients,
-      notes: row.notes,
+      waste_pct: source.waste_pct ?? 0,
+      unit_cost_cents: source.unit_cost_cents ?? null,
+      share_with_clients: source.share_with_clients ?? false,
+      notes: source.notes ?? null,
       group_name: parsed.group_name?.trim() || null,
       sort_order: sortOrder++,
       created_by: userId,
@@ -500,11 +621,30 @@ export async function saveConditionsAsTemplates(
     const { data, error: insertError } = await supabase
       .from("takeoff_condition_templates")
       .insert(rows)
-      .select("id")
+      .select(TEMPLATE_SELECT)
     if (insertError) {
       throw new Error(`Failed to save templates: ${insertError.message}`)
     }
-    result.created = data?.length ?? 0
+    const requestedByName = new Map(rows.map((row) => [row.name, row]))
+    const copiedKeys = [
+      "org_id", "name", "uom", "depth_in", "height_ft", "pitch_rise", "tons_per_cy",
+      "cost_code_id", "color", "waste_pct", "unit_cost_cents", "share_with_clients",
+      "notes", "group_name", "sort_order", "created_by",
+    ] as const
+    if (
+      !data || data.length !== rows.length || new Set(data.map((row) => row.id)).size !== rows.length ||
+      new Set(data.map((row) => row.name)).size !== rows.length ||
+      data.some((row) => typeof row.id !== "string" || !row.id || !requestedByName.has(row.name)) ||
+      data.some((row) => {
+        const requested = requestedByName.get(row.name)
+        if (!requested) return true
+        const saved = mapTemplate(row)
+        return copiedKeys.some((key) => saved[key] !== requested[key])
+      })
+    ) {
+      throw new Error("Saved templates could not be confirmed. Reload before retrying.")
+    }
+    result.created = data.length
   }
 
   await recordAudit({

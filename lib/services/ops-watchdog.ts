@@ -7,7 +7,9 @@ import {
   isPaymentReconciliationStale,
   RECONCILIATION_STALE_HOURS,
 } from "@/lib/payments/operations-monitor"
-import { CRON_JOBS } from "@/lib/services/job-runs"
+import { assessCronJob, cronAlertDetail, cronAlertKind, type CronAlertKind, type CronRunFacts } from "@/lib/ops/cron-health"
+import { OPEN_WIP_ATTENTION_DETAIL, PIPELINE_FAILURE_DETAIL, PIPELINE_KEYS, PIPELINES, type PipelineKey } from "@/lib/ops/pipelines"
+import { CRON_JOBS, loadCronRunFacts, reconcileOverdueJobRuns, type CronJobDefinition } from "@/lib/services/job-runs"
 import { ACCOUNTING_JOB_TYPES } from "@/lib/services/accounting-job-types"
 import { recordEvent } from "@/lib/services/events"
 import { readPaymentExecutionConfig } from "@/lib/services/payment-launch-readiness"
@@ -55,7 +57,9 @@ const LIVENESS_LOOKUP_CONCURRENCY = 8
 
 export interface WatchdogFinding {
   code:
-    | "cron_overdue"
+    | CronAlertKind
+    | "watchdog_probe_failed"
+    | "pipeline_units_failed"
     | "outbox_jobs_failed"
     | "payment_release_past_due"
     | "payment_reconciliation_stale"
@@ -75,11 +79,15 @@ export interface WatchdogFinding {
  * incident codes every tick, healthy or not, and why only a probe that actually
  * ran is allowed to speak — "could not check" is not evidence of recovery.
  */
+type AlertEventType = "payment_operations_alert" | "accounting_sync_needs_review" | "operations_pipeline_alert"
+
 interface WatchdogIncident {
   code: string
   orgIds: string[]
   detail: string
-  eventType?: "payment_operations_alert" | "accounting_sync_needs_review"
+  eventType?: AlertEventType
+  /** For operations_pipeline_alert: which pipeline, which decides who is told. */
+  pipeline?: PipelineKey
 }
 
 interface WatchdogProbeResult {
@@ -195,7 +203,8 @@ async function loadRailEnabledOrgIds(): Promise<string[]> {
 }
 
 /**
- * The last successful run of each registered job, asked one job at a time.
+ * The run history of each registered job (`loadCronRunFacts`), asked one job
+ * at a time.
  *
  * This used to be a single scan of the 2,000 most recent successful runs, which
  * silently became a *time* window rather than a per-job one: the busiest jobs
@@ -206,28 +215,17 @@ async function loadRailEnabledOrgIds(): Promise<string[]> {
  * `late-fees`, which had succeeded fourteen hours earlier. A watchdog that cries
  * wolf about healthy jobs is one nobody reads when a real one dies.
  *
- * One indexed lookup per job (`job_runs (job_name, started_at desc)`) is exact
- * regardless of history, and thirty-odd of them on an hourly job costs nothing.
+ * Indexed lookups per job (`job_runs (job_name, started_at desc)`) are exact
+ * regardless of history, and seventy-odd of them on an hourly job cost nothing.
  */
-async function loadLastSuccessByJob(): Promise<Map<string, string>> {
-  const supabase = createServiceSupabaseClient()
-  const entries = await mapWithConcurrency(CRON_JOBS, LIVENESS_LOOKUP_CONCURRENCY, async (job) => {
-    const { data, error } = await supabase
-      .from("job_runs")
-      .select("started_at")
-      .eq("job_name", job.name)
-      .eq("status", "success")
-      .order("started_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    if (error) throw new Error(`Unable to read the ${job.name} heartbeat: ${error.message}`)
-    return [job.name, data?.started_at ?? null] as const
-  })
-  const lastSuccessByJob = new Map<string, string>()
-  for (const [name, startedAt] of entries) {
-    if (typeof startedAt === "string") lastSuccessByJob.set(name, startedAt)
-  }
-  return lastSuccessByJob
+async function loadRunFactsByJob(nowMs: number): Promise<Map<string, CronRunFacts>> {
+  const entries = await mapWithConcurrency(CRON_JOBS, LIVENESS_LOOKUP_CONCURRENCY, async (job) =>
+    [job.name, await loadCronRunFacts(job.name, livenessWindowMs(job), nowMs)] as const)
+  return new Map(entries)
+}
+
+function livenessWindowMs(job: CronJobDefinition): number {
+  return job.expectedIntervalMinutes * LIVENESS_GRACE_MULTIPLIER * 60_000
 }
 
 /**
@@ -267,60 +265,145 @@ async function checkPaymentExecutionConfig(): Promise<WatchdogProbeResult> {
 }
 
 /**
- * Liveness, plus the money jobs' incident subjects.
+ * Liveness, plus the incident subjects of the jobs whose silence costs money or
+ * production work.
  *
- * A dead cron names no organization of its own, which is exactly why nothing was
- * ever told about one: the alert router only forwarded findings that carried an
- * org. A payment job that stops firing freezes real money for every rail-enabled
- * builder, so those are the organizations it is recorded against — one incident
- * per job, so a second job dying is a second alert rather than being swallowed
- * by the first one's open incident.
+ * Each job's run history says which of three things happened, and the alert
+ * says which: the scheduler never started it, it started and its runtime died
+ * (accepted work that never completed), or it ran and failed. A running row
+ * past its deadline is closed as `timed_out` before anything is read.
+ *
+ * A dead cron names no organization of its own, which is why nothing was ever
+ * told about one: the alert router only forwarded findings that carried an org.
+ * A payment job that stops freezes money for every rail-enabled builder, so its
+ * incident is recorded against them (one per job, so a second job dying is a
+ * second alert). A production pipeline's job is recorded against the builders
+ * with work waiting on it, one incident per job, outcome and pipeline.
  */
 async function checkCronLiveness(): Promise<WatchdogProbeResult> {
+  await reconcileOverdueJobRuns()
+  const nowMs = Date.now()
+  const factsByJob = await loadRunFactsByJob(nowMs)
   const findings: WatchdogFinding[] = []
-  const lastSuccessByJob = await loadLastSuccessByJob()
+  const alertByJob = new Map<string, CronAlertKind>()
+  const pipelineJobs = new Set(PIPELINE_KEYS.flatMap((key) => PIPELINES[key].jobs.map((job) => job.name)))
 
-  const overdueJobs = new Set<string>()
   for (const job of CRON_JOBS) {
-    const lastSuccess = lastSuccessByJob.get(job.name)
-    const overdueAfterMs = job.expectedIntervalMinutes * LIVENESS_GRACE_MULTIPLIER * 60_000
-    // No row at all is only actionable once the job has had time to run; a job
-    // registered minutes ago has legitimately never succeeded.
-    if (!lastSuccess) {
-      overdueJobs.add(job.name)
-      findings.push({
-        code: "cron_overdue",
-        // Money-moving jobs are the ones worth waking someone for.
-        severity: job.name.startsWith("payment") ? "critical" : "warn",
-        detail: `${job.name} has no successful run on record`,
-        context: { job: job.name, schedule: job.scheduleLabel },
-      })
-      continue
-    }
-    const ageMs = Date.now() - new Date(lastSuccess).getTime()
-    if (ageMs > overdueAfterMs) {
-      overdueJobs.add(job.name)
-      findings.push({
-        code: "cron_overdue",
-        severity: job.name.startsWith("payment") ? "critical" : "warn",
-        detail: `${job.name} last succeeded ${Math.round(ageMs / 60_000)} minutes ago, expected every ${job.expectedIntervalMinutes}`,
-        context: { job: job.name, schedule: job.scheduleLabel, last_success: lastSuccess },
-      })
-    }
+    const facts = factsByJob.get(job.name) ?? { inFlight: null, lastFinished: null, timedOutInWindow: 0, lastSuccessAt: null }
+    const kind = cronAlertKind(assessCronJob(facts, livenessWindowMs(job), nowMs))
+    if (!kind) continue
+    alertByJob.set(job.name, kind)
+    findings.push({
+      code: kind,
+      // Money-moving jobs, and production-pipeline jobs that are not doing their
+      // work at all, are the ones worth waking someone for.
+      severity: job.name.startsWith("payment") || (pipelineJobs.has(job.name) && kind !== "cron_failing") ? "critical" : "warn",
+      detail: cronAlertDetail(kind, job, facts.lastSuccessAt, nowMs),
+      context: { job: job.name, schedule: job.scheduleLabel, last_success: facts.lastSuccessAt, last_run_status: facts.lastFinished?.status ?? null, run_in_flight: facts.inFlight !== null, timed_out_in_window: facts.timedOutInWindow },
+    })
   }
 
   const paymentJobs = CRON_JOBS.filter((job) => job.name.startsWith("payment"))
-  const affectedOrgIds = paymentJobs.some((job) => overdueJobs.has(job.name))
-    ? await loadRailEnabledOrgIds()
-    : []
-  return {
-    findings,
-    incidents: paymentJobs.map((job) => ({
+  const railOrgIds = paymentJobs.some((job) => alertByJob.has(job.name)) ? await loadRailEnabledOrgIds() : []
+  const incidents: WatchdogIncident[] = paymentJobs.map((job) => {
+    const kind = alertByJob.get(job.name)
+    return {
       code: `cron_overdue:${job.name}`,
-      orgIds: overdueJobs.has(job.name) ? affectedOrgIds : [],
-      detail: `The ${job.name} job (${job.scheduleLabel}) has stopped running on schedule, so vendor payments are not being processed.`,
-    })),
+      orgIds: kind ? railOrgIds : [],
+      detail: kind
+        ? `The ${job.name} job (${job.scheduleLabel}) ${kind === "cron_timed_out" ? "started but died before finishing" : kind === "cron_not_started" ? "has not been started on schedule" : "keeps failing"}, so vendor payments are not being processed.`
+        : "",
+    }
+  })
+
+  // A run that failed reports its failed units, which are alerted on by
+  // themselves (checkProductionPipelines); here only a job that is not doing
+  // its work at all — never started, or died mid-run — is routed to the
+  // builders whose work waits on it.
+  // Who is waiting is a second read. If it fails, the payment incidents above
+  // still stand and the pipeline incidents are left out (not resolved): "could
+  // not check" must never read as recovery, nor take the money alerts with it.
+  let backlog = new Map<string, string[]>()
+  if ([...pipelineJobs].some((name) => alertByJob.has(name))) {
+    try {
+      backlog = await loadPipelineFindings()
+    } catch (error) {
+      findings.push({
+        code: "watchdog_probe_failed",
+        severity: "critical",
+        detail: `A watchdog probe failed: ${error instanceof Error ? error.message : String(error)}`,
+        context: { probe: "pipeline_backlog" },
+      })
+      return { findings, incidents }
+    }
   }
+  const kinds = ["cron_not_started", "cron_timed_out"] as const
+  for (const pipeline of PIPELINE_KEYS) {
+    const definition = PIPELINES[pipeline]
+    for (const { name, backlogCode } of definition.jobs) {
+      const job = CRON_JOBS.find((entry) => entry.name === name)
+      if (!job) continue
+      for (const kind of kinds) {
+        const active = alertByJob.get(name) === kind
+        incidents.push({
+          code: `${kind}:${name}:${pipeline}`,
+          orgIds: active ? (backlog.get(backlogCode) ?? []) : [],
+          detail: active ? `${cronAlertDetail(kind, job, factsByJob.get(name)?.lastSuccessAt ?? null, nowMs)}. ${definition.label} work is waiting on it.` : "",
+          eventType: "operations_pipeline_alert",
+          pipeline,
+        })
+      }
+    }
+  }
+  return { findings, incidents }
+}
+
+/** `operations_pipeline_findings()` as code -> affected organizations (complete, never paged). */
+async function loadPipelineFindings(): Promise<Map<string, string[]>> {
+  const { data, error } = await createServiceSupabaseClient().rpc("operations_pipeline_findings")
+  if (error) throw new Error(`Unable to read production pipeline health: ${error.message}`)
+  const byCode = new Map<string, string[]>()
+  for (const row of (data ?? []) as Array<{ code: string; org_id: string }>) {
+    byCode.set(row.code, [...(byCode.get(row.code) ?? []), row.org_id])
+  }
+  return byCode
+}
+
+/**
+ * Invariant: production work that failed or stopped. Releases parked in
+ * attention, starts jobs and warranty enrollments that exhausted their retries,
+ * imports that failed or stopped moving. Each is raised against exactly the
+ * organizations it affects, and resolved for everyone else.
+ */
+async function checkProductionPipelines(): Promise<WatchdogProbeResult> {
+  const byCode = await loadPipelineFindings()
+  const findings: WatchdogFinding[] = []
+  const incidents: WatchdogIncident[] = []
+  for (const pipeline of PIPELINE_KEYS) {
+    for (const code of PIPELINES[pipeline].failures) {
+      const orgIds = byCode.get(code) ?? []
+      if (orgIds.length > 0) {
+        findings.push({
+          code: "pipeline_units_failed",
+          severity: "critical",
+          detail: `${orgIds.length} organization(s): ${PIPELINE_FAILURE_DETAIL[code]}`,
+          context: { pipeline, finding: code, org_ids: orgIds.slice(0, 20) },
+        })
+      }
+      incidents.push({ code, orgIds, detail: PIPELINE_FAILURE_DETAIL[code], eventType: "operations_pipeline_alert", pipeline })
+    }
+  }
+  // Platform work: a finding for operators, no incident for the builder.
+  const openWipOrgIds = byCode.get("open_wip_attention") ?? []
+  if (openWipOrgIds.length > 0) {
+    findings.push({
+      code: "pipeline_units_failed",
+      severity: "critical",
+      detail: `${openWipOrgIds.length} organization(s): ${OPEN_WIP_ATTENTION_DETAIL}`,
+      context: { pipeline: "imports", finding: "open_wip_attention", org_ids: openWipOrgIds.slice(0, 20) },
+    })
+  }
+  return { findings, incidents }
 }
 
 /**
@@ -628,6 +711,7 @@ export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }>
     checkStalePaymentStates(),
     checkFailedOutboxJobs(),
     checkAccountingSyncTruthfulness(),
+    checkProductionPipelines(),
   ])
   const findings: WatchdogFinding[] = []
   const incidents: WatchdogIncident[] = []
@@ -640,7 +724,7 @@ export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }>
       incidents.push(...probe.value.incidents)
     } else {
       findings.push({
-        code: "cron_overdue",
+        code: "watchdog_probe_failed",
         severity: "critical",
         detail: `A watchdog probe failed: ${probe.reason instanceof Error ? probe.reason.message : String(probe.reason)}`,
         context: {},
@@ -658,14 +742,16 @@ export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }>
   )
   const detailByDestination = new Map<string, {
     orgId: string
-    eventType: "payment_operations_alert" | "accounting_sync_needs_review"
+    eventType: AlertEventType
+    pipeline: PipelineKey | null
     findings: Array<{ code: string; detail: string }>
   }>()
   for (const { incident, notifyOrgIds } of synced) {
     for (const orgId of notifyOrgIds) {
       const eventType = incident.eventType ?? "payment_operations_alert"
-      const key = `${eventType}:${orgId}`
-      const destination = detailByDestination.get(key) ?? { orgId, eventType, findings: [] }
+      const pipeline = incident.pipeline ?? null
+      const key = `${eventType}:${pipeline ?? ""}:${orgId}`
+      const destination = detailByDestination.get(key) ?? { orgId, eventType, pipeline, findings: [] }
       destination.findings.push({ code: incident.code, detail: incident.detail })
       detailByDestination.set(key, destination)
     }
@@ -675,15 +761,17 @@ export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }>
       recordEvent({
         orgId: destination.orgId,
         eventType: destination.eventType,
-        entityType: destination.eventType === "accounting_sync_needs_review" ? "accounting_sync_record" : "payment_rail_policy",
+        entityType: destination.eventType === "accounting_sync_needs_review"
+          ? "accounting_sync_record"
+          : destination.eventType === "operations_pipeline_alert" ? "operations_pipeline" : "payment_rail_policy",
         entityId: destination.orgId,
-        payload: { findings: destination.findings },
+        payload: destination.pipeline ? { pipeline: destination.pipeline, findings: destination.findings } : { findings: destination.findings },
       }),
     ),
   )
   const failedAlertWrites = alertWrites.filter((result) => result.status === "rejected")
   if (failedAlertWrites.length > 0) {
-    throw new Error(`Unable to persist ${failedAlertWrites.length} critical payment watchdog alert(s)`)
+    throw new Error(`Unable to persist ${failedAlertWrites.length} critical watchdog alert(s)`)
   }
 
   return { findings }

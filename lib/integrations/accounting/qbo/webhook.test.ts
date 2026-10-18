@@ -79,9 +79,9 @@ describe("extractIntuitEntityEvents", () => {
     expect(offsetEvent.eventId).toBe("12345:Invoice:77:Update:2026-02-12T14:30:00.000Z")
   })
 
-  it("preserves the raw lastUpdated alongside the normalized id", () => {
+  it("normalizes lastUpdated alongside the replay id", () => {
     const [event] = extractIntuitEntityEvents(notification("2026-02-12T09:30:00-05:00"))
-    expect(event.lastUpdated).toBe("2026-02-12T09:30:00-05:00")
+    expect(event.lastUpdated).toBe("2026-02-12T14:30:00.000Z")
     expect(event).toMatchObject({ realmId: "12345", entityName: "Invoice", entityId: "77", operation: "Update" })
   })
 
@@ -91,35 +91,29 @@ describe("extractIntuitEntityEvents", () => {
     expect(first.eventId).not.toBe(second.eventId)
   })
 
-  it("substitutes placeholders for a missing realmId and missing entity fields", () => {
-    const events = extractIntuitEntityEvents({
-      eventNotifications: [{ dataChangeEvent: { entities: [{}] } }],
-    })
-
-    expect(events).toEqual([
-      {
-        eventId: "unknown-realm:unknown-entity:unknown-id:unknown-op:unknown-time",
-        realmId: "unknown-realm",
-        entityName: "unknown-entity",
-        entityId: "unknown-id",
-        operation: "unknown-op",
-        lastUpdated: "unknown-time",
-      },
-    ])
-  })
-
-  it("leaves the unknown-time placeholder unparsed rather than turning it into a date", () => {
-    const [event] = extractIntuitEntityEvents({
+  it("rejects missing identities and timestamps", () => {
+    expect(() => extractIntuitEntityEvents({ eventNotifications: [{ dataChangeEvent: { entities: [{}] } }] })).toThrow()
+    expect(() => extractIntuitEntityEvents({
       eventNotifications: [{ realmId: "1", dataChangeEvent: { entities: [{ id: "2", name: "Bill", operation: "Delete" }] } }],
-    })
-    expect(event.eventId).toBe("1:Bill:2:Delete:unknown-time")
+    })).toThrow()
   })
 
-  it("returns nothing for payloads with no notifications or no entities", () => {
-    expect(extractIntuitEntityEvents({})).toEqual([])
-    expect(extractIntuitEntityEvents(null)).toEqual([])
-    expect(extractIntuitEntityEvents({ eventNotifications: [{ realmId: "1" }] })).toEqual([])
-    expect(extractIntuitEntityEvents({ eventNotifications: [{ realmId: "1", dataChangeEvent: {} }] })).toEqual([])
+  it("allows explicit empty notifications and rejects unknown envelopes", () => {
+    expect(extractIntuitEntityEvents([])).toEqual([])
+    expect(extractIntuitEntityEvents({ eventNotifications: [] })).toEqual([])
+    expect(() => extractIntuitEntityEvents({})).toThrow()
+    expect(() => extractIntuitEntityEvents(null)).toThrow()
+    expect(() => extractIntuitEntityEvents({ eventNotifications: [{ realmId: "1" }] })).toThrow()
+  })
+
+  it("normalizes CloudEvents to the same semantic identity as legacy notifications", () => {
+    const [event] = extractIntuitEntityEvents([{
+      id: "delivery-id", specversion: "1.0", type: "qbo.invoice.updated.v1",
+      intuitaccountid: "12345", intuitentityid: "77", time: "2026-02-12T09:30:00-05:00",
+    }])
+    const [legacy] = extractIntuitEntityEvents(notification("2026-02-12T14:30:00Z"))
+    expect(event.eventId).toBe(legacy.eventId)
+    expect(event.providerEventId).toBe("delivery-id")
   })
 
   it("flattens every entity across every notification", () => {

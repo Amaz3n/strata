@@ -60,7 +60,6 @@ const releaseNoteSchema = z.object({
 async function requireReleaseNotesAdmin() {
   await requireAnyPermissionGuard([
     "platform.feature_flags.manage",
-    "features.manage",
   ])
 }
 

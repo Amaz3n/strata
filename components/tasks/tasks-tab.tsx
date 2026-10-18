@@ -1,7 +1,6 @@
 "use client"
 
-import { useState, useMemo, useEffect, type CSSProperties } from "react"
-import type React from "react"
+import { useState, useMemo, useEffect } from "react"
 import { format, parseISO, isPast, isToday, isTomorrow, differenceInDays } from "date-fns"
 import { toast } from "sonner"
 
@@ -11,10 +10,10 @@ import { cn } from "@/lib/utils"
 import type { AssignableResource } from "@/app/(app)/projects/[id]/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { LinkedDrawings } from "@/components/drawings"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
-  uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
 
@@ -24,7 +23,9 @@ import { Progress } from "@/components/ui/progress"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
+import { SearchPicker, type SearchPickerItem } from "@/components/ui/search-picker"
+import { searchTaskProjectsAction } from "@/app/(app)/tasks/actions"
+import { MentionTextarea, HighlightedMentionsText } from "@/components/daily-logs/mention-textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -37,13 +38,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Sheet, SheetContent } from "@/components/ui/sheet"
 import {
   Select,
   SelectContent,
   SelectGroup,
-  SelectLabel,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -82,9 +82,10 @@ import {
   User,
   Trash2,
   Edit,
-  Check,
   X,
 } from "@/components/icons"
+
+import { listTaskPeopleAction } from "@/app/(app)/tasks/actions"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -105,11 +106,16 @@ interface TaskTeamMember {
 }
 
 interface TasksTabProps {
+  compact?: boolean
+  readOnly?: boolean
   tasks: Task[]
-  /** Projects the task can be attached to. Empty = personal-only. */
-  projects: TaskProjectOption[]
+  /** What the org calls a project (Project, Home): the picker's label. */
+  projectNoun: string
   /** Preselect the project filter (e.g. arriving from a project's Tasks nav). */
-  initialProjectFilter?: string
+  initialProject?: TaskProjectOption
+  initialTaskId?: string
+  initialCreateOpen?: boolean
+  fixedProjectName?: string
   assignableResources: AssignableResource[]
   onTaskCreate: (input: TaskInput) => Promise<Task>
   onTaskUpdate: (taskId: string, input: Partial<TaskInput>) => Promise<Task>
@@ -120,35 +126,35 @@ const NO_PROJECT = "none"
 
 const STATUS_CONFIG: Record<TaskStatus, { label: string; color: string; bgColor: string }> = {
   todo: { label: "To Do", color: "text-muted-foreground", bgColor: "bg-muted" },
-  in_progress: { label: "In Progress", color: "text-blue-600 dark:text-blue-400", bgColor: "bg-blue-500/10" },
+  in_progress: { label: "In Progress", color: "text-chart-1", bgColor: "bg-chart-1/10" },
   blocked: { label: "Blocked", color: "text-destructive", bgColor: "bg-destructive/10" },
-  done: { label: "Done", color: "text-emerald-600 dark:text-emerald-400", bgColor: "bg-emerald-500/10" },
+  done: { label: "Done", color: "text-success", bgColor: "bg-success/10" },
 }
 
 const PRIORITY_CONFIG: Record<TaskPriority, { label: string; color: string; bgColor: string; dotColor: string }> = {
-  low: { label: "Low", color: "text-muted-foreground", bgColor: "bg-muted", dotColor: "bg-slate-400" },
+  low: { label: "Low", color: "text-muted-foreground", bgColor: "bg-muted", dotColor: "bg-muted-foreground/60" },
   normal: { label: "Normal", color: "text-primary", bgColor: "bg-primary/10", dotColor: "bg-primary" },
-  high: { label: "High", color: "text-amber-600 dark:text-amber-400", bgColor: "bg-amber-500/10", dotColor: "bg-amber-500" },
+  high: { label: "High", color: "text-warning", bgColor: "bg-warning/10", dotColor: "bg-warning" },
   urgent: { label: "Urgent", color: "text-destructive", bgColor: "bg-destructive/10", dotColor: "bg-destructive" },
 }
 
 const TRADE_CONFIG: Record<TaskTrade, { label: string; color: string }> = {
-  general: { label: "General", color: "bg-slate-500" },
-  demolition: { label: "Demolition", color: "bg-gray-600" },
-  concrete: { label: "Concrete", color: "bg-stone-500" },
-  framing: { label: "Framing", color: "bg-amber-600" },
-  roofing: { label: "Roofing", color: "bg-red-600" },
-  electrical: { label: "Electrical", color: "bg-yellow-500" },
-  plumbing: { label: "Plumbing", color: "bg-blue-600" },
-  hvac: { label: "HVAC", color: "bg-cyan-500" },
-  insulation: { label: "Insulation", color: "bg-pink-500" },
-  drywall: { label: "Drywall", color: "bg-gray-400" },
-  painting: { label: "Painting", color: "bg-purple-500" },
-  flooring: { label: "Flooring", color: "bg-orange-600" },
-  cabinets: { label: "Cabinets", color: "bg-amber-700" },
-  tile: { label: "Tile", color: "bg-teal-500" },
-  landscaping: { label: "Landscaping", color: "bg-green-600" },
-  other: { label: "Other", color: "bg-slate-400" },
+  general: { label: "General", color: "bg-muted-foreground" },
+  demolition: { label: "Demolition", color: "bg-foreground/60" },
+  concrete: { label: "Concrete", color: "bg-foreground/40" },
+  framing: { label: "Framing", color: "bg-chart-3" },
+  roofing: { label: "Roofing", color: "bg-destructive" },
+  electrical: { label: "Electrical", color: "bg-warning" },
+  plumbing: { label: "Plumbing", color: "bg-chart-1" },
+  hvac: { label: "HVAC", color: "bg-chart-2" },
+  insulation: { label: "Insulation", color: "bg-chart-5/60" },
+  drywall: { label: "Drywall", color: "bg-muted-foreground/60" },
+  painting: { label: "Painting", color: "bg-chart-5" },
+  flooring: { label: "Flooring", color: "bg-chart-3/70" },
+  cabinets: { label: "Cabinets", color: "bg-chart-3/50" },
+  tile: { label: "Tile", color: "bg-chart-2/60" },
+  landscaping: { label: "Landscaping", color: "bg-success" },
+  other: { label: "Other", color: "bg-muted-foreground/60" },
 }
 
 const STATUS_ORDER: TaskStatus[] = ["todo", "in_progress", "blocked", "done"]
@@ -213,11 +219,11 @@ function getChecklistProgress(checklist?: TaskChecklistItem[]): { completed: num
 // Linear-style status glyph: empty ring for to-do, a half-filled pie for in
 // progress, a slashed circle for blocked, and a green check when done.
 function StatusCircle({ status, className }: { status: TaskStatus; className?: string }) {
-  if (status === "done") return <CheckCircle2 className={cn("size-4 text-emerald-600 dark:text-emerald-400", className)} />
+  if (status === "done") return <CheckCircle2 className={cn("size-4 text-success", className)} />
   if (status === "blocked") return <Ban className={cn("size-4 text-destructive", className)} />
 
   const fraction = status === "in_progress" ? 0.5 : 0
-  const color = status === "in_progress" ? "text-blue-500" : "text-muted-foreground"
+  const color = status === "in_progress" ? "text-chart-1" : "text-muted-foreground"
   const pieR = 2.5
   const circ = 2 * Math.PI * pieR
   return (
@@ -238,39 +244,19 @@ function StatusCircle({ status, className }: { status: TaskStatus; className?: s
   )
 }
 
-function StatusMenu({
-  status,
-  onChange,
-  children,
-}: {
-  status: TaskStatus
-  onChange: (status: TaskStatus) => void
-  children: React.ReactNode
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-44">
-        {STATUS_ORDER.map((item) => (
-          <DropdownMenuItem key={item} onSelect={() => onChange(item)} className="gap-2">
-            <StatusCircle status={item} />
-            {STATUS_CONFIG[item].label}
-            {item === status && <Check className="ml-auto size-3.5" />}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
 // ============================================
 // MAIN COMPONENT
 // ============================================
 
 export function TasksTab({
+  compact = false,
+  readOnly = false,
   tasks: initialTasks,
-  projects,
-  initialProjectFilter,
+  projectNoun,
+  initialProject,
+  initialTaskId,
+  initialCreateOpen = false,
+  fixedProjectName,
   assignableResources,
   onTaskCreate,
   onTaskUpdate,
@@ -280,13 +266,14 @@ export function TasksTab({
   const [searchQuery, setSearchQuery] = useState("")
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | "all">("all")
   const [assigneeFilter, setAssigneeFilter] = useState<string | "all">("all")
-  const [projectFilter, setProjectFilter] = useState<string | "all">(initialProjectFilter ?? "all")
+  const [projectFilter, setProjectFilter] = useState<string | "all">(initialProject?.id ?? "all")
+  const [filterProject, setFilterProject] = useState<TaskProjectOption | null>(initialProject ?? null)
   const [tradeFilter, setTradeFilter] = useState<TaskTrade | "all">("all")
   const [collapsedStatuses, setCollapsedStatuses] = useState<TaskStatus[]>(["done"])
 
-  const [createOpen, setCreateOpen] = useState(false)
-  const [detailOpen, setDetailOpen] = useState(false)
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null)
+  const [createOpen, setCreateOpen] = useState(initialCreateOpen)
+  const [detailOpen, setDetailOpen] = useState(Boolean(initialTaskId))
+  const [selectedTask, setSelectedTask] = useState<Task | null>(() => initialTasks.find(task => task.id === initialTaskId) ?? null)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -360,13 +347,7 @@ export function TasksTab({
     return count
   }, [priorityFilter, assigneeFilter, tradeFilter, projectFilter])
 
-  const projectName = (id: string | null | undefined) =>
-    id ? projects.find((p) => p.id === id)?.name : undefined
-
-  const defaultCreateProjectId =
-    projectFilter !== "all" && projectFilter !== NO_PROJECT && projects.some((p) => p.id === projectFilter)
-      ? projectFilter
-      : undefined
+  const defaultCreateProject = filterProject?.id === projectFilter ? filterProject : undefined
 
   // ============================================
   // HANDLERS
@@ -377,10 +358,14 @@ export function TasksTab({
     description?: string
     project_id?: string
     reminder_at?: string
+    assignee_id?: string
+    assignee_kind?: "user"
+    mentioned_user_ids?: string[]
   }) => {
     setIsSubmitting(true)
     try {
       const created = await onTaskCreate({
+        ...values,
         title: values.title,
         description: values.description,
         project_id: values.project_id,
@@ -393,7 +378,7 @@ export function TasksTab({
       toast.success("Task created", { description: created.title })
     } catch (error) {
       console.error(error)
-      toast.error("Failed to create task")
+      toast.error(error instanceof Error ? error.message : "Failed to create task")
     } finally {
       setIsSubmitting(false)
     }
@@ -407,7 +392,7 @@ export function TasksTab({
       return updated
     } catch (error) {
       console.error(error)
-      toast.error("Failed to update task")
+      toast.error(error instanceof Error ? error.message : "Failed to update task")
       throw error
     }
   }
@@ -424,7 +409,7 @@ export function TasksTab({
       console.error(error)
       setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: previous } : t)))
       if (selectedTask?.id === task.id) setSelectedTask({ ...selectedTask, status: previous })
-      toast.error("Failed to update task")
+      toast.error(error instanceof Error ? error.message : "Failed to update task")
     }
   }
 
@@ -476,7 +461,7 @@ export function TasksTab({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
       {/* Toolbar */}
-      <div className="shrink-0 border-b bg-background/95 px-3 py-2 backdrop-blur">
+      {compact ? <div className="flex items-center justify-between border-t py-2"><h2 className="text-sm font-semibold">Tasks <span className="ml-1 font-normal text-muted-foreground">{tasks.filter(task => task.status !== "done").length || ""}</span></h2>{!readOnly && <Button variant="ghost" size="sm" className="h-7 rounded-none px-2 text-xs" onClick={() => setCreateOpen(true)}><Plus className="size-3.5" />Add task</Button>}</div> : <div className="shrink-0 border-b bg-background/95 px-3 py-2 backdrop-blur">
         <div className="flex items-center gap-2">
           <div className="relative w-[220px]">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -583,28 +568,31 @@ export function TasksTab({
                 </Select>
               </div>
 
-              {projects.length > 0 && (
-                <div className="space-y-1.5">
-                  <p className="text-xs text-muted-foreground">Project</p>
-                  <Select value={projectFilter} onValueChange={setProjectFilter}>
-                    <SelectTrigger size="sm" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All projects</SelectItem>
-                      <SelectItem value={NO_PROJECT}>Personal (no project)</SelectItem>
-                      <SelectGroup>
-                        <SelectLabel>Projects</SelectLabel>
-                        {projects.map((project) => (
-                          <SelectItem key={project.id} value={project.id}>
-                            {project.name}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
+              <div className="space-y-1.5">
+                <p className="text-xs text-muted-foreground">{projectNoun}</p>
+                <Select value={projectFilter} onValueChange={setProjectFilter}>
+                  <SelectTrigger size="sm" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All {projectNoun.toLowerCase()}s</SelectItem>
+                    <SelectItem value={NO_PROJECT}>Personal (none)</SelectItem>
+                    {filterProject ? <SelectItem value={filterProject.id}>{filterProject.name}</SelectItem> : null}
+                  </SelectContent>
+                </Select>
+                {projectFilter !== NO_PROJECT ? (
+                  <SearchPicker
+                    label={`Find a ${projectNoun.toLowerCase()}`}
+                    noun={projectNoun.toLowerCase()}
+                    value={filterProject && filterProject.id === projectFilter ? { ...filterProject, detail: "" } : null}
+                    search={searchTaskProjectsAction}
+                    onChange={(next) => {
+                      setFilterProject(next ? { id: next.id, name: next.name } : null)
+                      setProjectFilter(next ? next.id : "all")
+                    }}
+                  />
+                ) : null}
+              </div>
             </PopoverContent>
           </Popover>
 
@@ -617,9 +605,10 @@ export function TasksTab({
         </div>
       </div>
 
+      }
       {/* Grouped list */}
-      <div className="min-h-0 flex-1 overflow-auto">
-        {grouped.length === 0 ? (
+      <div className={compact ? "max-h-80 overflow-auto" : "min-h-0 flex-1 overflow-auto"}>
+        {grouped.length === 0 && compact ? <p className="py-2 text-xs text-muted-foreground">No tasks yet.</p> : grouped.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">
             <div className="flex size-12 items-center justify-center rounded-none bg-muted">
               <CheckCircle2 className="size-6 text-muted-foreground" />
@@ -662,7 +651,7 @@ export function TasksTab({
                       const dateStr = task.reminder_at ?? task.due_date
                       const dateInfo = formatDueDate(dateStr ?? undefined)
                       const isReminder = Boolean(task.reminder_at)
-                      const project = task.project_name ?? projectName(task.project_id)
+                      const project = task.project_name
                       return (
                         <div
                           key={task.id}
@@ -671,19 +660,11 @@ export function TasksTab({
                             selectedTask?.id === task.id && detailOpen && "bg-accent/70",
                           )}
                         >
-                          <StatusMenu status={task.status} onChange={(value) => handleQuickStatusChange(task, value)}>
-                            <button
-                              type="button"
-                              onClick={(event) => event.stopPropagation()}
-                              className="flex size-6 shrink-0 items-center justify-center rounded-none hover:bg-accent"
-                              aria-label={`Status: ${STATUS_CONFIG[task.status].label}`}
-                            >
-                              <StatusCircle status={task.status} />
-                            </button>
-                          </StatusMenu>
+                          <Checkbox checked={task.status === "done"} disabled={readOnly} className="rounded-none" aria-label={`Mark ${task.title} ${task.status === "done" ? "incomplete" : "complete"}`} onCheckedChange={(checked) => { void handleQuickStatusChange(task, checked ? "done" : "todo") }} />
 
                           <button
                             type="button"
+                            disabled={readOnly}
                             onClick={() => openTaskDetail(task)}
                             className="flex min-w-0 flex-1 items-center gap-2 text-left"
                           >
@@ -698,10 +679,12 @@ export function TasksTab({
 
                           <button
                             type="button"
+                            disabled={readOnly}
                             onClick={() => openTaskDetail(task)}
+                            aria-label={`Task details · ${taskAssigneeName(task) ?? "Unassigned"}`}
                             className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground"
                           >
-                            <span className="hidden max-w-36 items-center gap-1 truncate md:flex">
+                            <span className={cn("hidden max-w-36 items-center gap-1 truncate md:flex", compact && "md:hidden")}>
                               <MapPin className="size-3 shrink-0" />
                               {project ?? "Personal"}
                             </span>
@@ -715,6 +698,7 @@ export function TasksTab({
                             ) : (
                               <User className="size-4" />
                             )}
+                            {compact && <span className="max-w-24 truncate">{taskAssigneeName(task) ?? "Unassigned"}</span>}
                             {dateStr && (
                               <span
                                 className={cn(
@@ -722,7 +706,7 @@ export function TasksTab({
                                   dateInfo.isOverdue
                                     ? "text-destructive"
                                     : dateInfo.isPriority
-                                      ? "text-amber-600 dark:text-amber-400"
+                                      ? "text-warning"
                                       : "text-muted-foreground",
                                 )}
                                 title={isReminder ? "Reminder" : "Due date"}
@@ -740,6 +724,7 @@ export function TasksTab({
                                 onClick={(event) => event.stopPropagation()}
                                 className="flex size-6 shrink-0 items-center justify-center rounded-none text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 data-[state=open]:opacity-100"
                                 aria-label="Task actions"
+                                disabled={readOnly}
                               >
                                 <MoreHorizontal className="size-4" />
                               </button>
@@ -777,20 +762,24 @@ export function TasksTab({
       <CreateTaskDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        projects={projects}
-        defaultProjectId={defaultCreateProjectId}
+        projectNoun={projectNoun}
+        team={team}
+        defaultProject={defaultCreateProject}
+        fixedProjectName={fixedProjectName}
         onCreate={handleCreateTask}
         isSubmitting={isSubmitting}
       />
 
       {/* Task Detail Sheet */}
       {selectedTask && (
-        <TaskDetailSheet
+        <TaskDetailDialog
+          key={selectedTask.id}
           open={detailOpen}
           onOpenChange={setDetailOpen}
           task={selectedTask}
+          fixedProjectName={fixedProjectName}
           team={team}
-          projects={projects}
+          projectNoun={projectNoun}
           onUpdate={handleUpdateTask}
           onDelete={() => {
             setTaskToDelete(selectedTask)
@@ -823,41 +812,123 @@ export function TasksTab({
   )
 }
 
+function useTaskPeople(open: boolean, projectId: string | undefined, fallback: TaskTeamMember[], prospectiveProject = false) {
+  const [state, setState] = useState<{ projectId?: string; team: TaskTeamMember[]; loaded: boolean }>({ team: [], loaded: false })
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setState({ projectId, team: [], loaded: false })
+    listTaskPeopleAction(projectId, prospectiveProject).then(team => { if (!cancelled) setState({ projectId, team, loaded: true }) }).catch((error) => { if (!cancelled) { toast.error(error instanceof Error ? error.message : "Unable to load task recipients"); setState({ projectId, team: [], loaded: false }) } })
+    return () => { cancelled = true }
+  }, [open, projectId, prospectiveProject])
+  return { team: open ? (state.projectId === projectId ? state.team : []) : fallback, loading: open && (!state.loaded || state.projectId !== projectId) }
+}
+
+// ============================================
+// PROJECT FIELD
+// ============================================
+
+/**
+ * Attach a task to a project by searching, never by scrolling the portfolio.
+ * `canClear` offers "Make personal", which clears the project.
+ */
+function TaskProjectField({
+  noun,
+  value,
+  canClear = false,
+  onChange,
+}: {
+  noun: string
+  value: SearchPickerItem | null
+  canClear?: boolean
+  onChange: (value: SearchPickerItem | null) => void
+}) {
+  const [picking, setPicking] = useState(false)
+  if (!value && !picking) {
+    return (
+      <Button type="button" variant="outline" className="w-full justify-start rounded-none bg-muted/50" onClick={() => setPicking(true)}>
+        <FolderOpen className="size-4" />
+        Personal task · attach to a {noun.toLowerCase()}
+      </Button>
+    )
+  }
+  return (
+    <div className="space-y-2">
+      <SearchPicker
+        label={noun}
+        value={picking ? null : value}
+        search={searchTaskProjectsAction}
+        onChange={(next) => {
+          if (next) {
+            setPicking(false)
+            onChange(next)
+          } else {
+            setPicking(true)
+          }
+        }}
+      />
+      {picking && value ? (
+        <Button type="button" variant="ghost" size="sm" onClick={() => setPicking(false)}>Keep {value.name}</Button>
+      ) : null}
+      {canClear && (value || picking) ? (
+        <Button type="button" variant="ghost" size="sm" onClick={() => { setPicking(false); onChange(null) }}>Make personal</Button>
+      ) : null}
+    </div>
+  )
+}
+
 // ============================================
 // CREATE TASK DIALOG
 // ============================================
 
 interface CreateTaskDialogProps {
+  team: TaskTeamMember[]
   open: boolean
   onOpenChange: (open: boolean) => void
-  projects: TaskProjectOption[]
-  defaultProjectId?: string
-  onCreate: (values: { title: string; description?: string; project_id?: string; reminder_at?: string }) => void
+  projectNoun: string
+  fixedProjectName?: string
+  defaultProject?: TaskProjectOption
+  onCreate: (values: { title: string; description?: string; project_id?: string; reminder_at?: string; assignee_id?: string; assignee_kind?: "user"; mentioned_user_ids?: string[] }) => void
   isSubmitting: boolean
 }
 
-function CreateTaskDialog({ open, onOpenChange, projects, defaultProjectId, onCreate, isSubmitting }: CreateTaskDialogProps) {
+function CreateTaskDialog({ team: initialTeam, open, onOpenChange, projectNoun, defaultProject, fixedProjectName, onCreate, isSubmitting }: CreateTaskDialogProps) {
+  const [assigneeId, setAssigneeId] = useState("unassigned")
+  const [mentionedUserIds, setMentionedUserIds] = useState<string[]>([])
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
-  const [projectId, setProjectId] = useState<string>(defaultProjectId ?? NO_PROJECT)
+  const defaultId = defaultProject?.id
+  const defaultName = defaultProject?.name
+  const [project, setProject] = useState<SearchPickerItem | null>(defaultId && defaultName ? { id: defaultId, name: defaultName, detail: "" } : null)
+  const { team, loading: peopleLoading } = useTaskPeople(open, project?.id, initialTeam, Boolean(fixedProjectName && !defaultId))
+  const mentionableUsers = useMemo(() => team.map(member => ({ id: member.user_id, name: member.full_name, avatar_url: member.avatar_url })), [team])
   const [reminderAt, setReminderAt] = useState<Date | undefined>()
 
   // Reset the composer each time it opens so it stays a fast capture surface.
   useEffect(() => {
     if (open) {
+      setAssigneeId("unassigned")
+      setMentionedUserIds([])
       setTitle("")
       setDescription("")
-      setProjectId(defaultProjectId ?? NO_PROJECT)
+      setProject(defaultId && defaultName ? { id: defaultId, name: defaultName, detail: "" } : null)
       setReminderAt(undefined)
     }
-  }, [open, defaultProjectId])
+  }, [open, defaultId, defaultName])
+
+  useEffect(() => {
+    if (!peopleLoading && assigneeId !== "unassigned" && !team.some(person => person.user_id === assigneeId)) setAssigneeId("unassigned")
+  }, [peopleLoading, team, assigneeId])
 
   const submit = () => {
-    if (!title.trim() || isSubmitting) return
+    if (!title.trim() || isSubmitting || peopleLoading) return
     onCreate({
+      assignee_id: assigneeId === "unassigned" ? undefined : assigneeId,
+      assignee_kind: assigneeId === "unassigned" ? undefined : "user",
+      mentioned_user_ids: mentionedUserIds,
       title: title.trim(),
       description: description.trim() || undefined,
-      project_id: projectId === NO_PROJECT ? undefined : projectId,
+      project_id: project?.id,
       reminder_at: reminderAt ? reminderAt.toISOString() : undefined,
     })
   }
@@ -886,6 +957,7 @@ function CreateTaskDialog({ open, onOpenChange, projects, defaultProjectId, onCr
             <Input
               value={title}
               onChange={(event) => setTitle(event.target.value)}
+              aria-label="Task name"
               placeholder="Task name"
               required
               autoFocus
@@ -894,33 +966,24 @@ function CreateTaskDialog({ open, onOpenChange, projects, defaultProjectId, onCr
           </DialogHeader>
 
           <div className="px-5 pb-2 pt-2">
-            <Textarea
+            <MentionTextarea
+              sharpCorners
+              ariaLabel="Task description"
               value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="Add a description…"
-              className="min-h-24 resize-none border-0 px-0 text-sm shadow-none focus-visible:ring-0"
+              onChange={setDescription}
+              mentionableUsers={mentionableUsers}
+              mentionedUserIds={mentionedUserIds}
+              onMentionedUserIdsChange={setMentionedUserIds}
+              placeholder="Add a description… Type @ to notify someone."
+              className="min-h-24 resize-none border-0 text-sm shadow-none focus-visible:ring-0"
             />
 
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Select value={projectId} onValueChange={setProjectId}>
-                <SelectTrigger className="w-fit justify-start rounded-none bg-muted/50 px-3">
-                  <FolderOpen className="size-4" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_PROJECT}>Personal task</SelectItem>
-                  {projects.length > 0 && (
-                    <SelectGroup>
-                      <SelectLabel>Projects</SelectLabel>
-                      {projects.map((project) => (
-                        <SelectItem key={project.id} value={project.id}>
-                          {project.name}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  )}
-                </SelectContent>
+              <Select value={assigneeId} onValueChange={setAssigneeId}>
+                <SelectTrigger aria-label="Assignee" className="w-fit rounded-none bg-muted/50"><User className="size-4" /><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="unassigned">Unassigned</SelectItem>{team.map(member => <SelectItem key={member.user_id} value={member.user_id}>{member.full_name}</SelectItem>)}</SelectContent>
               </Select>
+              {fixedProjectName ? <span className="inline-flex items-center gap-2 bg-muted/50 px-3 py-2 text-sm"><FolderOpen className="size-4" />{fixedProjectName}</span> : null}
 
               <ReminderPicker
                 value={reminderAt}
@@ -929,13 +992,18 @@ function CreateTaskDialog({ open, onOpenChange, projects, defaultProjectId, onCr
                 placeholder="Reminder"
               />
             </div>
+            {fixedProjectName ? null : (
+              <div className="mt-3">
+                <TaskProjectField noun={projectNoun} value={project} canClear onChange={setProject} />
+              </div>
+            )}
           </div>
 
           <DialogFooter className="items-center justify-end border-t px-5 py-3">
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isSubmitting || !title.trim()} className="gap-2">
+            <Button type="submit" disabled={isSubmitting || peopleLoading || !title.trim()} className="gap-2">
               {isSubmitting ? "Creating…" : "Create task"}
               <kbd className="inline-flex items-center rounded-none border border-primary-foreground/40 px-1.5 py-0.5 text-xs font-medium text-primary-foreground">
                 ⌘↵
@@ -1024,22 +1092,26 @@ function ReminderPicker({ value, onChange, triggerClassName, placeholder = "Remi
 // TASK DETAIL SHEET
 // ============================================
 
-interface TaskDetailSheetProps {
+interface TaskDetailDialogProps {
+  fixedProjectName?: string
   open: boolean
   onOpenChange: (open: boolean) => void
   task: Task
   team: TaskTeamMember[]
-  projects: TaskProjectOption[]
+  projectNoun: string
   onUpdate: (taskId: string, updates: Partial<TaskInput>) => Promise<Task>
   onDelete: () => void
 }
 
-function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, onDelete }: TaskDetailSheetProps) {
+function TaskDetailDialog({ open, onOpenChange, task, team: initialTeam, projectNoun, onUpdate, onDelete, fixedProjectName }: TaskDetailDialogProps) {
+  const { team } = useTaskPeople(open, task.project_id ?? undefined, initialTeam)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(task.title)
   const [editDescription, setEditDescription] = useState(task.description ?? "")
+  const [mentionedUserIds, setMentionedUserIds] = useState<string[]>(task.mentioned_user_ids ?? [])
+  const mentionableUsers = useMemo(() => team.map(member => ({ id: member.user_id, name: member.full_name, avatar_url: member.avatar_url })), [team])
   const [newChecklistItem, setNewChecklistItem] = useState("")
   const [isSaving, setIsSaving] = useState(false)
 
@@ -1051,6 +1123,7 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
       await onUpdate(task.id, {
         title: editTitle,
         description: editDescription,
+        mentioned_user_ids: mentionedUserIds,
       })
       setIsEditing(false)
     } catch {
@@ -1155,18 +1228,10 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        mobileFullscreen
-        className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
-        style={
-          {
-            animationDuration: "150ms",
-            transitionDuration: "150ms",
-          } satisfies CSSProperties
-        }
-      >
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent showCloseButton={false} className="flex h-[min(780px,85vh)] flex-col gap-0 rounded-none p-0 sm:max-w-2xl">
+        <DialogTitle className="sr-only">Task details</DialogTitle>
+        <DialogDescription className="sr-only">Update the task, assign responsibility, and track completion.</DialogDescription>
         {/* Header */}
         <div className="flex items-start justify-between gap-4 p-6 border-b bg-muted/30">
           <div className="flex-1 space-y-1">
@@ -1220,7 +1285,7 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
               </>
             ) : (
               <>
-                <Button size="icon" variant="ghost" onClick={() => setIsEditing(true)}>
+                <Button aria-label="Edit task" size="icon" variant="ghost" onClick={() => { setEditTitle(task.title); setEditDescription(task.description ?? ""); setMentionedUserIds(task.mentioned_user_ids ?? []); setIsEditing(true) }}>
                   <Edit className="h-4 w-4" />
                 </Button>
                 <DropdownMenu>
@@ -1290,12 +1355,12 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
                     onUpdate(
                       task.id,
                       value === "unassigned"
-                        ? { assignee_id: undefined, assignee_kind: undefined }
+                        ? { clear_assignee: true }
                         : { assignee_id: value, assignee_kind: "user" },
                     )
                   }
                 >
-                  <SelectTrigger className="w-full h-9">
+                  <SelectTrigger aria-label="Assignee" className="w-full h-9">
                     <SelectValue placeholder="Unassigned" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1316,24 +1381,15 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
                   </SelectContent>
                 </Select>
 
-                <Select
-                  value={task.project_id ?? NO_PROJECT}
-                  onValueChange={(value) =>
-                    onUpdate(task.id, { project_id: value === NO_PROJECT ? undefined : value })
-                  }
-                >
-                  <SelectTrigger className="w-full h-9">
-                    <SelectValue placeholder="Personal" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NO_PROJECT}>Personal (no project)</SelectItem>
-                    {projects.map((project) => (
-                      <SelectItem key={project.id} value={project.id}>
-                        {project.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {fixedProjectName ? null : (
+                  <TaskProjectField
+                    key={task.project_id ?? NO_PROJECT}
+                    noun={projectNoun}
+                    value={task.project_id ? { id: task.project_id, name: task.project_name ?? projectNoun, detail: "" } : null}
+                    canClear
+                    onChange={(next) => { onUpdate(task.id, { project_id: next ? next.id : null }).catch(() => undefined) }}
+                  />
+                )}
               </div>
             </div>
 
@@ -1344,15 +1400,20 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
                 <Badge variant="outline" className="text-[11px]">Context</Badge>
               </div>
               {isEditing ? (
-                <Textarea
+                <MentionTextarea
+                  sharpCorners
+                  ariaLabel="Task description"
                   value={editDescription}
-                  onChange={(e) => setEditDescription(e.target.value)}
-                  placeholder="Add a description..."
+                  onChange={setEditDescription}
+                  mentionableUsers={mentionableUsers}
+                  mentionedUserIds={mentionedUserIds}
+                  onMentionedUserIdsChange={setMentionedUserIds}
+                  placeholder="Add a description… Type @ to notify someone."
                   className="min-h-[100px]"
                 />
               ) : (
-                <p className="text-sm text-muted-foreground">
-                  {task.description || "No description added."}
+                <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+                  <HighlightedMentionsText value={task.description || "No description added."} mentionableUsers={mentionableUsers} />
                 </p>
               )}
             </div>
@@ -1389,7 +1450,7 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
                 <p className="text-xs font-medium text-muted-foreground">Assignee</p>
                 {task.assignee || task.assignee_contact || task.assignee_company ? (
                   <div className="flex items-center gap-2">
-                    <Avatar className="h-6 w-6">
+                    <Avatar className="h-6 w-6 rounded-none">
                       <AvatarImage src={task.assignee?.avatar_url} />
                       <AvatarFallback className="text-[10px]">
                         {getInitials(taskAssigneeName(task) ?? "A")}
@@ -1523,7 +1584,7 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
                     <div
                       key={item.id}
                       className={cn(
-                        "flex items-center gap-3 rounded-md px-3 py-2 group hover:bg-muted/50",
+                        "flex items-center gap-3 rounded-none px-3 py-2 group hover:bg-muted/50",
                         item.completed && "opacity-60"
                       )}
                     >
@@ -1566,14 +1627,14 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
             {/* Activity / Metadata */}
             <div className="space-y-2">
               <h4 className="text-sm font-medium text-muted-foreground">Activity</h4>
-              <div className="text-xs text-muted-foreground space-y-1 rounded-md border bg-muted/30 p-3">
+              <div className="text-xs text-muted-foreground space-y-1 rounded-none border bg-muted/30 p-3">
                 {task.created_by_name && (
                   <p>Created by {task.created_by_name}</p>
                 )}
                 <p>Created {format(parseISO(task.created_at), "MMM d, yyyy 'at' h:mm a")}</p>
                 <p>Updated {format(parseISO(task.updated_at), "MMM d, yyyy 'at' h:mm a")}</p>
                 {task.completed_at && (
-                  <p className="text-emerald-600 dark:text-emerald-400">
+                  <p className="text-success">
                     Completed {format(parseISO(task.completed_at), "MMM d, yyyy 'at' h:mm a")}
                   </p>
                 )}
@@ -1596,7 +1657,7 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
             </Button>
           </div>
         </div>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   )
 }

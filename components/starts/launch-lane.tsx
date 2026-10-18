@@ -1,5 +1,6 @@
 "use client"
 
+import { rebaseSelection, releaseBatches, releaseTargetIds, selectionAfterRelease, selectionOnScreen } from "@/lib/starts/release-selection"
 import {
   DndContext, DragOverlay, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors,
   type DragEndEvent, type DragStartEvent,
@@ -11,7 +12,8 @@ import { toast } from "sonner"
 
 import { AlertTriangle, HardHat, Plus } from "@/components/icons"
 import { CANDIDATE_PREFIX, CandidateCard, StartCard, formatDay } from "@/components/starts/start-card"
-import { SlotMeter } from "@/components/starts/slot-meter"
+import { CloseImpactTable } from "@/components/starts/release-dialog-parts"
+import { SlotMeter, ThroughputCaps } from "@/components/starts/slot-meter"
 import { StartPackageSheet } from "@/components/starts/start-package-sheet"
 import { Button } from "@/components/ui/button"
 import {
@@ -24,8 +26,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
+import { LOT_DELIVERY_REFUSAL } from "@/lib/land/lot-lifecycle"
 import type { StartsDesk } from "@/lib/services/starts-desk"
-import type { StartPackageListItemDTO } from "@/lib/services/starts"
+import type { ReleaseOverage, StartPackageListItemDTO } from "@/lib/services/starts"
+import { closeImpacts, lateCloses, startDateForWeek } from "@/lib/starts/close-impact"
 import { mondayOfIsoWeek, releaseSlotVariance } from "@/lib/starts/even-flow-math"
 import { cn } from "@/lib/utils"
 import {
@@ -89,6 +93,12 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
   const [focus, setFocus] = useState<Focus>("all")
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [sheetId, setSheetId] = useState<string | null>(initialPackageId ?? null)
+  // A permalink navigation changes the prop without remounting the lane.
+  const [seenPackageId, setSeenPackageId] = useState(initialPackageId)
+  if (seenPackageId !== initialPackageId) {
+    setSeenPackageId(initialPackageId)
+    setSheetId(initialPackageId ?? null)
+  }
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [slotEditor, setSlotEditor] = useState<{ communityId: string; communityName: string; weekStart: string } | null>(null)
   const [slotTarget, setSlotTarget] = useState("")
@@ -99,6 +109,10 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
   const [releaseOpen, setReleaseOpen] = useState(false)
   const [releaseDate, setReleaseDate] = useState("")
   const [overSlotIds, setOverSlotIds] = useState<string[]>([])
+  const [overages, setOverages] = useState<Record<string, ReleaseOverage>>({})
+  const [overReason, setOverReason] = useState("")
+  const [moveConfirm, setMoveConfirm] = useState<{ pkg: StartPackageListItemDTO; weekStart: string } | null>(null)
+  const [releaseProgress, setReleaseProgress] = useState<{ done: number; total: number } | null>(null)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor))
 
@@ -116,16 +130,35 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
     () => (focus === "all" || focus === "sold" ? desk.candidates.filter((candidate) => focus !== "sold" || candidate.sale.isSold) : []),
     [desk.candidates, focus],
   )
+  // A selection only ever means the houses on screen: narrowing the focus drops
+  // the rest from every action, instead of releasing homes nobody can see.
   const selectedPackages = useMemo(
-    () => desk.packages.filter((pkg) => selected.has(pkg.id)),
-    [desk.packages, selected],
+    () => selectionOnScreen(visible, selected),
+    [visible, selected],
   )
+  const releaseImpacts = useMemo(
+    () => (releaseDate ? closeImpacts(selectedPackages.map((pkg) => ({ id: pkg.id, lotLabel: pkg.lotLabel, closingDate: pkg.sale.closingDate, cycleDays: pkg.cycleDays })), releaseDate) : []),
+    [selectedPackages, releaseDate],
+  )
+  const unassignedSelected = useMemo(() => selectedPackages.filter((pkg) => !pkg.superintendentId), [selectedPackages])
+  function changeFocus(next: Focus) {
+    setFocus(next)
+    setSelected((current) => rebaseSelection(desk.packages.filter((pkg) => matchesFocus(pkg, next)), current))
+  }
+
   function refresh() {
     setSelected(new Set())
     router.refresh()
   }
 
-  function runAction(operation: () => Promise<unknown>, success: string, failure: string, after?: () => void) {
+  function runAction(
+    operation: () => Promise<unknown>,
+    success: string,
+    failure: string,
+    after?: () => void,
+    /** Where the person who can clear a refusal goes to do it. */
+    recovery?: { lotId: string; communityId: string },
+  ) {
     startTransition(async () => {
       try {
         await operation()
@@ -133,7 +166,17 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
         after?.()
         refresh()
       } catch (error) {
-        toast.error(failure, { description: error instanceof Error ? error.message : undefined })
+        const message = error instanceof Error ? error.message : undefined
+        toast.error(failure, {
+          description: message,
+          action:
+            recovery && message === LOT_DELIVERY_REFUSAL
+              ? {
+                  label: "Record exception",
+                  onClick: () => router.push(`/communities/${recovery.communityId}?lot=${recovery.lotId}`),
+                }
+              : undefined,
+        })
       }
     })
   }
@@ -166,36 +209,69 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
     }
     const pkg = desk.packages.find((candidate) => candidate.id === activeId)
     if (!pkg || pkg.targetWeek === weekStart) return
+    // A sold home whose closing the new week would push out says so before it moves.
+    if (weekStart && lateCloses(closeImpacts([{ id: pkg.id, lotLabel: pkg.lotLabel, closingDate: pkg.sale.closingDate, cycleDays: pkg.cycleDays }], startDateForWeek(weekStart, new Date().toISOString().slice(0, 10)))).length) {
+      setMoveConfirm({ pkg, weekStart })
+      return
+    }
+    moveToWeek(pkg, weekStart)
+  }
+
+  function moveToWeek(pkg: StartPackageListItemDTO, weekStart: string | null) {
     runAction(
-      async () => { unwrapAction(await setStartTargetWeekAction(activeId, weekStart)) },
+      async () => { unwrapAction(await setStartTargetWeekAction(pkg.id, weekStart)) },
       weekStart ? `${pkg.lotLabel} targeted at week of ${formatDay(weekStart)}` : `${pkg.lotLabel} returned to the yard`,
       "Unable to retarget this house",
+      () => setMoveConfirm(null),
     )
   }
 
   function submitRelease(confirmOverSlot: boolean) {
-    const ids = selectedPackages.map((pkg) => pkg.id)
+    // Confirming over-target homes resends only those homes; the rest of the
+    // selection was already released (or already failed) on the first pass.
+    const ids = releaseTargetIds(selectedPackages.map((pkg) => pkg.id), overSlotIds, confirmOverSlot)
     if (!ids.length || !releaseDate) return
     startTransition(async () => {
+      const released: string[] = []
+      const needsConfirm: string[] = []
+      const overageById: Record<string, ReleaseOverage> = {}
+      let processed = 0
       try {
-        const result = unwrapAction(await releaseStartsAction(ids, { scheduledStartDate: releaseDate, confirmOverSlot }))
-        if (result.released.length) {
-          toast.success(`${result.released.length} ${result.released.length === 1 ? "home" : "homes"} released — orchestration is running`)
+        for (const batch of releaseBatches(ids)) {
+          setReleaseProgress({ done: processed, total: ids.length })
+          const result = unwrapAction(await releaseStartsAction(batch, { scheduledStartDate: releaseDate, ...(confirmOverSlot ? { overTargetReason: overReason.trim() } : {}) }))
+          processed += batch.length
+          for (const id of result.released) released.push(id)
+          for (const entry of result.needsConfirm) {
+            needsConfirm.push(entry.id)
+            overageById[entry.id] = entry.slot
+          }
+          for (const failure of result.failed) {
+            const pkg = desk.packages.find((candidate) => candidate.id === failure.id)
+            toast.error(`Unable to release ${pkg?.lotLabel ?? "a home"}`, { description: failure.error })
+          }
         }
-        for (const failure of result.failed) {
-          const pkg = desk.packages.find((candidate) => candidate.id === failure.id)
-          toast.error(`Unable to release ${pkg?.lotLabel ?? "a home"}`, { description: failure.error })
+        if (released.length) {
+          toast.success(`${released.length} ${released.length === 1 ? "home" : "homes"} released — orchestration is running`)
         }
-        if (result.needsConfirm.length) {
-          setOverSlotIds(result.needsConfirm.map((entry) => entry.id))
-          if (result.released.length) router.refresh()
+        // Released homes leave the selection; failed and held-back ones stay, so a retry resends only them.
+        setSelected((current) => new Set(selectionAfterRelease([...current], released)))
+        if (needsConfirm.length) {
+          setOverSlotIds(needsConfirm)
+          setOverages(overageById)
+          if (released.length) router.refresh()
           return
         }
         setReleaseOpen(false)
         setOverSlotIds([])
-        refresh()
+        setOverages({})
+        router.refresh()
       } catch (error) {
-        toast.error("Unable to release", { description: error instanceof Error ? error.message : undefined })
+        setSelected((current) => new Set(selectionAfterRelease([...current], released)))
+        if (released.length) router.refresh()
+        toast.error(`Release stopped after ${processed} of ${ids.length} homes`, { description: error instanceof Error ? error.message : undefined })
+      } finally {
+        setReleaseProgress(null)
       }
     })
   }
@@ -208,6 +284,8 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
     const today = new Date().toISOString().slice(0, 10)
     setReleaseDate(earliest && earliest > today ? earliest : today)
     setOverSlotIds([])
+    setOverages({})
+    setOverReason("")
     setReleaseOpen(true)
   }
 
@@ -232,11 +310,13 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
 
   function openPackage() {
     if (!openLotId) return
+    const candidate = desk.candidates.find((entry) => entry.lotId === openLotId)
     runAction(
       async () => { unwrapAction(await openStartPackageAction(openLotId, { isFinanced: openFinanced, targetWeek: openWeek })) },
       "Start package opened",
       "Unable to open start package",
       () => { setOpenLotId(null); setOpenWeek(null) },
+      candidate ? { lotId: candidate.lotId, communityId: candidate.communityId } : undefined,
     )
   }
 
@@ -294,7 +374,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
                 key={counter.key}
                 type="button"
                 aria-pressed={active}
-                onClick={() => setFocus(active && counter.key !== "all" ? "all" : counter.key)}
+                onClick={() => changeFocus(active && counter.key !== "all" ? "all" : counter.key)}
                 className={cn(
                   "px-2 py-1 text-xs transition-colors",
                   active ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
@@ -320,14 +400,17 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
           {desk.counters.soldAtRisk > 0 ? (
             <button
               type="button"
-              onClick={() => setFocus("at_risk")}
+              onClick={() => changeFocus("at_risk")}
               className="flex items-center gap-1.5 font-medium text-destructive hover:underline"
             >
               <AlertTriangle className="h-3.5 w-3.5" />
               {desk.counters.soldAtRisk} sold {desk.counters.soldAtRisk === 1 ? "home" : "homes"} will miss its close
             </button>
           ) : null}
-          {desk.truncated ? <span>Showing the first 200 packages — narrow by community.</span> : null}
+          {desk.truncated ? <span>Showing {desk.packages.length} of {desk.packageTotal} packages — narrow by community.</span> : null}
+          {desk.canSetSlots || desk.canRelease ? (
+            <Link href="/settings/starts" className="hover:text-foreground hover:underline">Capacity settings</Link>
+          ) : null}
         </div>
       </div>
 
@@ -343,6 +426,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
         </Empty>
       ) : (
         <DndContext
+          id="launch-lane"
           sensors={sensors}
           onDragStart={(event: DragStartEvent) => setDraggingId(String(event.active.id))}
           onDragCancel={() => setDraggingId(null)}
@@ -417,6 +501,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
                           <SlotMeter target={week.targetStarts} released={released} targeted={cards.length - released} />
                         </div>
                       )}
+                      <ThroughputCaps caps={week.throughput} className="mt-1.5" />
                     </div>
                     <div className="flex flex-col gap-1.5 p-2">
                       {cards.map((pkg) => (
@@ -451,10 +536,10 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
       )}
 
       {/* ===== Batch release bar ===== */}
-      {selected.size > 0 ? (
+      {selectedPackages.length > 0 ? (
         <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t bg-foreground px-4 py-2.5 text-background">
           <span className="text-xs tabular-nums">
-            {selected.size} {selected.size === 1 ? "home" : "homes"} selected ·{" "}
+            {selectedPackages.length} {selectedPackages.length === 1 ? "home" : "homes"} selected ·{" "}
             {selectedPackages.map((pkg) => pkg.lotLabel).join(", ")}
           </span>
           <div className="flex items-center gap-2">
@@ -462,7 +547,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
               Clear
             </Button>
             <Button size="sm" variant="secondary" className="rounded-none" disabled={pending} onClick={beginRelease}>
-              Release {selected.size} {selected.size === 1 ? "home" : "homes"}
+              Release {selectedPackages.length} {selectedPackages.length === 1 ? "home" : "homes"}
             </Button>
           </div>
         </div>
@@ -511,6 +596,27 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
           <DialogFooter>
             <Button variant="outline" onClick={() => setSlotEditor(null)}>Cancel</Button>
             <Button form="slot-form" type="submit" disabled={pending || slotTarget === ""}>{pending ? "Saving…" : "Save target"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ===== Move that slips a promised closing ===== */}
+      <Dialog open={Boolean(moveConfirm)} onOpenChange={(open) => { if (!open) setMoveConfirm(null) }}>
+        <DialogContent className="rounded-none sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move {moveConfirm?.pkg.lotLabel} to the week of {moveConfirm ? formatDay(moveConfirm.weekStart) : ""}</DialogTitle>
+            <DialogDescription>This start date pushes the home past its promised closing.</DialogDescription>
+          </DialogHeader>
+          {moveConfirm ? (
+            <CloseImpactTable impacts={closeImpacts([{
+              id: moveConfirm.pkg.id, lotLabel: moveConfirm.pkg.lotLabel, closingDate: moveConfirm.pkg.sale.closingDate, cycleDays: moveConfirm.pkg.cycleDays,
+            }], startDateForWeek(moveConfirm.weekStart, new Date().toISOString().slice(0, 10)))} />
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMoveConfirm(null)}>Keep current week</Button>
+            <Button variant="destructive" disabled={pending} onClick={() => { if (moveConfirm) moveToWeek(moveConfirm.pkg, moveConfirm.weekStart) }}>
+              {pending ? "Moving…" : "Move anyway"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -567,7 +673,7 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
       <Dialog open={releaseOpen} onOpenChange={(open) => { if (!open) { setReleaseOpen(false); setOverSlotIds([]) } }}>
         <DialogContent className="rounded-none sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Release {selected.size} {selected.size === 1 ? "home" : "homes"}</DialogTitle>
+            <DialogTitle>Release {selectedPackages.length} {selectedPackages.length === 1 ? "home" : "homes"}</DialogTitle>
             <DialogDescription>
               Each release generates the budget, schedule, checklists, drawings and PO set from the pinned plan version, then notifies trades.
             </DialogDescription>
@@ -586,27 +692,52 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
               <p className="text-xs text-muted-foreground">Counts against the week of Monday {formatDay(mondayOfIsoWeek(releaseDate))}.</p>
             ) : null}
           </div>
-          {overSlotIds.length ? (
-            <div className="border border-destructive/50 bg-destructive/5 p-3">
-              <p className="flex items-center gap-1.5 text-sm font-medium text-destructive">
+          {unassignedSelected.length ? (
+            <div className="border border-warning/50 bg-warning/5 p-3">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-warning">
                 <AlertTriangle className="h-4 w-4" />
-                Over even-flow target
+                No superintendent
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {overSlotIds.length} of these would push their week past its start target:{" "}
-                {overSlotIds.map((id) => desk.packages.find((pkg) => pkg.id === id)?.lotLabel ?? id).join(", ")}.
+                {unassignedSelected.map((pkg) => pkg.lotLabel).join(", ")} cannot release until a superintendent is assigned. Open the house to assign one.
               </p>
+            </div>
+          ) : null}
+          <CloseImpactTable impacts={releaseImpacts} />
+          {overSlotIds.length ? (
+            <div className="grid gap-3">
+              <div className="border border-destructive/50 bg-destructive/5 p-3">
+                <p className="flex items-center gap-1.5 text-sm font-medium text-destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  Over start target
+                </p>
+                <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                  {overSlotIds.map((id) => {
+                    const overage = overages[id]
+                    return (
+                      <li key={id}>
+                        <span className="font-medium text-foreground">{desk.packages.find((pkg) => pkg.id === id)?.lotLabel ?? id}</span>
+                        {overage ? ` — ${overage.exceeded.map((entry) => `${entry.limit} target ${entry.target}, ${entry.alreadyTargeted} already`).join("; ")}` : ""}
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="batch-over-reason">Why release over target</Label>
+                <Textarea id="batch-over-reason" className="rounded-none" rows={2} maxLength={1000} value={overReason} onChange={(event) => setOverReason(event.target.value)} placeholder="Recorded on every home released over target (at least 10 characters)" />
+              </div>
             </div>
           ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => { setReleaseOpen(false); setOverSlotIds([]) }}>Cancel</Button>
             {overSlotIds.length ? (
-              <Button variant="destructive" disabled={pending || !releaseDate} onClick={() => submitRelease(true)}>
-                {pending ? "Releasing…" : "Release over target"}
+              <Button variant="destructive" disabled={pending || !releaseDate || overReason.trim().length < 10} onClick={() => submitRelease(true)}>
+                {releaseProgress ? `Releasing ${releaseProgress.done} of ${releaseProgress.total}…` : pending ? "Releasing…" : "Release over target"}
               </Button>
             ) : (
               <Button disabled={pending || !releaseDate} onClick={() => submitRelease(false)}>
-                {pending ? "Releasing…" : "Release"}
+                {releaseProgress ? `Releasing ${releaseProgress.done} of ${releaseProgress.total}…` : pending ? "Releasing…" : "Release"}
               </Button>
             )}
           </DialogFooter>

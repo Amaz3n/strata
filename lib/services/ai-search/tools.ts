@@ -52,7 +52,7 @@ const HREF_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
   submittal: "/projects/{project_id}/submittals?submittal={id}",
   payable: "/projects/{project_id}/financials/payables?bill={id}",
   expense: "/projects/{project_id}/expenses?expense={id}",
-  prospect: "/pipeline?prospectId={id}",
+  prospect: "/pipeline/{id}",
 }
 
 const UUID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i

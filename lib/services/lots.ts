@@ -1,3 +1,4 @@
+import { orFilterTerm } from "@/lib/search-picker"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import {
@@ -6,33 +7,39 @@ import {
   assertLotStatusTransition,
   ATTACHED_LOT_STATUS,
   DETACHED_LOT_STATUS,
+  LOT_DELIVERY_EXCEPTIONS_EMBED,
+  lotDeliveryRefusal,
   type LotStatus,
 } from "@/lib/land/lot-lifecycle"
+import { readLotDimensions, storeLotDimensions, type LotDimensions } from "@/lib/land/lot-dimensions"
+import type { LotSwing } from "@/lib/land/lot-fit"
 import { readAllRows } from "@/lib/land/paging"
+import { LIVE_RESERVATION_STATUSES, liveReservationOrFilter } from "@/lib/sales/live-reservation"
+import { isPlanOffered, offeringOverrideFor, PLAN_OFFERING_REFUSAL } from "@/lib/sales/plan-offering"
 import { resolveDivisionScope } from "@/lib/land/scope"
+import { checkLotFits, reevaluatePinnedLotFits, type LotFitVerdict } from "@/lib/services/lot-fit"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { requireCommunityScope } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
   bulkLotPatchSchema,
   createLotsInputSchema,
+  lotDeliveryExceptionSchema,
+  lotPlanAssignmentSchema,
   lotStatusSchema,
   lotUpdateSchema,
+  type LotPlanAssignmentInput,
   type LotCreateInput,
   type LotUpdateInput,
 } from "@/lib/validation/lots"
 
 export type { LotStatus } from "@/lib/land/lot-lifecycle"
 
-export interface LotDimensions {
-  widthFt?: number
-  depthFt?: number
-  acreage?: number
-  irregular?: boolean
-}
+export type { LotDimensions } from "@/lib/land/lot-dimensions"
 
 export interface LotDTO {
   id: string
@@ -94,19 +101,6 @@ function relationName(relation: RelationName | undefined) {
   return relation?.name ?? null
 }
 
-function optionalNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
-}
-
-export function mapDimensions(value: Record<string, unknown> | null): LotDimensions {
-  return {
-    widthFt: optionalNumber(value?.width_ft ?? value?.widthFt),
-    depthFt: optionalNumber(value?.depth_ft ?? value?.depthFt),
-    acreage: optionalNumber(value?.acreage),
-    irregular: typeof value?.irregular === "boolean" ? value.irregular : undefined,
-  }
-}
-
 function mapLot(row: LotRow): LotDTO {
   return {
     id: row.id,
@@ -118,7 +112,7 @@ function mapLot(row: LotRow): LotDTO {
     block: row.block,
     status: row.status,
     address: row.address,
-    dimensions: mapDimensions(row.dimensions),
+    dimensions: readLotDimensions(row.dimensions),
     swing: row.swing,
     premiumCents: Number(row.premium_cents),
     costBasisCents: row.cost_basis_cents == null ? null : Number(row.cost_basis_cents),
@@ -142,13 +136,7 @@ function dimensionsPayload(
   existing?: Record<string, unknown> | null,
 ) {
   if (dimensions === undefined) return undefined
-  return {
-    ...(existing ?? {}),
-    width_ft: dimensions.widthFt,
-    depth_ft: dimensions.depthFt,
-    acreage: dimensions.acreage,
-    irregular: dimensions.irregular,
-  }
+  return storeLotDimensions(existing, dimensions, "replace")
 }
 
 function lotPayload(input: Partial<LotUpdateInput>, existingDimensions?: Record<string, unknown> | null) {
@@ -166,6 +154,18 @@ function lotPayload(input: Partial<LotUpdateInput>, existingDimensions?: Record<
   if (input.acquiredDate !== undefined) patch.acquired_date = input.acquiredDate
   if (input.notes !== undefined) patch.notes = input.notes || null
   return patch
+}
+
+/**
+ * A lot premium is part of the asking price of the home standing on the lot, so
+ * once a lot carries a home its premium moves only through a spec price move,
+ * where the approval bands apply (the database refuses the direct write too).
+ */
+function assertPremiumEditable(lots: ReadonlyArray<{ lot_number: string; project_id: string | null; premium_cents: number | null }>, premiumCents: number | undefined) {
+  if (premiumCents === undefined) return
+  const homed = lots.filter((lot) => lot.project_id && Number(lot.premium_cents ?? 0) !== premiumCents)
+  if (homed.length === 0) return
+  throw new Error(`${homed.length === 1 ? `Lot ${homed[0].lot_number} has` : `Lots ${homed.map((lot) => lot.lot_number).join(", ")} have`} a home: the premium is part of the home's asking price. Reprice the home from the community's offering instead.`)
 }
 
 async function logLotMutation(input: {
@@ -408,7 +408,13 @@ export async function createLots(
   return { created: ids.length }
 }
 
-export async function updateLot(id: string, input: Partial<LotUpdateInput>, orgId?: string): Promise<LotDTO> {
+/**
+ * Edit a lot's land facts. A change to what the house is judged against — its
+ * dimensions, setbacks or the handing it takes — re-judges a home pinned to it;
+ * one that no longer fits is recorded and returned as `fitRefusal`, never
+ * silently unpinned.
+ */
+export async function updateLot(id: string, input: Partial<LotUpdateInput>, orgId?: string): Promise<LotDTO & { fitRefusal: string | null }> {
   const parsed = lotUpdateSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("lot.write", context)
@@ -416,10 +422,13 @@ export async function updateLot(id: string, input: Partial<LotUpdateInput>, orgI
   await requireCommunityScope(before.community_id, context)
   await assertCommunityRelations(context.supabase, context.orgId, before.community_id, parsed)
   if (parsed.status) assertLotStatusTransition({ from: before.status, to: parsed.status, hasProject: Boolean(before.project_id) })
+  assertPremiumEditable([before], parsed.premiumCents)
   const { data, error } = await context.supabase.from("lots").update(lotPayload(parsed, before.dimensions)).eq("org_id", context.orgId).eq("id", id).select(LOT_SELECT).single()
   if (error) throw new Error(`Failed to update lot: ${error.message}`)
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.updated", entityId: id, action: "update", before, after: data, payload: { community_id: before.community_id, lot_number: data.lot_number } })
-  return mapLot(data as LotRow)
+  const fitInputsChanged = parsed.dimensions !== undefined || parsed.swing !== undefined
+  const refused = fitInputsChanged ? await reevaluatePinnedLotFits(context, [id]) : new Map<string, string>()
+  return { ...mapLot(data as LotRow), fitRefusal: refused.get(id) ?? null }
 }
 
 export async function bulkUpdateLots(
@@ -432,9 +441,10 @@ export async function bulkUpdateLots(
   await requirePermission("lot.write", context)
   await requireCommunityScope(communityId, context)
   await assertCommunityRelations(context.supabase, context.orgId, communityId, parsed.patch)
-  const { data: before, error: beforeError } = await context.supabase.from("lots").select("id, status, project_id").eq("org_id", context.orgId).eq("community_id", communityId).in("id", parsed.lotIds)
+  const { data: before, error: beforeError } = await context.supabase.from("lots").select("id, lot_number, status, project_id, premium_cents").eq("org_id", context.orgId).eq("community_id", communityId).in("id", parsed.lotIds)
   if (beforeError) throw new Error(`Failed to load lots: ${beforeError.message}`)
   if ((before ?? []).length !== parsed.lotIds.length) throw new Error("One or more selected lots were not found.")
+  assertPremiumEditable(before ?? [], parsed.patch.premiumCents)
   if (parsed.patch.status) {
     for (const row of before ?? []) assertLotStatusTransition({ from: row.status as LotStatus, to: parsed.patch.status, hasProject: Boolean(row.project_id) })
   }
@@ -465,6 +475,236 @@ export async function setLotStatus(
 }
 
 /**
+ * Pin a released plan version and elevation to a lot nobody has bought, so a
+ * spec home can be started on it. A lot with a home already took its plan from
+ * instantiation, and a held or sold lot takes it from the purchase agreement,
+ * so both refuse here. The plan must be on the community's price sheet today, or
+ * carry a recorded offering override — the same answer the start package's plan
+ * gate re-derives at release.
+ */
+type PinClient = { supabase: SupabaseClient; orgId: string }
+/**
+ * A home whose building permit was approved was reviewed for the plan, version
+ * and elevation it carries; changing any of them is a new permit revision, never
+ * a re-pin. The database refuses a member's direct write for the same reason.
+ */
+export async function assertHomePlanNotPermitted(db: PinClient, projectId: string | null) {
+  if (!projectId) return
+  const { data, error } = await db.supabase.from("permit_applications").select("id")
+    .eq("org_id", db.orgId).eq("project_id", projectId).eq("permit_type", "building").eq("decision", "approved").is("superseded_at", null).limit(1)
+  if (error) throw new Error(`Failed to check the home's permit: ${error.message}`)
+  if ((data ?? []).length > 0) throw new Error("This home's building permit is approved for its current plan. Revise the permit before changing the plan.")
+}
+
+type PinnedLotFacts = { id: string; community_id: string; metadata: unknown; dimensions: Record<string, unknown> | null; swing: LotSwing | null }
+
+/**
+ * The rules every plan on a lot answers to, wherever it is pinned: the
+ * community offers the plan in that elevation today (or the lot carries an
+ * offering override for it), and the house fits the lot.
+ */
+async function assertLotTakesPlan(db: PinClient, lot: PinnedLotFacts, pin: { planId: string; elevationId: string | null; swing: "left" | "right" | null }) {
+  const { data: offering, error: offeringError } = await db.supabase.from("community_plan_availability")
+    .select("is_available, elevation_id, effective_start, effective_end")
+    .eq("org_id", db.orgId).eq("community_id", lot.community_id).eq("house_plan_id", pin.planId)
+  if (offeringError) throw new Error(`Failed to check community plan offering: ${offeringError.message}`)
+  const offered = isPlanOffered(offering ?? [], { elevationId: pin.elevationId, onDate: new Date().toISOString().slice(0, 10) })
+  if (!offered && !offeringOverrideFor(lot.metadata, pin.planId)) {
+    throw new Error(PLAN_OFFERING_REFUSAL)
+  }
+  const fit = (await checkLotFits(db, [{
+    key: lot.id, lotId: lot.id, communityId: lot.community_id, dimensions: lot.dimensions, lotSwing: lot.swing ?? "either",
+    planId: pin.planId, elevationId: pin.elevationId, swing: pin.swing,
+  }])).get(lot.id)
+  if (fit?.refusal) throw new Error(fit.refusal)
+}
+
+/**
+ * May this lot move from the version it carries to another version of the same
+ * plan, keeping its elevation? The version must be released, and the plan in
+ * that elevation must still be offered and still fit, as for any pin. Asked
+ * when a reviewer adopts a plan change for a home; the caller has authorized
+ * the reviewer (plan.adopt) and the home.
+ */
+export async function assertLotCanAdoptPlanVersion(db: PinClient, input: { lotId: string; fromVersionId: string; toVersionId: string }) {
+  const [lotResult, versionResult] = await Promise.all([
+    db.supabase.from("lots").select("id, community_id, project_id, metadata, dimensions, swing, house_plan_id, house_plan_version_id, house_plan_elevation_id")
+      .eq("org_id", db.orgId).eq("id", input.lotId).maybeSingle(),
+    db.supabase.from("house_plan_versions").select("id, house_plan_id, status").eq("org_id", db.orgId).eq("id", input.toVersionId).maybeSingle(),
+  ])
+  if (lotResult.error || !lotResult.data) throw new Error("Lot not found")
+  if (versionResult.error || !versionResult.data) throw new Error("Plan version not found")
+  const lot = lotResult.data
+  await assertHomePlanNotPermitted(db, lotResult.data.project_id)
+  if (lot.house_plan_version_id !== input.fromVersionId) throw new Error("This home's plan changed since the review opened. Reopen the review.")
+  if (versionResult.data.house_plan_id !== lot.house_plan_id) throw new Error("That version belongs to another plan.")
+  if (versionResult.data.status !== "released") throw new Error("Only a released plan version can be pinned to a lot.")
+  const swing = lot.swing === "left" || lot.swing === "right" ? lot.swing : null
+  await assertLotTakesPlan(db, lot, { planId: versionResult.data.house_plan_id, elevationId: lot.house_plan_elevation_id ?? null, swing })
+}
+
+/**
+ * Move a lot's pin from one version of its plan to another — the plan and
+ * elevation stay. Written only while the lot still carries `fromVersionId`, so
+ * a second adoption or a re-sale in between is refused rather than overwritten.
+ * The rules were asked by `assertLotCanAdoptPlanVersion` when the adoption was
+ * decided; an adoption that waited on a buyer's signature is applied as signed.
+ */
+export async function writeLotPlanVersion(db: PinClient & { actorId: string | null }, input: { lotId: string; fromVersionId: string; toVersionId: string; source: string }) {
+  // The reviewer holds plan.adopt, not lot.write: the pin is written as the
+  // service after that check, since members cannot rewrite a lot's plan directly.
+  const { data, error } = await createServiceSupabaseClient().from("lots")
+    .update({ house_plan_version_id: input.toVersionId })
+    .eq("org_id", db.orgId).eq("id", input.lotId).eq("house_plan_version_id", input.fromVersionId)
+    .select("id, community_id, house_plan_id").maybeSingle()
+  if (error) throw new Error(`Failed to move the home to the new plan version: ${error.message}`)
+  if (!data) throw new Error("This home's plan changed since the review opened. Reopen the review.")
+  await Promise.all([
+    recordEvent({ orgId: db.orgId, actorId: db.actorId, eventType: "lot.plan_assigned", entityType: "lot", entityId: input.lotId,
+      payload: { community_id: data.community_id, house_plan_id: data.house_plan_id, source: input.source } }),
+    recordAudit({ orgId: db.orgId, actorId: db.actorId ?? undefined, action: "update", entityType: "lot", entityId: input.lotId,
+      before: { house_plan_version_id: input.fromVersionId }, after: { house_plan_version_id: input.toVersionId }, source: input.source }),
+  ])
+}
+
+export async function assignPlanToLot(lotId: string, input: LotPlanAssignmentInput, orgId?: string): Promise<LotDTO> {
+  const parsed = lotPlanAssignmentSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await Promise.all([requirePermission("lot.write", context), requirePermission("plan.instantiate", context)])
+  const { data: lot, error: lotError } = await context.supabase.from("lots")
+    .select("id, community_id, status, project_id, metadata, dimensions, swing, house_plan_version_id, house_plan_elevation_id, updated_at")
+    .eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
+  if (lotError || !lot) throw new Error("Lot not found")
+  await requireCommunityScope(lot.community_id, context)
+  if (lot.project_id) throw new Error("This lot already has a home; its plan comes from that home.")
+  if (lot.status === "started" || lot.status === "closed") throw new Error("A started or closed lot cannot take a new plan.")
+
+  const [reservations, version, elevation] = await Promise.all([
+    context.supabase.from("lot_reservations").select("id").eq("org_id", context.orgId).eq("lot_id", lotId)
+      .in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()).limit(1),
+    context.supabase.from("house_plan_versions").select("id, house_plan_id, status").eq("org_id", context.orgId).eq("id", parsed.versionId).maybeSingle(),
+    context.supabase.from("house_plan_elevations").select("id, house_plan_id, is_active").eq("org_id", context.orgId).eq("id", parsed.elevationId).maybeSingle(),
+  ])
+  if (reservations.error) throw new Error(`Failed to check the lot's reservations: ${reservations.error.message}`)
+  if (version.error || !version.data) throw new Error("Plan version not found")
+  if (elevation.error || !elevation.data) throw new Error("Plan elevation not found")
+  if ((reservations.data ?? []).length > 0) throw new Error("This lot is held or sold; its plan comes from the purchase agreement.")
+  if (version.data.status !== "released") throw new Error("Only a released plan version can be pinned to a lot.")
+  if (elevation.data.house_plan_id !== version.data.house_plan_id || elevation.data.is_active === false) {
+    throw new Error("That elevation does not belong to the plan, or is no longer offered.")
+  }
+
+  await assertLotTakesPlan(context, lot, { planId: version.data.house_plan_id, elevationId: elevation.data.id, swing: parsed.swing ?? null })
+
+  const { data, error } = await context.supabase.from("lots")
+    .update({
+      house_plan_id: version.data.house_plan_id,
+      house_plan_version_id: version.data.id,
+      house_plan_elevation_id: elevation.data.id,
+      ...(parsed.swing ? { swing: parsed.swing } : {}),
+    })
+    .eq("org_id", context.orgId).eq("id", lotId).eq("updated_at", lot.updated_at).is("project_id", null)
+    .select(LOT_SELECT).maybeSingle()
+  if (error) throw new Error(`Failed to assign the plan: ${error.message}`)
+  if (!data) throw new Error("The lot changed while you were assigning the plan. Review it and try again.")
+  await logLotMutation({
+    orgId: context.orgId, userId: context.userId, eventType: "lot.plan_assigned", entityId: lotId, action: "update",
+    before: { house_plan_version_id: lot.house_plan_version_id, house_plan_elevation_id: lot.house_plan_elevation_id },
+    after: { house_plan_id: version.data.house_plan_id, house_plan_version_id: version.data.id, house_plan_elevation_id: elevation.data.id },
+    payload: { community_id: lot.community_id, house_plan_id: version.data.house_plan_id },
+  })
+  return mapLot(data as LotRow)
+}
+
+export interface PlanAssignmentOption {
+  planId: string
+  code: string
+  name: string
+  /** Released versions, newest first. */
+  versions: Array<{ id: string; versionNumber: number }>
+  elevations: Array<{
+    id: string
+    code: string
+    name: string | null
+    swingApplicable: boolean
+    offered: boolean
+    /** How this elevation fits the lot in its current handing, when a lot was named. */
+    fit: LotFitVerdict | null
+  }>
+}
+
+/** More plans than this and the picker would be a search problem, not a select. */
+export const PLAN_ASSIGNMENT_OPTION_CAP = 200
+
+/**
+ * Every plan a lot could be pinned to, offered in its community or not. The
+ * unoffered ones are listed on purpose: the refusal and its override path are
+ * the point of showing them, so the answer per elevation is computed with the
+ * same `isPlanOffered` the assignment itself uses. Named a lot, each elevation
+ * also carries the lot fit verdict the assignment will apply.
+ */
+export async function listPlanAssignmentOptions(
+  communityId: string,
+  input: { search?: string; lotId?: string } = {},
+  orgId?: string,
+): Promise<{ plans: PlanAssignmentOption[]; truncated: boolean }> {
+  const context = await requireOrgContext(orgId)
+  await Promise.all([requirePermission("lot.write", context), requirePermission("plan.instantiate", context)])
+  await requireCommunityScope(communityId, context)
+  const lot = input.lotId ? await getLotById(context.supabase, context.orgId, input.lotId) : null
+  if (lot && lot.community_id !== communityId) throw new Error("Lot not found")
+  let planQuery = context.supabase.from("house_plans")
+    .select("id, code, name")
+    .eq("org_id", context.orgId).neq("status", "retired")
+  const term = input.search ? orFilterTerm(input.search) : ""
+  if (term) planQuery = planQuery.or(`code.ilike.%${term}%,name.ilike.%${term}%`)
+  const { data: plans, error } = await planQuery.order("code").order("id").limit(PLAN_ASSIGNMENT_OPTION_CAP + 1)
+  if (error) throw new Error(`Failed to load plans: ${error.message}`)
+  const shown = (plans ?? []).slice(0, PLAN_ASSIGNMENT_OPTION_CAP)
+  if (shown.length === 0) return { plans: [], truncated: false }
+  const planIds = shown.map((plan) => plan.id)
+  const [versions, elevations, offering] = await Promise.all([
+    context.supabase.from("house_plan_versions").select("id, house_plan_id, version_number")
+      .eq("org_id", context.orgId).eq("status", "released").in("house_plan_id", planIds).order("version_number", { ascending: false }),
+    context.supabase.from("house_plan_elevations").select("id, house_plan_id, code, name, swing_applicable")
+      .eq("org_id", context.orgId).eq("is_active", true).in("house_plan_id", planIds).order("sort_order"),
+    context.supabase.from("community_plan_availability").select("house_plan_id, is_available, elevation_id, effective_start, effective_end")
+      .eq("org_id", context.orgId).eq("community_id", communityId).in("house_plan_id", planIds),
+  ])
+  for (const result of [versions, elevations, offering]) {
+    if (result.error) throw new Error(`Failed to load plan options: ${result.error.message}`)
+  }
+  const today = new Date().toISOString().slice(0, 10)
+  const fits = lot
+    ? await checkLotFits(context, (elevations.data ?? []).map((elevation) => ({
+      key: elevation.id, lotId: lot.id, communityId, dimensions: lot.dimensions, lotSwing: lot.swing,
+      planId: elevation.house_plan_id, elevationId: elevation.id, swing: null,
+    })))
+    : null
+  const options = shown.flatMap((plan): PlanAssignmentOption[] => {
+    const planVersions = (versions.data ?? []).filter((version) => version.house_plan_id === plan.id)
+    const planElevations = (elevations.data ?? []).filter((elevation) => elevation.house_plan_id === plan.id)
+    if (planVersions.length === 0 || planElevations.length === 0) return []
+    const rows = (offering.data ?? []).filter((row) => row.house_plan_id === plan.id)
+    return [{
+      planId: plan.id,
+      code: plan.code,
+      name: plan.name,
+      versions: planVersions.map((version) => ({ id: version.id, versionNumber: Number(version.version_number) })),
+      elevations: planElevations.map((elevation) => ({
+        id: elevation.id,
+        code: elevation.code,
+        name: elevation.name,
+        swingApplicable: Boolean(elevation.swing_applicable),
+        offered: isPlanOffered(rows, { elevationId: elevation.id, onDate: today }),
+        fit: fits?.get(elevation.id) ?? null,
+      })),
+    }]
+  })
+  return { plans: options, truncated: (plans ?? []).length > PLAN_ASSIGNMENT_OPTION_CAP }
+}
+
+/**
  * Link a home to its dirt.
  *
  * Both halves of the link go through `assertLotStatusTransition` like every other
@@ -490,13 +730,26 @@ export async function attachProjectToLot(
   await requireCommunityScope(before.community_id, context)
   if (before.project_id && before.project_id !== projectId) throw new Error("This lot already has a project attached.")
   assertLotAttachTransition({ from: before.status, force })
-  const { data: project, error: projectError } = await context.supabase.from("projects").select("id, org_id, name, property_type, division_id").eq("org_id", context.orgId).eq("id", projectId).maybeSingle()
+  const { data: project, error: projectError } = await context.supabase.from("projects").select("id, org_id, name, property_type, division_id, client_id").eq("org_id", context.orgId).eq("id", projectId).maybeSingle()
   if (projectError || !project) throw new Error("Project not found")
+  const [delivery, reservations] = await Promise.all([
+    context.supabase.from("lots").select(`delivered_at, ${LOT_DELIVERY_EXCEPTIONS_EMBED}`).eq("org_id", context.orgId).eq("id", lotId).maybeSingle(),
+    context.supabase.from("lot_reservations").select("buyer_contact_id, co_buyer_contact_id").eq("org_id", context.orgId).eq("lot_id", lotId).in("status", LIVE_RESERVATION_STATUSES).or(liveReservationOrFilter()).limit(10),
+  ])
+  if (delivery.error || !delivery.data || reservations.error) throw new Error("The lot's delivery and reservation status could not be verified. No home was attached.")
+  const undelivered = lotDeliveryRefusal({ deliveredAt: delivery.data.delivered_at, deliveryExceptions: delivery.data.delivery_exceptions })
+  if (undelivered) throw new Error(undelivered)
+  // A live hold or reservation belongs to its buyer. Only that buyer's own
+  // home may be attached; anyone else's would sell the lot twice. This read
+  // refuses early; the lot update below is the fence (lots_home_reservation_guard
+  // serializes it with hold inserts on the lot row).
+  const heldForOthers = (reservations.data ?? []).some((reservation) => !project.client_id || ![reservation.buyer_contact_id, reservation.co_buyer_contact_id].includes(project.client_id))
+  if (heldForOthers) throw new Error("This lot has a live hold or reservation for another buyer. Release it before attaching a different home.")
   if (project.property_type && project.property_type !== "production") throw new Error("Only production-posture projects can be attached to lots.")
   const { data: existingLink, error: linkError } = await context.supabase.from("lots").select("id").eq("org_id", context.orgId).eq("project_id", projectId).neq("id", lotId).maybeSingle()
   if (linkError) throw new Error(`Failed to validate project link: ${linkError.message}`)
   if (existingLink) throw new Error("This project is already attached to another lot.")
-  const { error: projectUpdateError } = await context.supabase.from("projects").update({ property_type: "production", division_id: before.division_id }).eq("org_id", context.orgId).eq("id", projectId)
+  const { error: projectUpdateError } = await context.supabase.from("projects").update({ property_type: "production", division_id: before.division_id ?? project.division_id }).eq("org_id", context.orgId).eq("id", projectId)
   if (projectUpdateError) throw new Error(`Failed to prepare project: ${projectUpdateError.message}`)
   const { data, error } = await context.supabase.from("lots").update({ project_id: projectId, status: ATTACHED_LOT_STATUS }).eq("org_id", context.orgId).eq("id", lotId).select(LOT_SELECT).single()
   if (error) {
@@ -505,14 +758,62 @@ export async function attachProjectToLot(
       .update({ property_type: project.property_type, division_id: project.division_id })
       .eq("org_id", context.orgId)
       .eq("id", projectId)
-    throw new Error(`Failed to attach project: ${error.message}`)
+    throw new Error(error.code === "23514" ? error.message : `Failed to attach project: ${error.message}`)
   }
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.project_attached", entityId: lotId, action: "update", before, after: data, payload: { community_id: before.community_id, project_id: projectId, project_name: project.name, force } })
   return mapLot(data as LotRow)
 }
 
 /**
- * Unlink a home from its dirt and return the lot to inventory.
+ * Let a house start on a lot land development has not delivered. The exception
+ * is its own authority (`lot.delivery_override`), needs a reason, and is a
+ * record the start gates read back — the database refuses a start package or a
+ * `started` status on an undelivered lot without a live one. Recording a new
+ * exception is refused while one is live; revoke it first.
+ */
+export async function recordLotDeliveryException(
+  lotId: string,
+  input: { reason: string },
+  orgId?: string,
+): Promise<void> {
+  const parsed = lotDeliveryExceptionSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("lot.delivery_override", context)
+  const before = await getLotById(context.supabase, context.orgId, lotId)
+  await requireCommunityScope(before.community_id, context)
+  const { data, error } = await context.supabase
+    .from("lot_delivery_exceptions")
+    .insert({ org_id: context.orgId, lot_id: lotId, reason: parsed.reason, approved_by: context.userId })
+    .select("id, reason, approved_by, approved_at")
+    .single()
+  if (error?.code === "23505") throw new Error("This lot already has a delivery exception. Revoke it before recording another.")
+  if (error || !data) throw new Error(`Failed to record the delivery exception: ${error?.message ?? "no row returned"}`)
+  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.delivery_exception_recorded", entityId: lotId, action: "insert", after: data, payload: { community_id: before.community_id, exception_id: data.id, reason: parsed.reason } })
+}
+
+/** Withdraw a lot's live delivery exception. A house already started on it stays started. */
+export async function revokeLotDeliveryException(lotId: string, orgId?: string): Promise<void> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("lot.delivery_override", context)
+  const before = await getLotById(context.supabase, context.orgId, lotId)
+  await requireCommunityScope(before.community_id, context)
+  const { data, error } = await context.supabase
+    .from("lot_delivery_exceptions")
+    .update({ revoked_at: new Date().toISOString(), revoked_by: context.userId })
+    .eq("org_id", context.orgId)
+    .eq("lot_id", lotId)
+    .is("revoked_at", null)
+    .select("id, reason, approved_by, approved_at, revoked_at")
+    .maybeSingle()
+  if (error) throw new Error(`Failed to revoke the delivery exception: ${error.message}`)
+  if (!data) throw new Error("This lot has no live delivery exception.")
+  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.delivery_exception_revoked", entityId: lotId, action: "update", after: data, payload: { community_id: before.community_id, exception_id: data.id } })
+}
+
+/**
+ * Unlink a home from its dirt and return the lot to inventory. The home keeps
+ * its division: that belongs to the project, and clearing it would take the
+ * house out of every division-scoped member's reach.
  *
  * A started lot moving back to `assigned` is exactly the backward step the
  * lifecycle asks for an explicit confirmation on, so detaching a house that is
@@ -531,19 +832,15 @@ export async function detachProjectFromLot(
   await requireCommunityScope(before.community_id, context)
   if (!before.project_id) throw new Error("This lot does not have a project attached.")
   assertLotDetachTransition({ from: before.status, force })
+  // A live start package belongs to this lot's home; detaching would strand it
+  // (nothing could cancel or release it). The database refuses too.
+  const { data: livePackage, error: livePackageError } = await context.supabase.from("start_packages").select("id")
+    .eq("org_id", context.orgId).eq("lot_id", lotId).in("status", ["open", "ready", "releasing", "attention"]).limit(1).maybeSingle()
+  if (livePackageError) throw new Error(`Failed to check the lot's start package: ${livePackageError.message}`)
+  if (livePackage) throw new Error("Cancel this lot's start package on the Starts desk before detaching its home.")
   const projectId = before.project_id
-  const restoreDivisionId = before.division_id
-  if (restoreDivisionId) {
-    const { error: projectError } = await context.supabase.from("projects").update({ division_id: null }).eq("org_id", context.orgId).eq("id", projectId).eq("division_id", restoreDivisionId)
-    if (projectError) throw new Error(`Failed to clear project division: ${projectError.message}`)
-  }
   const { data, error } = await context.supabase.from("lots").update({ project_id: null, status: DETACHED_LOT_STATUS }).eq("org_id", context.orgId).eq("id", lotId).select(LOT_SELECT).single()
-  if (error) {
-    if (restoreDivisionId) {
-      await context.supabase.from("projects").update({ division_id: restoreDivisionId }).eq("org_id", context.orgId).eq("id", projectId)
-    }
-    throw new Error(`Failed to detach project: ${error.message}`)
-  }
+  if (error) throw new Error(`Failed to detach project: ${error.message}`)
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.project_detached", entityId: lotId, action: "update", before, after: data, payload: { community_id: before.community_id, project_id: projectId, force } })
   return mapLot(data as LotRow)
 }

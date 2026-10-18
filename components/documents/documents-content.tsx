@@ -9,6 +9,7 @@ import { DocumentsFileTable } from "./documents-table"
 import type { DocumentTableItem } from "./documents-table"
 
 interface DocumentsContentProps {
+  preconstruction?: boolean
   onFileClick: (fileId: string) => void
   onDownloadFile: (fileId: string) => void
   onFolderClick: (path: string) => void
@@ -35,6 +36,7 @@ interface DocumentsContentProps {
 }
 
 export function DocumentsContent({
+  preconstruction = false,
   onFileClick,
   onDownloadFile,
   onFolderClick,
@@ -129,6 +131,7 @@ export function DocumentsContent({
       ) : null}
       <div className="flex-1 min-h-0">
         <DocumentsFileTable
+          preconstruction={preconstruction}
           items={documentItems}
           isLoading={isLoading}
           selectedFileIds={selectedFileIds}

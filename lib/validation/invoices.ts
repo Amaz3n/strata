@@ -75,3 +75,10 @@ export const invoiceInputSchema = z.object({
 
 export type InvoiceLineInput = z.infer<typeof invoiceLineInputSchema>
 export type InvoiceInput = z.infer<typeof invoiceInputSchema>
+
+/** A reviewed void date for a void Arc never dated, with what it rests on. */
+export const invoiceVoidDateSchema = z.object({
+  invoiceId: z.string().uuid(),
+  voidedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose the date the invoice was voided"),
+  basis: z.string().trim().min(5, "Say what the date rests on, such as the accounting system's void record").max(500),
+})

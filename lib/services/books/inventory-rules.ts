@@ -1,18 +1,26 @@
+import type { GlAccountType } from "@/lib/services/books/types"
+
 /** Owned-property accounting is an explicit project policy, independent of org tier. */
 export type InventoryPolicy = { enabled: boolean; effectiveOn: string | null; completedOn: string | null; soldOn: string | null }
-export function inventoryCostAccount(policy: InventoryPolicy | undefined, incurredOn: string, expenseAccount = "5000") {
+
+/**
+ * Where a home's cost lands under its inventory policy. Only construction cost
+ * (a cost-of-sales account) is capitalized; a line coded to an operating expense
+ * -- a sales commission -- is a period expense whatever the home's stage.
+ */
+export function inventoryCostAccount(policy: InventoryPolicy | undefined, incurredOn: string, expenseAccount = "5000", accountType: GlAccountType = "cogs") {
+  if (accountType !== "cogs") return expenseAccount
   if (!policy?.enabled || !policy.effectiveOn || incurredOn < policy.effectiveOn) return expenseAccount
   if (policy.soldOn && incurredOn >= policy.soldOn) return expenseAccount
   if (policy.completedOn && incurredOn >= policy.completedOn) return "1170"
   return "1160"
 }
 
-/** Largest-remainder allocation: exact cents, stable ties, and no synthetic cost. */
-export function allocateInventoryCost(amountCents: number, weights: Array<{ id: string; weight: number }>) {
-  if (!Number.isSafeInteger(amountCents) || amountCents <= 0 || weights.length === 0 || new Set(weights.map(row => row.id)).size !== weights.length || weights.some(row => !Number.isFinite(row.weight) || row.weight <= 0)) throw new Error("Allocation requires positive cents and unique positive weights")
-  const total = weights.reduce((sum, row) => sum + row.weight, 0)
-  const shares = weights.map(row => ({ ...row, exact: amountCents * row.weight / total, amountCents: Math.floor(amountCents * row.weight / total) }))
-  let remaining = amountCents - shares.reduce((sum, row) => sum + row.amountCents, 0)
-  for (const row of [...shares].sort((a,b) => (b.exact - b.amountCents) - (a.exact - a.amountCents) || a.id.localeCompare(b.id))) { if (remaining-- <= 0) break; row.amountCents++ }
-  return shares.map(({ id, amountCents }) => ({ id, amountCents })).sort((a,b) => a.id.localeCompare(b.id))
+/**
+ * A cost incurred on or after a home's sale is cost of that sold home, expensed
+ * in the period it is incurred and labeled so it is never mistaken for ordinary
+ * job cost (the closed-home late-cost policy). An operating expense is never one.
+ */
+export function isClosedHomeCost(policy: InventoryPolicy | undefined, incurredOn: string, accountType: GlAccountType = "cogs") {
+  return Boolean(accountType === "cogs" && policy?.enabled && policy.soldOn && incurredOn >= policy.soldOn)
 }

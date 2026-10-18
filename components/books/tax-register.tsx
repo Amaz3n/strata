@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,37 +23,66 @@ type Register = Awaited<
   ReturnType<typeof import("@/lib/services/books/tax-register").getTaxRegister>
 >;
 
-export function TaxRegister() {
+export function TaxRegister({ mode = "settings" }: { mode?: "settings" | "filings" }) {
   const [register, setRegister] = useState<Register | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const mounted = useRef(false);
+  const readVersion = useRef(0);
   const identityForm = useRef<HTMLFormElement>(null);
   const replacementForm = useRef<HTMLFormElement>(null);
-  const load = () =>
+  const load = useCallback(() => {
+    if (!mounted.current) return;
+    const version = ++readVersion.current;
+    const isCurrent = () => mounted.current && readVersion.current === version;
+    setLoadError(null);
     startTransition(async () => {
-      const result = await loadTaxRegisterAction();
-      if (!result.success) toast.error(result.error);
-      else setRegister(result.data);
+      try {
+        const result = await loadTaxRegisterAction();
+        if (!isCurrent()) return;
+        if (!result.success) setLoadError(result.error);
+        else setRegister(result.data);
+      } catch (error) {
+        if (isCurrent())
+          setLoadError(error instanceof Error ? error.message : "Unable to load the tax register. Please try again.");
+      }
     });
-  useEffect(load, []);
+  }, [startTransition]);
+  useEffect(() => {
+    mounted.current = true;
+    load();
+    return () => {
+      mounted.current = false;
+      readVersion.current++;
+    };
+  }, [load]);
+  const loadFailure = loadError ? (
+    <div role="alert" className="border-b p-5 text-sm">
+      <p>{loadError}</p>
+      <Button className="mt-3" variant="outline" disabled={pending} onClick={load}>
+        Retry
+      </Button>
+    </div>
+  ) : null;
   if (!register)
     return (
       <section className="border bg-background p-5 text-sm text-muted-foreground">
-        Loading tax jurisdictions and filing register…
+        {loadFailure ?? <p role="status">Loading tax jurisdictions and filing register…</p>}
       </section>
     );
   return (
     <section className="border bg-background">
+      {loadFailure}
       <div className="border-b px-5 py-4">
         <p className="text-sm font-semibold">
-          Tax jurisdictions & filing record
+          {mode === "settings" ? "Tax settings" : "Filing records"}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Jurisdiction drives invoice tax coding. Filing confirmations preserve
-          proof without treating Arc as tax counsel.
+          {mode === "settings" ? "Manage tax jurisdictions and vendor taxpayer identities." : "Record filing status and confirmations for your accounting records."}
         </p>
       </div>
-      <div className="grid divide-y xl:grid-cols-2 xl:divide-x xl:divide-y-0">
-        <div className="p-5">
+      <div>
+        {mode === "settings" ? <div className="p-5">
           <p className="text-xs font-semibold uppercase tracking-wide">
             Jurisdictions
           </p>
@@ -133,8 +162,8 @@ export function TaxRegister() {
             </Select>
             <Button disabled={pending}>Add jurisdiction</Button>
           </form>
-        </div>
-        <div className="p-5">
+        </div> : null}
+        {mode === "filings" ? <div className="p-5">
           <p className="text-xs font-semibold uppercase tracking-wide">
             Filing evidence
           </p>
@@ -253,9 +282,9 @@ export function TaxRegister() {
               Record filing
             </Button>
           </form>
-        </div>
+        </div> : null}
       </div>
-      <div className="border-t p-5">
+      {mode === "settings" ? <div className="border-t p-5">
         <p className="text-xs font-semibold uppercase tracking-wide">
           1099 vendor identity control
         </p>
@@ -402,7 +431,7 @@ export function TaxRegister() {
             </form>
           </details>
         ) : null}
-      </div>
+      </div> : null}
     </section>
   );
 }

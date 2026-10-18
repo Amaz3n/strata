@@ -44,7 +44,7 @@ export function DealStageTrack({ stage, stageRank }: { stage: SalesDealStage; st
                 "block truncate px-2 py-2 text-center text-[10px] font-medium tracking-wider uppercase",
                 current ? cn("font-semibold", settled ? "text-success" : accent.text) : null,
                 done && "text-foreground/60",
-                !done && !current && "text-muted-foreground/50",
+                !done && !current && "text-muted-foreground",
               )}
             >
               {STAGE_SHORT_LABELS[step]}

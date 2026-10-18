@@ -1,3 +1,5 @@
+import { proposalDocumentLabel } from "@/lib/precon/proposal-documents"
+import { estimateDocumentTerms, estimateBuilderFeeCents, estimatePriceRange, normalizeEstimateCommercial } from "@/lib/financials/estimate-commercial"
 import { NextResponse } from "next/server"
 
 import { requireOrgContext } from "@/lib/services/context"
@@ -81,8 +83,9 @@ export async function GET(
 
   const metadata = (estimate.metadata as Record<string, any> | null) ?? {}
   const recipient = resolveEstimateRecipient(estimate)
-  const accepted = (metadata.accepted_options as { ids?: string[]; accepted_total_cents?: number } | null) ?? null
+  const accepted = (metadata.accepted_options as { ids?: string[]; accepted_total_cents?: number; optional_tax_cents?: number } | null) ?? null
   const isSigned = Boolean(estimate.client_signed_at || estimate.builder_signed_at)
+  const hasAcceptedScope = isSigned || (estimate.status === "approved" && normalizeEstimateCommercial(metadata).purpose === "budget")
   const pricingRaw = metadata.display?.pricing
   const pricingDisplay = (PRICING_DISPLAY_MODES as readonly string[]).includes(pricingRaw)
     ? (pricingRaw as PricingDisplayMode)
@@ -94,6 +97,7 @@ export async function GET(
     orgAddress: branding.address,
     accentColor: branding.estimateAccentColor,
     fontFamily: branding.estimateFont,
+    builderFeeCents: estimateBuilderFeeCents(metadata),
     estimateTitle: estimate.title,
     recipientName: recipient.name ?? undefined,
     recipientEmail: recipient.email ?? null,
@@ -101,19 +105,20 @@ export async function GET(
     issuedAt: estimate.created_at ?? null,
     intro: typeof metadata.intro === "string" ? metadata.intro : null,
     summary: typeof metadata.summary === "string" ? metadata.summary : undefined,
-    terms: typeof metadata.terms === "string" ? metadata.terms : (branding.estimateTermsTemplate ?? undefined),
+    terms: estimateDocumentTerms(metadata, branding.estimateTermsTemplate),
     pricingDisplay,
     acceptedOptionalIds: accepted?.ids ?? null,
-    hideUnacceptedOptionals: isSigned,
+    hideUnacceptedOptionals: hasAcceptedScope,
+    totalRange: estimatePriceRange(metadata),
     subtotalCents: estimate.subtotal_cents,
-    taxCents: estimate.tax_cents,
-    totalCents: isSigned && accepted?.accepted_total_cents != null ? accepted.accepted_total_cents : estimate.total_cents,
+    taxCents: (estimate.tax_cents ?? 0) + (hasAcceptedScope ? accepted?.optional_tax_cents ?? 0 : 0),
+    totalCents: hasAcceptedScope && accepted?.accepted_total_cents != null ? accepted.accepted_total_cents : estimate.total_cents,
     contingencyCents: (estimate.total_cents ?? 0) - (estimate.subtotal_cents ?? 0) - (estimate.tax_cents ?? 0),
     contingencyPercent: Number(metadata.contingency_percent ?? 0) || 0,
     inclusions: typeof metadata.inclusions === "string" ? metadata.inclusions : null,
     exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : null,
     validUntil: estimate.valid_until,
-    documentLabel: signers ? (estimate.executed_at ? "Executed Estimate" : "Client-Signed Estimate") : undefined,
+    documentLabel: signers ? (estimate.executed_at ? "Executed agreement" : "Client-signed agreement") : proposalDocumentLabel(normalizeEstimateCommercial(metadata)),
     signers,
     lines: sortedItems,
   })

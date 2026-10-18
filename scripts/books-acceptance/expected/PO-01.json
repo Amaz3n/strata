@@ -1,0 +1,243 @@
+{
+  "scenario": "PO-01",
+  "reviewedFrom": "EP08-06 and EP08-07 (docs/enterprise-production/completion-checklist.json) and the EP08 owner decisions of 2026-10-15: generation reconciles per source line across every run (approved and billed orders are preserved and reported, only drafts are replaced), one living draft budget per home, order numbers assigned under the project lock, an exception is resolved in the transaction that creates its order, zero-price manual resolutions need a note, run and exception tables are read-only to members. Code: lib/services/po-generation.ts, lib/validation/po-generation.ts, components/purchasing/po-generation-preview.tsx; migrations 20261015110000_po_generation_reconcile and 20261015181000_po_generation_round3_fixes. Values are derived from each subcase's inputs and confirmed by the first run on the acceptance stack.",
+  "subcases": {
+    "po-generation-tables-refuse-data-api-writes": {
+      "derivation": "A sales consultant (a member with no purchasing permission) tries, with their own JWT through the data API, to resolve an open exception with a forged manual vendor and a $0.01 price, to delete the org's exceptions, to insert a succeeded commit run with a chosen fingerprint, and to rewrite run status. Every statement is refused, nothing changes, the exception stays open, and the member can still read. The purchasing manager then resolves the same exception through the service and it lands.",
+      "expected": {
+        "forged": {
+          "resolveException": "refused",
+          "deleteExceptions": "refused",
+          "forgeSucceededRun": "refused",
+          "rewriteRun": "refused"
+        },
+        "rowsChanged": {
+          "exceptions": 0,
+          "runs": 0
+        },
+        "exceptionStillOpen": true,
+        "memberReads": true,
+        "buyerResolved": true
+      }
+    },
+    "po-preview-lists-expiring-agreements": {
+      "derivation": "Two agreements are ended 10 and 25 days from today, inside the org's 30-day lead window. The preview returns both with vendor and days left, soonest first, each carrying its agreement's end date, and writes no order.",
+      "expected": {
+        "expiring": [
+          {
+            "vendor": "Cypress Sitework",
+            "endsInDays": 10,
+            "endDateIsTheAgreementEnd": true
+          },
+          {
+            "vendor": "Palmetto Framing",
+            "endsInDays": 25,
+            "endDateIsTheAgreementEnd": true
+          }
+        ],
+        "previewWroteNoOrders": true
+      }
+    },
+    "po-regeneration-preserves-progressed-orders": {
+      "derivation": "A home is generated; Palmetto Framing's order is approved and another vendor's order is marked complete (no bill). The framing agreement is repriced by $1 per unit. The preview already reports the approved order as pricing differently, and so does the commit; the approved and completed orders keep status and total, the number of orders is unchanged, and the house keeps one line per source and one budget equal to the commitments.",
+      "expected": {
+        "previewReportsApprovedOrder": true,
+        "commitReportsApprovedOrder": true,
+        "approvedOrderUntouched": true,
+        "completedOrderUntouched": true,
+        "orderCountUnchanged": true,
+        "firstRunWasWhole": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "po-dismissed-exceptions-stay-dismissed": {
+      "derivation": "A home with two price exceptions is generated; one is dismissed with a note. A later preview and commit raise the same exceptions again for the same reasons: the dismissed one stays dismissed (one dismissed row, none open for its line), the other stays open exactly once, and no line has two open exceptions.",
+      "expected": {
+        "dismissed": 1,
+        "reopenedForTheDismissedLine": 0,
+        "othersStillOpen": true,
+        "maxOpenPerLine": 1
+      }
+    },
+    "po-resolutions-keep-one-budget": {
+      "derivation": "A home with two price exceptions (a lapsed and a void agreement) is generated, then both exceptions are resolved with manual prices. Each resolution adds its order to the same generated budget; nothing is left open.",
+      "expected": {
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true,
+        "openExceptions": 0,
+        "resolutions": 2
+      }
+    },
+    "po-zero-price-needs-a-reason": {
+      "derivation": "A manual $0 price is refused with no note and with a 4-character note, the exception staying open; with a note of at least ten characters it is accepted and the note is stored on the resolution.",
+      "expected": {
+        "noNote": "needs a reason",
+        "shortNote": "needs a reason",
+        "stillOpenAfterRefusals": true,
+        "withNote": "allowed",
+        "noteStored": "Owner-supplied concrete, no charge"
+      }
+    },
+    "po-canceled-order-is-reordered": {
+      "derivation": "A home is generated, then its first order is canceled (fixture). The next commit treats a canceled order as not live: it is left exactly as it was with its lines, and the same source lines are ordered again on a new draft order for the same vendor, totalling what the canceled one did, under a number above every number used (the floor, not a reuse). The house has one more order than before, one live order per source line, and one budget equal to the live commitments (canceled orders are not committed).",
+      "expected": {
+        "runSucceeded": true,
+        "canceledOrderUntouched": true,
+        "canceledOrderKeepsItsLines": true,
+        "replacementDraftSameTotal": true,
+        "replacementHasNewNumber": true,
+        "orderCount": 1,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "po-deleted-draft-is-repaired": {
+      "derivation": "A home is generated and one draft order is deleted. The preview's inputs are identical to the last run, but the reconcile report finds lines to re-create, so the commit is not short-circuited as already generated: the order returns with the same vendor and total, the order count and the sum of totals are what they were, and the house invariants hold.",
+      "expected": {
+        "repairedNotShortCircuited": true,
+        "orderCountRestored": true,
+        "totalsRestored": true,
+        "vendorOrderBack": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "po-order-with-history-is-preserved": {
+      "derivation": "Palmetto Framing's order is approved by the owner (an issue version is written), receives a receipt that is then voided, and is returned to draft. The framing agreement is then repriced by $1 a unit. Regeneration treats an order with any issue, acknowledgment or receipt history as progressed even though it is a draft: it neither deletes the lines (which would fail on the receipt foreign key) nor orders them again on another draft. The run succeeds; the order stays a draft with its total; its one issue version and one receipt remain; the preview and the commit both report that it would now price differently; one framing order exists.",
+      "expected": {
+        "runSucceeded": true,
+        "orderStillADraft": true,
+        "totalUnchanged": true,
+        "historyUnchanged": true,
+        "previewReportsIt": true,
+        "commitReportsIt": true,
+        "orderCountUnchanged": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "race-po-competing-commits": {
+      "derivation": "Two sessions commit one preview at once. Under the project lock the first writes the orders; the second finds the same inputs already generated and returns that run (or is refused as a stale preview). Exactly one commit run succeeded and the orders exist once.",
+      "expected": {
+        "fulfilled": 2,
+        "distinctRuns": 1,
+        "refusals": [],
+        "succeededCommitRuns": 1,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "race-po-duplicate-resolution": {
+      "derivation": "Two sessions resolve one exception, one with each of two vendors. The first to take the project lock orders the line and closes the exception; the other is told it was already resolved. One line for the source, one resolved exception, no failed run, no raw index error.",
+      "expected": {
+        "winners": 1,
+        "losers": [
+          "already resolved"
+        ],
+        "linesForTheSource": 1,
+        "exceptionStatus": "resolved_manual",
+        "failedRuns": 0,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "race-po-release-against-resolution": {
+      "derivation": "The starts release's PO step and a buyer's resolution run on one home at once. If the resolution lands between the release reading the house and committing, the release's commit is refused as stale and reads the house again; both finish and every source line is ordered once.",
+      "expected": {
+        "outcomes": [
+          "done",
+          "done"
+        ],
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "po-order-with-variance-order-is-preserved": {
+      "derivation": "A home is generated; a variance order (status sent, with an org reason code) is raised on Palmetto Framing's still-draft order, and the framing agreement is repriced by $1 a unit. A variance order is history: regeneration treats the draft as progressed, so it neither deletes the order (which cascades the variance order away) nor orders its lines again on another draft. The run succeeds, the order keeps its status and total, the variance order is still attached to it, the preview and the commit both report that the order would now price differently, and one framing order exists.",
+      "expected": {
+        "runSucceeded": true,
+        "orderKept": true,
+        "varianceOrderSurvives": 1,
+        "previewReportsIt": true,
+        "commitReportsIt": true,
+        "oneFramingOrder": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "po-fractional-quantity-generates-approves-and-issues": {
+      "derivation": "One of the plan's framing takeoff lines is set to 12.5 units and the framing agreement to 345 cents a unit. 12.5 x 345 = 4,312.5 cents; the rule is round half up to whole cents, so the generated line is 4,313 and the draft order's total is the sum of its line totals. The owner (a second person) approves it through the approval service: it succeeds, the order's total is still the sum of its lines, the fractional line is still 4,313, and exactly one issue version is written.",
+      "expected": {
+        "fractionalLineCents": 4313,
+        "orderTotalEqualsItsLines": true,
+        "approval": "approved",
+        "approvedTotalEqualsItsLines": true,
+        "approvedLineUnchanged": true,
+        "issueVersions": 1,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "race-po-approval-lands-first": {
+      "derivation": "The framing price moves by $1 a unit and a preview is taken. One database session holds the framing order's row lock; the owner's approval is started and waited for until it is queued on that lock; then the regeneration commit is started and waited for until it is queued behind the approval; then the lock is released. Postgres grants row locks in queue order, so the approval lands first, at the total it read (its updated_at still matches). The regeneration then finds an approved order, preserves it and reports that it would now price differently. The order ends approved at its original total, equal to its lines.",
+      "expected": {
+        "approval": "approved",
+        "regenerationRan": true,
+        "regenerationReportsTheApprovedOrder": true,
+        "orderApprovedAtItsReadTotal": true,
+        "approvedTotalEqualsItsLines": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    },
+    "race-po-regeneration-lands-first": {
+      "derivation": "Same setup, opposite queue order: the regeneration commit queues on the held order lock first, the owner's approval (which has already read the old order and its updated_at) queues second, then the lock is released. The regeneration re-prices the draft and bumps its updated_at; the approval's conditional update matches nothing and is refused with the plain 'order changed while you were working on it' message, never approving the old total. The order stays a draft, its total is higher than before (the price rose $1 on every framing unit) and equals the sum of its new lines.",
+      "expected": {
+        "regeneration": "regenerated",
+        "approval": "order changed",
+        "orderStillADraft": true,
+        "orderRepriced": true,
+        "totalEqualsItsLines": true,
+        "oneOrderPerSourceLine": true,
+        "noOrderWithoutLines": true,
+        "oneBudget": true,
+        "budgetEqualsCommitments": true,
+        "noRunFailedOnARace": true
+      }
+    }
+  }
+}

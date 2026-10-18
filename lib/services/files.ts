@@ -1,3 +1,4 @@
+import { assertDocumentUploadObject } from "@/lib/services/document-upload-object"
 import { createHash } from "node:crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -7,10 +8,10 @@ import { fileInputSchema, fileUpdateSchema, fileListFiltersSchema } from "@/lib/
 import { validateDocumentUpload } from "@/lib/files/content-policy"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
-import { createFilesDownloadUrl, deleteFilesObjects, ensureOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-storage"
+import { createFilesDownloadUrl, ensureOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { createInitialVersion } from "./file-versions"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { triggerFileIndexing } from "./files-indexing"
 import { findFileIdsBySourceSearch, listFileSourceContexts } from "./file-source-contexts"
 
@@ -135,14 +136,18 @@ export interface FileTimelineEvent {
   details?: string
 }
 
-export function buildInternalFileUrl(fileId: string): string {
-  return `/api/files/${fileId}/raw`
+export function buildInternalFileUrl(fileId: string, revision?: string): string {
+  const suffix = revision ? `?revision=${createHash("sha256").update(revision).digest("hex").slice(0, 20)}` : ""
+  return `/api/files/${fileId}/raw${suffix}`
 }
 
 /** The one place that decides which URL a file previews and downloads from. */
 function buildFileUrls(file: FileRecord): FileWithUrls {
-  const internalUrl = buildInternalFileUrl(file.id)
-  const previewUrl = file.preview_thumbnail_path ? `/api/files/${file.id}/preview` : undefined
+  const revision = `${file.storage_path}:${file.updated_at}`
+  const internalUrl = buildInternalFileUrl(file.id, revision)
+  const previewRevision = createHash("sha256").update(`${revision}:${file.preview_thumbnail_path ?? "pending"}`).digest("hex").slice(0, 20)
+  const generatedPreviewUrl = `/api/files/${file.id}/preview?revision=${previewRevision}`
+  const previewUrl = file.preview_thumbnail_path ? generatedPreviewUrl : undefined
 
   return {
     ...file,
@@ -150,7 +155,7 @@ function buildFileUrls(file: FileRecord): FileWithUrls {
     thumbnail_url:
       previewUrl ??
       (needsGeneratedImagePreview(file.mime_type, file.file_name, file.storage_path)
-        ? `/api/files/${file.id}/preview`
+        ? generatedPreviewUrl
         : canUseOriginalAsImagePreview(file.mime_type)
           ? internalUrl
           : undefined),
@@ -167,6 +172,10 @@ const DEFAULT_FOLDER_BY_CATEGORY: Record<FileCategory, string> = {
   safety: "/safety",
   financials: "/financials",
   other: "/general",
+}
+
+function escapeFolderLike(path: string): string {
+  return path.replace(/[\\%_]/g, "\\$&")
 }
 
 export function normalizeFolderPath(path?: string | null): string | undefined {
@@ -888,39 +897,26 @@ interface PersistUploadedFileInput {
 }
 
 async function persistUploadedFile(input: PersistUploadedFileInput): Promise<FileWithUrls> {
-  const record = await createFileRecord(
-    {
-      project_id: input.projectId,
-      file_name: input.fileName,
-      storage_path: input.storagePath,
-      mime_type: input.mimeType,
-      size_bytes: input.sizeBytes,
-      checksum: input.checksum,
-      visibility: input.visibility,
-      category: input.category,
-      folder_path: input.folderPath ?? null,
-      description: input.description,
-      tags: input.tags,
-      source: "upload",
-      share_with_clients: input.shareWithClients,
-      share_with_subs: input.shareWithSubs,
+  const { userId } = await requireOrgContext(input.orgId)
+  const defaults = input.projectId && input.folderPath
+    ? await getFolderPermissionDefaults(input.projectId, input.folderPath, input.orgId)
+    : null
+  const { data, error } = await createServiceSupabaseClient().rpc("commit_document_upload", {
+    p_org_id: input.orgId,
+    p_actor_id: userId,
+    p_file: {
+      project_id: input.projectId, file_name: input.fileName, storage_path: input.storagePath,
+      mime_type: input.mimeType, size_bytes: input.sizeBytes, checksum: input.checksum,
+      visibility: input.visibility, category: input.category, folder_path: input.folderPath,
+      description: input.description, tags: input.tags, source: "upload",
+      share_with_clients: input.shareWithClients ?? defaults?.share_with_clients ?? false,
+      share_with_subs: input.shareWithSubs ?? defaults?.share_with_subs ?? false,
     },
-    input.orgId,
-  )
-
-  await createInitialVersion(
-    {
-      fileId: record.id,
-      storagePath: input.storagePath,
-      fileName: input.fileName,
-      mimeType: input.mimeType,
-      sizeBytes: input.sizeBytes,
-      checksum: input.checksum,
-    },
-    input.orgId,
-  )
-
-  return buildFileUrls(record)
+  })
+  // Never delete bytes on a failed/ambiguous commit response. A retry of the
+  // same immutable storage path reconciles the committed row in the RPC.
+  if (error || !data) throw new Error(`Failed to finalize upload: ${error?.message}`)
+  return buildFileUrls(mapFile(data))
 }
 
 export interface CreateFileFromUploadInput {
@@ -940,8 +936,8 @@ export interface CreateFileFromUploadInput {
 
 /**
  * Server-side upload: the bytes arrive with the request, so permission is
- * checked before anything reaches storage and an orphaned object is removed if
- * the record cannot be written.
+ * checked before anything reaches storage. Ambiguous commits retain the object
+ * so retry/reconciliation cannot destroy a successful upload.
  */
 export async function createFileFromUpload(
   input: CreateFileFromUploadInput,
@@ -992,8 +988,7 @@ export async function createFileFromUpload(
     upsert: false,
   })
 
-  try {
-    return await persistUploadedFile({
+  return await persistUploadedFile({
       orgId: resolvedOrgId,
       projectId,
       storagePath,
@@ -1009,10 +1004,6 @@ export async function createFileFromUpload(
       shareWithClients: input.shareWithClients,
       shareWithSubs: input.shareWithSubs,
     })
-  } catch (error) {
-    await discardUploadedObject(supabase, resolvedOrgId, storagePath)
-    throw error
-  }
 }
 
 export interface FinalizeUploadedFileInput {
@@ -1034,7 +1025,7 @@ export interface FinalizeUploadedFileInput {
 
 /**
  * Record a file the browser already pushed straight to object storage. The
- * object is discarded if the record cannot be written.
+ * immutable storage path is the retry key; commit failures never delete bytes.
  */
 export async function finalizeDirectUpload(
   input: FinalizeUploadedFileInput,
@@ -1076,12 +1067,29 @@ export async function finalizeDirectUpload(
     throw new Error("Invalid upload path for project scope")
   }
 
+  const { data: receipt, error: receiptError } = await createServiceSupabaseClient().from("document_upload_commits")
+    .select("file_id").eq("org_id", resolvedOrgId).eq("storage_path", storagePath).maybeSingle()
+  if (receiptError) throw new Error(`Failed to reconcile upload receipt: ${receiptError.message}`)
+  if (receipt) {
+    const existing = await getFile(receipt.file_id, resolvedOrgId)
+    if (!existing || (existing.project_id ?? null) !== (projectId ?? null)) throw new Error("Upload scope mismatch")
+    return buildFileUrls(existing)
+  }
+  const { data: committed, error: lookupError } = await supabase.from("files")
+    .select("*").eq("org_id", resolvedOrgId).eq("storage_path", storagePath).limit(1).maybeSingle()
+  if (lookupError) throw new Error(`Failed to reconcile upload: ${lookupError.message}`)
+  if (committed) {
+    if ((committed.project_id ?? null) !== (projectId ?? null)) throw new Error("Upload scope mismatch")
+    return buildFileUrls(mapFile(committed))
+  }
+
+  await assertDocumentUploadObject({ orgId: resolvedOrgId, userId, projectId, storagePath,
+    fileName: input.fileName, mimeType: input.mimeType, sizeBytes: input.fileSize })
   const mimeType = input.mimeType || "application/octet-stream"
   const category = input.category ?? inferFileCategory(input.fileName, input.mimeType)
   const folderPath = resolveUploadFolderPath({ folderPath: input.folderPath, projectId, category })
 
-  try {
-    const fileName = await resolveUploadFileName({
+  const fileName = await resolveUploadFileName({
       supabase,
       orgId: resolvedOrgId,
       projectId,
@@ -1106,16 +1114,6 @@ export async function finalizeDirectUpload(
       shareWithClients: input.shareWithClients,
       shareWithSubs: input.shareWithSubs,
     })
-  } catch (error) {
-    await discardUploadedObject(supabase, resolvedOrgId, storagePath)
-    throw error
-  }
-}
-
-async function discardUploadedObject(supabase: SupabaseClient, orgId: string, storagePath: string) {
-  await deleteFilesObjects({ supabase, orgId, paths: [storagePath] }).catch((cleanupError) => {
-    console.warn("[files] Failed to clean up orphaned upload object", cleanupError)
-  })
 }
 
 /**
@@ -1428,88 +1426,6 @@ export async function unarchiveFile(fileId: string, orgId?: string): Promise<Fil
 }
 
 /**
- * Delete a file permanently
- */
-export async function deleteFile(fileId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.delete", { supabase, orgId: resolvedOrgId, userId })
-
-  const { data: existing, error: fetchError } = await supabase
-    .from("files")
-    .select("id, file_name, storage_path, project_id")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", fileId)
-    .single()
-
-  if (fetchError || !existing) {
-    throw new Error("File not found")
-  }
-
-  const { data: versionRows, error: versionsError } = await supabase
-    .from("doc_versions")
-    .select("storage_path")
-    .eq("org_id", resolvedOrgId)
-    .eq("file_id", fileId)
-
-  if (versionsError) {
-    throw new Error(`Failed to load file versions for deletion: ${versionsError.message}`)
-  }
-
-  const storagePaths = Array.from(
-    new Set(
-      [existing.storage_path, ...(versionRows ?? []).map((row: any) => row.storage_path)]
-        .filter((path): path is string => typeof path === "string" && path.length > 0),
-    ),
-  )
-
-  try {
-    await deleteFilesObjects({
-      supabase,
-      orgId: resolvedOrgId,
-      paths: storagePaths,
-    })
-  } catch (error) {
-    console.error("Failed to delete file blobs from storage:", error)
-    // Continue to clean up db record
-  }
-
-  // Delete file links first
-  await supabase
-    .from("file_links")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("file_id", fileId)
-
-  // Delete file record
-  const { error } = await supabase
-    .from("files")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("id", fileId)
-
-  if (error) {
-    throw new Error(`Failed to delete file: ${error.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "file",
-    entityId: fileId,
-    before: existing,
-  })
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "file_deleted",
-    entityType: "file",
-    entityId: fileId,
-    payload: { file_name: existing.file_name, project_id: existing.project_id },
-  })
-}
-
-/**
  * Generate a signed download URL for a file
  */
 export async function getSignedUrl(
@@ -1757,7 +1673,7 @@ export async function listChildFolders(
     .eq("project_id", projectId)
 
   if (normalizedParentPath) {
-    persistedFoldersQuery = persistedFoldersQuery.like("path", `${normalizedParentPath}/%`)
+    persistedFoldersQuery = persistedFoldersQuery.like("path", `${escapeFolderLike(normalizedParentPath)}/%`)
   }
 
   const { data: persistedFolders, error: persistedFoldersError } = await persistedFoldersQuery
@@ -1780,7 +1696,7 @@ export async function listChildFolders(
     .not("folder_path", "is", null)
 
   if (normalizedParentPath) {
-    fileFoldersQuery = fileFoldersQuery.like("folder_path", `${normalizedParentPath}/%`)
+    fileFoldersQuery = fileFoldersQuery.like("folder_path", `${escapeFolderLike(normalizedParentPath)}/%`)
   }
 
   const { data: fileFolders, error: fileFoldersError } = await fileFoldersQuery
@@ -1959,7 +1875,7 @@ export async function applyFolderPermissionsToExistingFiles(
   }
 
   const defaults = await getProjectFolderPermissions(projectId, normalizedPath, resolvedOrgId)
-  const nestedPathPattern = `${normalizedPath}/%`
+  const nestedPathPattern = `${escapeFolderLike(normalizedPath)}/%`
 
   const [{ data: directRows, error: directError }, { data: nestedRows, error: nestedError }] =
     await Promise.all([
@@ -2038,7 +1954,7 @@ export async function renameProjectFolder(
         .select("id, file_name, folder_path")
         .eq("org_id", resolvedOrgId)
         .eq("project_id", projectId)
-        .like("folder_path", `${normalizedOldPath}/%`),
+        .like("folder_path", `${escapeFolderLike(normalizedOldPath)}/%`),
     ])
 
   if (directFetchError) {
@@ -2186,7 +2102,7 @@ async function renameFolderPathRows(
       .select("id, path")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
-      .like("path", `${oldPath}/%`),
+      .like("path", `${escapeFolderLike(oldPath)}/%`),
   ])
 
   if (exactError) {
@@ -2251,7 +2167,7 @@ export async function deleteEmptyProjectFolder(
         .select("id", { count: "exact", head: true })
         .eq("org_id", resolvedOrgId)
         .eq("project_id", projectId)
-        .like("folder_path", `${normalizedPath}/%`)
+        .like("folder_path", `${escapeFolderLike(normalizedPath)}/%`)
         .is("archived_at", null),
     ])
 
@@ -2303,7 +2219,7 @@ async function deleteFolderPathRows(
     .delete()
     .eq("org_id", orgId)
     .eq("project_id", projectId)
-    .like("path", `${folderPath}/%`)
+    .like("path", `${escapeFolderLike(folderPath)}/%`)
 
   if (nestedError) {
     if (nestedError.code === "42P01") return
@@ -2376,7 +2292,9 @@ export async function listFileTimeline(
       .eq("file_id", fileId)
       .order("created_at", { ascending: false })
       .limit(limit),
-    supabase
+    // The session client only sees audit rows its holder wrote or may read via
+    // `audit.read`; the docs.read gate above is the authorization for this trail.
+    createServiceSupabaseClient()
       .from("audit_log")
       .select("id, action, before_data, after_data, actor_user_id, created_at")
       .eq("org_id", resolvedOrgId)

@@ -83,6 +83,16 @@ export interface AccountingInboundQueueItem {
   operation: string; error: string | null; receivedAt: string; processedAt: string | null
 }
 
+export interface AccountingMaintenanceResult {
+  scanned: number
+  refreshed: number
+  failed: number
+  attempted?: number
+  deferred?: number
+  budgetExhausted?: boolean
+  error?: string
+}
+
 export interface AccountingProvider {
   validateSettings?(settings: Record<string, unknown>): Record<string, unknown>
 
@@ -102,7 +112,7 @@ export interface AccountingProvider {
   /** Refresh or otherwise re-validate provider credentials on demand. */
   refreshConnection?(connectionId: string): Promise<{ ok: boolean; error?: string }>
   /** Perform provider-owned credential keepalive for connections that are due. */
-  keepAliveConnections?(limit: number): Promise<{ scanned: number; refreshed: number; failed: number }>
+  keepAliveConnections?(limit: number): Promise<AccountingMaintenanceResult>
   /** Revoke provider-side credentials. Local lifecycle state is owned by the connection service. */
   disconnect(input: { orgId: string; connectionId: string }): Promise<void>
   pushInvoice(input: { orgId: string; connectionId: string; invoiceId: string; allowRecreateDeleted?: boolean }): Promise<PushResult>
@@ -158,7 +168,7 @@ export interface AccountingProvider {
    */
   receiveWebhook?(input: { rawBody: string; headers: Record<string, string | null> }): Promise<{ received: number; inserted: number } | null>
   /** Poll the provider's change feed for one connection and enqueue changes. Requires capabilities.supportsCDC. */
-  ingestChanges?(input: { connectionId: string; lookbackMinutes?: number | null }): Promise<{ scanned: number; inserted: number }>
+  ingestChanges?(input: { connectionId: string; lookbackMinutes?: number | null }): Promise<{ scanned: number; inserted: number; recoveryRequired?: boolean; deferred?: boolean; runId?: string | null; recoveryReasons?: string[]; currentScanComplete?: boolean }>
   /** Drain the provider's inbound event queue, reconciling remote changes into Arc. */
   drainInboundEvents?(input: { limit: number }): Promise<{ processed: number; reconciled: number; ignored?: number; errored?: number }>
   /**
