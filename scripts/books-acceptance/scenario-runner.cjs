@@ -39,7 +39,7 @@ async function runScenario(id, stackKit, fixtures = {}, only = null, { includePe
     // A subcase that needs an outside sandbox (`requires`) is blocked, never
     // skipped, when the run was not given it; the scenario stays INCOMPLETE.
     if (spec.requires && !kit[spec.requires]) {
-      subcases.push({ name, status: "BLOCKED", reason: `needs --${spec.requires}-env`, checks: [] })
+      subcases.push({ name, status: "BLOCKED", reason: `needs --${spec.requires}-env`, outside: true, checks: [] })
       continue
     }
     const check = recorder(),
@@ -86,7 +86,22 @@ function longRunEvidence(id, dir) {
  * its own (`longRunEvidenceDir`, see longRunEvidence) stands in for it, and without
  * that it is NOT_RUN, which fails the verdict like any scenario that did not pass.
  */
-async function runAll(kit, container, evidenceDir, { includeLongRunning = false, longRunEvidenceDir = null } = {}) {
+/**
+ * The verdict over a run's summary rows. A production scenario with open steps is
+ * reported, not failed; a failed one, one with an open defect, and a long-running one
+ * with no fresh evidence fail the run. The core gate (`core`, what pull requests run)
+ * also reports, without failing, what waits only on the outside: a long-running
+ * scenario, real storage, or a sandbox subcase the run was not given.
+ */
+function allScenariosVerdict(summary, { core = false } = {}) {
+  const inScope = summary.filter((row) => row.disposition !== "deferred")
+  const open = inScope.filter((row) => row.status !== "PASSED" && (
+    (PRODUCTION[row.scenario] && row.status === "INCOMPLETE") ||
+    (core && (row.status === "NOT_RUN" || row.disposition === "blocked" || (row.status === "INCOMPLETE" && row.outsideOnly)))))
+  return { verdict: inScope.every((row) => row.status === "PASSED" || open.includes(row)) ? "PASSED" : "INCOMPLETE", inScope, open }
+}
+
+async function runAll(kit, container, evidenceDir, { includeLongRunning = false, longRunEvidenceDir = null, core = false } = {}) {
   const { GOLDEN_SCENARIOS } = require("./runtime.cjs")
   fs.mkdirSync(evidenceDir, { recursive: true, mode: 0o700 })
   const summary = []
@@ -101,20 +116,17 @@ async function runAll(kit, container, evidenceDir, { includeLongRunning = false,
     fs.writeFileSync(path.join(evidenceDir, `${id}.json`), JSON.stringify(result, null, 2) + "\n", { mode: 0o600 })
     summary.push({ scenario: id, status: result.status, seconds: Math.round((Date.now() - startedAt) / 1000),
       ...(result.disposition ? { disposition: result.disposition.status, packages: result.disposition.packages } : {}),
-      open: result.subcases.filter((s) => s.status !== "PASSED").map((s) => s.name) })
+      open: result.subcases.filter((s) => s.status !== "PASSED").map((s) => s.name),
+      outsideOnly: result.subcases.some((s) => s.outside) && result.subcases.every((s) => s.status === "PASSED" || s.outside) })
     console.log(`${result.status.padEnd(15)} ${id}${result.disposition ? ` (${result.disposition.status}: ${result.disposition.packages.join(", ")})` : ""}`)
   }
-  const inScope = summary.filter((row) => row.disposition !== "deferred")
-  // A production scenario with open steps is reported, not failed; a failed one, one with
-  // an open defect, and a long-running one with no fresh evidence fail the run.
-  const production = inScope.filter((row) => PRODUCTION[row.scenario] && row.status === "INCOMPLETE")
-  const verdict = inScope.every((row) => row.status === "PASSED" || production.includes(row)) ? "PASSED" : "INCOMPLETE"
-  fs.writeFileSync(path.join(evidenceDir, "summary.json"), JSON.stringify({ verdict, finishedAt: new Date().toISOString(), container, scenarios: summary }, null, 2) + "\n", { mode: 0o600 })
-  console.log(`All scenarios: ${verdict} (${inScope.filter((row) => row.status === "PASSED").length} of ${inScope.length} scenarios pass${production.length ? `; open by design: ${production.map((row) => row.scenario).join(", ")}` : ""})`)
+  const { verdict, inScope, open } = allScenariosVerdict(summary, { core })
+  fs.writeFileSync(path.join(evidenceDir, "summary.json"), JSON.stringify({ verdict, gate: core ? "core" : "full", finishedAt: new Date().toISOString(), container, scenarios: summary }, null, 2) + "\n", { mode: 0o600 })
+  console.log(`All scenarios (${core ? "core" : "full"} gate): ${verdict} (${inScope.filter((row) => row.status === "PASSED").length} of ${inScope.length} scenarios pass${open.length ? `; open, not failing: ${open.map((row) => row.scenario).join(", ")}` : ""})`)
   if (verdict !== "PASSED") process.exitCode = 1
 }
 
-module.exports = { runScenario, SCENARIO_MODULES }
+module.exports = { runScenario, allScenariosVerdict, SCENARIO_MODULES }
 
 if (require.main === module) {
   const arg = (name) => process.argv[process.argv.indexOf(name) + 1]
@@ -127,11 +139,12 @@ if (require.main === module) {
       plaidEnv = process.argv.includes("--plaid-env") ? arg("--plaid-env") : null,
       taxbanditsEnv = process.argv.includes("--taxbandits-env") ? arg("--taxbandits-env") : null
     if (!container || !apiUrl || (!scenario && !process.argv.includes("--all")) || !evidenceDir || fs.existsSync(evidenceDir))
-      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT (--scenario ID | --all [--include-long-running | --long-run-evidence DIR]) --evidence-dir NEW_DIRECTORY [--only name[,name]] [--include-pending] [--storage-env FILE] [--plaid-env FILE] [--taxbandits-env FILE]")
+      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT (--scenario ID | --all [--core] [--include-long-running | --long-run-evidence DIR]) --evidence-dir NEW_DIRECTORY [--only name[,name]] [--include-pending] [--storage-env FILE] [--plaid-env FILE] [--taxbandits-env FILE]")
     const kit = createKit({ container, apiUrl, storageEnv, plaidEnv, taxbanditsEnv })
     if (!scenario) return runAll(kit, container, evidenceDir, {
       includeLongRunning: process.argv.includes("--include-long-running"),
       longRunEvidenceDir: process.argv.includes("--long-run-evidence") ? arg("--long-run-evidence") : null,
+      core: process.argv.includes("--core"),
     })
     const only = process.argv.includes("--only") ? arg("--only").split(",") : null
     const result = { ...(await runScenario(scenario, kit, {}, only, { includePending: process.argv.includes("--include-pending") })), container, finishedAt: new Date().toISOString() }

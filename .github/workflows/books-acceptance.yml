@@ -4,11 +4,14 @@ name: Books acceptance
 # the repository's migrations (scripts/books-acceptance/ci.cjs). No production
 # credentials: the stack mints its own development keys. Real storage runs only
 # against the acceptance bucket, Plaid and TaxBandits only against their sandboxes,
-# each when its secrets are configured; without them STORE-01 and the Plaid and
-# TaxBandits subcases report blocked and the run fails as incomplete.
+# each when its secrets are configured.
+# Pull requests and pushes to main run the core gate (--core): the legs that wait
+# only on the outside (real storage, the sandboxes, the long-running scenarios)
+# report as not run without failing. The weekly and manual runs are the full gate,
+# where a missing secret or long-run evidence fails the run as incomplete.
 on:
   schedule:
-    - cron: "30 6 * * *"
+    - cron: "30 6 * * 1"
   push:
     branches: [main]
   workflow_dispatch:
@@ -78,6 +81,7 @@ jobs:
           --db-port 55480
           --evidence-dir "$RUNNER_TEMP/books-evidence"
           $STORAGE_ARGS $PLAID_ARGS $TAXBANDITS_ARGS
+          ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && '--core' || '' }}
       - name: Remove the storage key
         if: always()
         run: rm -f "$RUNNER_TEMP/r2.env" "$RUNNER_TEMP/plaid.env" "$RUNNER_TEMP/taxbandits.env"

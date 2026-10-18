@@ -43,6 +43,20 @@ test("subcases of one scenario share its fixtures; the next scenario on the same
   assert.deepEqual(lotsTaken, [1, 2, 1, 2])
 })
 
+test("the core gate reports what waits on the outside without failing; the full gate fails it", () => {
+  const { allScenariosVerdict } = require("../scripts/books-acceptance/scenario-runner.cjs")
+  const outside = [
+    { scenario: "BILL-01", status: "PASSED" },
+    { scenario: "SCALE-01", status: "NOT_RUN", disposition: "long_running" },
+    { scenario: "STORE-01", status: "NOT_IMPLEMENTED", disposition: "blocked" },
+    { scenario: "BANK-01", status: "INCOMPLETE", outsideOnly: true },
+  ]
+  assert.equal(allScenariosVerdict(outside, { core: true }).verdict, "PASSED")
+  assert.equal(allScenariosVerdict(outside).verdict, "INCOMPLETE")
+  assert.equal(allScenariosVerdict([...outside, { scenario: "AP-01", status: "INCOMPLETE", outsideOnly: false }], { core: true }).verdict, "INCOMPLETE")
+  assert.equal(allScenariosVerdict([...outside, { scenario: "AP-01", status: "FAILED" }], { core: true }).verdict, "INCOMPLETE")
+})
+
 test("a required subcase that is not implemented keeps the scenario from passing", async () => {
   const result = await runScenario("UNIT-01", {}, {
     expected: expected({ main: { cents: 100 }, later: { status: "NOT_IMPLEMENTED" } }),
