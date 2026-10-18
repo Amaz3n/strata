@@ -14,8 +14,8 @@ const scope = require("@/lib/supabase/service-client-context")
 const TOKEN_A = "00000000-0000-4000-8000-000000000001"
 const TOKEN_B = "00000000-0000-4000-8000-000000000002"
 
-/** The headers PostgREST would actually receive from `client`. */
-async function sentHeaders(client) {
+/** The headers PostgREST would actually receive from the client `build` returns. The client is built under the stub because the shared client binds the global fetch when it is created. */
+async function sentHeaders(build) {
   const original = globalThis.fetch
   let headers
   globalThis.fetch = async (_url, init) => {
@@ -23,7 +23,7 @@ async function sentHeaders(client) {
     return new Response("[]", { status: 200, headers: { "content-type": "application/json" } })
   }
   try {
-    await client.from("start_packages").select("id")
+    await build().from("start_packages").select("id")
   } finally {
     globalThis.fetch = original
   }
@@ -31,11 +31,11 @@ async function sentHeaders(client) {
 }
 
 test("a worker client sends its claim and the shared service client sends none", async () => {
-  const worker = await sentHeaders(server.createStartsWorkerSupabaseClient(7, TOKEN_A))
+  const worker = await sentHeaders(() => server.createStartsWorkerSupabaseClient(7, TOKEN_A))
   assert.equal(worker["x-starts-job-id"], "7")
   assert.equal(worker["x-starts-claim-token"], TOKEN_A)
 
-  const shared = await sentHeaders(server.createServiceSupabaseClient())
+  const shared = await sentHeaders(() => server.createServiceSupabaseClient())
   assert.equal(shared["x-starts-claim-token"], undefined)
 })
 

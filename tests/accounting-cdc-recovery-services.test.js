@@ -1,3 +1,4 @@
+require("../scripts/register-ts-node-test")
 const test = require("node:test")
 const assert = require("node:assert/strict")
 const { cdcDatabase, id } = require("./fixtures/qbo-cdc-database")
@@ -138,6 +139,7 @@ test("actual nightly spine carries durable historic gap across short CDC, expire
   }
   const api = load("lib/services/books/reconciliation.ts", {
     "@/lib/supabase/server": { createServiceSupabaseClient: () => service },
+    "@/lib/utils": require("@/lib/utils"),
     "@/lib/services/books/reconciliation-rules": load("lib/services/books/reconciliation-rules.ts"),
     "@/lib/services/books/reconciliation-digest": {},
     "@/lib/services/books/access": {},

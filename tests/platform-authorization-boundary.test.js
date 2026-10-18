@@ -18,7 +18,7 @@ function authorizationHarness() {
   const reads = [], from = db.from.bind(db)
   db.from = table => { reads.push(table); return from(table) }
   stubModule('@/lib/supabase/server', { createServiceSupabaseClient: () => db })
-  stubModule('@/lib/auth/platform', { isPlatformAdminId: () => false })
+  delete require.cache[require.resolve('../lib/auth/platform')]
   delete require.cache[require.resolve('../lib/services/authorization')]
   const service = require('../lib/services/authorization')
   function role(...keys) { db.store.platform_memberships = [{ user_id: ACTOR, status: 'active', expires_at: null, role: { permissions: keys.map(permission_key => ({ permission_key })) } }] }
