@@ -12,7 +12,11 @@ const { IMPLEMENTED: SCENARIO_MODULES, NOT_IMPLEMENTED, NEEDS_STORAGE, LONG_RUNN
 // written: NOT_IMPLEMENTED (not built yet), DEFECT_OPEN (a reproduced product defect,
 // which fails the verdict until it is fixed) or `blocked` (needs an environment the
 // acceptance stack is not, e.g. a production build); it reports PASSED when that is gone.
-async function runScenario(id, kit, fixtures = {}, only = null, { includePending = false } = {}) {
+async function runScenario(id, stackKit, fixtures = {}, only = null, { includePending = false } = {}) {
+  // Scenarios memoise their fixtures (organisation, community, staged lots) per kit,
+  // so their subcases share them. Each scenario gets a kit of its own identity: an
+  // all-scenarios run must not hand one scenario the organisation another has used.
+  const kit = { ...stackKit }
   if (!fixtures.scenario && NEEDS_STORAGE[id] && !kit.storage) return { scenario: id, status: "NOT_IMPLEMENTED", disposition: NEEDS_STORAGE[id], subcases: [] }
   if (!fixtures.scenario && !SCENARIO_MODULES[id]) return { scenario: id, status: "NOT_IMPLEMENTED", ...(NOT_IMPLEMENTED[id] ? { disposition: NOT_IMPLEMENTED[id] } : {}), subcases: [] }
   const scenario = fixtures.scenario ?? require(SCENARIO_MODULES[id]),

@@ -69,6 +69,17 @@ function createKit(stack) {
     for (const name of ["TAXBANDITS_ENV", "TAXBANDITS_CLIENT_ID", "TAXBANDITS_CLIENT_SECRET", "TAXBANDITS_USER_TOKEN"]) process.env[name] = settings[name]
     taxbandits = { env: "sandbox" }
   }
+  // Request taps (CAP-01 meters the projector's reads) must see the app's cached
+  // service client, which binds `fetch` once, when it is first created. So the tap
+  // goes in here, before any client exists, not in whichever scenario loads later.
+  const taps = new Set()
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const response = await realFetch(input, init)
+    for (const tap of taps) await tap(input, init, response)
+    return response
+  }
+  const tapRequests = (tap) => { taps.add(tap); return () => taps.delete(tap) }
   require("../register-ts-node-test")
   // Route handlers give `after()` a request scope; scenarios await the work instead.
   const deferred = []
@@ -195,7 +206,7 @@ function createKit(stack) {
     return result
   }
 
-  return { container: stack.container, apiUrl: stack.apiUrl, storage, plaid, taxbandits, sql, rows, q, as, service, settle, organization, addMember, postedNet, drainOutbox, localJwt }
+  return { container: stack.container, apiUrl: stack.apiUrl, storage, plaid, taxbandits, sql, rows, q, as, service, settle, organization, addMember, postedNet, drainOutbox, localJwt, tapRequests }
 }
 
 // Expected-versus-observed recorder. A subcase passes only if every check passes.
