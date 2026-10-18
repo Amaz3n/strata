@@ -64,7 +64,7 @@ function nodes(node) {
   if (Array.isArray(node)) return node.flatMap(nodes)
   return React.isValidElement(node) ? [node, ...nodes(node.props.children)] : []
 }
-for (const permissions of [['plan.write'], ['selections.catalog.manage'], ['commitment.write'], ['lot.write'], ['members.manage'], ['*'], []]) test(`actual importer roster uses destination grants ${permissions.join(',') || 'none'} without tier or existing-data probes`, async () => {
+for (const permissions of [['plan.write'], ['selections.catalog.manage'], ['commitment.write'], ['price_book.write'], ['lot.write'], ['members.manage'], ['*'], []]) test(`actual importer roster uses destination grants ${permissions.join(',') || 'none'} without tier or existing-data probes`, async () => {
   const page = load('app/(app)/settings/imports/page.tsx', {
     'next/server': { connection: async () => {} }, 'next/link': { __esModule: true, default: 'Link' },
     '@/lib/services/import-definitions': definitions,
@@ -75,7 +75,7 @@ for (const permissions of [['plan.write'], ['selections.catalog.manage'], ['comm
   const shell = page.default(), tree = nodes(await shell.props.children.type(shell.props.children.props))
   const paths = tree.filter(node => node.type === 'Link').map(node => node.props.href)
   assert.ok(!paths.includes('/settings/imports/open_wip'))
-  for (const [importer, grant] of [['plan_library', 'plan.write'], ['option_catalog', 'selections.catalog.manage'], ['price_book', 'commitment.write'], ['communities_lots', 'lot.write'], ['team', 'members.manage']]) {
+  for (const [importer, grant] of [['plan_library', 'plan.write'], ['option_catalog', 'selections.catalog.manage'], ['price_book', 'price_book.write'], ['communities_lots', 'lot.write'], ['team', 'members.manage']]) {
     assert.equal(paths.includes(`/settings/imports/${importer}`), permissions.includes(grant) || permissions.includes('*'))
   }
 })

@@ -18,7 +18,7 @@
     },
     {
       "path": "/api/jobs/drawings-pipeline",
-      "schedule": "* * * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/jobs/specs-pipeline",

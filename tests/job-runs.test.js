@@ -132,7 +132,7 @@ describe("a run that never reports", () => {
   })
 
   test("a run in flight inside its deadline does not hide a job whose runs keep dying or failing", () => {
-    // drawings-pipeline: every minute, a 15-minute deadline, so one run is nearly always in flight.
+    // A frequent job with a 15-minute deadline nearly always has one run in flight.
     const now = Date.parse("2026-10-17T12:00:00Z")
     const minute = 60_000
     const at = (ms) => new Date(now - ms).toISOString()
