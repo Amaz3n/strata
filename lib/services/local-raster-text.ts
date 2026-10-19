@@ -1,5 +1,6 @@
 import "server-only";
 import { spawn } from "node:child_process";
+import { readdirSync } from "node:fs";
 import path from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
@@ -12,6 +13,14 @@ import {
 import type { AreaRegion } from "@/lib/drawings/area-takeoff";
 import type { openOriginalSheetRaster } from "./original-sheet-raster";
 import { renderSheetWindowImage } from "./drawings-sheet-images";
+
+/** next.config.mjs ships tesseract.js from its pnpm directory, where its own
+ * dependencies resolve; the deployed function has no top-level link to it. */
+function tesseractModulesPath(): string | undefined {
+  const pnpm = path.join(process.cwd(), "node_modules/.pnpm");
+  const dir = readdirSync(pnpm).find((name) => name.startsWith("tesseract.js@"));
+  return dir ? path.join(pnpm, dir, "node_modules") : undefined;
+}
 
 /** Killing the child also stops Tesseract initialization and its nested worker,
  * so a failed/timed-out OCR job does not remain alive in the application. */
@@ -35,6 +44,7 @@ function runRasterTextChild(
       process.execPath,
       ["--max-old-space-size=256", path.join(process.cwd(), "lib/services/ocr/raster-text-process.cjs")],
       {
+        env: { ...process.env, NODE_PATH: tesseractModulesPath() },
         serialization: "advanced",
         stdio: ["ignore", "ignore", "ignore", "ipc"],
       },

@@ -284,6 +284,16 @@ function createFakeSupabase(tables = {}, rpcHandlers = {}, options = {}) {
       throttle.set(key, (throttle.get(key) ?? 0) + 1)
       return { data: throttle.get(key), error: null }
     },
+    // Every permission decision asks whether the caller is staff inside an open support grant
+    // (lib/auth/platform.ts); mirrors the SQL function over the fake's own `platform_access_grants`.
+    active_platform_access_grants: ({ p_operator_user_id, p_org_id }, rows) => ({
+      data: (rows.platform_access_grants ?? [])
+        .filter((grant) => grant.operator_user_id === p_operator_user_id)
+        .filter((grant) => p_org_id == null || grant.org_id === p_org_id)
+        .filter((grant) => grant.ended_at == null && new Date(grant.expires_at).getTime() > Date.now())
+        .sort((a, b) => new Date(b.expires_at).getTime() - new Date(a.expires_at).getTime()),
+      error: null,
+    }),
   }
   return {
     store,

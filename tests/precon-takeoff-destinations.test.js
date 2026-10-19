@@ -14,7 +14,8 @@ const CONDITION = id(5)
 const ESTIMATE = id(6)
 const SHEET = id(7)
 
-// RBAC has its own suite; a configured superadmin keeps it out of the way here.
+// RBAC has its own suite; a configured superadmin inside an open support grant
+// keeps it out of the way here (staff hold no org rights without a grant).
 process.env.SUPERADMIN_IDS = ACTOR
 
 const PERMISSIONS = ["takeoff.read", "takeoff.write", "estimate.write", "project.read", "org.read", "org.member"]
@@ -65,6 +66,9 @@ function estimate(overrides = {}) {
 function seed({ phase = "precon", estimates = [estimate()] } = {}) {
   const tables = {
     permissions: PERMISSIONS.map((key) => ({ key })),
+    platform_access_grants: [
+      { id: id(9), org_id: ORG, operator_user_id: ACTOR, ended_at: null, expires_at: "2999-01-01T00:00:00Z" },
+    ],
     projects: [
       { id: PROJECT, org_id: ORG, division_id: null, phase, prospect_id: PROSPECT, project_module_overrides: [] },
     ],

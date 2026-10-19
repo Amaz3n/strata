@@ -242,6 +242,12 @@ given it, and its scenario stays `INCOMPLETE`.
 runs (RACE-01 holds locks on timing). Status (October 8): every scenario in the
 catalog passes except PAY-01 and PAY-02, which are deferred with payroll.
 
+`--all --core` is the pull-request gate (CI runs it on pull requests and pushes
+to main): a long-running scenario without evidence, STORE-01 without storage,
+and a scenario whose only open subcases are sandbox ones it was not given are
+reported as open without failing. Anything that fails, has an open defect or is
+unbuilt still fails it. The weekly and manual CI runs are the full gate.
+
 ## Browser journeys and the app sweep
 
 `browser.cjs --workspace W` runs the committed app from a detached worktree

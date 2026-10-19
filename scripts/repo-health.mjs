@@ -6,8 +6,12 @@ const root = process.cwd()
 const check = process.argv.includes("--check")
 const scanRoots = ["app", "components", "lib", "scripts", "tests"]
 const scanExtensions = new Set([".css", ".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"])
-const ignoredDirectories = new Set([".git", ".next", "archive", "node_modules", "plans"])
-const runtimeOnlyPackages = new Set(["next", "react", "react-dom", "server-only", "sharp", "three"])
+// Only build output and vendored trees. `plans` is not here: docs/ is never scanned, and
+// components/plans, lib/plans and app/(app)/plans are product source.
+const ignoredDirectories = new Set([".git", ".next", "archive", "node_modules"])
+// tesseract.js-core is loaded by tesseract.js's worker at runtime and pinned so next.config's
+// file tracing ships its wasm; nothing imports it by name.
+const runtimeOnlyPackages = new Set(["next", "react", "react-dom", "server-only", "sharp", "tesseract.js-core", "three"])
 const importPattern = /(?:from\s*|import\s*\(|require\s*\(|@import\s+)["']([^"']+)["']/g
 
 function walk(directory) {

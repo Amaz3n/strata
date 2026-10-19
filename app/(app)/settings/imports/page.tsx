@@ -41,7 +41,7 @@ async function ImportsPageContent() {
   const available = IMPORTER_KEYS.filter((key) => {
     // Open WIP cutover is run by us, not by the customer.
     if (key === "open_wip") return false
-    if (key === "price_book") return hasAny("price_book.write", "commitment.write")
+    if (key === "price_book") return hasAny("price_book.write")
     if (key === "plan_library") return hasAny("plan.write")
     if (key === "option_catalog") return hasAny("selections.catalog.manage")
     if (key === "communities_lots") return hasAny("community.write", "lot.write")

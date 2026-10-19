@@ -8,28 +8,23 @@ const { jobOrg, createBill, editBill, incrementalJob, projectionJob, glId } = re
 
 // Counts every PostgREST request the projector makes while a measurement is
 // open: rows returned by reads, and calls per RPC.
-const meter = { on: false, requests: 0, rows: 0, rpc: {}, tables: {} }
-const realFetch = globalThis.fetch
-globalThis.fetch = async (input, init) => {
-  const response = await realFetch(input, init)
-  if (!meter.on) return response
-  const url = String(input?.url ?? input)
-  if (!url.includes("/rest/v1/")) return response
-  meter.requests += 1
-  const rpc = /\/rest\/v1\/rpc\/([a-z0-9_]+)/.exec(url)
-  if (rpc) meter.rpc[rpc[1]] = (meter.rpc[rpc[1]] ?? 0) + 1
-  else if ((init?.method ?? "GET") === "GET") {
-    const body = await response.clone().json().catch(() => null)
-    const count = Array.isArray(body) ? body.length : body ? 1 : 0
-    const table = /\/rest\/v1\/([a-z0-9_]+)/.exec(url)?.[1] ?? "?"
-    meter.rows += count
-    meter.tables[table] = (meter.tables[table] ?? 0) + count
-  }
-  return response
-}
-async function metered(work) {
-  Object.assign(meter, { on: true, requests: 0, rows: 0, rpc: {}, tables: {} })
-  try { await work() } finally { meter.on = false }
+async function metered(kit, work) {
+  const meter = { requests: 0, rows: 0, rpc: {}, tables: {} }
+  const untap = kit.tapRequests(async (input, init, response) => {
+    const url = String(input?.url ?? input)
+    if (!url.includes("/rest/v1/")) return
+    meter.requests += 1
+    const rpc = /\/rest\/v1\/rpc\/([a-z0-9_]+)/.exec(url)
+    if (rpc) meter.rpc[rpc[1]] = (meter.rpc[rpc[1]] ?? 0) + 1
+    else if ((init?.method ?? "GET") === "GET") {
+      const body = await response.clone().json().catch(() => null)
+      const count = Array.isArray(body) ? body.length : body ? 1 : 0
+      const table = /\/rest\/v1\/([a-z0-9_]+)/.exec(url)?.[1] ?? "?"
+      meter.rows += count
+      meter.tables[table] = (meter.tables[table] ?? 0) + count
+    }
+  })
+  try { await work() } finally { untap() }
   // Tables that returned rows, largest first: where a run's reads went.
   const tables = Object.fromEntries(Object.entries(meter.tables).filter(([, rows]) => rows > 0).sort((a, b) => b[1] - a[1]))
   return { requests: meter.requests, rows: meter.rows, projections: meter.rpc.project_books_fact_and_journal_atomic ?? 0, receipts: meter.rpc.record_books_projection_receipt ?? 0, tables }
@@ -75,12 +70,12 @@ async function firstRunTiesIdleAndOneChange(kit, expected, check) {
   const input = expected.inputs
   const want = expected.expected
   const { org, template } = await volumeOrg(kit, "CAP-01 volume", input)
-  const first = await metered(() => incrementalJob(kit, org))
+  const first = await metered(kit, () => incrementalJob(kit, org))
   check.equal(`${input.bills} tied bills post exactly once`, want["first-run"], { ...exactlyOnce(ledger(kit, org), input.bills, input.cents), projections: first.projections })
-  const idle = await metered(() => incrementalJob(kit, org))
+  const idle = await metered(kit, () => incrementalJob(kit, org))
   check.equal("an idle run reads only configuration and posts nothing", want.idle, { rowsUnderBudget: idle.rows <= input.idleRowBudget, projections: idle.projections, receipts: idle.receipts })
   await editBill(kit, org, template, { actual_lines: [{ description: "Framing", amount_cents: input.cents, cost_code_id: org.costCodeId, project_id: org.projectId, arc_books_gl_account_id: glId(kit, org, "5020") }] })
-  const change = await metered(() => incrementalJob(kit, org))
+  const change = await metered(kit, () => incrementalJob(kit, org))
   check.equal("one changed bill: one projection, reads bounded by the change", want["one-change"], { rowsUnderBudget: change.rows <= input.changeRowBudget, projections: change.projections })
   return { orgId: org.orgId, measurements: { first, idle, change } }
 }
@@ -141,12 +136,12 @@ async function nightlyPass(kit, expected, check) {
   const input = expected.inputs
   const { org, template } = await volumeOrg(kit, "CAP-01 nightly", input)
   await incrementalJob(kit, org)
-  const unchanged = await metered(() => projectionJob(kit, org))
+  const unchanged = await metered(kit, () => projectionJob(kit, org))
   const { q } = kit
   kit.sql(`insert into public.divisions(org_id, name) values (${q(org.orgId)}, 'North division');
 update public.projects set division_id = (select id from public.divisions where org_id = ${q(org.orgId)} and name = 'North division') where id = ${q(org.projectId)};`)
-  const quiet = await metered(() => incrementalJob(kit, org))
-  const full = await metered(() => projectionJob(kit, org))
+  const quiet = await metered(kit, () => incrementalJob(kit, org))
+  const full = await metered(kit, () => projectionJob(kit, org))
   const tagged = (billId) => Number(kit.rows(`select count(*) n from public.journal_lines l join public.journal_entries e on e.id = l.entry_id where e.org_id = ${q(org.orgId)} and e.status = 'posted' and e.source_id = ${q(billId)} and l.dimensions ->> 'division_name' = 'North division'`)[0].n) > 0
   const next = await createBill(kit, org, input.billDate, input.cents)
   await incrementalJob(kit, org)
@@ -224,7 +219,7 @@ async function closeReviewReads(kit, expected, check) {
     await incrementalJob(kit, org)
     const { runBooksCloseChecklist } = app("books/period-close")
     let checklist = null
-    const reads = await metered(async () => { checklist = await kit.as(org.owner, () => runBooksCloseChecklist(org.periods["2026-07"].periodId)) })
+    const reads = await metered(kit, async () => { checklist = await kit.as(org.owner, () => runBooksCloseChecklist(org.periods["2026-07"].periodId)) })
     const tieOut = (code) => checklist.checks.find((item) => item.code === code)?.status
     return { reads, apControl: tieOut("ap_control"), jobCostControl: tieOut("job_cost_control") }
   }
@@ -274,9 +269,9 @@ commit;`, "supabase_admin")
   const everything = await kit.service(() => proveProjectedSources(org.orgId, { sourceKeys: allKeys }))
   const tenKeys = [tampered, ...billIds.slice(-9)].map((id) => `vendor_bill:${id}`)
   let scoped = null
-  const scopedReads = await metered(async () => { scoped = await kit.service(() => proveProjectedSources(org.orgId, { sourceKeys: tenKeys })) })
+  const scopedReads = await metered(kit, async () => { scoped = await kit.service(() => proveProjectedSources(org.orgId, { sourceKeys: tenKeys })) })
   let recent = null
-  const recentReads = await metered(async () => { recent = await kit.service(() => proveProjectedSources(org.orgId, { changedSince })) })
+  const recentReads = await metered(kit, async () => { recent = await kit.service(() => proveProjectedSources(org.orgId, { changedSince })) })
   check.equal("the narrowed proof matches the full drill and finds what the drill cannot; scoped proofs read only their sources", expected.expected, {
     drill: named(drill.differences),
     proofOverAll: named(everything.differences),

@@ -23,7 +23,7 @@ type HelpRoutePageProps = {
 export const instant = {
   unstable_samples: [{
     params: { slug: ["getting-started"] },
-    headers: [["sentry-trace", null], ["baggage", null]] as Array<[string, string | null]>,
+    headers: [["sentry-trace", null], ["baggage", null], ["x-request-id", null], ["x-vercel-id", null]] as Array<[string, string | null]>,
   }],
 }
 

@@ -27,6 +27,36 @@ test("a subcase that needs an outside sandbox is blocked, not skipped, when the 
   assert.equal((await run({ plaid: { env: "sandbox" } })).status, "PASSED")
 })
 
+test("subcases of one scenario share its fixtures; the next scenario on the same stack does not inherit them", async () => {
+  // A scenario memoises its organisation per kit, as LOT-01's stages do.
+  const orgs = new WeakMap()
+  const stack = { sql: () => "" }
+  const lotsTaken = []
+  const takeLot = async (kit, _spec, check) => {
+    const org = orgs.get(kit) ?? (orgs.set(kit, { next: 1 }), orgs.get(kit))
+    lotsTaken.push(org.next++)
+    check.equal("the stack's tools reach the scenario", stack.sql, kit.sql)
+  }
+  const run = () => runScenario("UNIT-01", stack, { expected: expected({ first: {}, second: {} }), scenario: scenario({ first: takeLot, second: takeLot }) })
+  assert.equal((await run()).status, "PASSED")
+  assert.equal((await run()).status, "PASSED")
+  assert.deepEqual(lotsTaken, [1, 2, 1, 2])
+})
+
+test("the core gate reports what waits on the outside without failing; the full gate fails it", () => {
+  const { allScenariosVerdict } = require("../scripts/books-acceptance/scenario-runner.cjs")
+  const outside = [
+    { scenario: "BILL-01", status: "PASSED" },
+    { scenario: "SCALE-01", status: "NOT_RUN", disposition: "long_running" },
+    { scenario: "STORE-01", status: "NOT_IMPLEMENTED", disposition: "blocked" },
+    { scenario: "BANK-01", status: "INCOMPLETE", outsideOnly: true },
+  ]
+  assert.equal(allScenariosVerdict(outside, { core: true }).verdict, "PASSED")
+  assert.equal(allScenariosVerdict(outside).verdict, "INCOMPLETE")
+  assert.equal(allScenariosVerdict([...outside, { scenario: "AP-01", status: "INCOMPLETE", outsideOnly: false }], { core: true }).verdict, "INCOMPLETE")
+  assert.equal(allScenariosVerdict([...outside, { scenario: "AP-01", status: "FAILED" }], { core: true }).verdict, "INCOMPLETE")
+})
+
 test("a required subcase that is not implemented keeps the scenario from passing", async () => {
   const result = await runScenario("UNIT-01", {}, {
     expected: expected({ main: { cents: 100 }, later: { status: "NOT_IMPLEMENTED" } }),

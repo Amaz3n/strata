@@ -47,12 +47,24 @@ const securityHeaders = [
   },
 ]
 
-// Local OCR must ship its child entry, worker scripts, WASM and English data.
+// Local OCR must ship its child entry, tesseract.js, its WASM and English data.
+// The child is spawned by path, so nothing traces its requires: tesseract.js ships
+// from its pnpm directory, where its own dependencies resolve, and the child finds
+// it there through NODE_PATH (lib/services/local-raster-text.ts), because Turbopack
+// cannot include the top-level link itself. Node loads a core's .js and .wasm; the
+// browser builds (.wasm.js) and the duplicates a whole-package glob drags in would
+// push process-outbox past Vercel's 250MB function limit.
+const tesseractDir = "./node_modules/.pnpm/tesseract.js@7.0.0/node_modules"
 const rasterOcrAssets = [
   "./lib/services/ocr/*.cjs",
-  "./node_modules/tesseract.js/src/**",
-  "./node_modules/tesseract.js-core/**",
-  "./node_modules/@tesseract.js-data/eng/**",
+  `${tesseractDir}/tesseract.js/{package.json,src/**}`,
+  `${tesseractDir}/{bmp-js,is-url,regenerator-runtime,wasm-feature-detect,zlibjs}/**`,
+  `${tesseractDir}/tesseract.js-core/package.json`,
+  `${tesseractDir}/tesseract.js-core/tesseract-core{,-simd,-relaxedsimd,-lstm,-simd-lstm,-relaxedsimd-lstm}.js`,
+  `${tesseractDir}/tesseract.js-core/tesseract-core*.wasm`,
+  "./node_modules/@tesseract.js-data/eng/package.json",
+  "./node_modules/@tesseract.js-data/eng/index.js",
+  "./node_modules/@tesseract.js-data/eng/4.0.0/**",
 ]
 
 const nextConfig = {

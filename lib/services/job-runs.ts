@@ -29,7 +29,7 @@ export const CRON_JOBS: CronJobDefinition[] = [
   // be told a payable needs them. An hour behind the in-app badge made email
   // the slower channel for the one queue people work from email.
   { name: "process-outbox", path: "/api/jobs/process-outbox", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10, maxDurationSeconds: 300 },
-  { name: "drawings-pipeline", path: "/api/jobs/drawings-pipeline", schedule: "* * * * *", scheduleLabel: "Every minute", expectedIntervalMinutes: 1, maxDurationSeconds: 800 },
+  { name: "drawings-pipeline", path: "/api/jobs/drawings-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5, maxDurationSeconds: 800 },
   { name: "specs-pipeline", path: "/api/jobs/specs-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5, maxDurationSeconds: 300 },
   { name: "meeting-transcription", path: "/api/jobs/meeting-transcription", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5, maxDurationSeconds: 300 },
   { name: "meeting-audio-cleanup", path: "/api/jobs/meeting-audio-cleanup", schedule: "10 3 * * *", scheduleLabel: "Daily 3:10 UTC", expectedIntervalMinutes: 1440, maxDurationSeconds: 120 },

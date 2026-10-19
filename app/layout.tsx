@@ -36,6 +36,8 @@ export const instant = {
         ["sentry-trace", null],
         ["user-agent", null],
         ["x-forwarded-for", null],
+        ["x-request-id", null],
+        ["x-vercel-id", null],
       ] as Array<[string, string | null]>,
       params: {
         accountId: "00000000-0000-4000-8000-000000000001",
