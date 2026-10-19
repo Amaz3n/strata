@@ -1,6 +1,10 @@
 "use client";
 
-import { proposalDocumentLabel } from "@/lib/precon/proposal-documents";
+import {
+  proposalDocumentLabel,
+  type ProposalDocument,
+  type ProposalSectionKey,
+} from "@/lib/precon/proposal-documents";
 import type { EstimateInput } from "@/lib/validation/estimates";
 import {
   QuoteDocumentView,
@@ -35,13 +39,22 @@ export function EstimateLivePreview({
   range,
   questions,
   className,
+  proposal,
+  selectedSection,
+  onSelectSection,
+  sectionFlags,
 }: {
   input: EstimateInput;
   branding?: EstimatePreviewBranding;
-  /** A budget shows its range in place of a total. */
+  /** An estimate shows its range in place of a total. */
   range?: { lowCents: number; highCents: number } | null;
   questions?: Array<{ id: string; question: string; answer?: string | null }>;
   className?: string;
+  /** A deal proposal: rendered as its sections, each selectable. */
+  proposal?: ProposalDocument | null;
+  selectedSection?: ProposalSectionKey | null;
+  onSelectSection?: (id: ProposalSectionKey) => void;
+  sectionFlags?: Record<ProposalSectionKey, string>;
 }) {
   const commercial = normalizeEstimateCommercial({ precon: input.precon });
   const normalized = normalizeCommercialEstimateLines(input.lines, commercial);
@@ -108,6 +121,10 @@ export function EstimateLivePreview({
           taxCents={totals.tax}
           contingencyCents={totals.contingency}
           contingencyPercent={input.contingency_percent}
+          proposal={proposal}
+          selectedSection={selectedSection}
+          onSelectSection={onSelectSection}
+          sectionFlags={sectionFlags}
         />
       </ScaledDocument>
     </DocumentPreviewPane>

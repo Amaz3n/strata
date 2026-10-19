@@ -1,6 +1,5 @@
 "use client"
 
-import Link from "next/link"
 
 import {
   Search,
@@ -36,7 +35,6 @@ import { QUICK_FILTER_CONFIG, type QuickFilter } from "./types"
 import { cn } from "@/lib/utils"
 
 interface DocumentsToolbarProps {
-  plansHref?: string
   preconstruction?: boolean
   onUploadClick: () => void
   onCreateFolderClick: () => void
@@ -58,7 +56,6 @@ interface DocumentsToolbarProps {
 
 export function DocumentsToolbar({
   preconstruction = false,
-  plansHref,
   onUploadClick,
   onCreateFolderClick,
   selectedCount,
@@ -83,7 +80,7 @@ export function DocumentsToolbar({
   const isTrashView = quickFilter === "trash"
 
   return (
-    <div className={cn("flex flex-col gap-2", preconstruction && "gap-3 [&>div:first-child]:rounded-none")}>
+    <div className="flex flex-col gap-2">
       {hasFolderSelection ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-none border border-primary/20 bg-primary/5 px-3 py-2 shadow-sm">
           <div className="flex min-w-0 items-center gap-2">
@@ -178,7 +175,7 @@ export function DocumentsToolbar({
             type="button"
             variant="outline"
             size="icon"
-            className={cn("h-8 w-8 shrink-0", preconstruction && "hidden h-10 w-10 rounded-none border-border/60 shadow-none lg:inline-flex")}
+            className="h-8 w-8 shrink-0"
             onClick={onToggleExplorer}
             aria-label={explorerOpen ? "Hide explorer" : "Show explorer"}
             title={explorerOpen ? "Hide explorer" : "Show explorer"}
@@ -198,7 +195,7 @@ export function DocumentsToolbar({
               aria-label="Search documents"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              className={cn("h-8 pl-8 text-sm", preconstruction && "h-10 rounded-none border-border/60 bg-muted/30 pr-8 shadow-none")}
+              className="h-8 pl-8 pr-7 text-sm"
             />
             {searchInput && (
               <button
@@ -215,7 +212,7 @@ export function DocumentsToolbar({
           {/* Category Filter */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className={cn("h-8 gap-1.5 hidden md:flex", preconstruction && "h-10 rounded-none border-border/60 px-3 shadow-none")}>
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 hidden md:flex">
                 <ListFilter className="h-3.5 w-3.5" />
                 <span className="text-xs">Filter</span>
                 {quickFilter !== "all" && (
@@ -247,17 +244,12 @@ export function DocumentsToolbar({
 
         {preconstruction && (
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {plansHref && (
-              <Button asChild variant="outline" className="h-10 rounded-none shadow-none">
-                <Link href={plansHref}>Plans &amp; quantities</Link>
-              </Button>
-            )}
-            <Button variant="outline" className="h-10 rounded-none shadow-none" onClick={onCreateFolderClick}>
-              <FolderPlus className="size-4" />
+            <Button variant="outline" size="sm" className="h-8" onClick={onCreateFolderClick}>
+              <FolderPlus className="size-3.5" />
               New folder
             </Button>
-            <Button className="h-10 rounded-none px-4" onClick={onUploadClick}>
-              <Upload className="size-4" />
+            <Button size="sm" className="h-8" onClick={onUploadClick}>
+              <Upload className="size-3.5" />
               Upload files
             </Button>
           </div>

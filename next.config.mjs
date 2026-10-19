@@ -88,6 +88,16 @@ const nextConfig = {
       revalidate: 60, // re-check the session every minute
       expire: 3600,
     },
+    // A deal's tabs (/pipeline/[dealId]/*). Long enough that runtime prefetch
+    // carries each tab's data (stale >= 30s) and switching tabs back and forth
+    // never reloads; short enough that a teammate's or a trade's change shows
+    // within a minute. Your own changes evict it at once through the actions'
+    // revalidatePath.
+    deal: {
+      stale: 60,
+      revalidate: 30,
+      expire: 300,
+    },
   },
   turbopack: {
     root: projectRoot,

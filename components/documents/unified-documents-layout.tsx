@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
   DndContext,
@@ -94,6 +94,7 @@ export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
   return (
     <DocumentsProvider
       project={props.project}
+      dealId={props.deal?.id ?? null}
       initialFiles={props.initialFiles}
       initialTotalCount={props.initialTotalCount}
       initialHasMore={props.initialHasMore}
@@ -103,14 +104,12 @@ export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
       initialFolderPermissions={props.initialFolderPermissions}
       initialPath={props.initialPath}
     >
-      <UnifiedDocumentsLayoutInner preconstruction={props.preconstruction} />
+      <UnifiedDocumentsLayoutInner preconstruction={props.preconstruction} deal={props.deal} />
     </DocumentsProvider>
   );
 }
 
-function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruction?: boolean }) {
-  const pathname = usePathname();
-  const preconBase = pathname.match(/^\/pipeline\/prospects\/[^/]+/)?.[0];
+function UnifiedDocumentsLayoutInner({ preconstruction = false, deal }: Pick<UnifiedDocumentsLayoutProps, "preconstruction" | "deal">) {
   const searchParams = useSearchParams();
   const isMobile = useIsMobile();
   const {
@@ -124,9 +123,9 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
     refreshFiles,
     beginOptimisticMove,
   } = useDocuments();
-  // The organization document library has no project to link back to.
-  const projectBase = preconBase ?? (projectId ? `/projects/${projectId}` : undefined);
-  const documentsBase = projectBase ? `${projectBase}/documents` : "/documents";
+  // A deal's files stay on the deal; the organization library has no project to link back to.
+  const projectBase = projectId ? `/projects/${projectId}` : undefined;
+  const documentsBase = deal ? `/pipeline/${deal.id}/files` : projectBase ? `${projectBase}/documents` : "/documents";
   const transfers = useDocumentTransfers();
   const { setBreadcrumbs } = usePageTitle();
   const requestedFileId = searchParams.get("fileId");
@@ -976,9 +975,16 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
 
   useEffect(() => {
     const breadcrumbs: Array<{ label: string; href?: string; onClick?: () => void }> = [
-      ...(projectBase ? [{ label: projectName, href: projectBase }] : []),
+      ...(deal
+        ? [
+            { label: "Pipeline", href: "/pipeline" },
+            { label: deal.name, href: `/pipeline/${deal.id}` },
+          ]
+        : projectBase
+          ? [{ label: projectName, href: projectBase }]
+          : []),
       {
-        label: preconBase ? "Files" : "Documents",
+        label: deal ? "Files" : "Documents",
         href: documentsBase,
         onClick: () => {
           setPropertiesFileId(null);
@@ -1008,7 +1014,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
     }
 
     setBreadcrumbs(breadcrumbs);
-  }, [activeBreadcrumbPath, documentsBase, preconBase, projectBase, projectName, propertiesFile, setBreadcrumbs, setCurrentPath]);
+  }, [activeBreadcrumbPath, deal, documentsBase, projectBase, projectName, propertiesFile, setBreadcrumbs, setCurrentPath]);
 
   const handleSendForSignature = useCallback(
     (fileId: string) => {
@@ -1069,7 +1075,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
     >
       <FileDropOverlay isVisible={isDraggingOver} className="rounded-none" />
 
-      <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", preconstruction && "overflow-hidden bg-card [&_[data-slot=button]]:rounded-none")}>
+      <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", preconstruction && "overflow-hidden bg-card")}>
 
       {isMobile ? (
         <DocumentsMobileLayout
@@ -1114,10 +1120,9 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
         onDragEnd={handleFilesDragEnd}
       >
       <DocumentsDragProvider state={dragState}>
-      <div className={cn("relative z-20 shrink-0 border-b bg-background px-4 py-3", preconstruction && "border-border/60 bg-card px-5 py-4")}>
+      <div className={cn("relative z-20 shrink-0 border-b bg-background px-4 py-3", preconstruction && "bg-card")}>
         <DocumentsToolbar
           preconstruction={preconstruction}
-          plansHref={projectBase ? `${projectBase}/drawings` : undefined}
           onUploadClick={handleUploadClick}
           onCreateFolderClick={() => {
             setCreateFolderInitialPath(currentPath || "");
@@ -1170,14 +1175,14 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
         <aside
           className={cn(
             "hidden shrink-0 overflow-hidden border-r bg-background lg:block",
-            preconstruction && "border-border/60 bg-muted/15",
+            preconstruction && "bg-muted/15",
             preconstruction && propertiesFile && "lg:hidden",
             explorerRestored && "transition-[width,opacity] duration-200 ease-out",
             explorerOpen ? "w-[280px] opacity-100" : "w-0 border-r-0 opacity-0",
           )}
         >
           <DocumentsExplorer
-            className={cn("h-full", preconstruction && "[&>div:first-child]:border-border/60 [&>div:first-child]:bg-transparent [&>div:first-child>p]:text-xs [&>div:first-child>p]:font-medium [&>div:first-child>p]:normal-case [&>div:first-child>p]:tracking-normal [&_button]:rounded-none")}
+            className="h-full"
             onRenameFolder={handleRenameFolder}
             onDeleteFolder={handleDeleteFolder}
             onShareFolder={projectId ? handleShareFolder : undefined}

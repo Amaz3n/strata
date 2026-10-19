@@ -11,6 +11,7 @@ import { pricingBriefVersion } from "@/lib/precon/brief-revision";
 import {
   pricingWorksheetSchema,
   pricingRequestSchema,
+  rowPricing,
   scopeSignature,
   worksheetEstimateLines,
   worksheetTotals,
@@ -36,6 +37,27 @@ import {
 import { createEstimate, createEstimateVersion } from "./estimates";
 import { estimateInputSchema } from "@/lib/validation/estimates";
 import { recordAudit } from "./audit";
+import { bidPackageTermsInputSchema } from "@/lib/validation/bids";
+import { listBidPackageTerms, saveBidPackageTerms } from "./bid-package-terms";
+import { requireOrgContext } from "./context";
+import { LUMP_SUM_NOTE } from "@/lib/precon/deal-bids";
+import {
+  paymentPercentTotal,
+  paymentTermsText,
+  proposalChanges,
+  proposalKind,
+  proposalPriceLines,
+  resolveProposalDocument,
+} from "@/lib/precon/proposal-documents";
+
+/** Alternates and unit prices a trade is asked to price beside the lines from Pricing. */
+const extraScopeItemSchema = z.object({
+  item_type: z.enum(["alternate", "unit_price"]),
+  description: z.string().trim().min(1).max(1000),
+  details: z.string().max(12000).default(""),
+  quantity: z.number().positive().nullable().default(null),
+  unit: z.string().trim().max(20).nullable().default(null),
+});
 
 export async function savePricingWorksheet(
   prospectId: string,
@@ -209,30 +231,6 @@ async function pricingPackageContext(
   return { workspace, pkg };
 }
 
-export async function getPricingQuotes(prospectId: string, packageId: string) {
-  z.string().uuid().parse(packageId);
-  // Quote inspection needs authorization and the package, not the full brief and decision history.
-  const [context, pkg] = await Promise.all([
-    authorizePreconWorkspaceRead(prospectId),
-    getBidPackage(packageId),
-  ]);
-  assertPackageParent(pkg, prospectId, context.projectId);
-  const { listAttachments } = await import("./file-links");
-  const [scope, submissions, invites, attachments] = await Promise.all([
-    listBidScopeItems(packageId),
-    listBidSubmissions(packageId),
-    listBidInvites(packageId),
-    listAttachments("bid_package", packageId),
-  ]);
-  return {
-    pkg,
-    scope,
-    submissions,
-    invites,
-    fileIds: attachments.map((link) => link.file_id),
-  };
-}
-
 export async function createPricingRequest(
   prospectId: string,
   input: unknown,
@@ -241,9 +239,12 @@ export async function createPricingRequest(
   const parsed = z
     .object({
       title: z.string().trim().min(1).max(200),
+      trade: z.string().trim().max(200).nullable().default(null),
+      cost_code_id: z.string().uuid().nullable().default(null),
       row_ids: z.array(z.string().uuid()).min(1).max(200),
       due_at: z.string().datetime().nullable(),
       instructions: z.string().max(12000),
+      extra_items: z.array(extraScopeItemSchema).max(50).default([]),
     })
     .parse(input);
   const context = await authorizePreconWorkspaceWrite(prospectId);
@@ -276,6 +277,8 @@ export async function createPricingRequest(
       instructions: parsed.instructions,
       due_at: parsed.due_at,
       mode: "quote",
+      ...(parsed.trade ? { trade: parsed.trade } : {}),
+      ...(parsed.cost_code_id ? { cost_code_id: parsed.cost_code_id } : {}),
     },
   });
   // Link first, so a later scope-save failure leaves a recoverable draft request.
@@ -298,14 +301,19 @@ export async function createPricingRequest(
   await saveBidScopeItems({
     input: {
       bid_package_id: pkg.id,
-      items: rows.map((row) => ({
-        description: row.description,
-        details: row.notes,
-        quantity: row.quantity || null,
-        unit: row.unit,
-        cost_code_id: row.cost_code_id,
-        item_type: "base",
-      })),
+      // The budget is your placeholder, for leveling; bidders never see it.
+      items: [
+        ...rows.map((row) => ({
+          description: row.description,
+          details: row.notes,
+          quantity: row.quantity || null,
+          unit: row.unit,
+          cost_code_id: row.cost_code_id,
+          budget_cents: rowPricing(row, worksheet).cost,
+          item_type: "base" as const,
+        })),
+        ...parsed.extra_items,
+      ],
     },
   });
   return { ...saved, packageId: pkg.id };
@@ -417,12 +425,15 @@ export async function recordPricingQuote(
   const { pkg } = await pricingPackageContext(prospectId, packageId, true);
   const parsed = z
     .object({
-      company_id: z.string().uuid(),
+      // An invited bidder by invite (email-only invites have no company), or a directory company not yet asked.
+      bid_invite_id: z.string().uuid().nullable(),
+      company_id: z.string().uuid().nullable(),
       total_cents: z.number().int().nonnegative(),
       valid_until: z.string().date().nullable(),
       exclusions: z.string().max(12000),
       notes: z.string().max(12000),
     })
+    .refine((value) => value.bid_invite_id || value.company_id, "Choose who the bid is from.")
     .parse(input);
   if (pkg.status === "draft")
     await updateBidPackage({
@@ -441,20 +452,21 @@ export async function recordPricingQuote(
         description: item.description,
         response: "priced",
         amount_cents: index === 0 ? parsed.total_cents : 0,
-        notes: "Included in vendor lump sum",
+        notes: LUMP_SUM_NOTE,
       })),
     },
   });
 }
 
-const DEFAULT_PAYMENT_TERMS =
-  "10% deposit on signing. Progress payments billed monthly for work completed, due within 15 days.";
-const DEFAULT_ALLOWANCE_POLICY =
-  "Allowances are reconciled against actual selections by change order; differences are billed or credited with the same markup.";
+/** A range is approved, not paid against; its commercial terms say how billing will work once signed. */
+const BUDGET_PAYMENT_TERMS = "Set out in the signed proposal that follows this estimate.";
+/** A signed proposal whose builder turned the payment schedule off. */
+const UNSCHEDULED_PAYMENT_TERMS = "Billed as agreed in writing between the client and the builder.";
 
 /**
- * One document, prepared from the worksheet. A soft price goes out as a budget
- * (a range, approval only); a firm one as the construction agreement. The
+ * One document, prepared from the worksheet and the proposal written around it.
+ * The builder chooses how it is priced: a fixed price the client signs (the
+ * construction agreement) or a range the client approves (the budget). The
  * worksheet is the only place a price is edited, so each send is a snapshot of it.
  */
 export async function prepareDealDocument(
@@ -462,6 +474,7 @@ export async function prepareDealDocument(
   kind: "budget" | "agreement",
   input: unknown,
   expectedVersion: number,
+  expectedProposalVersion: number,
 ) {
   const context = await authorizePreconWorkspaceWrite(prospectId);
   if (["lost", "won"].includes(context.prospectStatus) || context.projectPhase === "delivery")
@@ -469,6 +482,16 @@ export async function prepareDealDocument(
   const workspace = await getPreconWorkspace(prospectId);
   if (workspace.version !== expectedVersion || !workspace.pricing)
     throw new Error("Save the latest worksheet before sending a price.");
+  const [{ loadDealProposal, proposalNames }, { getOrgBranding }] = await Promise.all([
+    import("./precon-proposal"),
+    import("./estimate-portal"),
+  ]);
+  const [written, branding] = await Promise.all([
+    loadDealProposal({ service: context.service, orgId: context.orgId, prospectId, worksheet: workspace.pricing }),
+    getOrgBranding(context.orgId, context.service),
+  ]);
+  if (written.available && (written.version !== expectedProposalVersion || proposalKind(written.content) !== kind))
+    throw new Error("Save the latest proposal before sending it.");
   const worksheet = workspace.pricing;
   if (!worksheet.rows.length || worksheetTotals(worksheet).unpriced)
     throw new Error(
@@ -492,19 +515,32 @@ export async function prepareDealDocument(
       if (!manualOverride && Math.abs(measurement.effective_quantity - (source.measured_quantity ?? 0)) > 0.01) throw new Error(`Plans changed for ${row.description}. Review and apply the updated quantity before sending a price.`);
     }
   }
-  const { priceFirmness, SIGNATURE_FIRMNESS } = await import("@/lib/precon/deal-move");
+  // How firm the price is, is the builder's risk to take; it only sets the range on an estimate.
+  const { priceFirmness } = await import("@/lib/precon/deal-move");
   const firmness = priceFirmness(worksheet, []);
-  const openQuestions = workspace.decisions.filter(
-    (decision) => decision.kind === "client_decision" && decision.status === "open",
-  ).length;
-  if (kind === "agreement" && (firmness.firmShare < SIGNATURE_FIRMNESS || openQuestions))
-    throw new Error(
-      openQuestions
-        ? "Answer the open client questions before sending for signature."
-        : "Firm up more of the price before sending for signature. Send a budget instead.",
-    );
   const settings = estimateInputSchema.omit({ lines: true }).parse(input);
   const proposalLines = worksheetEstimateLines(worksheet);
+  const content = written.content;
+  const primarySigner =
+    settings.recipient_name && settings.recipient_email
+      ? { name: settings.recipient_name, email: settings.recipient_email }
+      : null;
+  const document = resolveProposalDocument({
+    proposal: content,
+    defaults: branding.proposalDefaults,
+    kind,
+    lines: proposalPriceLines(proposalLines),
+    names: await proposalNames(context.service, context.orgId, prospectId, context.userId, content.co_signers.map((signer) => signer.name)),
+    primarySigner,
+    today: new Date(),
+  });
+  if (kind === "agreement") {
+    if (document.sections.some((section) => section.key === "payments") && paymentPercentTotal(document.payments) !== 100)
+      throw new Error("The payment schedule must add up to 100% before sending for signature.");
+    if (!document.signers.length) throw new Error("Add the client's name and email before sending for signature.");
+    const emails = document.signers.map((signer) => signer.email.trim().toLowerCase());
+    if (new Set(emails).size !== emails.length) throw new Error("Each signer needs their own email address.");
+  }
   const { normalizeEstimateCommercial } =
     await import("@/lib/financials/estimate-commercial");
   const purpose = kind === "budget" ? ("budget" as const) : ("construction_agreement" as const);
@@ -525,8 +561,13 @@ export async function prepareDealDocument(
       ]
         .filter(Boolean)
         .join(" · "),
-    payment_terms: settings.precon?.payment_terms || DEFAULT_PAYMENT_TERMS,
-    allowance_policy: settings.precon?.allowance_policy || DEFAULT_ALLOWANCE_POLICY,
+    payment_terms:
+      kind !== "agreement"
+        ? BUDGET_PAYMENT_TERMS
+        : document.payments.length
+          ? paymentTermsText(document.payments)
+          : UNSCHEDULED_PAYMENT_TERMS,
+    allowance_policy: document.allowance_policy,
     brief_version: pricingBriefVersion(workspace.brief, workspace.version),
     governing_documents: workspace.brief.governing_documents,
   };
@@ -534,10 +575,16 @@ export async function prepareDealDocument(
     .update(JSON.stringify(worksheet))
     .digest("hex");
   const proposalFingerprint = createHash("sha256")
-    .update(JSON.stringify({ worksheet, settings, commercial, proposalLines }))
+    .update(JSON.stringify({ worksheet, settings, commercial, proposalLines, document }))
     .digest("hex");
   const draft = {
     ...settings,
+    intro: document.cover,
+    terms: document.terms,
+    inclusions: document.inclusions.join("\n"),
+    exclusions: document.exclusions.join("\n"),
+    pricing_display: content.pricing_display,
+    valid_until: document.valid_until,
     precon: commercial,
     prospect_id: prospectId,
     project_id: context.projectId ?? null,
@@ -576,47 +623,29 @@ export async function prepareDealDocument(
       proposalFingerprint
   )
     return prior.data as import("@/lib/types").Estimate;
-  if (prior.data)
-    return createEstimateVersion({ estimateId: prior.data.id, input: draft });
-  const result = await createEstimate(draft);
-  return result.estimate as import("@/lib/types").Estimate;
-}
-
-/** Only files stored in this workspace may be exposed through its bid portal. */
-export async function getPricingRequestResources(prospectId: string) {
-  const context = await authorizePreconWorkspaceWrite(prospectId);
-  const [{ listContacts }, { listPreconDocuments }, { listDrawingSets }] =
-    await Promise.all([
-      import("./contacts"),
-      import("./precon-workspace"),
-      import("./drawings"),
-    ]);
-  const [contacts, files, sets] = await Promise.all([
-    listContacts(context.orgId),
-    listPreconDocuments(prospectId),
-    context.projectId
-      ? listDrawingSets({ project_id: context.projectId }, context.orgId)
-      : Promise.resolve([]),
-  ]);
-  return {
-    files: files.map((file) => {
-      const drawing = sets.find((set) => set.source_file_id === file.id);
-      return {
-        ...file,
-        source: drawing ? ("Drawings" as const) : ("Documents" as const),
-        name: drawing ? `${drawing.title} · ${file.name}` : file.name,
-      };
-    }),
-    contacts: contacts
-      .filter((contact) => contact.email)
-      .map((contact) => ({
-        id: contact.id,
-        name: contact.full_name,
-        email: contact.email!,
-        company_id: contact.primary_company_id ?? null,
-        company_name: contact.primary_company?.name ?? null,
-      })),
+  // The client hears what changed since the last version they were sent, of either kind.
+  const proposal = {
+    ...document,
+    changes: proposalChanges(
+      written.lastSent,
+      {
+        kind,
+        version: (prior.data?.version ?? 0) + 1,
+        sent_at: null,
+        total_cents: worksheetTotals(worksheet).total,
+        range: kind === "budget" ? firmness.range : null,
+        options: proposalLines.filter((line) => line.is_optional).map((line) => line.description),
+        exclusions: document.exclusions,
+        payments: document.payments.length,
+        start_window: document.start_window,
+        signers: document.signers.map((signer) => signer.name),
+      },
+    ),
   };
+  if (prior.data)
+    return createEstimateVersion({ estimateId: prior.data.id, input: { ...draft, proposal } });
+  const result = await createEstimate({ ...draft, proposal });
+  return result.estimate as import("@/lib/types").Estimate;
 }
 
 export async function savePricingRequestDetails(
@@ -634,6 +663,7 @@ export async function savePricingRequestDetails(
       due_tz: z.string().min(1).max(100),
       instructions: z.string().max(12000),
       file_ids: z.array(z.string().uuid()).max(250),
+      terms: bidPackageTermsInputSchema.optional(),
       notify_bidders: z.boolean().default(false),
     })
     .parse(input);
@@ -652,6 +682,12 @@ export async function savePricingRequestDetails(
     throw new Error(
       "Edit details and notify bidders to change issued instructions.",
     );
+  const termChanges = parsed.terms ? await describeTermChanges(packageId, parsed.terms) : [];
+  if (issued && termChanges.length && !parsed.notify_bidders)
+    throw new Error("Notify bidders to change the sheets or site walk on an issued request.");
+  if (parsed.terms) {
+    await saveBidPackageTerms({ bidPackageId: packageId, input: parsed.terms });
+  }
   if (issued && instructionsChanged)
     await beginBidScopeRevision({
       bidPackageId: packageId,
@@ -684,6 +720,7 @@ export async function savePricingRequestDetails(
       pkg.due_at !== parsed.due_at
         ? `Deadline: ${parsed.due_at ? `${parsed.due_at} (${parsed.due_tz})` : "No deadline"}`
         : "",
+      ...termChanges,
       instructionsChanged
         ? `Updated instructions:\n${parsed.instructions || "No instructions"}\nPlease review and submit a quote against the updated scope revision.`
         : "",
@@ -708,11 +745,106 @@ export async function savePricingRequestDetails(
   return null;
 }
 
-export async function retryPricingNotice(prospectId: string, packageId: string, addendumId: string) {
+/** What an edit changes in the sheets and site walk, worded for the addendum. */
+async function describeTermChanges(packageId: string, next: z.infer<typeof bidPackageTermsInputSchema>) {
+  const { supabase, orgId } = await requireOrgContext();
+  const { terms } = await listBidPackageTerms([packageId], orgId);
+  const before = terms.get(packageId) ?? { site_walk_at: null, sheet_ids: [] };
+  const changes: string[] = [];
+  const walk = (value: string | null) => (value ? Date.parse(value) : null);
+  if (walk(before.site_walk_at) !== walk(next.site_walk_at))
+    changes.push(next.site_walk_at ? `Site walk: ${next.site_walk_at}` : "Site walk: cancelled");
+  const sameSheets = before.sheet_ids.length === next.sheet_ids.length && next.sheet_ids.every((id) => before.sheet_ids.includes(id));
+  if (!sameSheets) {
+    const { data, error } = next.sheet_ids.length
+      ? await supabase.from("drawing_sheets").select("sheet_number").eq("org_id", orgId).in("id", next.sheet_ids).order("sheet_number")
+      : { data: [], error: null };
+    if (error) throw new Error(`Unable to read the sheets: ${error.message}`);
+    changes.push(`Plan sheets: ${(data ?? []).map((sheet) => sheet.sheet_number).join(", ") || "None"}`);
+  }
+  return changes;
+}
+
+/**
+ * A trade's request, sent in one step: the request (unless it already exists
+ * as a draft), its details and sheets, then the invitations.
+ */
+export async function issuePricingRequest(prospectId: string, input: unknown, expectedVersion: number) {
+  const parsed = z
+    .object({
+      package_id: z.string().uuid().nullable(),
+      title: z.string().trim().min(1).max(200),
+      trade: z.string().trim().max(200).nullable(),
+      cost_code_id: z.string().uuid().nullable(),
+      row_ids: z.array(z.string().uuid()).max(200),
+      extra_items: z.array(extraScopeItemSchema).max(50),
+      due_at: z.string().datetime().nullable(),
+      due_tz: z.string().min(1).max(100),
+      instructions: z.string().max(12000),
+      file_ids: z.array(z.string().uuid()).max(250),
+      // Null until the sheets-and-terms migration is applied.
+      terms: bidPackageTermsInputSchema.nullable(),
+      invites: z
+        .array(
+          z.object({
+            company_id: z.string().uuid().optional(),
+            contact_id: z.string().uuid().optional(),
+            invite_email: z.string().email().optional(),
+          }),
+        )
+        .min(1, "Pick at least one bidder."),
+    })
+    .parse(input);
+  let created: Awaited<ReturnType<typeof createPricingRequest>> | null = null;
+  let packageId = parsed.package_id;
+  if (!packageId) {
+    created = await createPricingRequest(
+      prospectId,
+      {
+        title: parsed.title,
+        trade: parsed.trade,
+        cost_code_id: parsed.cost_code_id,
+        row_ids: parsed.row_ids,
+        due_at: parsed.due_at,
+        instructions: parsed.instructions,
+        extra_items: parsed.extra_items,
+      },
+      expectedVersion,
+    );
+    packageId = created.packageId;
+  } else {
+    const { pkg } = await pricingPackageContext(prospectId, packageId, true);
+    if (pkg.status !== "draft") throw new Error("This request already went out. Invite more bidders from Bidders.");
+  }
+  await savePricingRequestDetails(prospectId, packageId, {
+    title: parsed.title,
+    due_at: parsed.due_at,
+    due_tz: parsed.due_tz,
+    instructions: parsed.instructions,
+    file_ids: parsed.file_ids,
+    terms: parsed.terms ?? undefined,
+    notify_bidders: false,
+  });
+  const invites = await sendPricingRequest(prospectId, packageId, parsed.invites);
+  return { packageId, saved: created ? { worksheet: created.worksheet, version: created.version } : null, invites };
+}
+
+/** Your number for a line a bidder excluded, so every bid covers the same scope. Null clears it. */
+export async function setPricingBidPlug(prospectId: string, packageId: string, itemId: string, plugCents: number | null) {
+  const { pkg } = await pricingPackageContext(prospectId, packageId, true);
+  const cents = z.number().int().nonnegative().max(2_000_000_000).nullable().parse(plugCents);
+  const submissions = await listBidSubmissions(pkg.id);
+  if (!submissions.some((submission) => submission.items?.some((item) => item.id === itemId)))
+    throw new Error("That line is not part of this request's bids.");
+  const { updateBidSubmissionItemLeveling } = await import("./bids");
+  return updateBidSubmissionItemLeveling({ input: { bid_submission_item_id: itemId, gc_plug_cents: cents } });
+}
+
+/** One answer to a bidder's question, sent to every bidder as an addendum. */
+export async function answerPricingQuestion(prospectId: string, packageId: string, rfiId: string, body: string) {
   await pricingPackageContext(prospectId, packageId, true);
-  const { listBidAddenda, retryBidAddendumNotifications } = await import("./bids");
-  if (!(await listBidAddenda(packageId)).some(notice => notice.id === addendumId)) throw new Error("This notice does not belong to the request.");
-  return retryBidAddendumNotifications({ addendumId });
+  const { answerBidPackageRfi } = await import("./bids");
+  return answerBidPackageRfi({ input: { bid_package_id: packageId, rfi_id: rfiId, body, broadcast_as_addendum: true } });
 }
 
 export async function revisePricingRequestScope(prospectId: string, packageId: string, expectedVersion: number, reason: string) {

@@ -1,28 +1,76 @@
-require('../scripts/register-ts-node-test')
-const test = require('node:test'), assert = require('node:assert/strict'), Module = require('node:module')
-let status, project, allowed, failure, checked
-const client = { from(table) { const q = { select() { return q }, eq() { return q }, async maybeSingle() { return { data: table === 'projects' ? project : { id: 'deal', status }, error: failure } } }; return q } }
-const original = Module._load
-Module._load = function(name, ...args) { return ({
-  'server-only': {}, '@/lib/services/context': {},
-  '@/lib/supabase/server': { createServiceSupabaseClient: () => client },
-  '@/lib/services/authorization': { requireAuthorization: async input => { checked.push(input); if (!allowed) throw Error('Forbidden') } },
-})[name] ?? original.call(this, name, ...args) }
-const { assertProspectWriteAccess } = require('../lib/services/prospect-write-access')
-Module._load = original
-const context = { supabase: {}, orgId: 'org', userId: 'user' }
-test.beforeEach(() => { status = 'new'; project = null; allowed = true; failure = null; checked = [] })
-test('unlinked intake is writable and hidden linked projects require manage access', async () => {
-  await assertProspectWriteAccess(context, 'deal')
-  project = { id: 'hidden-project', phase: 'precon' }; allowed = false
-  await assert.rejects(assertProspectWriteAccess(context, 'deal'), /Forbidden/)
-  assert.equal(checked[0].projectId, 'hidden-project')
-  assert.equal(checked[0].permission, 'project.manage')
+"use strict"
+
+/**
+ * `assertProspectWriteAccess()` — the gate every deal edit passes: an unlinked
+ * deal needs sales.manage or pipeline.write, a deal
+ * linked to a project needs project.manage on THAT project (resolved with the
+ * service client, so a project hidden by RLS cannot make the deal look
+ * unlinked), closed and delivered deals are read-only, and only a lost deal
+ * can be reopened.
+ */
+
+const assert = require("node:assert/strict")
+const { test } = require("node:test")
+
+const { createServiceHarness, replies, id, ORG, ACTOR } = require("./support/service")
+const { freshRequire } = require("./support/modules")
+
+const { assertProspectWriteAccess } = freshRequire("lib/services/prospect-write-access.ts")
+
+const DEAL = id(1)
+const PROJECT = id(2)
+const OTHER_PROJECT = id(3)
+
+function harness({ status = "new", project = null, permissions = ["project.manage", "sales.manage"], projects } = {}) {
+  return createServiceHarness({
+    tables: {
+      prospects: [{ id: DEAL, org_id: ORG, status }],
+      projects: project ? [{ id: PROJECT, org_id: ORG, prospect_id: DEAL, phase: "precon", ...project }] : [],
+    },
+    permissions,
+    projects,
+  })
+}
+
+const check = (service, options) =>
+  service.run(() => assertProspectWriteAccess({ supabase: service.client, orgId: ORG, userId: ACTOR }, DEAL, options))
+
+test("an unlinked deal takes a desk write key, not a project grant", async () => {
+  await check(harness({ permissions: ["sales.manage"] }))
+  await check(harness({ permissions: ["pipeline.write"] }))
+  await assert.rejects(check(harness({ permissions: ["project.manage"] })), /sales\.manage or pipeline\.write/)
 })
-test('closed and delivery deals reject ordinary edits and only lost deals reopen', async () => {
-  for (const next of ['lost', 'won']) { status = next; await assert.rejects(assertProspectWriteAccess(context, 'deal')) }
-  status = 'lost'; await assertProspectWriteAccess(context, 'deal', { reopen: true })
-  status = 'new'; await assert.rejects(assertProspectWriteAccess(context, 'deal', { reopen: true }), /Only lost/)
-  project = { id: 'project', phase: 'delivery' }; await assert.rejects(assertProspectWriteAccess(context, 'deal'), /delivery/)
+
+test("a linked deal needs project.manage on its own project, even when that project is hidden", async () => {
+  await check(harness({ project: {} }))
+  const denied = /Missing permission: project\.manage/
+  await assert.rejects(check(harness({ project: {}, permissions: ["project.read"] })), denied)
+  await assert.rejects(check(harness({ project: {}, projects: [OTHER_PROJECT] })), denied)
 })
-test('lookup failures fail closed', async () => { failure = { message: 'Unavailable' }; await assert.rejects(assertProspectWriteAccess(context, 'deal'), /verify deal access/) })
+
+test("won and delivered deals are read-only; lost deals must be reopened first", async () => {
+  for (const [status, project, message] of [
+    ["won", null, /in delivery/],
+    ["pricing", { phase: "delivery" }, /in delivery/],
+    ["lost", null, /Reopen the deal/],
+  ]) {
+    await assert.rejects(check(harness({ status, project })), message, status)
+  }
+})
+
+test("only a lost deal can be reopened", async () => {
+  await check(harness({ status: "lost" }), { reopen: true })
+  await assert.rejects(check(harness({ status: "new" }), { reopen: true }), /Only lost deals/)
+})
+
+test("a missing deal or a failed lookup fails closed", async () => {
+  const missing = harness()
+  missing.db.prospects = []
+  await assert.rejects(check(missing), /Prospect not found/)
+
+  for (const table of ["prospects", "projects"]) {
+    const service = harness()
+    service.tamper(table, replies.error())
+    await assert.rejects(check(service), /verify deal access/, table)
+  }
+})

@@ -1355,7 +1355,7 @@ async function loadSyncInputs(
       const linked = (row.metadata.takeoff_source ?? row.metadata.takeoff) as { condition_id?: string } | undefined
       if (linked?.condition_id && linked.condition_id !== conditionId) throw new Error("That scope item already has another measurement source.")
       if ([...existingLines].some(([id, line]) => id !== conditionId && line.id === rowId)) throw new Error("A scope item can only receive one measured quantity.")
-      const evidenceOnly = row.basis === "quote" || !!worksheet?.requests.some(request => request.quote && request.row_ids.includes(row.id))
+      const evidenceOnly = !!worksheet?.requests.some(request => request.quote && request.row_ids.includes(row.id))
       const { measurementUnit } = await import("@/lib/drawings/measurement-context")
       if (!evidenceOnly && measurementUnit(row.unit) && measurementUnit(row.unit) !== rollup.condition.uom) throw new Error("The measurement unit does not match the scope item. Review the unit in the estimate first.")
       existingLines.set(conditionId, { id: row.id, quantity: row.quantity, lastSyncedQuantity: (row.metadata.takeoff as any)?.measured_quantity ?? null, metadata: { ...row.metadata, __reprice_required: !evidenceOnly && !measurementUnit(row.unit) && row.unit_cost_cents !== null }, evidenceOnly })
@@ -1379,7 +1379,7 @@ async function loadExistingDestinationLines(
     for (const row of workspace.pricing?.rows ?? []) {
       const takeoff = (row.metadata.takeoff_source ?? row.metadata.takeoff) as { condition_id?: string; measured_quantity?: number } | undefined
       if (!takeoff?.condition_id || !conditionIds.includes(takeoff.condition_id)) continue
-      map.set(takeoff.condition_id, { id: row.id, quantity: row.quantity, lastSyncedQuantity: (row.metadata.takeoff as any)?.measured_quantity ?? null, metadata: row.metadata, evidenceOnly: row.basis === "quote" || !!workspace.pricing?.requests.some(request => request.quote && request.row_ids.includes(row.id)) })
+      map.set(takeoff.condition_id, { id: row.id, quantity: row.quantity, lastSyncedQuantity: (row.metadata.takeoff as any)?.measured_quantity ?? null, metadata: row.metadata, evidenceOnly: !!workspace.pricing?.requests.some(request => request.quote && request.row_ids.includes(row.id)) })
     }
     return map
   }
@@ -1539,7 +1539,7 @@ export async function syncConditions(
       if (linked && !existing) throw new Error("The scope item changed. Review the estimate and try again.")
       const currentLink = (existing?.metadata.takeoff_source ?? existing?.metadata.takeoff) as { condition_id?: string } | undefined
       if (currentLink?.condition_id && currentLink.condition_id !== rollup.condition.id) throw new Error("The scope item was linked to another measurement. Review it again.")
-      const evidenceOnly = !!existing && (existing.basis === "quote" || worksheet.requests.some(request => request.quote && request.row_ids.includes(existing.id)))
+      const evidenceOnly = !!existing && worksheet.requests.some(request => request.quote && request.row_ids.includes(existing.id))
       const prior = existing?.metadata.takeoff as { measured_quantity?: number } | undefined
       if (parsed.reviewed_line_quantities) {
         const reviewed = parsed.reviewed_line_quantities[rollup.condition.id]

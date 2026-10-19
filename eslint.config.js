@@ -11,7 +11,7 @@ const legacyConfig = require("./.eslintrc.js")
 module.exports = [
   // Generated browser assets and independently packaged workers are outside
   // the application lint surface.
-  { ignores: ["public/**", "workers/**"] },
+  { ignores: ["public/**", "workers/**", "marketing/**"] },
   ...nextCoreWebVitals,
   ...nextTypeScript,
   {

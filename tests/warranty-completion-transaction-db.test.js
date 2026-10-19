@@ -35,6 +35,10 @@ async function fixture(t, guards=false) {
  const counts=async()=>(await db.query('select (select count(*)::int from warranty_visit_photos) photos,(select count(*)::int from events) events,(select count(*)::int from audit_log) audits,(select count(*)::int from warranty_visit_completion_receipts) receipts')).rows[0]
  return {db,input,complete,counts}
 }
+// Cases share one database: each runs in a transaction that is rolled back, and
+// an expected rejection is wrapped in a savepoint so the case can still read state.
+async function isolated(h,fn){await h.db.exec('begin');try{await fn()}finally{await h.db.exec('rollback')}}
+async function rejectsWithin(h,promise,pattern){await h.db.exec('savepoint attempt');await assert.rejects(promise(),pattern);await h.db.exec('rollback to savepoint attempt')}
 test('completion commits all evidence once and retry preserves original actor and later follow-up',async t=>{
  const h=await fixture(t),first=await h.complete(); assert.equal(first.status,'created')
  assert.deepEqual(await h.counts(),{photos:1,events:1,audits:1,receipts:1})
@@ -54,6 +58,7 @@ test('failure while persisting audit rolls back visit, photos, request, event an
  await h.db.exec('alter table audit_log drop constraint reject_test_audit');assert.equal((await h.complete()).status,'created')
 })
 test('home ancestry, active file scope, membership and stale revisions reject before mutation',async t=>{
+ const h=await fixture(t)
  for(const [sql,pattern] of [
   ["update warranty_service_visits set project_id='00000000-0000-4000-8000-000000000006'",/ancestry|unavailable/],
   ["update files set project_id='00000000-0000-4000-8000-000000000006'",/active home/],
@@ -63,8 +68,9 @@ test('home ancestry, active file scope, membership and stale revisions reject be
   ["update warranty_requests set updated_at=now()",/revision/],
   ["update warranty_requests set status='closed'",/current state/],
  ]) {
-  const h=await fixture(t);await h.db.exec(sql);await assert.rejects(h.complete(),pattern);assert.deepEqual(await h.counts(),{photos:0,events:0,audits:0,receipts:0})
+  await isolated(h,async()=>{await h.db.exec(sql);await rejectsWithin(h,()=>h.complete(),pattern);assert.deepEqual(await h.counts(),{photos:0,events:0,audits:0,receipts:0})})
  }
+ assert.equal((await h.complete()).status,'created')
 })
 test('immutable receipt and restrictive source links preserve completion history',async t=>{
  const h=await fixture(t);await h.complete()
@@ -79,11 +85,13 @@ test('different retry input or changed recorded visit/event/audit/photos require
   ["update events set payload='{}'",/event evidence changed/],
   ["update audit_log set after_data='{}'",/audit evidence changed/],
   ["delete from warranty_visit_photos",/photo evidence changed/],
- ]) {const item=await fixture(t);await item.complete();await item.db.exec(sql);await assert.rejects(item.complete(),pattern)}
+ ]) await isolated(h,async()=>{await h.db.exec(sql);await rejectsWithin(h,()=>h.complete(),pattern)})
+ assert.equal((await h.complete()).status,'existing')
 })
 test('invalid costs, outcomes and photo limits cannot leave partial work',async t=>{
+ const h=await fixture(t)
  for(const input of [{outcome:'invalid'},{outcome:'resolved',labor_hours:1},{outcome:'resolved',outcome_note:123},{outcome:'resolved',labor_hours:25},{outcome:'resolved',labor_rate_cents:1.5},{outcome:'resolved',material_cents:-1},{outcome:'resolved',material_cents:'100'},{outcome:'resolved',photo_file_ids:Array(21).fill(FILE)}]){
-  const h=await fixture(t);await assert.rejects(h.complete(input),/invalid|numeric|limit|required|strings/);assert.deepEqual(await h.counts(),{photos:0,events:0,audits:0,receipts:0})
+  await assert.rejects(h.complete(input),/invalid|numeric|limit|required|strings/);assert.deepEqual(await h.counts(),{photos:0,events:0,audits:0,receipts:0})
  }
 })
 test('completion transaction and receipt storage are service-only',async t=>{
@@ -92,53 +100,55 @@ test('completion transaction and receipt storage are service-only',async t=>{
  assert.deepEqual(privileges,{rpc:false,receipt:false,worker:true})
 })
 test('requested permission denies override wildcard/grants and revoked permission also blocks receipt replay',async t=>{
- for(const kind of ['wildcard','grant','replay']) {
-  const h=await fixture(t)
+ const h=await fixture(t)
+ for(const kind of ['wildcard','grant','replay']) await isolated(h,async()=>{
   if(kind==='wildcard') await h.db.query("insert into role_permissions values($1,'*')",[HOME])
   if(kind==='replay') await h.complete()
   await h.db.query("insert into membership_permission_overrides select id,'warranty.write','deny' from memberships where user_id=$1",[ACTOR])
-  await assert.rejects(h.complete(),/organization write permission/)
+  await rejectsWithin(h,()=>h.complete(),/organization write permission/)
   assert.equal((await h.counts()).receipts,kind==='replay'?1:0)
- }
- const h=await fixture(t);await h.db.query("delete from role_permissions where permission_key='warranty.write'")
+ })
+ await h.db.query("delete from role_permissions where permission_key='warranty.write'")
  await assert.rejects(h.complete(),/organization write permission/)
  await h.db.query("insert into membership_permission_overrides select id,'warranty.write','grant' from memberships where user_id=$1",[ACTOR])
  assert.equal((await h.complete()).status,'created')
 })
 test('assigned-project policy requires an active same-org project membership unless wildcard/admin grants access',async t=>{
- for(const kind of ['none','inactive','foreign-org','active','wildcard','admin']){
-  const h=await fixture(t);await h.db.query("update memberships set project_scope='assigned' where user_id=$1",[ACTOR])
+ const h=await fixture(t)
+ for(const kind of ['none','inactive','foreign-org','active','wildcard','admin']) await isolated(h,async()=>{
+  await h.db.query("update memberships set project_scope='assigned' where user_id=$1",[ACTOR])
   if(['inactive','foreign-org','active'].includes(kind)) {
    if(kind==='foreign-org')await h.db.query('insert into orgs values($1)',[FILE])
    await h.db.query('insert into project_members(org_id,project_id,user_id,role_id,status) values($1,$2,$3,$4,$5)',[kind==='foreign-org'?FILE:ORG,HOME,ACTOR,VISIT,kind==='inactive'?'inactive':'active'])
   }
   if(kind==='wildcard'||kind==='admin')await h.db.query('insert into role_permissions values($1,$2)',[HOME,kind==='wildcard'?'*':'org.admin'])
   if(['active','wildcard','admin'].includes(kind))assert.equal((await h.complete()).status,'created')
-  else {await assert.rejects(h.complete(),/assigned project access/);assert.equal((await h.counts()).receipts,0)}
- }
+  else {await rejectsWithin(h,()=>h.complete(),/assigned project access/);assert.equal((await h.counts()).receipts,0)}
+ })
 })
 test('division assignments restrict wildcard users, raw admin role bypasses scope, grant-only admin does not',async t=>{
- for(const kind of ['missing','wrong','null-home','assigned','base-admin','grant-admin']){
-  const h=await fixture(t);await h.db.query("update memberships set division_scope='assigned' where user_id=$1",[ACTOR])
+ const h=await fixture(t)
+ for(const kind of ['missing','wrong','null-home','assigned','base-admin','grant-admin']) await isolated(h,async()=>{
+  await h.db.query("update memberships set division_scope='assigned' where user_id=$1",[ACTOR])
   await h.db.query("insert into role_permissions values($1,'*')",[HOME])
   if(kind==='assigned'||kind==='wrong')await h.db.query('insert into membership_divisions select id,$2 from memberships where user_id=$1',[ACTOR,kind==='assigned'?REQUEST:FILE])
   if(kind==='null-home')await h.db.exec('update projects set division_id=null')
   if(kind==='base-admin')await h.db.query("insert into role_permissions values($1,'org.admin')",[HOME])
   if(kind==='grant-admin')await h.db.query("insert into membership_permission_overrides select id,'org.admin','grant' from memberships where user_id=$1",[ACTOR])
   if(['assigned','base-admin'].includes(kind))assert.equal((await h.complete()).status,'created')
-  else {await assert.rejects(h.complete(),/division access/);assert.equal((await h.counts()).receipts,0)}
- }
+  else {await rejectsWithin(h,()=>h.complete(),/division access/);assert.equal((await h.counts()).receipts,0)}
+ })
 })
 test('platform org access follows current membership expiry and overrides organization restrictions',async t=>{
- for(const kind of ['active','expired','inactive']){
-  const h=await fixture(t)
+ const h=await fixture(t)
+ for(const kind of ['active','expired','inactive']) await isolated(h,async()=>{
   await h.db.query("insert into role_permissions values($1,'platform.org.access')",[FILE])
   await h.db.query('insert into platform_memberships(user_id,role_id,status,expires_at) values($1,$2,$3,$4)',[ACTOR,FILE,kind==='inactive'?'inactive':'active',kind==='expired'?'2000-01-01':null])
   await h.db.query("update memberships set division_scope='assigned',project_scope='assigned' where user_id=$1",[ACTOR])
   await h.db.query("insert into membership_permission_overrides select id,'warranty.write','deny' from memberships where user_id=$1",[ACTOR])
   if(kind==='active')assert.equal((await h.complete()).status,'created')
-  else {await assert.rejects(h.complete(),/organization write permission/);assert.equal((await h.counts()).receipts,0)}
- }
+  else {await rejectsWithin(h,()=>h.complete(),/organization write permission/);assert.equal((await h.counts()).receipts,0)}
+ })
 })
 test('project-only grants cannot bypass the office organization gate and catalog must be registered',async t=>{
  const h=await fixture(t);await h.db.exec("delete from role_permissions where permission_key='warranty.write'")
@@ -180,14 +190,14 @@ test('sealed event and audit cannot be rewritten while unrelated activity remain
  assert.equal((await h.complete()).status,'existing')
 })
 test('sealed photo and signature file identity/version/digest cannot change or be archived/deleted',async t=>{
- for(const useSignature of [false,true]) {
-  const h=await fixture(t,true)
+ const h=await fixture(t,true)
+ for(const useSignature of [false,true]) await isolated(h,async()=>{
   await h.complete({...h.input,photo_file_ids:useSignature?[]:[FILE],buyer_signature_file_id:useSignature?FILE:null})
   for(const change of ["storage_path='replacement.jpg'","checksum='different'","current_version_id='00000000-0000-4000-8000-000000000005'","size_bytes=200","mime_type='application/pdf'","archived_at=now()","org_id='00000000-0000-4000-8000-000000000005'","project_id='00000000-0000-4000-8000-000000000005'"])
-   await assert.rejects(h.db.exec(`update files set ${change}`),/immutable/)
-  await assert.rejects(h.db.exec('delete from files'),/cannot be deleted/)
+   await rejectsWithin(h,()=>h.db.exec(`update files set ${change}`),/immutable/)
+  await rejectsWithin(h,()=>h.db.exec('delete from files'),/cannot be deleted/)
   await h.db.exec("update files set file_name='Repair evidence',folder_path='/warranty'")
- }
+ })
 })
 test('unsealed visit/file/photo sources retain ordinary mutation behavior',async t=>{
  const h=await fixture(t,true)

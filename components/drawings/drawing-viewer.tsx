@@ -105,6 +105,7 @@ import { SheetRail } from "./workspace/sheet-rail";
 import { ItemPicker, type TakeoffScope } from "./workspace/item-picker";
 import { TakeoffLedger } from "./workspace/takeoff-ledger";
 import { EstimateHandoff } from "./workspace/estimate-handoff";
+import { LineLedger, type LineMeasuring } from "./workspace/line-ledger";
 import { OnSheetPanel, type SheetLink } from "./workspace/on-sheet-panel";
 import { WorkspaceHeader } from "./workspace/workspace-header";
 import { ModelPane } from "./workspace/model-pane";
@@ -153,8 +154,17 @@ export type SaveMarkupInput = {
 
 interface DrawingViewerProps {
   measurementContext?: MeasurementContext;
-  prospectId?: string;
   estimateId?: string;
+  /** Measuring one pricing line: its takeoff item stays armed and Done puts the quantity on it. */
+  line?: LineMeasuring;
+  /**
+   * A deal's sheet opened to read: the takeoff shows what was measured but
+   * measures nothing new (that starts from a pricing line). Measurements new
+   * plans carried over can still be confirmed.
+   */
+  viewOnly?: boolean;
+  /** Open with the takeoff panel showing, as when new plans need measurements confirmed. */
+  initialPanelOpen?: boolean;
   sheet: DrawingSheet;
   fileUrl?: string;
   markups?: DrawingMarkup[];
@@ -230,8 +240,10 @@ const isAreaCondition = (condition: TakeoffCondition) =>
 
 export function DrawingViewer({
   measurementContext,
-  prospectId,
   estimateId,
+  line,
+  viewOnly = false,
+  initialPanelOpen = false,
   sheet,
   fileUrl,
   markups = NO_MARKUPS,
@@ -308,7 +320,7 @@ export function DrawingViewer({
   // (an item to measure, a deep link from an estimate) or because this person
   // left it open last time.
   const [panelOpen, setPanelOpenState] = useState(() => {
-    if (initialConditionId || measurementContext) return true;
+    if (initialConditionId || measurementContext || line || initialPanelOpen) return true;
     try {
       return window.localStorage.getItem(PANEL_STORAGE_KEY) === "open";
     } catch {
@@ -342,7 +354,8 @@ export function DrawingViewer({
     [takeoffPlanVersionId, takeoffProjectId],
   );
   const takeoffAvailable = !!scope && !readOnly;
-  const canMeasure = takeoffAvailable && canWriteTakeoff;
+  const canConfirm = takeoffAvailable && canWriteTakeoff;
+  const canMeasure = canConfirm && !viewOnly;
   const [refreshToken, setRefreshToken] = useState(0);
   const bump = useCallback(() => setRefreshToken((token) => token + 1), []);
   const { rollups, error: rollupError, reload: reloadRollups } = useTakeoffRollups(takeoffAvailable ? scope : null, refreshToken);
@@ -840,6 +853,10 @@ export function DrawingViewer({
           startMeasuring(armed, next);
           return;
         }
+        if (line) {
+          if (armed) toast(`${line.name} is measured by ${TOOL_LABELS[toolForSourceUom(conditionSourceUom(armed.uom, armed))].toLowerCase()}.`);
+          return;
+        }
         setPicker({ tool: next, purpose: "arm" });
         return;
       }
@@ -855,7 +872,7 @@ export function DrawingViewer({
         measureToolsRef.current.setActiveTool("polyline");
       }
     },
-    [canMeasure, armed, startMeasuring, stopMeasuring, scaleReady, calibration, startCalibration],
+    [canMeasure, armed, line, startMeasuring, stopMeasuring, scaleReady, calibration, startCalibration],
   );
 
   // Resume the tool that asked for a scale, the moment one exists.
@@ -868,15 +885,22 @@ export function DrawingViewer({
     else if (armed) startMeasuring(armed, resume);
   }, [scaleReady, armed, startMeasuring]);
 
-  // Deep link: arm the item the estimate asked to measure, once.
-  const armedInitialRef = useRef(false);
+  // Arm the item a deep link or the line being measured names, once. A line's
+  // item re-arms when its wall height changes, because that changes the tool.
+  const armTarget = line?.conditionId ?? initialConditionId;
+  const armedInitialRef = useRef<string | null>(null);
   useEffect(() => {
-    if (armedInitialRef.current || !initialConditionId || !rollups || !canMeasure) return;
-    const match = rollups.find((row) => row.condition.id === initialConditionId);
+    if (!armTarget || !rollups || !canMeasure) return;
+    const match = rollups.find((row) => row.condition.id === armTarget);
     if (!match) return;
-    armedInitialRef.current = true;
+    const reshaped = !!line && armed?.id === armTarget && armed.height_ft !== match.condition.height_ft;
+    if (armedInitialRef.current === armTarget && !reshaped) return;
+    armedInitialRef.current = armTarget;
     arm(match.condition);
-  }, [initialConditionId, rollups, canMeasure, arm]);
+  }, [armTarget, line, armed, rollups, canMeasure, arm]);
+  const [lineRate, setLineRate] = useState(line?.rateCents ?? null);
+  const [finishing, setFinishing] = useState(false);
+  useEffect(() => setLineRate(line?.rateCents ?? null), [line?.conditionId, line?.rateCents]);
 
   // A tool belongs to a sheet; moving sheets stops whatever was half-drawn
   // but keeps the item armed, so the next sheet measures into it too.
@@ -1664,6 +1688,10 @@ export function DrawingViewer({
     if (measureTools.isDrafting) return; // the measure hook cancels the shape itself
     if (autoAreas.open && autoAreas.tool !== "select") return;
     if (tool === "ruler" && rulerMeasurements.length) return setRulerMeasurements([]);
+    if (line && isMeasuringTool(tool)) {
+      stopMeasuring();
+      return setTool("select");
+    }
     if (isMeasuringTool(tool) || tool !== "select") return disarm();
     if (findOpen) return setFindOpen(false);
     if (modelSelected) return setModelSelected(null);
@@ -2062,8 +2090,9 @@ export function DrawingViewer({
           tool={tool}
           onTool={chooseTool}
           armed={armed}
-          onChangeArmed={() => setPicker({ tool: measuringTool ? (tool as MeasuringTool) : null, purpose: "arm" })}
-          onDisarm={disarm}
+          canMeasure={!viewOnly}
+          onChangeArmed={line ? undefined : () => setPicker({ tool: measuringTool ? (tool as MeasuringTool) : null, purpose: "arm" })}
+          onDisarm={line ? undefined : disarm}
           disabled={dockDisabled}
           armedTotal={
             armedRow && measuringTool
@@ -2142,7 +2171,42 @@ export function DrawingViewer({
     </div>
   );
 
-  const panelBody = (
+  const lineRollup = line ? rollups?.find((row) => row.condition.id === line.conditionId) : undefined;
+  const lineReady = !!lineRollup && lineRollup.markup_count > 0 && lineRollup.pending_review_count === 0 && lineRollup.unscaled_markup_count === 0;
+  const finishLine = async () => {
+    if (!line) return;
+    setFinishing(true);
+    try {
+      await line.onDone(lineRate);
+    } catch (failure) {
+      toast.error(failure instanceof Error ? failure.message : "Couldn't put the quantity on the line");
+    } finally {
+      setFinishing(false);
+    }
+  };
+
+  const panelBody = line ? (
+    <>
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b px-4">
+        <span className="microlabel text-muted-foreground">The line</span>
+        <button type="button" className="ml-auto px-2 text-xs text-muted-foreground md:hidden" onClick={() => setMobilePanelOpen((open) => !open)}>
+          {mobilePanelOpen ? "Hide" : "Show"}
+        </button>
+      </div>
+      <LineLedger
+        line={line}
+        rollup={lineRollup}
+        rateCents={lineRate}
+        onRate={setLineRate}
+        markupsHere={markups.filter((markup) => markup.condition_id === line.conditionId)}
+        sheetNumber={sheet.sheet_number}
+        canWrite={canMeasure}
+        onChanged={bump}
+        onOpenSheet={openSheetById}
+        onDeleteMarkup={(markupId) => void onDeleteMarkup?.(markupId).then(bump)}
+      />
+    </>
+  ) : (
     <>
       <div className="flex h-11 shrink-0 items-stretch border-b px-2" role="tablist" aria-label="Panel">
         {takeoffAvailable && <PanelTab active={rightTab === "takeoff"} onClick={() => setRightTab("takeoff")} label="Takeoff" count={rollups?.length} />}
@@ -2166,7 +2230,7 @@ export function DrawingViewer({
           onChanged={bump}
           onNewItem={() => setPicker({ tool: null, purpose: "arm" })}
           onOpenSheet={openSheetById}
-          onSendToEstimate={() => setHandoffOpen(true)}
+          onSendToEstimate={viewOnly ? undefined : () => setHandoffOpen(true)}
           notices={
             <>
               {measurementContext && <MeasurementContextBar context={measurementContext} />}
@@ -2174,7 +2238,7 @@ export function DrawingViewer({
                 <TakeoffRevisionBand
                   projectId={takeoffProjectId as string}
                   refreshToken={refreshToken}
-                  canWrite={canMeasure}
+                  canWrite={canConfirm}
                   onResolved={bump}
                   onReview={(items) => setReview({ items, index: 0 })}
                 />
@@ -2222,6 +2286,21 @@ export function DrawingViewer({
   return (
     <div className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-background text-foreground" data-drawing-workspace>
       <WorkspaceHeader
+        task={
+          line
+            ? {
+                label: `Measuring for ${line.section || "the price"}`,
+                title: line.name,
+                color: armed?.color ?? null,
+                action: (
+                  <Button size="sm" className="h-8 gap-1.5" disabled={!lineReady || finishing || busy} onClick={() => void finishLine()}>
+                    {finishing ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+                    Done
+                  </Button>
+                ),
+              }
+            : undefined
+        }
         sheet={sheet}
         hasPrev={currentIndex > 0}
         hasNext={currentIndex >= 0 && currentIndex < sheets.length - 1}
@@ -2352,7 +2431,7 @@ export function DrawingViewer({
         }}
       />
 
-      {scope && (
+      {scope && !line && !viewOnly && (
         <EstimateHandoff
           open={handoffOpen}
           onOpenChange={setHandoffOpen}
@@ -2360,7 +2439,6 @@ export function DrawingViewer({
           projectId={takeoffPlanVersionId ? null : (takeoffProjectId ?? null)}
           housePlanVersionId={takeoffPlanVersionId ?? null}
           measurementContext={measurementContext}
-          prospectId={prospectId}
           estimateId={estimateId}
           onSent={bump}
           onReviewRevision={() => {

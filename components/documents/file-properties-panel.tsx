@@ -1,6 +1,6 @@
 "use client"
 
-import { usePathname, useRouter } from "next/navigation"
+import { useRouter } from "next/navigation"
 import {
   Download,
   Eye,
@@ -36,7 +36,9 @@ import {
   FileStatusBadge,
   getPrimarySourceContext,
 } from "./file-badges"
+import { useDocuments } from "./documents-context"
 import { formatDate, formatDateTime, formatFileSize } from "./format"
+import { plansLink } from "./plans-link"
 import { useProductTerminology } from "@/components/layout/use-product-terminology"
 import { QUICK_FILTER_CONFIG } from "./types"
 
@@ -131,7 +133,7 @@ export function FilePropertiesPanel({
   onDelete,
 }: FilePropertiesPanelProps) {
   const router = useRouter()
-  const preconBase = usePathname().match(/^\/pipeline\/prospects\/[^/]+/)?.[0]
+  const { dealId } = useDocuments()
   const terms = useProductTerminology()
 
   if (!file) return null
@@ -265,7 +267,7 @@ export function FilePropertiesPanel({
             <DetailRow label="Version" value={file.version_number ? `v${file.version_number}` : null} />
           </div>
           <div className="mt-4 border bg-card p-4">
-            {file.project_id && file.mime_type === "application/pdf" && <Button variant="outline" size="sm" className="w-full" onClick={() => router.push(preconBase ? `${preconBase}/drawings?sourceFile=${file.id}` : file.source_contexts?.find((source) => source.type === "drawing_set" || source.type === "drawing_sheet")?.href ?? `/projects/${file.project_id}/drawings?sourceFile=${file.id}`)}>Open in Plans & takeoff</Button>}
+            {file.project_id && file.mime_type === "application/pdf" && <Button variant="outline" size="sm" className="w-full" onClick={() => router.push(plansLink(file, dealId).href)}>{plansLink(file, dealId).label}</Button>}
             {primarySource ? (
               <>
                 <div className="min-w-0 space-y-2">

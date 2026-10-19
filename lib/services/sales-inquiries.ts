@@ -2,11 +2,11 @@ import { readPageOrEmpty } from "@/lib/land/paging"
 import { orFilterTerm } from "@/lib/search-picker"
 import { INQUIRY_CHANNEL_LABELS } from "@/lib/sales/activity"
 import { requireOrgContext } from "@/lib/services/context"
-import { requirePermission } from "@/lib/services/permissions"
+import { requireAnyPermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { fileLeadRecord, leadReceiptForHandFiling, recordLeadFiled, type LeadFilingInput } from "@/lib/services/lead-intake"
 import { getProspect, type Prospect } from "@/lib/services/prospects"
-import { assertCanWriteDeals, assertProspectOwner } from "@/lib/services/prospect-write-access"
+import { DEAL_WRITE_PERMISSIONS, assertCanWriteDeals, assertProspectOwner } from "@/lib/services/prospect-write-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { productionInquiryInputSchema, type ProductionInquiryInput } from "@/lib/validation/prospects"
 
@@ -100,7 +100,7 @@ async function loadExistingBuyer(context: Awaited<ReturnType<typeof requireOrgCo
   }
 }
 
-export interface BuyerSearchResult {
+export interface PersonSearchResult {
   id: string
   name: string
   email: string | null
@@ -109,24 +109,25 @@ export interface BuyerSearchResult {
   roles: string[]
 }
 
-export interface BuyerSearchPage {
-  buyers: BuyerSearchResult[]
+export interface PeopleSearchPage {
+  people: PersonSearchResult[]
   page: number
   pageSize: number
   total: number
 }
 
 /**
- * Existing people matching what the consultant typed — name, email or phone — so
- * a returning buyer is picked instead of entered a second time. Reads the
- * directory's contact list, org-scoped, a page at a time.
+ * Existing people matching what was typed — name, email or phone — so a
+ * returning buyer or client is picked instead of entered a second time. Reads
+ * the directory's contact list, org-scoped, a page at a time. Anyone who can
+ * read sales or write a deal may look a person up to attach them.
  */
-export async function searchBuyerContacts(
+export async function searchDirectoryPeople(
   input: { search: string; page?: number; pageSize?: number },
   orgId?: string,
-): Promise<BuyerSearchPage> {
+): Promise<PeopleSearchPage> {
   const context = await requireOrgContext(orgId)
-  await requirePermission("sales.read", context)
+  await requireAnyPermission(["sales.read", ...DEAL_WRITE_PERMISSIONS], context)
   const page = Math.max(1, input.page ?? 1)
   const pageSize = Math.min(Math.max(1, input.pageSize ?? 25), 50)
   const term = orFilterTerm(input.search)
@@ -141,10 +142,10 @@ export async function searchBuyerContacts(
   if (term) query = query.or(`name.ilike.%${term}%,email.ilike.%${term}%,phone.ilike.%${term}%`)
   const ordered = query.order("name").order("id")
   const { data, error, count } = await readPageOrEmpty((start, end) => ordered.range(start, end), from, from + pageSize - 1)
-  if (error) throw new Error(`Failed to search buyers: ${error.message}`)
+  if (error) throw new Error(`Failed to search people: ${error.message}`)
 
   return {
-    buyers: data.map((row) => ({
+    people: data.map((row) => ({
       id: row.id,
       name: row.name,
       email: row.email ?? null,

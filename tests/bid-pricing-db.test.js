@@ -1,69 +1,167 @@
-// Executes the actual migration in an isolated PostgreSQL engine. No local or remote database changes.
-const assert=require("node:assert/strict")
-const test=require("node:test")
-const fs=require("node:fs")
-const path=require("node:path")
-let PGlite
-try { ({PGlite}=require(process.env.ARC_TEST_PGLITE_MODULE || "@electric-sql/pglite")) } catch {}
-const org="20000000-0000-0000-0000-000000000001",pkg="30000000-0000-0000-0000-000000000001",invite="40000000-0000-0000-0000-000000000001",scope="50000000-0000-0000-0000-000000000001"
-test("bid pricing snapshots, revision locks, stale offers, and reviewed awards",{skip:!PGlite},async t=>{
- const db=new PGlite();t.after(()=>db.close())
- await db.exec(fs.readFileSync(path.join(__dirname,"fixtures/bid-pricing-schema.sql"),"utf8"))
- await db.exec(fs.readFileSync(path.join(__dirname,"../supabase/migrations/20260921121014_bid_pricing_decisions_and_scope_revisions.sql"),"utf8"))
- await db.query("insert into bid_packages(id,org_id,status,scope) values($1,$2,'draft','Concrete scope')",[pkg,org])
- await db.query("insert into bid_scope_items(id,org_id,bid_package_id,item_type,description) values($1,$2,$3,'base','Concrete')",[scope,org,pkg])
- await db.query("insert into bid_invites(id,org_id,bid_package_id,status) values($1,$2,$3,'sent')",[invite,org,pkg])
- await db.query("update bid_packages set status='open' where id=$1",[pkg])
- const submit=async(revision)=> (await db.query("select create_bid_submission_version($1,$2,$3) result",[org,invite,{total_cents:100000,scope_revision:revision}])).rows[0].result.submission_id
- const first=await submit(1)
- const decision={vendor_total_cents:100000,normalized_total_cents:120000,accepted_alternate_ids:[],gaps:[{description:"Pumping",amount_cents:20000,owner:"GC",disposition:"allowance"}],rationale:"Confirmed scope",snapshot:{}}
- const select=async(id)=> (await db.query("select save_bid_pricing_decision($1,$2,null,$3) result",[org,id,decision])).rows[0].result
- await t.test("issued scope is immutable and selected cost preserves complete scope",async()=>{
-  await assert.rejects(db.query("update bid_scope_items set description='Changed' where id=$1",[scope]),/immutable/)
-  await assert.rejects(db.query("update bid_packages set scope='Changed' where id=$1",[pkg]),/revision/)
-  await select(first)
-  const row=(await db.query("select * from bid_pricing_decisions where superseded_at is null")).rows[0]
-  assert.equal(row.vendor_total_cents,100000);assert.equal(row.normalized_total_cents,120000)
-  assert.equal(row.snapshot.scope[0].description,"Concrete")
- })
- await t.test("revision snapshots scope, retires selection, rejects old browser and old quote",async()=>{
-  await db.query("select begin_bid_scope_revision($1,$2,'Revised slab')",[org,pkg])
-  assert.equal((await db.query("select count(*)::int n from bid_pricing_decisions where superseded_at is null")).rows[0].n,0)
-  await db.query("update bid_scope_items set description='Revised slab' where id=$1",[scope])
-  await assert.rejects(submit(2),/not open/)
-  await db.query("update bid_packages set status='open' where id=$1",[pkg])
-  await assert.rejects(submit(1),/scope changed/)
-  await assert.rejects(select(first),/no longer eligible/)
-  assert.equal((await db.query("select snapshot->'scope'->0->>'description' description from bid_scope_revisions")).rows[0].description,"Concrete")
- })
- const second=await submit(2)
- await t.test("withdrawal retires pricing and cannot be awarded",async()=>{
-  await select(second)
-  await db.query("update bid_submissions set status='withdrawn' where id=$1",[second])
-  assert.equal((await db.query("select count(*)::int n from bid_pricing_decisions where superseded_at is null")).rows[0].n,0)
-  await assert.rejects(db.query("select run_reviewed_bid_award($1,$2,null,null,'{}','Scope','Terms')",[org,second]),/refreshed/)
-  assert.equal((await db.query("select count(*)::int n from commitments")).rows[0].n,0)
- })
- const third=await submit(2)
- await t.test("new addendum requires a fresh quote and acknowledgement",async()=>{
-  await select(third)
-  await db.query("insert into bid_addenda(org_id,bid_package_id,number) values($1,$2,1)",[org,pkg])
-  await assert.rejects(select(third),/no longer eligible/)
-  const revised=await submit(3)
-  await assert.rejects(db.query("select run_reviewed_bid_award($1,$2,null,null,'{}','Scope','Terms')",[org,revised]),/acknowledge/)
-  await db.query("insert into bid_addendum_acknowledgements select id,$1 from bid_addenda",[invite])
-  await assert.rejects(db.query("select run_reviewed_bid_award($1,$2,null,null,'{}','','Terms')",[org,revised]),/Review scope/)
-  await db.query("insert into projects(id,phase) values($1,'precon')",[scope])
-  await db.query("update bid_packages set project_id=$1 where id=$2",[scope,pkg])
-  await assert.rejects(db.query("select run_reviewed_bid_award($1,$2,null,null,'{}','Scope','Terms')",[org,revised]),/signed owner contract/)
-  await db.query("insert into contracts(id,org_id,status) values($1,$2,'active')",[scope,org])
-  await db.query("insert into project_precon_handoffs values($1,$2,$3,'awarded')",[org,scope,scope])
-  const result=(await db.query("select run_reviewed_bid_award($1,$2,null,null,'{}','Agreed slab and pumping','Net 30; 5% retainage') result",[org,revised])).rows[0].result
-  const commitment=(await db.query("select * from commitments where id=$1",[result.commitment_id])).rows[0]
-  assert.equal(commitment.scope,"Agreed slab and pumping");assert.equal(commitment.terms,"Net 30; 5% retainage");assert.equal(commitment.metadata.subcontract_review_required,false)
- })
- await t.test("clients cannot write decisions or invoke privileged award RPC",async()=>{
-  const row=(await db.query("select has_table_privilege('authenticated','bid_pricing_decisions','select') read,has_table_privilege('authenticated','bid_pricing_decisions','insert') write,has_function_privilege('anon','run_reviewed_bid_award(uuid,uuid,uuid,text,uuid[],text,text,text)','execute') award")).rows[0]
-  assert.equal(row.read,false);assert.equal(row.write,false);assert.equal(row.award,false)
- })
+"use strict"
+
+/**
+ * The database contract for pricing from trade quotes: an issued scope is
+ * immutable until a revision snapshots it; a revision, a withdrawal or a new
+ * addendum retires the pricing decision built on the old scope; a quote is
+ * selected for pricing at its normalized (complete-scope) cost; and an award
+ * needs a current, acknowledged quote and a reviewed scope and terms. Every
+ * function here is service-role only.
+ */
+
+const test = require("node:test")
+const assert = require("node:assert/strict")
+
+const { createDatabase, insert, rpc, seedMember } = require("./support/pglite")
+
+const DECISION = {
+  vendor_total_cents: 100000,
+  normalized_total_cents: 120000,
+  accepted_alternate_ids: [],
+  gaps: [{ description: "Pumping", amount_cents: 20000, owner: "GC", disposition: "allowance" }],
+  rationale: "Confirmed scope",
+  snapshot: {},
+}
+
+/** An org with a delivery project and an issued concrete package with one invited trade. */
+async function issuedPackage(t, { phase = "delivery" } = {}) {
+  const db = await createDatabase(t)
+  const { orgId, userId } = await seedMember(db)
+  const project = await insert(db, "projects", { org_id: orgId, name: "Lot 12", phase })
+  const company = await insert(db, "companies", { org_id: orgId, name: "Slab Co" })
+  const pkg = await insert(db, "bid_packages", {
+    org_id: orgId,
+    project_id: project.id,
+    title: "Concrete",
+    scope: "Concrete scope",
+    status: "draft",
+  })
+  const scope = await insert(db, "bid_scope_items", {
+    org_id: orgId,
+    bid_package_id: pkg.id,
+    item_type: "base",
+    description: "Concrete",
+  })
+  const invite = await insert(db, "bid_invites", {
+    org_id: orgId,
+    bid_package_id: pkg.id,
+    company_id: company.id,
+    status: "sent",
+  })
+  await db.query("update bid_packages set status = 'open' where id = $1", [pkg.id])
+
+  const submit = async (revision) =>
+    (
+      await rpc(db, "create_bid_submission_version", {
+        p_org_id: orgId,
+        p_bid_invite_id: invite.id,
+        p_payload: { total_cents: 100000, scope_revision: revision },
+      })
+    ).submission_id
+  const select = (submissionId) =>
+    rpc(db, "save_bid_pricing_decision", {
+      p_org_id: orgId,
+      p_submission_id: submissionId,
+      p_user_id: userId,
+      p_data: DECISION,
+    })
+  const award = (submissionId, scopeText = "Agreed slab and pumping", terms = "Net 30; 5% retainage") =>
+    rpc(db, "run_reviewed_bid_award", {
+      p_org_id: orgId,
+      p_bid_submission_id: submissionId,
+      p_awarded_by: userId,
+      p_notes: null,
+      p_accepted_alternate_ids: [],
+      p_reviewed_scope: scopeText,
+      p_reviewed_terms: terms,
+    })
+  const currentDecisions = async () =>
+    (await db.query("select * from bid_pricing_decisions where superseded_at is null")).rows
+  const reopen = () => db.query("update bid_packages set status = 'open' where id = $1", [pkg.id])
+  const revise = (reason = "Revised slab") =>
+    rpc(db, "begin_bid_scope_revision", { p_org_id: orgId, p_package_id: pkg.id, p_reason: reason })
+
+  return { db, orgId, userId, project, pkg, scope, invite, submit, select, award, currentDecisions, reopen, revise }
+}
+
+test("an issued scope cannot be edited in place", async (t) => {
+  const { db, pkg, scope } = await issuedPackage(t)
+  await assert.rejects(db.query("update bid_scope_items set description = 'Changed' where id = $1", [scope.id]), /immutable/)
+  await assert.rejects(db.query("update bid_packages set scope = 'Changed' where id = $1", [pkg.id]), /scope revision/)
+})
+
+test("selecting a quote prices it at its complete-scope cost and snapshots the scope it covered", async (t) => {
+  const { submit, select, currentDecisions } = await issuedPackage(t)
+  await select(await submit(1))
+
+  const [decision] = await currentDecisions()
+  assert.equal(Number(decision.vendor_total_cents), 100000)
+  assert.equal(Number(decision.normalized_total_cents), 120000)
+  assert.equal(decision.snapshot.scope[0].description, "Concrete")
+})
+
+test("a scope revision retires the selection and refuses quotes and forms from the old scope", async (t) => {
+  const { db, scope, submit, select, currentDecisions, reopen, revise } = await issuedPackage(t)
+  const old = await submit(1)
+  await select(old)
+
+  await revise()
+  assert.deepEqual(await currentDecisions(), [])
+  await db.query("update bid_scope_items set description = 'Revised slab' where id = $1", [scope.id])
+  await assert.rejects(submit(2), /not open/, "a revised package is a draft until reissued")
+
+  await reopen()
+  await assert.rejects(submit(1), /scope changed/)
+  await assert.rejects(select(old), /no longer eligible/)
+  const { rows } = await db.query("select snapshot -> 'scope' -> 0 ->> 'description' as description from bid_scope_revisions")
+  assert.deepEqual(rows, [{ description: "Concrete" }])
+})
+
+test("a withdrawn quote loses its pricing and cannot be awarded", async (t) => {
+  const { db, submit, select, award, currentDecisions } = await issuedPackage(t)
+  const quote = await submit(1)
+  await select(quote)
+
+  await db.query("update bid_submissions set status = 'withdrawn' where id = $1", [quote])
+  assert.deepEqual(await currentDecisions(), [])
+  await assert.rejects(award(quote), /refreshed/)
+  assert.equal((await db.query("select count(*)::int as n from commitments")).rows[0].n, 0)
+})
+
+test("a new addendum needs a fresh, acknowledged quote and a reviewed scope before award", async (t) => {
+  const { db, orgId, pkg, invite, submit, select, award } = await issuedPackage(t)
+  const before = await submit(1)
+  await select(before)
+
+  await insert(db, "bid_addenda", { org_id: orgId, bid_package_id: pkg.id, number: 1 })
+  await assert.rejects(select(before), /no longer eligible/)
+
+  const revised = await submit(2)
+  await assert.rejects(award(revised), /acknowledge/)
+  const [addendum] = (await db.query("select id from bid_addenda")).rows
+  await insert(db, "bid_addendum_acknowledgements", { org_id: orgId, bid_addendum_id: addendum.id, bid_invite_id: invite.id })
+  await assert.rejects(award(revised, ""), /Review scope/)
+
+  const result = await award(revised)
+  const { rows } = await db.query("select scope, terms, metadata from commitments where id = $1", [result.commitment_id])
+  assert.equal(rows[0].scope, "Agreed slab and pumping")
+  assert.equal(rows[0].terms, "Net 30; 5% retainage")
+  assert.equal(rows[0].metadata.subcontract_review_required, false)
+})
+
+test("a precon job cannot commit subcontract cost before the owner contract is signed", async (t) => {
+  const { submit, award } = await issuedPackage(t, { phase: "precon" })
+  await assert.rejects(award(await submit(1)), /signed owner contract/)
+})
+
+test("browser roles can neither see pricing decisions nor run an award", async (t) => {
+  const db = await createDatabase(t)
+  const { rows } = await db.query(`
+    select has_table_privilege('authenticated', 'bid_pricing_decisions', 'select') as read,
+           has_table_privilege('authenticated', 'bid_pricing_decisions', 'insert') as write,
+           has_function_privilege('anon', 'run_reviewed_bid_award(uuid,uuid,uuid,text,uuid[],text,text,text)', 'execute') as anon_award,
+           has_function_privilege('authenticated', 'run_reviewed_bid_award(uuid,uuid,uuid,text,uuid[],text,text,text)', 'execute') as member_award,
+           has_function_privilege('authenticated', 'save_bid_pricing_decision(uuid,uuid,uuid,jsonb)', 'execute') as member_select
+  `)
+  assert.deepEqual(rows[0], { read: false, write: false, anon_award: false, member_award: false, member_select: false })
 })

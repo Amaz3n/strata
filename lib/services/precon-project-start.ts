@@ -61,7 +61,8 @@ export async function startProspectProject(prospectId: string, agreementId?: str
  * Signing is the handoff. Starting the job activates the project with its
  * contract, then drafts the budget from the cost side of the signed agreement —
  * one line per signed line, allowances tagged so they can be tracked against
- * selections, and a contingency reserve when the price carries one.
+ * selections, and a contingency reserve when the price carries one — and turns
+ * the signed payment schedule into the job's draws.
  */
 export async function startBuilding(prospectId: string, agreementId: string) {
   const started = await startProspectProject(prospectId, agreementId);
@@ -70,19 +71,35 @@ export async function startBuilding(prospectId: string, agreementId: string) {
     supabase.from("budgets").select("id").eq("org_id", orgId).eq("project_id", started.projectId).limit(1).maybeSingle(),
     supabase
       .from("estimates")
-      .select("id, subtotal_cents, metadata, items:estimate_items(*)")
+      .select("id, subtotal_cents, total_cents, metadata, items:estimate_items(*)")
       .eq("org_id", orgId)
       .eq("id", agreementId)
       .maybeSingle(),
   ]);
   if (existing.error) throw new Error(`Unable to check the job budget: ${existing.error.message}`);
   if (agreement.error || !agreement.data) throw new Error("Unable to load the signed agreement for the budget.");
-  if (existing.data) return { ...started, budgetCreated: false };
-  const [{ normalizeEstimateCommercial }, { resolveContractedEstimateItems }, { createBudget }] = await Promise.all([
-    import("@/lib/financials/estimate-commercial"),
-    import("@/lib/financials/contracted-estimate"),
-    import("./budgets"),
-  ]);
+  const [{ normalizeEstimateCommercial }, { resolveContractedEstimateItems }, { createBudget }, { estimateProposal }, { createDrawsFromPaymentSchedule }] =
+    await Promise.all([
+      import("@/lib/financials/estimate-commercial"),
+      import("@/lib/financials/contracted-estimate"),
+      import("./budgets"),
+      import("@/lib/precon/proposal-documents"),
+      import("./draws"),
+    ]);
+  // The payment schedule the client signed is how the job bills.
+  const signed = estimateProposal(agreement.data.metadata);
+  const base = Number(agreement.data.total_cents ?? 0);
+  const accepted = z.number().int().catch(base).parse(agreement.data.metadata?.accepted_options?.accepted_total_cents);
+  const draws = signed?.payments.length
+    ? await createDrawsFromPaymentSchedule({
+        projectId: started.projectId,
+        sourceEstimateId: agreementId,
+        baseCents: base,
+        optionsCents: Math.max(0, accepted - base),
+        payments: signed.payments,
+      })
+    : { created: 0 };
+  if (existing.data) return { ...started, budgetCreated: false, drawsCreated: draws.created };
   const commercial = normalizeEstimateCommercial(agreement.data.metadata);
   const items = resolveContractedEstimateItems(agreement.data.items ?? [], agreement.data.metadata);
   const lines = items
@@ -112,9 +129,9 @@ export async function startBuilding(prospectId: string, agreementId: string) {
       amount_cents: contingency,
       metadata: { source: "estimate_execution", source_estimate_id: agreementId, source_estimate_item_id: "contingency" },
     });
-  if (!lines.length) return { ...started, budgetCreated: false };
+  if (!lines.length) return { ...started, budgetCreated: false, drawsCreated: draws.created };
   await createBudget({ project_id: started.projectId, status: "draft", lines });
-  return { ...started, budgetCreated: true };
+  return { ...started, budgetCreated: true, drawsCreated: draws.created };
 }
 
 /** Read the exact handoff the builder will approve; conversion rechecks the agreement ID under lock. */
@@ -133,6 +150,7 @@ export async function getProspectConversionReview(prospectId: string) {
   const agreement = dealDocumentSlot(documents.data as import("@/lib/types").Estimate[], "construction_agreement").current;
   if (!agreement || !["executed", "converted_to_project"].includes(agreement.status)) throw new Error("Execute the current construction agreement before converting.");
   const commercial = normalizeEstimateCommercial(agreement.metadata);
+  const { estimateProposal } = await import("@/lib/precon/proposal-documents");
   const ownerId = workspace.data?.brief?.delivery_owner_id;
   const owner = ownerId ? await service.from("app_users").select("full_name").eq("id", ownerId).maybeSingle() : null;
   if (owner?.error) throw new Error("Unable to load the delivery lead.");
@@ -141,7 +159,9 @@ export async function getProspectConversionReview(prospectId: string) {
     totalCents: Number(agreement.metadata?.accepted_options?.accepted_total_cents ?? agreement.total_cents ?? 0),
     billingModel: commercial.billing_model, retainagePercent: commercial.retainage_percent,
     fixedFeeCents: commercial.fixed_fee_cents, gmpCents: commercial.gmp_cents,
-    paymentTerms: commercial.payment_terms, exclusions: String(agreement.metadata?.exclusions ?? ""),
+    paymentTerms: commercial.payment_terms,
+    draws: estimateProposal(agreement.metadata)?.payments ?? [],
+    exclusions: String(agreement.metadata?.exclusions ?? ""),
     deliveryOwner: owner?.data?.full_name ?? null,
     conditions: (conditions.data ?? []).map((item) => ({ id: item.id, title: item.title, blocksStart: item.blocks_start })),
     allowances: (agreement.items ?? []).filter((item) => item.metadata?.is_allowance && (!item.metadata?.is_optional || agreement.metadata?.accepted_options?.ids?.includes(item.id)))

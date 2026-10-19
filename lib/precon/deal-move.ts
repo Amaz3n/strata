@@ -4,7 +4,8 @@ import {
   type PricingRow,
   type PricingWorksheet,
 } from "./pricing-worksheet";
-import { money } from "./format";
+import { budgetBand, money } from "./format";
+import type { ProposalSectionKey } from "./proposal-documents";
 import type { ProspectStatus } from "@/lib/validation/prospects";
 
 /**
@@ -13,8 +14,11 @@ import type { ProspectStatus } from "@/lib/validation/prospects";
  * is stored, so a deal can never claim a stage its documents contradict.
  */
 
-/** Share of cost that must be firm before Arc offers a signature instead of a budget. */
-export const SIGNATURE_FIRMNESS = 0.75;
+/**
+ * Share of cost Arc calls a firm price. Below it, a fixed price for signature
+ * is still the builder's call; Arc only says how much of it is a guess.
+ */
+export const FIRM_PRICE_SHARE = 0.75;
 
 export type QuoteRequestStatus = {
   package_id: string;
@@ -31,6 +35,7 @@ export type LineStatus =
   | { kind: "priced"; firmness: Firmness; cost: number }
   | { kind: "included" }
   | { kind: "open" }
+  | { kind: "to_bid" }
   | { kind: "request_draft"; packageId: string }
   | { kind: "awaiting_quotes"; packageId: string; invited: number; dueAt: string | null }
   | { kind: "quotes_in"; packageId: string; received: number };
@@ -58,7 +63,7 @@ export function lineStatus(
   }
   const request = pricing.request;
   const status = request && requests.find((item) => item.package_id === request.package_id);
-  if (!request || !status || status.status === "cancelled") return { kind: "open" };
+  if (!request || !status || status.status === "cancelled") return { kind: row.basis === "quote" ? "to_bid" : "open" };
   if (status.status === "draft" || status.invite_count === 0)
     return { kind: "request_draft", packageId: request.package_id };
   if (status.response_count > 0)
@@ -69,6 +74,16 @@ export function lineStatus(
     invited: status.invite_count,
     dueAt: status.due_at,
   };
+}
+
+/** Lines marked to go out for bids that no live request covers yet: the Bids tab's first job. */
+export function linesToBid(worksheet: PricingWorksheet, requests: QuoteRequestStatus[]) {
+  return worksheet.rows.filter((row) => {
+    if (row.basis !== "quote") return false;
+    const request = worksheet.requests.find((item) => item.row_ids.includes(row.id));
+    const status = request && requests.find((item) => item.package_id === request.package_id);
+    return !status || status.status === "cancelled";
+  });
 }
 
 export type PriceFirmness = {
@@ -140,26 +155,34 @@ export type DealMoveInput = {
   status: ProspectStatus;
   lostReason: string | null;
   projectPhase: "precon" | "delivery" | null;
-  scope: string;
   worksheet: PricingWorksheet | null;
   requests: QuoteRequestStatus[];
   proposal: DealDocument | null;
   agreement: DealDocument | null;
   openQuestions: number;
+  /** How the proposal is priced: a fixed price to sign (the default) or a range to approve. */
+  priceMode?: "signature" | "range";
+  /** Proposal sections still waiting on the builder; the deal room knows them, the list does not. */
+  proposalNeeds?: Array<{ key: ProposalSectionKey; name: string; label: string }>;
+  /** Client comments on the document nobody has answered. */
+  unansweredComments?: number;
+  /** What new plans did to measured lines: measurements to confirm, then quantities that moved. */
+  planChanges?: { review: number; changed: number };
 };
 
 export type DealBall = "you" | "trades" | "client" | "building" | "closed";
 
 export type DealAction =
-  | { kind: "describe" }
-  | { kind: "start_pricing" }
+  | { kind: "start_price" }
   | { kind: "add_line" }
   | { kind: "price_line"; rowId: string }
+  | { kind: "review_plan_measurements" }
+  | { kind: "review_plan_quantities" }
+  | { kind: "request_bids" }
   | { kind: "send_request"; rowId: string }
   | { kind: "review_quotes"; rowId: string }
   | { kind: "follow_up_trades"; rowId: string }
-  | { kind: "firm_up"; rowId: string }
-  | { kind: "answer_questions" }
+  | { kind: "open_proposal"; section: ProposalSectionKey }
   | { kind: "send"; document: "budget" | "agreement" }
   | { kind: "remind_client"; documentId: string }
   | { kind: "revise" }
@@ -178,7 +201,7 @@ export type DealMove = {
   action: DealAction | null;
   label: string | null;
   detail: string | null;
-  /** Whether the next send would be a signable agreement rather than a budget. */
+  /** Whether the next send asks for a signature rather than approval of a range. */
   signable: boolean;
   firmness: PriceFirmness | null;
 };
@@ -197,7 +220,7 @@ const ago = (from: string, now: Date) => {
 };
 const firstName = (name: string | null) => name?.trim().split(/\s+/)[0] || null;
 const kindOf = (document: DealDocument) =>
-  document.purpose === "budget" ? "budget" : "agreement";
+  document.purpose === "budget" ? "estimate" : "proposal";
 
 function sentDocument(input: DealMoveInput) {
   // An agreement supersedes the budget it came from.
@@ -211,13 +234,7 @@ export function dealMove(input: DealMoveInput): DealMove {
   const client = name ?? "the client";
   const Client = name ?? "The client";
   const firmness = input.worksheet ? priceFirmness(input.worksheet, input.requests) : null;
-  const signable = Boolean(
-    firmness &&
-      input.worksheet?.rows.length &&
-      firmness.unpriced === 0 &&
-      firmness.firmShare >= SIGNATURE_FIRMNESS &&
-      input.openQuestions === 0,
-  );
+  const signable = (input.priceMode ?? "signature") === "signature";
   const move = (
     ball: DealBall,
     stop: number,
@@ -259,6 +276,37 @@ export function dealMove(input: DealMoveInput): DealMove {
       );
   }
 
+  const comments = input.unansweredComments ?? 0;
+  if (document && !document.changed_since && comments && ["sent", "approved", "changes_requested"].includes(document.status))
+    return move(
+      "you",
+      2,
+      `${Client} asked ${plural(comments, "question")} on the ${kindOf(document)}.`,
+      { kind: "open_proposal", section: "questions" },
+      comments === 1 ? "Answer it" : "Answer them",
+      `${Client} sees your answer on the document.`,
+    );
+
+  const plans = input.planChanges;
+  if (input.worksheet && plans?.review)
+    return move(
+      "you",
+      1,
+      `New plans moved the measurements on ${plural(plans.review, "line")}. Check they still sit right.`,
+      { kind: "review_plan_measurements" },
+      "Review measurements",
+      "They count again once you confirm them on the new sheets.",
+    );
+  if (input.worksheet && plans?.changed)
+    return move(
+      "you",
+      1,
+      `New plans changed the quantity on ${plural(plans.changed, "measured line")}.`,
+      { kind: "review_plan_quantities" },
+      "Review quantities",
+      "Nothing on the price changes until you choose.",
+    );
+
   if (document?.status === "sent" && !document.changed_since) {
     const sentAt = document.sent_at ?? input.now.toISOString();
     return move(
@@ -286,35 +334,26 @@ export function dealMove(input: DealMoveInput): DealMove {
         : `${Client} asked for changes${document.decision_note ? `: “${document.decision_note}”` : "."}`,
       { kind: "revise" },
       "Revise the price",
-      "Change the lines below, then send the new version.",
+      "Change the lines on Pricing, then send the new version.",
     );
 
   const worksheet = input.worksheet;
   if (worksheet && !worksheet.rows.length)
     return move("you", 1, "Add the first line of work.", { kind: "add_line" }, "Add a line");
-  if (!worksheet) {
-    if (!input.scope.trim())
-      return move(
-        "you",
-        0,
-        `Write down what ${client} wants built.`,
-        { kind: "describe" },
-        "Start pricing",
-        "One idea per line. Each line becomes something to price.",
-      );
+  if (!worksheet)
     return move(
       "you",
       0,
-      "Turn your notes into lines to price.",
-      { kind: "start_pricing" },
-      "Start pricing",
-      "Each line of your notes becomes a line to price.",
+      "Nothing is priced yet.",
+      { kind: "start_price" },
+      "Start the price",
+      "From a template, the plans, a past deal or a blank sheet.",
     );
-  }
 
   const rows = (kind: LineStatus["kind"]) =>
     worksheet.rows.filter((row) => firmness?.lines.get(row.id)?.kind === kind);
   const open = rows("open");
+  const toBid = linesToBid(worksheet, input.requests);
   const drafts = rows("request_draft");
   const quotesIn = rows("quotes_in");
   const awaiting = rows("awaiting_quotes");
@@ -328,21 +367,30 @@ export function dealMove(input: DealMoveInput): DealMove {
       { kind: "price_line", rowId: open[0].id },
       `Price ${open[0].description}`,
     );
+  if (toBid.length)
+    return move(
+      "you",
+      1,
+      `${plural(toBid.length, "line goes", "lines go")} out for bids: ${list(toBid.map((row) => row.description))}.`,
+      { kind: "request_bids" },
+      "Request bids",
+      "Group what one trade prices into one request.",
+    );
   if (drafts.length)
     return move(
       "you",
       1,
-      `The quote request for ${drafts[0].description} hasn't gone out.`,
+      `The bid request for ${drafts[0].description} hasn't gone out.`,
       { kind: "send_request", rowId: drafts[0].id },
-      "Send quote request",
+      "Send bid request",
     );
   if (quotesIn.length)
     return move(
       "you",
       1,
-      `Quotes are in for ${list(quotesIn.map((row) => row.description))}. Pick one.`,
+      `Bids are in for ${list(quotesIn.map((row) => row.description))}. Pick one.`,
       { kind: "review_quotes", rowId: quotesIn[0].id },
-      "Review quotes",
+      "Review bids",
     );
   if (awaiting.length) {
     const first = firmness?.lines.get(awaiting[0].id);
@@ -350,7 +398,7 @@ export function dealMove(input: DealMoveInput): DealMove {
     return move(
       "trades",
       1,
-      `Waiting on quotes for ${list(awaiting.map((row) => row.description))}.`,
+      `Waiting on bids for ${list(awaiting.map((row) => row.description))}.`,
       { kind: "follow_up_trades", rowId: awaiting[0].id },
       "Follow up with trades",
       due
@@ -360,48 +408,93 @@ export function dealMove(input: DealMoveInput): DealMove {
   }
 
   const share = Math.round((firmness?.firmShare ?? 0) * 100);
+  const need = input.proposalNeeds?.[0];
+  if (need)
+    return move(
+      "you",
+      1,
+      `${need.name}: ${need.label.charAt(0).toLowerCase()}${need.label.slice(1)}.`,
+      { kind: "open_proposal", section: need.key },
+      `Finish ${need.name.toLowerCase()}`,
+      input.proposalNeeds && input.proposalNeeds.length > 1
+        ? `${plural(input.proposalNeeds.length - 1, "more section")} after this, then it is ready to send.`
+        : "Then it is ready to send.",
+    );
+  const questions = input.openQuestions
+    ? ` ${Client} answers ${plural(input.openQuestions, "question")} on it before signing.`
+    : "";
   if (signable)
     return move(
       "you",
       1,
-      approved
-        ? `${Client} approved the budget, and the price is now ${share}% firm.`
-        : `The price is ${share}% firm. Ready for ${client} to sign.`,
+      approved ? `${Client} approved the estimate. Send the proposal to sign.` : `Every line has a price. Ready for ${client} to sign.`,
       { kind: "send", document: "agreement" },
       "Send for signature",
-      `${money(firmness?.total ?? 0)} fixed price, with your terms.`,
+      `${money(firmness?.total ?? 0)} fixed price, ${share}% firm.${questions}`,
     );
-
-  const soft = (firmness?.guess ?? 0) + (firmness?.allowance ?? 0);
-  const blocker =
-    (firmness?.firmShare ?? 0) < SIGNATURE_FIRMNESS
-      ? `Firm up ${money(soft)} of guesses and allowances`
-      : `Answer ${plural(input.openQuestions, "open question")}`;
-  if (approved) {
-    const guess = worksheet.rows.find((row) => {
-      const status = firmness?.lines.get(row.id);
-      return status?.kind === "priced" && status.firmness !== "firm";
-    });
+  const range = firmness?.range ?? { low: 0, high: 0 };
+  if (approved)
     return move(
       "you",
       1,
-      `${Client} approved the budget. Firm it up to send for signature.`,
-      guess && (firmness?.firmShare ?? 0) < SIGNATURE_FIRMNESS
-        ? { kind: "firm_up", rowId: guess.id }
-        : { kind: "answer_questions" },
-      guess && (firmness?.firmShare ?? 0) < SIGNATURE_FIRMNESS
-        ? `Firm up ${guess.description}`
-        : "Answer open questions",
-      `${blocker} to send for signature.`,
+      `${Client} approved ${money(range.low)}–${money(range.high)}. Set a fixed price to send it for signature.`,
+      { kind: "open_proposal", section: "price" },
+      "Set a fixed price",
     );
-  }
-  const range = firmness?.range ?? { low: 0, high: 0 };
   return move(
     "you",
     1,
     `Every line has a price. ${share}% of it is firm.`,
     { kind: "send", document: "budget" },
-    document?.purpose === "budget" && document.sent_at ? "Send updated budget" : "Send budget",
-    `${Client} sees ${money(range.low)}–${money(range.high)}. ${blocker} to send for signature.`,
+    document?.purpose === "budget" && document.sent_at ? "Send updated estimate" : "Send for approval",
+    `${Client} approves ${money(range.low)}–${money(range.high)}. Nothing is signed.`,
   );
+}
+
+/**
+ * What a deal is worth, as precisely as its records allow: the budget the client
+ * stated, then what is priced so far, then the range an estimate shows, then a price.
+ */
+export type DealValue =
+  /** A single number, and what it rests on: the sent agreement, firm costs, or the last proposal. */
+  | { kind: "price"; cents: number; basis: "agreement" | "firm" | "proposal" }
+  | { kind: "range"; low: number; high: number }
+  | { kind: "priced_so_far"; cents: number }
+  | { kind: "budget"; label: string }
+  | { kind: "none" };
+
+export function dealValue(
+  move: DealMove,
+  documents: { proposal: DealDocument | null; agreement: DealDocument | null },
+  statedBudget: string | null,
+): DealValue {
+  const { proposal, agreement } = documents;
+  // The agreement's total is what the client was offered, whatever the worksheet says since.
+  if (agreement && agreement.status !== "void" && agreement.total_cents > 0)
+    return { kind: "price", cents: agreement.total_cents, basis: "agreement" };
+  const firmness = move.firmness;
+  if (firmness && firmness.cost > 0) {
+    if (firmness.unpriced > 0) return { kind: "priced_so_far", cents: firmness.total };
+    // How firm the cost is decides how the value reads, whichever way the builder sends it.
+    if (firmness.firmShare >= FIRM_PRICE_SHARE) return { kind: "price", cents: firmness.total, basis: "firm" };
+    return { kind: "range", low: firmness.range.low, high: firmness.range.high };
+  }
+  if (proposal && proposal.total_cents > 0) return { kind: "price", cents: proposal.total_cents, basis: "proposal" };
+  // Before anything is priced, the band the client named is all there is to show.
+  const band = budgetBand(statedBudget);
+  if (band) return { kind: "budget", label: band };
+  return { kind: "none" };
+}
+
+/** One number for totals: a range counts at its midpoint; a stated band is not money yet. */
+export function dealValueCents(value: DealValue) {
+  switch (value.kind) {
+    case "range":
+      return Math.round((value.low + value.high) / 2);
+    case "budget":
+    case "none":
+      return 0;
+    default:
+      return value.cents;
+  }
 }

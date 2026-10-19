@@ -2,7 +2,7 @@
 
 Implemented September 26, 2026. **Release accuracy gate has not passed.**
 How accuracy is measured: [takeoff-evaluation.md](takeoff-evaluation.md). Current
-scores and the work plan: [the reliability gameplan](plans/takeoff-reliability-gameplan.md).
+scores and the work plan: [the recognition engine gameplan](plans/plan-recognition-engine-gameplan.md).
 
 ## Using it
 
@@ -227,7 +227,7 @@ responses from another drawing context are ignored. Atomic acceptance requires t
 Accuracy is scored against traced references only — see
 [takeoff-evaluation.md](takeoff-evaluation.md) for the data split, tracing tools,
 conventions and the frozen release protocol. The running scoreboard lives in
-[the reliability gameplan](plans/takeoff-reliability-gameplan.md). The public
+[the recognition engine gameplan](plans/plan-recognition-engine-gameplan.md). The public
 Swiss Dwellings diagnostics ([fixture attribution](../tests/fixtures/area-takeoff/README.md),
 CC BY 4.0) are development diagnostics and do not count toward any gate.
 

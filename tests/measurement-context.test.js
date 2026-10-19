@@ -1,152 +1,121 @@
-require("../scripts/register-ts-node-test");
-const test = require("node:test"),
-  assert = require("node:assert/strict"),
-  Module = require("node:module"),
-  { randomUUID } = require("node:crypto");
-const {
-  measurementUnit,
-  measurementHref,
-} = require("../lib/drawings/measurement-context");
-const prospect = randomUUID(),
-  project = randomUUID(),
-  rowId = randomUUID(),
-  conditionId = randomUUID();
-let worksheet, conditions, version, denied, creates;
-const reset = () => {
-  worksheet = {
-    rows: [
-      {
-        id: rowId,
-        description: "Flooring",
-        unit: "sf",
-        quantity: 200,
-        metadata: {},
-        cost_code_id: null,
-      },
-    ],
+const assert = require("node:assert/strict")
+const { beforeEach, describe, test } = require("node:test")
+
+const { createServiceHarness, replies, id, ORG } = require("./support/service")
+const { freshRequire, stubModule } = require("./support/modules")
+
+const PROSPECT = id(1)
+const PROJECT = id(2)
+const ROW = id(3)
+const ESTIMATE = id(4)
+
+// The deal's pricing worksheet lives in the precon services (their own suites);
+// this is that store. Takeoff conditions are the real service against the fake.
+const deal = { worksheet: null, version: 1, saves: [] }
+stubModule("lib/services/precon-workspace.ts", {
+  authorizePreconWorkspaceWrite: async () => ({}),
+  getPreconWorkspace: async () => ({ pricing: structuredClone(deal.worksheet), version: deal.version }),
+})
+stubModule("lib/services/precon-pricing.ts", {
+  async savePricingWorksheet(prospectId, worksheet, expectedVersion) {
+    if (expectedVersion !== deal.version) throw new Error("The worksheet changed")
+    deal.saves.push(prospectId)
+    deal.worksheet = structuredClone(worksheet)
+    deal.version += 1
+  },
+})
+stubModule("lib/services/conversions.ts", { startProspectPricing: async () => ({ projectId: PROJECT }) })
+stubModule("lib/services/takeoff-destinations.ts", {
+  listSyncTargets: async () => [
+    { destination: "pricing_worksheet", id: PROSPECT, label: "Working estimate", writable: true },
+    { destination: "estimate", id: ESTIMATE, label: "Estimate", writable: true },
+  ],
+})
+
+const { beginWorksheetMeasurement, resolveMeasurementContext } = freshRequire("lib/services/measurement-context.ts")
+const { measurementUnit } = require("../lib/drawings/measurement-context")
+
+function harness(permissions = ["project.read", "takeoff.read", "takeoff.write"]) {
+  const service = createServiceHarness({
+    permissions,
+    tables: { projects: [{ id: PROJECT, org_id: ORG }], takeoff_conditions: [] },
+  })
+  // The column defaults Postgres fills on insert.
+  const NOW = "2026-10-06T12:00:00+00:00"
+  service.tamper(
+    "takeoff_conditions",
+    (result) => {
+      for (const row of service.db.takeoff_conditions) Object.assign(row, { created_at: NOW, updated_at: NOW, ...row })
+      return replies.patch({ created_at: NOW, updated_at: NOW })(result)
+    },
+    { on: "insert" },
+  )
+  return service
+}
+
+beforeEach(() => {
+  deal.worksheet = {
+    rows: [{ id: ROW, description: "Flooring", unit: "sf", quantity: 200, unit_cost_cents: 450, metadata: {}, cost_code_id: null }],
     requests: [],
-  };
-  conditions = [];
-  version = 1;
-  denied = false;
-  creates = 0;
-};
-const orig = Module._load;
-Module._load = function (request, ...args) {
-  if (request === "./precon-workspace")
-    return {
-      authorizePreconWorkspaceWrite: async () => {
-        if (denied) throw Error("Denied");
-        return { projectId: project };
-      },
-      getPreconWorkspace: async () => ({
-        pricing: structuredClone(worksheet),
-        version,
-      }),
-    };
-  if (request === "./permissions")
-    return {
-      requirePermission: async () => {
-        if (denied) throw Error("Denied");
-      },
-    };
-  if (request === "./precon-pricing")
-    return {
-      savePricingWorksheet: async (id, rows, expected) => {
-        assert.equal(id, prospect);
-        assert.equal(expected, version);
-        worksheet = rows;
-        version++;
-      },
-    };
-  if (request === "./takeoff")
-    return {
-      listTakeoffConditions: async () => conditions,
-      createTakeoffCondition: async (input) => {
-        creates++;
-        const c = { id: conditionId, ...input };
-        conditions.push(c);
-        return c;
-      },
-    };
-  if (request === "./conversions")
-    return { startProspectPricing: async () => ({ projectId: project }) };
-  if (request === "./takeoff-destinations")
-    return {
-      listSyncTargets: async () => [
-        {
-          destination: "pricing_worksheet",
-          id: prospect,
-          label: "Working estimate",
-          writable: true,
-        },
-      ],
-    };
-  return orig.call(this, request, ...args);
-};
-const {
-  beginWorksheetMeasurement,
-  resolveMeasurementContext,
-} = require("../lib/services/measurement-context");
-test.after(() => (Module._load = orig));
-test.beforeEach(reset);
-test("existing row creates one reusable measurement source without changing quantity or money", async () => {
-  const first = await beginWorksheetMeasurement(prospect, rowId, "SF");
-  const second = await beginWorksheetMeasurement(prospect, rowId, "SF");
-  assert.equal(first, second);
-  assert.equal(creates, 1);
-  assert.equal(worksheet.rows.length, 1);
-  assert.equal(worksheet.rows[0].quantity, 200);
-  assert.equal(
-    worksheet.rows[0].metadata.takeoff_source.condition_id,
-    conditionId,
-  );
-  assert.ok(first.includes(`row=${rowId}`));
-  assert.ok(first.includes(`condition=${conditionId}`));
-});
-test("permissions and removed rows fail without creating orphan measurement items", async () => {
-  denied = true;
-  await assert.rejects(
-    beginWorksheetMeasurement(prospect, rowId, "sf"),
-    /Denied/,
-  );
-  assert.equal(creates, 0);
-  denied = false;
-  await assert.rejects(
-    beginWorksheetMeasurement(prospect, randomUUID(), "sf"),
-    /Save this scope/,
-  );
-  assert.equal(creates, 0);
-});
-test("row context rejects another destination and resolves the exact return row", async () => {
-  await assert.rejects(
-    resolveMeasurementContext(
-      project,
-      { destination: "pricing_worksheet", target: randomUUID() },
-      prospect,
-    ),
-    /does not belong/,
-  );
-  const c = await resolveMeasurementContext(
-    project,
-    { destination: "pricing_worksheet", target: prospect, row: rowId },
-    prospect,
-  );
-  assert.equal(c.rowLabel, "Flooring");
-  assert.equal(
-    c.returnHref,
-    `/pipeline/${prospect}?row=${rowId}`,
-  );
-});
-test("unit aliases normalize without treating lump sums as measurable rates", () => {
-  assert.equal(measurementUnit("Sq. Ft."), "sf");
-  assert.equal(measurementUnit("LS"), null);
-  assert.ok(
-    measurementHref(project, {
-      destination: "change_order",
-      targetId: conditionId,
-      label: "Change",
-      returnHref: "/ignored",
-    }).includes("destination=change_order"),
-  );
-});
+  }
+  deal.version = 1
+  deal.saves = []
+})
+
+describe("measuring a worksheet row", () => {
+  test("the first measurement links one takeoff item to the row; a retry reuses it", async () => {
+    const service = harness()
+
+    const first = await service.run(() => beginWorksheetMeasurement(PROSPECT, ROW, "SF"))
+    const second = await service.run(() => beginWorksheetMeasurement(PROSPECT, ROW, "SF"))
+
+    const [condition] = service.db.takeoff_conditions
+    assert.equal(service.db.takeoff_conditions.length, 1)
+    assert.equal(condition.name, "Flooring")
+    assert.equal(condition.uom, "sf")
+    assert.deepEqual(first, { projectId: PROJECT, conditionId: condition.id, sheetId: null, saved: true }, "nothing measured yet, so no sheet to land on")
+    assert.deepEqual(second, { ...first, saved: false }, "a linked line opens without saving again")
+    const [row] = deal.worksheet.rows
+    assert.deepEqual(row.metadata.takeoff_source, { condition_id: condition.id, uom: "sf" })
+    assert.equal(row.quantity, 200, "linking never changes the quantity")
+    assert.equal(row.unit_cost_cents, 450, "or the money")
+    assert.equal(deal.saves.length, 1)
+  })
+
+  test("without takeoff.write, or for a removed row, nothing is created", async () => {
+    const denied = harness(["project.read", "takeoff.read"])
+    await assert.rejects(denied.run(() => beginWorksheetMeasurement(PROSPECT, ROW, "sf")))
+    assert.deepEqual(denied.db.takeoff_conditions, [])
+
+    const removed = harness()
+    await assert.rejects(removed.run(() => beginWorksheetMeasurement(PROSPECT, id(404), "sf")), /Save this line/)
+    assert.deepEqual(removed.db.takeoff_conditions, [])
+    assert.deepEqual(deal.saves, [])
+  })
+
+  test("a lump-sum row cannot be measured", async () => {
+    deal.worksheet.rows[0].unit = "ls"
+    const service = harness()
+    await assert.rejects(service.run(() => beginWorksheetMeasurement(PROSPECT, ROW, "LS")), /Choose an area/)
+    assert.deepEqual(service.db.takeoff_conditions, [])
+  })
+})
+
+describe("resolving where a measurement returns", () => {
+  test("a target that is not one of these plans' destinations is refused", async () => {
+    await assert.rejects(resolveMeasurementContext(PROJECT, { destination: "pricing_worksheet", target: id(404) }), /does not belong/)
+  })
+
+  test("a deal's worksheet returns to the deal, an estimate to the estimate", async () => {
+    const deal = await resolveMeasurementContext(PROJECT, { destination: "pricing_worksheet", target: PROSPECT })
+    assert.equal(deal.returnHref, `/pipeline/${PROSPECT}`)
+    const estimate = await resolveMeasurementContext(PROJECT, { destination: "estimate", target: ESTIMATE })
+    assert.equal(estimate.returnHref, `/estimates?estimate=${ESTIMATE}`)
+  })
+})
+
+test("unit aliases normalize, and a lump sum is not a measurable unit", () => {
+  for (const [unit, expected] of [["Sq. Ft.", "sf"], ["LF", "lf"], ["ea", "ea"], ["LS", null]]) {
+    assert.equal(measurementUnit(unit), expected, unit)
+  }
+})

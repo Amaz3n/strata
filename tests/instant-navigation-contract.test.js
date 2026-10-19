@@ -286,16 +286,6 @@ test("known route props use the asynchronous Next.js request API", () => {
   }
 })
 
-test("pipeline enters request time before starting authenticated data fetches", () => {
-  const layout = source("app/(app)/pipeline/layout.tsx")
-  const liveRequest = layout.indexOf("await connection()")
-  const authenticatedFetch = layout.indexOf("getOrgProductTier()")
-
-  assert.notEqual(liveRequest, -1)
-  assert.notEqual(authenticatedFetch, -1)
-  assert.ok(liveRequest < authenticatedFetch)
-})
-
 test("authenticated pages inherit loading coverage and specialized boundaries use skeletons", () => {
   const appRoot = path.join(root, "app", "(app)")
   const boundaries = filesNamed(appRoot, "loading.tsx").map((absolute) =>

@@ -1,49 +1,103 @@
-const assert = require('node:assert/strict')
-const test = require('node:test')
-const fs = require('node:fs')
-const path = require('node:path')
-const ts = require('typescript')
-const id = '00000000-0000-4000-8000-000000000001'
-const project = '00000000-0000-4000-8000-000000000002'
-function fixture({ found = true, executed = false, fileFound = true, permission = true } = {}) {
-  const calls = []
-  class MobileAPIError extends Error { constructor(status, code, message) { super(message); this.status = status } }
-  const query = table => new Proxy({}, { get: (_, method) => method === 'maybeSingle' ? async () => ({ data: table === 'estimates' ? found ? { id, executed_file_id: executed ? 'file-a' : null } : null : fileFound ? { storage_path: 'org/executed.pdf' } : null }) : (...args) => { calls.push([table, method, ...args]); return query(table) } })
-  const mocks = {
-    '@/lib/mobile/api': { MobileAPIError, mobileRequestId: () => 'request-a', mobileErrorResponse: error => new Response(error.message, { status: error.status ?? 500 }) },
-    '@/lib/mobile/auth': { requireMobileOrg: async () => ({ orgId: 'org-a', serviceContext: {}, serviceSupabase: { from: query } }) },
-    '@/lib/mobile/workspace': { requireModule: async (...args) => { calls.push(['module', args[1], args[2]]); if (!permission) throw new MobileAPIError(403, 'forbidden', 'Forbidden') } },
-    '@/lib/services/context': { runWithServiceOrgContext: (_, fn) => fn() },
-    '@/lib/storage/files-storage': { downloadFilesObject: async () => { calls.push(['stored']); return Buffer.from('%PDF-stored') } },
-    '@/app/(app)/estimates/[id]/export/route': { GET: async () => { calls.push(['render']); return new Response('%PDF-draft', { headers: { 'Content-Type': 'application/pdf' } }) } },
-  }
-  const source = fs.readFileSync(path.resolve(__dirname, '../app/api/mobile/v1/workspace/estimates/[recordId]/pdf/route.ts'), 'utf8')
-  const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
-  const workspaceModule = { exports: {} }
-  Function('exports', 'require', 'module', code)(workspaceModule.exports, name => name in mocks ? mocks[name] : require(name), workspaceModule)
-  return { calls, run: () => workspaceModule.exports.GET(new Request(`https://example.com/api/mobile/v1/workspace/estimates/${id}/pdf?project_id=${project}`), { params: Promise.resolve({ recordId: id }) }) }
+const assert = require("node:assert/strict")
+const { beforeEach, test } = require("node:test")
+
+const { createServiceHarness, id, ORG } = require("./support/service")
+const { freshRequire, stubModule } = require("./support/modules")
+const { mobileContext } = require("./support/mobile")
+
+const PROJECT = id(1)
+const OTHER_PROJECT = id(2)
+const ESTIMATE = id(3)
+const EXECUTED = id(4)
+
+// Boundaries: the bearer-token session (lib/mobile/auth has its own suite), the
+// stored executed PDF, and the desk's live PDF renderer.
+const world = { context: null, renders: 0, downloads: [] }
+stubModule("lib/mobile/auth.ts", { requireMobileOrg: async () => world.context })
+const storage = require("@/lib/storage/files-storage")
+stubModule("lib/storage/files-storage.ts", {
+  ...storage,
+  async downloadFilesObject({ path }) {
+    world.downloads.push(path)
+    return Buffer.from("%PDF-stored")
+  },
+})
+stubModule("app/(app)/estimates/[id]/export/route.ts", {
+  async GET() {
+    world.renders += 1
+    return new Response("%PDF-draft", { headers: { "Content-Type": "application/pdf" } })
+  },
+})
+
+const { GET } = freshRequire("app/api/mobile/v1/workspace/estimates/[recordId]/pdf/route.ts")
+
+const project = (projectId) => ({
+  id: projectId,
+  org_id: ORG,
+  name: "Lot 12",
+  phase: "delivery",
+  property_type: "residential",
+  status: "active",
+  created_at: "2026-10-01T00:00:00Z",
+})
+
+function harness({ permissions = ["project.read", "project.manage"], estimate = {}, files = [] } = {}) {
+  const service = createServiceHarness({
+    permissions,
+    tables: {
+      projects: [project(PROJECT), project(OTHER_PROJECT)],
+      estimates: [{ id: ESTIMATE, org_id: ORG, project_id: PROJECT, executed_file_id: null, ...estimate }],
+      files,
+    },
+  })
+  world.context = mobileContext(service)
+  service.get = (projectId = PROJECT) =>
+    service.run(() =>
+      GET(new Request(`https://arc.test/api/mobile/v1/workspace/estimates/${ESTIMATE}/pdf?project_id=${projectId}`), {
+        params: Promise.resolve({ recordId: ESTIMATE }),
+      }),
+    )
+  return service
 }
-test('draft PDF uses canonical rendering only after module and exact project checks', async () => {
-  const f = fixture()
-  const response = await f.run()
+
+beforeEach(() => {
+  world.renders = 0
+  world.downloads.length = 0
+})
+
+test("a draft estimate renders through the desk's PDF, never cached", async () => {
+  const response = await harness().get()
+
   assert.equal(response.status, 200)
-  assert.equal(response.headers.get('Cache-Control'), 'private, no-store')
-  assert.equal(await response.text(), '%PDF-draft')
-  assert.ok(f.calls.some(c => c[0] === 'estimates' && c[1] === 'eq' && c[2] === 'project_id' && c[3] === project))
-  assert.equal(f.calls[0][0], 'module')
+  assert.equal(response.headers.get("Cache-Control"), "private, no-store")
+  assert.equal(await response.text(), "%PDF-draft")
 })
-test('executed PDF serves the immutable stored file and never substitutes a live render', async () => {
-  const f = fixture({ executed: true })
-  assert.equal(await (await f.run()).text(), '%PDF-stored')
-  assert.equal(f.calls.some(c => c[0] === 'render'), false)
-  const missing = fixture({ executed: true, fileFound: false })
-  assert.equal((await missing.run()).status, 404)
-  assert.equal(missing.calls.some(c => c[0] === 'render' || c[0] === 'stored'), false)
+
+test("an executed estimate serves its stored file and never re-renders", async () => {
+  const executed = { estimate: { executed_file_id: EXECUTED } }
+  const stored = await harness({ ...executed, files: [{ id: EXECUTED, org_id: ORG, storage_path: `${ORG}/executed.pdf` }] }).get()
+  assert.equal(await stored.text(), "%PDF-stored")
+  assert.deepEqual(world.downloads, [`${ORG}/executed.pdf`])
+
+  const missing = await harness(executed).get()
+  assert.equal(missing.status, 404)
+  assert.equal(world.renders, 0)
 })
-test('PDF endpoints reject inaccessible or foreign-project estimates without rendering', async () => {
-  for (const options of [{ found: false }, { permission: false }]) {
-    const f = fixture(options)
-    assert.ok([403, 404].includes((await f.run()).status))
-    assert.equal(f.calls.some(c => c[0] === 'render' || c[0] === 'stored'), false)
+
+test("an estimate from another project, or a caller without the module, gets no PDF", async () => {
+  const cases = [
+    { options: { estimate: { project_id: OTHER_PROJECT } }, status: 404 },
+    { options: { permissions: ["project.read"] }, status: 403 },
+  ]
+  for (const { options, status } of cases) {
+    assert.equal((await harness(options).get()).status, status)
   }
+  assert.equal(world.renders, 0)
+  assert.deepEqual(world.downloads, [])
+})
+
+test("a malformed project id is refused before any lookup", async () => {
+  const service = harness()
+  assert.equal((await service.get("not-a-uuid")).status, 422)
+  assert.deepEqual(service.reads("estimates"), [])
 })

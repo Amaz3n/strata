@@ -20,16 +20,20 @@ import { cn } from "@/lib/utils";
 
 import { TOOL_KEYS, TOOL_LABELS, type WorkspaceTool } from "./workspace-tools";
 
-const GROUPS: Array<Array<{ tool: WorkspaceTool; icon: LucideIcon }>> = [
+type DockGroup = Array<{ tool: WorkspaceTool; icon: LucideIcon }>;
+
+const MEASURE_GROUP: DockGroup = [
+  { tool: "length", icon: Spline },
+  { tool: "area", icon: Pentagon },
+  { tool: "count", icon: Hash },
+];
+
+const GROUPS: DockGroup[] = [
   [
     { tool: "select", icon: MousePointer2 },
     { tool: "pan", icon: Move },
   ],
-  [
-    { tool: "length", icon: Spline },
-    { tool: "area", icon: Pentagon },
-    { tool: "count", icon: Hash },
-  ],
+  MEASURE_GROUP,
   [
     { tool: "ruler", icon: Ruler },
     { tool: "redline", icon: Pencil },
@@ -42,20 +46,24 @@ export interface ToolDockProps {
   onTool: (tool: WorkspaceTool) => void;
   /** The item the next measurement lands in. */
   armed: TakeoffCondition | null;
-  onChangeArmed: () => void;
-  onDisarm: () => void;
+  /** Absent when the item is fixed, as when measuring one pricing line. */
+  onChangeArmed?: () => void;
+  onDisarm?: () => void;
   /** The armed item's running quantity: on this sheet, and in all. */
   armedTotal?: string | null;
   /** Tools this person may not use here (no takeoff scope, read-only). */
   disabled?: Partial<Record<WorkspaceTool, string>>;
+  /** False where a sheet is only read: the measuring tools are not offered at all. */
+  canMeasure?: boolean;
   className?: string;
 }
 
 /**
- * The one row of tools. There are no modes: every tool is always here, and a
- * measuring tool shows the item it is measuring into right beside it.
+ * The one row of tools. There are no modes: every tool is always here (the
+ * measuring ones only where measuring is offered), and a measuring tool shows
+ * the item it is measuring into right beside it.
  */
-export function ToolDock({ tool, onTool, armed, onChangeArmed, onDisarm, armedTotal, disabled = {}, className }: ToolDockProps) {
+export function ToolDock({ tool, onTool, armed, onChangeArmed, onDisarm, armedTotal, disabled = {}, canMeasure = true, className }: ToolDockProps) {
   const measuring = tool === "length" || tool === "area" || tool === "count";
   return (
     <TooltipProvider delayDuration={250}>
@@ -72,8 +80,9 @@ export function ToolDock({ tool, onTool, armed, onChangeArmed, onDisarm, armedTo
             <button
               type="button"
               onClick={onChangeArmed}
-              className="flex min-w-0 flex-1 items-center gap-2 py-2 pl-3 pr-2 text-left transition-colors hover:bg-muted sm:max-w-64"
-              title="Change what you're measuring"
+              disabled={!onChangeArmed}
+              className="flex min-w-0 flex-1 items-center gap-2 py-2 pl-3 pr-2 text-left transition-colors enabled:hover:bg-muted sm:max-w-64"
+              title={onChangeArmed ? "Change what you're measuring" : undefined}
             >
               <span className="size-2.5 shrink-0" style={{ backgroundColor: armed.color }} aria-hidden />
               <span className="grid min-w-0 leading-tight">
@@ -82,17 +91,19 @@ export function ToolDock({ tool, onTool, armed, onChangeArmed, onDisarm, armedTo
               </span>
               {!armedTotal && <span className="font-mono text-[11px] text-muted-foreground">{MEASURE_UOM_LABELS[armed.uom]}</span>}
             </button>
-            <button
-              type="button"
-              onClick={onDisarm}
-              className="grid size-9 shrink-0 place-items-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              aria-label="Stop measuring"
-            >
-              <X className="size-3.5" />
-            </button>
+            {onDisarm && (
+              <button
+                type="button"
+                onClick={onDisarm}
+                className="grid size-9 shrink-0 place-items-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="Stop measuring"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
           </div>
         )}
-        {GROUPS.map((group, index) => (
+        {(canMeasure ? GROUPS : GROUPS.filter((group) => group !== MEASURE_GROUP)).map((group, index) => (
           <div key={index} className={cn("flex items-center gap-0.5 p-1", index > 0 && "border-l")}>
             {group.map(({ tool: option, icon: Icon }) => {
               const reason = disabled[option];

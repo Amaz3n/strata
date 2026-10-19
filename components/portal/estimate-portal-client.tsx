@@ -21,6 +21,7 @@ import { QuoteDocumentView, type QuoteViewLine } from "@/components/portal/quote
 import { EstimatePhotoGallery } from "@/components/portal/estimate-photo-gallery"
 import { TakeoffEvidenceDialog } from "@/components/portal/takeoff-evidence-dialog"
 import { answerEstimateQuestionAction, submitEstimateDecisionAction, type EstimatePortalPayload } from "@/app/e/[token]/actions"
+import { unwrapAction } from "@/lib/action-result"
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
 const money = (cents?: number | null) => currency.format((cents ?? 0) / 100)
@@ -130,7 +131,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
   function runDecision(decision: "approved" | "rejected" | "changes_requested", note?: string) {
     startTransition(async () => {
       try {
-        await submitEstimateDecisionAction({
+        unwrapAction(await submitEstimateDecisionAction({
           token,
           decision,
           note,
@@ -145,7 +146,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
                   consent_accepted: consentAccepted,
                 }
               : null,
-        })
+        }))
         toast.success(
           decision === "approved"
             ? (isBudget ? "Proposal approved for scope and budget — thank you!" : "Agreement signed — thank you!")
@@ -513,7 +514,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
 }
 
 /** One question, answered in place. The builder sees the answer on the deal right away. */
-function QuestionAnswer({ token, questionId }: { token: string; questionId: string }) {
+export function QuestionAnswer({ token, questionId }: { token: string; questionId: string }) {
   const router = useRouter()
   const [answer, setAnswer] = useState("")
   const [pending, startTransition] = useTransition()

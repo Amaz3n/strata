@@ -8,7 +8,7 @@ import { SignatureEmail } from "@/lib/emails/signature-email"
 import { issueSigningLinkForRequest, deliverSigningInvitation } from "@/lib/services/signature-delivery"
 import { authorizeEstimateDocumentWrite } from "./estimate-document-authorization"
 import { assertEstimateIssuable } from "./estimate-issuance"
-import { proposalDocumentLabel } from "@/lib/precon/proposal-documents"
+import { estimateProposal, proposalSectionKeySchema, proposalDefaultsFromSettings, proposalDocumentLabel, type ProposalDefaults, type ProposalDocument } from "@/lib/precon/proposal-documents"
 import { normalizeEstimateCommercial, estimateBuilderFeeCents, estimateLineNotes, estimateDocumentTerms, estimateCommercialIssues, estimatePriceRange, type EstimateCommercial } from "@/lib/financials/estimate-commercial"
 import { createHmac, createHash, randomBytes, randomUUID } from "crypto"
 
@@ -26,6 +26,7 @@ import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/service
 import { EstimateEmail } from "@/lib/emails/estimate-email"
 import { ENVELOPE_EVENT_TYPES, buildUnifiedSigningUrl } from "@/lib/esign/unified-contracts"
 import { renderEstimatePdf } from "@/lib/pdfs/estimate"
+import type { QuoteSigner } from "@/lib/pdfs/quote-document"
 import { generateExecutedPdf, type ESignAuditTrailItem } from "@/lib/pdfs/esign"
 import { recordESignEvent } from "@/lib/services/esign-events"
 import { buildOrgScopedPath, createFilesDownloadUrl, downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
@@ -107,6 +108,8 @@ export type OrgBranding = {
   estimateFont: string | null
   /** Default cover note seeded into new estimates. */
   estimateIntroTemplate: string | null
+  /** What every new deal proposal starts from. */
+  proposalDefaults: ProposalDefaults
 }
 
 const HEX_COLOR = /^#?[0-9a-fA-F]{6}$/
@@ -174,6 +177,7 @@ export async function getOrgBranding(orgId: string, client?: ServiceClient): Pro
     estimateFont: (typeof settings.estimate_font === "string" && settings.estimate_font) || null,
     estimateIntroTemplate:
       (typeof settings.estimate_intro_template === "string" && settings.estimate_intro_template) || null,
+    proposalDefaults: proposalDefaultsFromSettings(settings),
   }
 }
 
@@ -239,14 +243,58 @@ export async function getEstimateShareLink({ estimateId, orgId, revokeExisting =
   return { token, url: `${appUrl()}/e/${token}` }
 }
 
-/** Existing legacy links and separately issued review capabilities remain valid until explicitly revoked. */
-async function estimateIdForReviewToken(supabase: ServiceClient, tokenHash: string): Promise<string> {
+const NO_ESTIMATE = "00000000-0000-0000-0000-000000000000"
+
+type ReviewLink = {
+  estimateId: string
+  /** Whose link this is when the document has several signers; null is the primary client's. */
+  signer: { name: string; email: string } | null
+}
+
+/**
+ * Existing legacy links and separately issued review capabilities remain valid
+ * until explicitly revoked. A deal's link always opens the newest version the
+ * client was sent, whichever document it was first sent with.
+ */
+async function reviewLinkForToken(supabase: ServiceClient, tokenHash: string): Promise<ReviewLink> {
   const legacy = await supabase.from("estimates").select("id").eq("token_hash", tokenHash).maybeSingle()
   if (legacy.error) throw new Error("Unable to verify this review link.")
-  if (legacy.data) return legacy.data.id
-  const link = await supabase.from("estimate_review_links").select("estimate_id").eq("token_hash", tokenHash).maybeSingle()
+  if (legacy.data) return { estimateId: await latestSentVersion(supabase, legacy.data.id), signer: null }
+  let link = await supabase.from("estimate_review_links").select("estimate_id, signer_name, signer_email").eq("token_hash", tokenHash).maybeSingle()
+  // Signer columns arrive with a pending migration; links issued before it are the primary client's.
+  if (link.error?.code === "42703")
+    link = await supabase.from("estimate_review_links").select("estimate_id").eq("token_hash", tokenHash).maybeSingle()
   if (link.error) throw new Error("Unable to verify this review link.")
-  return link.data?.estimate_id ?? "00000000-0000-0000-0000-000000000000"
+  if (!link.data) return { estimateId: NO_ESTIMATE, signer: null }
+  const signer = z.object({ signer_name: z.string(), signer_email: z.string() }).safeParse(link.data)
+  return {
+    estimateId: await latestSentVersion(supabase, link.data.estimate_id),
+    signer: signer.success ? { name: signer.data.signer_name, email: signer.data.signer_email } : null,
+  }
+}
+
+async function estimateIdForReviewToken(supabase: ServiceClient, tokenHash: string): Promise<string> {
+  return (await reviewLinkForToken(supabase, tokenHash)).estimateId
+}
+
+/** A deal's budget and agreement are one conversation with the client: the link follows the newest version sent. */
+async function latestSentVersion(supabase: ServiceClient, estimateId: string): Promise<string> {
+  const { data, error } = await supabase.from("estimates").select("org_id, prospect_id, metadata").eq("id", estimateId).maybeSingle()
+  if (error) throw new Error("Unable to verify this review link.")
+  if (!data?.prospect_id || normalizeEstimateCommercial(data.metadata).purpose === "preconstruction_agreement") return estimateId
+  const latest = await supabase.from("estimates").select("id")
+    .eq("org_id", data.org_id).eq("prospect_id", data.prospect_id)
+    .not("sent_at", "is", null)
+    .in("metadata->precon->>purpose", ["budget", "construction_agreement"])
+    .order("sent_at", { ascending: false }).limit(1).maybeSingle()
+  if (latest.error) throw new Error("Unable to verify this review link.")
+  return latest.data?.id ?? estimateId
+}
+
+/** Who has signed so far, by lowercased email. Each signer's signature is kept under signature_data.signers. */
+function signedEmails(signatureData: unknown): Set<string> {
+  const parsed = z.object({ signers: z.record(z.string(), z.object({ signed_at: z.string() }).passthrough()) }).safeParse(signatureData)
+  return new Set(parsed.success ? Object.keys(parsed.data.signers) : [])
 }
 
 /**
@@ -267,7 +315,7 @@ export async function sendEstimate({
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      "id, org_id, prospect_id, title, status, sent_at, updated_at, is_current_version, client_signed_at, executed_at, total_cents, valid_until, version_group_id, recipient_contact_id, metadata, items:estimate_items(id,metadata), project:projects(name), prospect:prospects(name, prospect_contacts(full_name, email, is_primary)), recipient:contacts(full_name, email)",
+      "id, org_id, prospect_id, title, status, sent_at, updated_at, is_current_version, client_signed_at, executed_at, total_cents, valid_until, version_group_id, recipient_contact_id, metadata, signature_data, items:estimate_items(id,metadata), project:projects(name), prospect:prospects(name, prospect_contacts(full_name, email, is_primary)), recipient:contacts(full_name, email)",
     )
     .eq("id", estimateId)
     .eq("org_id", resolvedOrgId)
@@ -283,40 +331,79 @@ export async function sendEstimate({
   if (!recipientEmail) {
     throw new Error("Add a client contact with an email address before sending this estimate.")
   }
+  const proposal = estimateProposal(estimate.metadata)
+  const isBudget = normalizeEstimateCommercial(estimate.metadata).purpose === "budget"
+  // Each signer gets a link of their own; anyone who already signed is not asked again.
+  const signed = signedEmails(estimate.signature_data)
+  const recipients = proposal?.signers.length
+    ? proposal.signers.filter((signer) => !signed.has(signer.email.toLowerCase()))
+    : [{ name: recipient.name ?? "", email: recipientEmail }]
+  if (!recipients.length) throw new Error("Everyone has signed this document.")
+  const primaryEmail = (proposal?.signers[0]?.email ?? recipientEmail).toLowerCase()
 
-  const { token, tokenHash } = mintToken()
-  const reviewUrl = `${appUrl()}/e/${token}`
-
+  const links = recipients.map((person) => ({ person, ...mintToken() }))
   const { error: issueError } = await service.rpc("issue_estimate_review_link", {
-    p_org_id: resolvedOrgId, p_estimate_id: estimateId, p_token_hash: tokenHash,
+    p_org_id: resolvedOrgId, p_estimate_id: estimateId, p_token_hash: links[0].tokenHash,
     p_expected_updated_at: estimate.updated_at, p_revoke_existing: false,
   })
   if (issueError) throw new Error(`Failed to issue document: ${issueError.message}`)
+  // A link with no signer is the primary client's; every other signer's link says whose it is.
+  const signerLinks = links.filter(({ person }) => person.email.toLowerCase() !== primaryEmail)
+  if (signerLinks.length) {
+    const firstIsSigner = links[0].person.email.toLowerCase() !== primaryEmail
+    const [named, inserted] = await Promise.all([
+      firstIsSigner
+        ? service.from("estimate_review_links").update({ signer_name: links[0].person.name, signer_email: links[0].person.email })
+            .eq("org_id", resolvedOrgId).eq("token_hash", links[0].tokenHash)
+        : Promise.resolve({ error: null }),
+      service.from("estimate_review_links").insert(
+        signerLinks.filter((link) => link !== links[0]).map((link) => ({
+          org_id: resolvedOrgId, estimate_id: estimateId, token_hash: link.tokenHash,
+          signer_name: link.person.name, signer_email: link.person.email,
+        })),
+      ),
+    ])
+    const linkError = named.error ?? inserted.error
+    if (linkError) throw new Error(`The document was issued, but a signer's link was not: ${linkError.message}`)
+  }
 
   const branding = await getOrgBranding(resolvedOrgId, supabase)
-  const html = await renderEmailTemplate(
-    EstimateEmail({
-      documentKind: normalizeEstimateCommercial(estimate.metadata).purpose === "budget" ? "proposal" : "agreement",
-      estimateTitle: estimate.title,
-      reviewLink: reviewUrl,
-      orgName: branding.name,
-      orgLogoUrl: branding.logoUrl,
-      recipientName: recipient.name ?? null,
-      projectName: (estimate as any).project?.name ?? (estimate as any).prospect?.name ?? null,
-      totalLabel: formatMoney(estimate.total_cents),
-      validUntil: estimate.valid_until
-        ? formatLocalDate(estimate.valid_until, "MMMM d, yyyy")
-        : null,
-      message: message ?? null,
+  const range = estimatePriceRange(estimate.metadata)
+  const documentName = proposal ? proposalDocumentLabel(normalizeEstimateCommercial(estimate.metadata)) : null
+  const delivered = await Promise.all(
+    links.map(async ({ person, token }) => {
+      const html = await renderEmailTemplate(
+        EstimateEmail({
+          documentKind: isBudget ? "proposal" : "agreement",
+          documentName,
+          actionLabel: proposal ? (isBudget ? "Review the proposal" : "Review and sign") : null,
+          persistentLink: Boolean(proposal),
+          estimateTitle: estimate.title,
+          reviewLink: `${appUrl()}/e/${token}`,
+          orgName: branding.name,
+          orgLogoUrl: branding.logoUrl,
+          recipientName: person.name || null,
+          projectName: (estimate as any).project?.name ?? (estimate as any).prospect?.name ?? null,
+          totalLabel: range ? `${formatMoney(range.lowCents)} – ${formatMoney(range.highCents)}` : formatMoney(estimate.total_cents),
+          validUntil: estimate.valid_until
+            ? formatLocalDate(estimate.valid_until, "MMMM d, yyyy")
+            : null,
+          message: message ?? null,
+        }),
+      )
+      return sendEmail({
+        to: [person.email],
+        subject: documentName
+          ? `Your ${documentName.toLowerCase()} from ${branding.name ?? "your builder"}: ${estimate.title}`
+          : `${branding.name ?? "Your builder"} sent you ${isBudget ? "a proposal" : "an agreement"}: ${estimate.title}`,
+        html,
+        from: getOrgSenderEmail(branding.slug, branding.name),
+      })
     }),
   )
-
-  const emailSent = await sendEmail({
-    to: [recipientEmail],
-    subject: `${branding.name ?? "Your builder"} sent you ${normalizeEstimateCommercial(estimate.metadata).purpose === "budget" ? "a proposal" : "an agreement"}: ${estimate.title}`,
-    html,
-    from: getOrgSenderEmail(branding.slug, branding.name),
-  })
+  const emailSent = delivered.every(Boolean)
+  const reviewUrl = `${appUrl()}/e/${links[0].token}`
+  const token = links[0].token
 
   await addComment(supabase, {
     orgId: resolvedOrgId,
@@ -327,7 +414,7 @@ export async function sendEstimate({
     authorName: await resolveActorName(supabase, userId),
     kind: "sent",
     body: message ?? null,
-    metadata: { recipient_email: recipientEmail, email_sent: emailSent },
+    metadata: { recipient_email: links.map(({ person }) => person.email).join(", "), email_sent: emailSent },
   })
 
   await recordEvent({
@@ -335,7 +422,7 @@ export async function sendEstimate({
     eventType: "estimate_sent",
     entityType: "estimate",
     entityId: estimateId,
-    payload: { title: estimate.title, recipient_email: recipientEmail, email_sent: emailSent },
+    payload: { title: estimate.title, recipient_email: links.map(({ person }) => person.email).join(", "), email_sent: emailSent },
   })
 
   // A budget out for review puts the deal with the client just as an agreement does.
@@ -405,13 +492,33 @@ export type EstimateCommentDto = {
   kind: string
   body: string | null
   created_at: string
+  /** The document section a client asked about; null for a general comment. */
+  section: string | null
+  /** The comment a builder's answer replies to. */
+  reply_to: string | null
+}
+
+const COMMENT_COLUMNS = "id, author_type, author_name, author_email, kind, body, created_at, metadata"
+
+function mapComments(rows: any[] | null): EstimateCommentDto[] {
+  return (rows ?? []).map((row) => ({
+    id: row.id,
+    author_type: row.author_type,
+    author_name: row.author_name ?? null,
+    author_email: row.author_email ?? null,
+    kind: row.kind,
+    body: row.body ?? null,
+    created_at: row.created_at,
+    section: typeof row.metadata?.section === "string" ? row.metadata.section : null,
+    reply_to: typeof row.metadata?.reply_to === "string" ? row.metadata.reply_to : null,
+  }))
 }
 
 export async function listEstimateComments(estimateId: string, orgId?: string): Promise<EstimateCommentDto[]> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   const { data, error } = await supabase
     .from("estimate_comments")
-    .select("id, author_type, author_name, author_email, kind, body, created_at")
+    .select(COMMENT_COLUMNS)
     .eq("org_id", resolvedOrgId)
     .eq("estimate_id", estimateId)
     .order("created_at", { ascending: true })
@@ -420,7 +527,7 @@ export async function listEstimateComments(estimateId: string, orgId?: string): 
     console.error("Failed to list estimate comments", error.message)
     return []
   }
-  return (data ?? []) as EstimateCommentDto[]
+  return mapComments(data)
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +588,14 @@ export type EstimatePortalData = {
   questions: EstimateQuestion[]
   items: EstimatePortalLine[]
   comments: EstimateCommentDto[]
+  /** A deal proposal's sections; null for documents that predate proposals. */
+  proposal: ProposalDocument | null
+  /** Agreement signatures so far, by lowercased signer email, and the builder's countersignature. */
+  signatures: { signed: Record<string, string>; builder: { name: string; signedAt: string | null } }
+  /** Whose link this is; null is the primary client's. */
+  viewer: { name: string; email: string } | null
+  /** Every version the client was sent, newest first, for reading earlier ones. */
+  versions: Array<{ id: string; label: string; version: number; sent_at: string }>
 }
 
 export type EstimateQuestion = { id: string; question: string; answer: string | null }
@@ -555,6 +670,38 @@ type PortalExtras = {
   accentColor?: string | null
   fontFamily?: string | null
   orgAddress?: string | null
+  viewer?: { name: string; email: string } | null
+  versions?: EstimatePortalData["versions"]
+}
+
+/** The versions a deal's client was sent; beyond this they are reading history, not deciding. */
+const PORTAL_VERSIONS_SHOWN = 20
+
+/** A deal's comments follow the client across versions; other estimates keep their own thread. */
+async function loadPortalComments(supabase: ServiceClient, estimate: { id: string; org_id: string; prospect_id: string | null }) {
+  const query = estimate.prospect_id
+    ? supabase.from("estimate_comments").select(`${COMMENT_COLUMNS}, estimate:estimates!inner(prospect_id)`)
+        .eq("org_id", estimate.org_id).eq("estimate.prospect_id", estimate.prospect_id).eq("kind", "comment")
+    : supabase.from("estimate_comments").select(COMMENT_COLUMNS).eq("org_id", estimate.org_id).eq("estimate_id", estimate.id)
+  const { data, error } = await query.order("created_at", { ascending: true }).limit(500)
+  if (error) throw new Error(`Unable to load comments: ${error.message}`)
+  return mapComments(data)
+}
+
+async function loadPortalVersions(supabase: ServiceClient, estimate: { org_id: string; prospect_id: string | null }) {
+  if (!estimate.prospect_id) return []
+  const { data, error } = await supabase.from("estimates").select("id, version, sent_at, metadata")
+    .eq("org_id", estimate.org_id).eq("prospect_id", estimate.prospect_id)
+    .not("sent_at", "is", null)
+    .in("metadata->precon->>purpose", ["budget", "construction_agreement"])
+    .order("sent_at", { ascending: false }).limit(PORTAL_VERSIONS_SHOWN)
+  if (error) throw new Error(`Unable to load earlier versions: ${error.message}`)
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    label: proposalDocumentLabel(normalizeEstimateCommercial(row.metadata)),
+    version: row.version as number,
+    sent_at: row.sent_at as string,
+  }))
 }
 
 function mapEstimatePortalData(
@@ -590,8 +737,22 @@ function mapEstimatePortalData(
   if (builderFee) items.push({ id: `${estimate.id}-builder-fee`, item_type: "line", description: "Fixed builder fee", quantity: 1, unit: null, unit_cost_cents: builderFee, markup_pct: 0, amount_cents: builderFee, notes: null, is_optional: false, is_allowance: false, option_group: null, takeoff_condition_id: null })
 
   const acceptedOptions = (metadata.accepted_options as AcceptedOptions | null) ?? null
+  const signatureData = (estimate.signature_data as Record<string, any> | null) ?? {}
+  const signed: Record<string, string> = {}
+  for (const [email, signature] of Object.entries((signatureData.signers ?? {}) as Record<string, { signed_at?: unknown }>))
+    if (typeof signature?.signed_at === "string") signed[email] = signature.signed_at
 
   return {
+    proposal: estimateProposal(metadata),
+    signatures: {
+      signed,
+      builder: {
+        name: typeof signatureData.builder?.signer_name === "string" ? signatureData.builder.signer_name : "",
+        signedAt: (estimate as any).builder_signed_at ?? null,
+      },
+    },
+    viewer: extras.viewer ?? null,
+    versions: extras.versions ?? [],
     precon: normalizeEstimateCommercial(metadata),
     intro: typeof metadata.intro === "string" ? metadata.intro : null,
     tax_rate: Number(metadata.tax_rate ?? 0) || 0,
@@ -720,10 +881,26 @@ export async function answerEstimateQuestion(input: { token: string; questionId:
   return { id: question.id }
 }
 
-/** Loads an estimate for the public portal by raw token, stamping first-view time. */
-export async function loadEstimateByToken(token: string): Promise<EstimatePortalData | null> {
+/**
+ * Loads an estimate for the public portal by raw token, stamping first-view time.
+ * A deal's link opens its newest version; `versionId` reads an earlier one the
+ * same client was sent.
+ */
+export async function loadEstimateByToken(token: string, versionId?: string | null): Promise<EstimatePortalData | null> {
   const supabase = createServiceSupabaseClient()
   const tokenHash = hashToken(token)
+  const link = await reviewLinkForToken(supabase, tokenHash)
+  let estimateId = link.estimateId
+  if (versionId && versionId !== estimateId && z.string().uuid().safeParse(versionId).success) {
+    const [latest, earlier] = await Promise.all([
+      supabase.from("estimates").select("org_id, prospect_id").eq("id", estimateId).maybeSingle(),
+      supabase.from("estimates").select("id, org_id, prospect_id, sent_at").eq("id", versionId).maybeSingle(),
+    ])
+    if (latest.error || earlier.error) throw new Error("Unable to load this version.")
+    const sameDeal = latest.data?.prospect_id && earlier.data?.sent_at &&
+      earlier.data.org_id === latest.data.org_id && earlier.data.prospect_id === latest.data.prospect_id
+    if (sameDeal) estimateId = versionId
+  }
 
   const { data: estimate, error } = await supabase
     .from("estimates")
@@ -737,7 +914,7 @@ export async function loadEstimateByToken(token: string): Promise<EstimatePortal
        org:orgs(name, logo_url),
        recipient:contacts(full_name, email)`,
     )
-    .eq("id", await estimateIdForReviewToken(supabase, tokenHash))
+    .eq("id", estimateId)
     .maybeSingle()
 
   if (error) {
@@ -745,7 +922,7 @@ export async function loadEstimateByToken(token: string): Promise<EstimatePortal
   }
   if (!estimate) return null
 
-  if (estimate.status === "sent") {
+  if (estimate.status === "sent" && estimateId === link.estimateId) {
     const { data: updated } = await supabase
       .from("estimates")
       .update({ viewed_at: new Date().toISOString() })
@@ -765,19 +942,17 @@ export async function loadEstimateByToken(token: string): Promise<EstimatePortal
     }
   }
 
-  const [{ data: comments }, branding, photos, questions] = await Promise.all([
-    supabase
-      .from("estimate_comments")
-      .select("id, author_type, author_name, author_email, kind, body, created_at")
-      .eq("org_id", estimate.org_id)
-      .eq("estimate_id", estimate.id)
-      .order("created_at", { ascending: true }),
+  const [comments, branding, photos, questions, versions] = await Promise.all([
+    loadPortalComments(supabase, estimate),
     getOrgBranding(estimate.org_id, supabase),
     resolveEstimatePhotos(supabase, estimate.org_id, estimate.metadata as Record<string, any> | null),
     loadEstimateQuestions(supabase, estimate.org_id, estimate.prospect_id ?? null),
+    loadPortalVersions(supabase, estimate),
   ])
 
-  return mapEstimatePortalData(estimate, (comments ?? []) as EstimateCommentDto[], {
+  return mapEstimatePortalData(estimate, comments, {
+    viewer: link.signer,
+    versions,
     questions,
     photos,
     accentColor: branding.estimateAccentColor,
@@ -816,7 +991,7 @@ export async function loadEstimateByIdForPortal(input: {
   const [{ data: comments }, branding, photos, questions] = await Promise.all([
     supabase
       .from("estimate_comments")
-      .select("id, author_type, author_name, author_email, kind, body, created_at")
+      .select(COMMENT_COLUMNS)
       .eq("org_id", estimate.org_id)
       .eq("estimate_id", estimate.id)
       .order("created_at", { ascending: true }),
@@ -825,7 +1000,7 @@ export async function loadEstimateByIdForPortal(input: {
     loadEstimateQuestions(supabase, estimate.org_id, estimate.prospect_id ?? null),
   ])
 
-  return mapEstimatePortalData(estimate, (comments ?? []) as EstimateCommentDto[], {
+  return mapEstimatePortalData(estimate, mapComments(comments), {
     questions,
     photos,
     accentColor: branding.estimateAccentColor,
@@ -844,7 +1019,7 @@ export async function renderEstimatePdfByToken(
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      `id, org_id, title, status, metadata, subtotal_cents, tax_cents, total_cents, valid_until, created_at,
+      `id, org_id, prospect_id, title, status, metadata, subtotal_cents, tax_cents, total_cents, valid_until, created_at,
        executed_file_id,
        client_signed_at, builder_signed_at, executed_at, signature_data,
        items:estimate_items(*),
@@ -857,7 +1032,18 @@ export async function renderEstimatePdfByToken(
 
   if (error) throw new Error(`Database error: ${error.message}`)
   if (!estimate) return null
+  return renderEstimateDocumentPdf(supabase, estimate)
+}
 
+/**
+ * The client's document as a PDF: the executed file once there is one, else
+ * rendered from the record. The builder's export and the client's download are
+ * this one function, so they can never disagree.
+ */
+export async function renderEstimateDocumentPdf(
+  supabase: ServiceClient,
+  estimate: any,
+): Promise<{ pdf: Buffer; fileName: string }> {
   if ((estimate as any).executed_file_id) {
     try {
       const { data: file, error: fileError } = await supabase
@@ -883,7 +1069,10 @@ export async function renderEstimatePdfByToken(
     }
   }
 
-  const branding = await getOrgBranding(estimate.org_id, supabase)
+  const [branding, questions] = await Promise.all([
+    getOrgBranding(estimate.org_id, supabase),
+    loadEstimateQuestions(supabase, estimate.org_id, (estimate as any).prospect_id ?? null),
+  ])
   const metadata = (estimate.metadata as Record<string, any> | null) ?? {}
   const items = [...((estimate as any).items ?? [])].sort(
     (a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0),
@@ -896,12 +1085,10 @@ export async function renderEstimatePdfByToken(
   const signers =
     (estimate as any).client_signed_at || (estimate as any).builder_signed_at
       ? [
-          {
-            role: "Client",
+          ...clientSignerBlocks(metadata, signatureData, {
             name: clientSigner.signer_name ?? pdfRecipient.name ?? null,
-            signedAt: clientSigner.signed_at ?? (estimate as any).client_signed_at ?? null,
-            signatureImage: clientSigner.signature_image ?? null,
-          },
+            signedAt: (estimate as any).client_signed_at ?? null,
+          }),
           {
             role: branding.name ?? "Builder",
             name: builderSigner.signer_name ?? null,
@@ -934,7 +1121,7 @@ export async function renderEstimatePdfByToken(
     issuedAt: (estimate as any).created_at ?? null,
     intro: typeof metadata.intro === "string" ? metadata.intro : null,
     summary: typeof metadata.summary === "string" ? metadata.summary : null,
-    terms: estimateDocumentTerms(metadata),
+    terms: estimateDocumentTerms(metadata, branding.estimateTermsTemplate),
     pricingDisplay: normalizePricingDisplay(metadata.display?.pricing),
     acceptedOptionalIds: acceptedOptions?.ids ?? null,
     hideUnacceptedOptionals: hasAcceptedScope,
@@ -949,10 +1136,42 @@ export async function renderEstimatePdfByToken(
     validUntil: estimate.valid_until,
     documentLabel: signers ? ((estimate as any).executed_at ? "Executed agreement" : "Client-signed agreement") : proposalDocumentLabel(normalizeEstimateCommercial(estimate.metadata)),
     signers,
+    proposal: estimateProposal(metadata),
+    questions,
     lines: items,
   })
 
   return { pdf, fileName: `estimate-${estimate.id}.pdf` }
+}
+
+/**
+ * The client's signature lines: one per signer when the agreement has several
+ * (in the order they were asked to sign), otherwise the one client.
+ */
+function clientSignerBlocks(
+  metadata: Record<string, any>,
+  signatureData: Record<string, any>,
+  fallback: { name: string | null; signedAt: string | null },
+): QuoteSigner[] {
+  const signed = (signatureData.signers ?? {}) as Record<string, Record<string, any>>
+  const signers = estimateProposal(metadata)?.signers ?? []
+  if (signers.length)
+    return signers.map((person) => {
+      const signature = signed[person.email.toLowerCase()] ?? {}
+      return {
+        role: "Client",
+        name: signature.signer_name ?? person.name,
+        signedAt: signature.signed_at ?? null,
+        signatureImage: signature.signature_image ?? null,
+      }
+    })
+  const client = signatureData.client ?? {}
+  return [{
+    role: "Client",
+    name: client.signer_name ?? fallback.name,
+    signedAt: client.signed_at ?? fallback.signedAt,
+    signatureImage: client.signature_image ?? null,
+  }]
 }
 
 function estimateLinesToQuoteLines(lines: any[]) {
@@ -994,6 +1213,16 @@ function buildEstimateAuditTrail(estimate: any, signatureData: Record<string, an
     { label: "Client signed at", value: fmt(client.signed_at ?? estimate.client_signed_at) },
     { label: "Client IP address", value: client.signer_ip ?? null },
     { label: "Client consent", value: client.consent_accepted ? "Accepted" : null },
+    // Every other signer of a multi-signer agreement carries the same evidence.
+    ...Object.values((signatureData.signers ?? {}) as Record<string, Record<string, any>>)
+      .filter((signer) => signer.signer_email !== client.signer_email)
+      .flatMap((signer) => [
+        { label: "Signer", value: signer.signer_name ?? null },
+        { label: "Signer email", value: signer.signer_email ?? null },
+        { label: "Signer signed at", value: fmt(signer.signed_at) },
+        { label: "Signer IP address", value: signer.signer_ip ?? null },
+        { label: "Signer consent", value: signer.consent_accepted ? "Accepted" : null },
+      ]),
     { label: "Builder signer", value: builder.signer_name ?? null },
     { label: "Builder email", value: builder.signer_email ?? null },
     { label: "Builder signed at", value: fmt(builder.signed_at ?? estimate.builder_signed_at) },
@@ -1076,12 +1305,10 @@ async function generateExecutedEstimateArtifact({
       exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : null,
       validUntil: estimate.valid_until,
       signers: [
-        {
-          role: "Client",
+        ...clientSignerBlocks(metadata, signatureData, {
           name: clientSigner.signer_name ?? estimate.recipient?.full_name ?? null,
-          signedAt: clientSigner.signed_at ?? estimate.client_signed_at ?? null,
-          signatureImage: clientSigner.signature_image ?? null,
-        },
+          signedAt: estimate.client_signed_at ?? null,
+        }),
         {
           role: branding.name ?? "Builder",
           name: builderSigner.signer_name ?? null,
@@ -1089,6 +1316,7 @@ async function generateExecutedEstimateArtifact({
           signatureImage: builderSigner.signature_image ?? null,
         },
       ],
+      proposal: estimateProposal(metadata),
       lines: estimateLinesToQuoteLines(estimate.items ?? []),
     })
 
@@ -1430,14 +1658,13 @@ async function issueBuilderEstimateSigningEnvelope(input: {
     exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : null,
     validUntil: estimate.valid_until,
     signers: [
-      {
-        role: "Client",
+      ...clientSignerBlocks(metadata, signatureData, {
         name: clientSigner.signer_name ?? estimate.recipient?.full_name ?? null,
-        signedAt: clientSigner.signed_at ?? estimate.client_signed_at ?? null,
-        signatureImage: clientSigner.signature_image ?? null,
-      },
+        signedAt: estimate.client_signed_at ?? null,
+      }),
       { role: branding.name ?? "Builder", name: signer.name },
     ],
+    proposal: estimateProposal(metadata),
     lines: estimateLinesToQuoteLines(estimate.items ?? []),
   })
 
@@ -1954,25 +2181,28 @@ export async function submitEstimateDecision(input: {
   /** Ids of optional add-on line items the client chose to accept. */
   selected_optional_ids?: string[] | null
   ip?: string | null
-}): Promise<{ status: string }> {
+}): Promise<{ status: string; waitingOn: string[] }> {
   const supabase = createServiceSupabaseClient()
   const tokenHash = hashToken(input.token)
+  const link = await reviewLinkForToken(supabase, tokenHash)
 
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      "id, org_id, prospect_id, title, status, valid_until, version_group_id, is_current_version, signature_data, metadata, total_cents, created_by, items:estimate_items(id, item_type, quantity, unit_cost_cents, markup_pct, metadata), recipient:contacts(full_name, email), prospect:prospects(name, owner_user_id)",
+      "id, org_id, prospect_id, title, status, valid_until, version_group_id, is_current_version, signature_data, metadata, total_cents, created_by, updated_at, items:estimate_items(id, item_type, quantity, unit_cost_cents, markup_pct, metadata), recipient:contacts(full_name, email), prospect:prospects(name, owner_user_id)",
     )
-    .eq("id", await estimateIdForReviewToken(supabase, tokenHash))
+    .eq("id", link.estimateId)
     .maybeSingle()
 
   if (error) throw new Error(`Database error: ${error.message}`)
   if (!estimate) throw new Error("This estimate link is no longer valid.")
 
-  // The link is sent to a known contact, so attribute the decision to them.
+  // The link is sent to a known person, so attribute the decision to them.
   const recipient = resolveEstimateRecipient(estimate)
-  const name = recipient.name?.trim() || "Client"
-  const email = recipient.email?.trim() || null
+  const proposal = estimateProposal(estimate.metadata)
+  const signer = link.signer ?? proposal?.signers[0] ?? null
+  const name = signer?.name.trim() || recipient.name?.trim() || "Client"
+  const email = signer?.email.trim() || recipient.email?.trim() || null
 
   if (!estimate.is_current_version) {
     throw new Error("A newer version of this estimate is available. Please use the latest link.")
@@ -1987,6 +2217,15 @@ export async function submitEstimateDecision(input: {
   const isBudget = normalizeEstimateCommercial(estimate.metadata).purpose === "budget"
   const nowIso = new Date().toISOString()
   const existingSignatureData = ((estimate as any).signature_data as Record<string, any> | null) ?? {}
+  // An agreement with several signers is client-signed only once the last of them signs.
+  const signers = !isBudget ? proposal?.signers ?? [] : []
+  const alreadySigned = signedEmails(existingSignatureData)
+  if (input.decision === "approved" && email && alreadySigned.has(email.toLowerCase()))
+    throw new Error("You already signed this agreement.")
+  const waitingOn =
+    input.decision === "approved"
+      ? signers.filter((person) => person.email.toLowerCase() !== email?.toLowerCase() && !alreadySigned.has(person.email.toLowerCase()))
+      : []
   const update: Record<string, any> = {
     status: input.decision === "approved" ? (isBudget ? "approved" : "client_signed") : input.decision,
     responded_at: nowIso,
@@ -1999,6 +2238,12 @@ export async function submitEstimateDecision(input: {
     const signerName = signature?.signer_name?.trim()
     if (!isBudget && (!signature?.consent_accepted || !signerName)) {
       throw new Error("Please sign and accept the estimate before approving.")
+    }
+    // The builder's questions are answered on this page, and a signature settles them.
+    if (!isBudget) {
+      const questions = await loadEstimateQuestions(supabase, estimate.org_id, (estimate as any).prospect_id ?? null)
+      if (questions.some((question) => !question.answer))
+        throw new Error("Answer the questions in the document before signing.")
     }
 
     // Alternates in the same option group are mutually exclusive; reject the
@@ -2022,15 +2267,47 @@ export async function submitEstimateDecision(input: {
       if (issues.length) throw new Error(issues.join(" "))
     }
     const existingMetadata = ((estimate as any).metadata as Record<string, any> | null) ?? {}
+    // Every signer signs the same choices: once one has signed, the options are settled.
+    const settled = existingMetadata.accepted_options as AcceptedOptions | undefined
+    if (alreadySigned.size && settled && [...settled.ids].sort().join() !== [...accepted.ids].sort().join())
+      throw new Error("Another signer already signed with these options. Ask for changes to change them.")
     update.metadata = { ...existingMetadata, accepted_options: accepted }
 
-    update.approved_at = nowIso
-    if (!isBudget && signature) {
+    if (!isBudget && signature && signers.length) {
+      update.signature_data = {
+        ...existingSignatureData,
+        signers: {
+          ...(existingSignatureData.signers ?? {}),
+          [(email ?? signerName ?? "").toLowerCase()]: {
+            signer_name: signerName,
+            signer_email: email,
+            signature_text: signature.signature_text?.trim() || signerName,
+            signature_image: signature.signature_image || null,
+            consent_accepted: true,
+            signed_at: nowIso,
+            signer_ip: input.ip ?? null,
+            accepted_total_cents: accepted.accepted_total_cents,
+            source: "estimate_portal",
+          },
+        },
+      }
+    }
+    if (waitingOn.length) {
+      // Recorded, but not yet the client's signature: the others still sign on their own links.
+      delete update.status
+      delete update.responded_at
+      delete update.client_decision_name
+      delete update.client_decision_email
+    } else update.approved_at = nowIso
+
+    if (!isBudget && signature && !waitingOn.length) {
+    const primary = signers[0] ? (update.signature_data ?? existingSignatureData).signers?.[signers[0].email.toLowerCase()] : null
     await resolveEstimateBuilderSigner({ supabase, orgId: estimate.org_id, estimate })
     update.client_signed_at = nowIso
     update.signature_data = {
       ...existingSignatureData,
-      client: {
+      ...(update.signature_data ?? {}),
+      client: primary ?? {
         signer_name: signerName,
         signer_email: signature.signer_email?.trim() || email,
         signature_text: signature.signature_text?.trim() || signerName,
@@ -2047,20 +2324,22 @@ export async function submitEstimateDecision(input: {
 
   // Precondition on status so a concurrent decision (double-click, two tabs)
   // can't re-sign or overwrite an already-recorded outcome.
-  const { data: updatedRows, error: updateError } = await supabase
+  let guarded = supabase
     .from("estimates")
-    .update(update)
+    .update(signers.length ? { ...update, updated_at: nowIso } : update)
     .eq("id", estimate.id)
     .eq("org_id", estimate.org_id)
     .not("status", "in", '("approved","client_signed","executed","converted_to_project")')
     .eq("is_current_version", true)
-    .select("id")
+  // Two signers signing at once must not overwrite each other's signature.
+  if (signers.length) guarded = guarded.eq("updated_at", estimate.updated_at)
+  const { data: updatedRows, error: updateError } = await guarded.select("id")
 
   if (updateError) {
     throw new Error(`Failed to record decision: ${updateError.message}`)
   }
   if (!updatedRows || updatedRows.length === 0) {
-    throw new Error("This estimate has already been signed.")
+    throw new Error(signers.length ? "This agreement just changed. Reload the page and try again." : "This estimate has already been signed.")
   }
 
   let builderSigningResult:
@@ -2069,7 +2348,7 @@ export async function submitEstimateDecision(input: {
 
   // Route the builder countersignature through the same unified e-sign backend
   // used by the Signatures workspace.
-  if (input.decision === "approved" && !isBudget) {
+  if (input.decision === "approved" && !isBudget && !waitingOn.length) {
     try {
     builderSigningResult = await issueBuilderEstimateSigningEnvelope({
       supabase,
@@ -2105,13 +2384,13 @@ export async function submitEstimateDecision(input: {
 
   await recordEvent({
     orgId: estimate.org_id,
-    eventType: input.decision === "approved" ? (isBudget ? "estimate_budget_approved" : "estimate_client_signed") : `estimate_${input.decision}`,
+    eventType: input.decision === "approved" ? (isBudget ? "estimate_budget_approved" : waitingOn.length ? "estimate_signer_signed" : "estimate_client_signed") : `estimate_${input.decision}`,
     entityType: "estimate",
     entityId: estimate.id,
     payload: { title: estimate.title, decision: input.decision, by: name },
   })
 
-  if (input.decision === "approved" && normalizeEstimateCommercial(estimate.metadata).purpose === "construction_agreement" && (estimate as any).prospect_id) {
+  if (input.decision === "approved" && !waitingOn.length && normalizeEstimateCommercial(estimate.metadata).purpose === "construction_agreement" && (estimate as any).prospect_id) {
     await supabase
       .from("prospects")
       .update({ status: "client_approved", updated_at: nowIso })
@@ -2149,7 +2428,7 @@ export async function submitEstimateDecision(input: {
     action: "update",
     entityType: "estimate",
     entityId: estimate.id,
-    after: { status: update.status, decided_by: name, decided_at: nowIso },
+    after: { status: update.status ?? estimate.status, decided_by: name, decided_at: nowIso },
     source: "client_portal",
   })
 
@@ -2157,7 +2436,7 @@ export async function submitEstimateDecision(input: {
     console.error("Estimate decision saved; activity notification failed", { estimateId: estimate.id, activityError })
   }
 
-  return { status: update.status }
+  return { status: update.status ?? estimate.status, waitingOn: waitingOn.map((person) => person.name) }
 }
 
 export async function executeEstimateFromEnvelopeExecution(input: {
@@ -2486,26 +2765,31 @@ export async function finalizeEstimateBuilderSignature(input: { orgId: string; r
 /** Client posts a comment from the portal (e.g. alongside a "request changes"). */
 export async function addClientEstimateComment(input: {
   token: string
-  name: string
+  name?: string | null
   email?: string | null
   body: string
+  /** The document section the client is asking about. */
+  section?: string | null
 }) {
-  const name = input.name.trim()
-  const body = input.body.trim()
-  if (!name) throw new Error("Please enter your name.")
-  if (!body) throw new Error("Comment cannot be empty.")
+  const body = z.string().trim().min(1, "Comment cannot be empty.").max(4000).parse(input.body)
+  const section = proposalSectionKeySchema.nullable().catch(null).parse(input.section ?? null)
 
   const supabase = createServiceSupabaseClient()
-  const tokenHash = hashToken(input.token)
+  const link = await reviewLinkForToken(supabase, hashToken(input.token))
 
   const { data: estimate, error } = await supabase
     .from("estimates")
-    .select("id, org_id, version_group_id, is_current_version")
-    .eq("id", await estimateIdForReviewToken(supabase, tokenHash))
+    .select("id, org_id, version_group_id, is_current_version, metadata, prospect:prospects(prospect_contacts(full_name, email, is_primary)), recipient:contacts(full_name, email)")
+    .eq("id", link.estimateId)
     .maybeSingle()
 
   if (error) throw new Error(`Database error: ${error.message}`)
   if (!estimate) throw new Error("This estimate link is no longer valid.")
+
+  // The link belongs to a known person; a typed name only stands in when it does not say.
+  const recipient = link.signer ?? estimateProposal(estimate.metadata)?.signers[0] ?? resolveEstimateRecipient(estimate)
+  const name = recipient.name?.trim() || input.name?.trim()
+  if (!name) throw new Error("Please enter your name.")
 
   await addComment(supabase, {
     orgId: estimate.org_id,
@@ -2513,9 +2797,10 @@ export async function addClientEstimateComment(input: {
     versionGroupId: estimate.version_group_id ?? null,
     authorType: "client",
     authorName: name,
-    authorEmail: input.email?.trim() || null,
+    authorEmail: recipient.email?.trim() || input.email?.trim() || null,
     kind: "comment",
     body,
+    metadata: section ? { section } : {},
   })
 
   await recordEvent({

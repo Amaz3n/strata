@@ -1,178 +1,157 @@
-require("../scripts/register-ts-node-test")
-const test = require("node:test")
 const assert = require("node:assert/strict")
-const Module = require("node:module")
-const original = Module._load
-let authorized = false,
-  deny = false,
-  reads = [],
-  rows = {}
-const org = "org",
-  pid = "11111111-1111-4111-8111-111111111111"
-const client = {
-  from(table) {
-    assert.ok(authorized, "authorization precedes register reads")
-    const filters = [],
-      record = { table, filters }
-    reads.push(record)
-    let bounds = null
-    const q = {
-      select() {
-        return q
-      },
-      eq(k, v) {
-        filters.push([k, v])
-        return q
-      },
-      gt() {
-        return q
-      },
-      not() {
-        return q
-      },
-      in(k, v) {
-        filters.push([k, v])
-        return q
-      },
-      order() {
-        return q
-      },
-      range(a, b) {
-        bounds = [a, b]
-        return q
-      },
-      single() {
-        return Promise.resolve({
-          data: { name: "Project", require_subtier_waivers: true },
-          error: null,
-        })
-      },
-      then(resolve, reject) {
-        let data = rows[table] ?? []
-        for (const [k, v] of filters)
-          if (k !== "org_id")
-            data = data.filter((r) =>
-              r[k] === undefined || Array.isArray(v)
-                ? r[k] === undefined || v.includes(r[k])
-                : r[k] === v,
-            )
-        if (bounds) data = data.slice(bounds[0], bounds[1] + 1)
-        return Promise.resolve({ data, error: null }).then(resolve, reject)
-      },
-    }
-    return q
-  },
-}
-Module._load = function (request, parent, isMain) {
-  if (request === "@/lib/services/context")
-    return {
-      requireOrgContext: async () => ({
-        supabase: client,
-        orgId: org,
-        userId: "user",
-      }),
-    }
-  if (request === "@/lib/services/authorization")
-    return {
-      requireAuthorization: async (input) => {
-        assert.equal(input.projectId, pid)
-        if (deny) throw new Error("denied")
-        authorized = true
-      },
-    }
-  if (request === "@/lib/services/compliance")
-    return {
-      getComplianceRulesWithClient: async () => ({ require_lien_waiver: true }),
-    }
-  if (request === "@/lib/services/files")
-    return { buildInternalFileUrl: (id) => `/files/${id}` }
-  return original.call(this, request, parent, isMain)
-}
-const { getProjectWaiverRegister } = require("../lib/services/waiver-register")
-Module._load = original
-function reset(count = 1) {
-  authorized = false
-  deny = false
-  reads = []
-  rows = {
-    vendor_bills: Array.from({ length: count }, (_, i) => ({
-      id: String(i).padStart(4, "0"),
-      project_id: pid,
-      company_id: "vendor",
-      commitment_id: "commit",
-      total_cents: 10000,
-      paid_cents: 0,
-      retainage_cents: 1000,
-      status: "approved",
-      metadata: { billing_period_end: "2026-08-31" },
-    })),
-    companies: [{ id: "vendor", name: "Trade" }],
-    lien_waivers: [],
-    subtier_waiver_requirements: [],
-    commitments: [],
+const test = require("node:test")
+
+const { createServiceHarness, id, ORG } = require("./support/service")
+const { freshRequire } = require("./support/modules")
+
+const { getProjectWaiverRegister, WAIVER_REGISTER_BILL_CAP } = freshRequire("lib/services/waiver-register.ts")
+
+const PROJECT = id(1)
+const VENDOR = id(2)
+const COMMITMENT = id(3)
+const FOREIGN_ORG = id(4)
+const PERIOD = "2026-08-31"
+
+/** An approved $100 bill with $10 retainage, work through `PERIOD`, nothing paid. */
+function bill(n, overrides = {}) {
+  return {
+    id: id(10_000 + n),
+    org_id: ORG,
+    project_id: PROJECT,
+    company_id: VENDOR,
+    commitment_id: COMMITMENT,
+    bill_number: `B-${n}`,
+    total_cents: 10_000,
+    paid_cents: 0,
+    retainage_cents: 1_000,
+    status: "approved",
+    metadata: { billing_period_end: PERIOD },
+    ...overrides,
   }
 }
-test("denied project does not read financial records", async () => {
-  reset()
-  deny = true
-  await assert.rejects(getProjectWaiverRegister(pid), /denied/)
-  assert.equal(reads.length, 0)
-})
-test("every financial read is scoped to the active organization", async () => {
-  reset()
-  await getProjectWaiverRegister(pid)
-  for (const read of reads)
-    assert.ok(
-      read.filters.some(([k, v]) => k === "org_id" && v === org),
-      read.table,
-    )
-})
-test("pagination totals include all database pages, without silently truncating", async () => {
-  reset(601)
-  const result = await getProjectWaiverRegister(pid, "", undefined, {
-    page: 7,
-    status: "outstanding",
-  })
-  assert.equal(result.total, 601)
-  assert.equal(result.entries.length, 1)
-  assert.equal(result.pages, 7)
-  assert.equal(result.totals.heldCents, 601 * 9000)
-})
-test("full export includes every filtered payable", async () => {
-  reset(501)
-  const result = await getProjectWaiverRegister(pid, "", undefined, {
-    exportAll: true,
-  })
-  assert.equal(result.entries.length, 501)
-})
-test("claimants without matching bills remain visible", async () => {
-  reset()
-  rows.subtier_waiver_requirements = [
-    {
-      id: "req",
-      project_id: pid,
-      commitment_id: "future",
-      period_end: "2026-09-30",
-      claimant_company_name: "Supply",
-      waiver_type: "conditional_progress",
-      amount_cents: 5000,
-      is_active: true,
+
+/** A signed, reviewed and accepted conditional progress waiver for `billId`. */
+function acceptedWaiver(billId) {
+  return {
+    id: id(20_000),
+    org_id: ORG,
+    project_id: PROJECT,
+    bill_id: billId,
+    waiver_type: "conditional_progress",
+    status: "signed",
+    amount_cents: 9_000,
+    through_date: PERIOD,
+    signed_file_id: id(30_000),
+    signed_at: "2026-09-02T00:00:00Z",
+    metadata: { review: { status: "accepted" } },
+    created_at: "2026-09-02T00:00:00Z",
+  }
+}
+
+function harness({ bills = [bill(0)], waivers = [], requirements = [], commitments = [], permissions } = {}) {
+  return createServiceHarness({
+    permissions: permissions ?? ["bill.read", "project.read"],
+    tables: {
+      orgs: [{ id: ORG, compliance_rules: { require_lien_waiver: true } }],
+      projects: [{ id: PROJECT, org_id: ORG, name: "Lot 12", require_subtier_waivers: true }],
+      vendor_bills: bills,
+      companies: [{ id: VENDOR, org_id: ORG, name: "Trade" }],
+      commitments,
+      lien_waivers: waivers,
+      subtier_waiver_requirements: requirements,
     },
-  ]
-  const result = await getProjectWaiverRegister(pid)
+  })
+}
+
+const register = (service, ...args) => service.run(() => getProjectWaiverRegister(PROJECT, ...args))
+
+test("a member without bill access reads no financial records", async () => {
+  const service = harness({ permissions: ["project.read"] })
+
+  await assert.rejects(register(service), /Missing permission: bill.read/)
+  for (const table of ["vendor_bills", "lien_waivers", "subtier_waiver_requirements", "companies"]) {
+    assert.deepEqual(service.reads(table), [], table)
+  }
+})
+
+test("another organization's bills on the same project id never appear", async () => {
+  const service = harness({ bills: [bill(0), bill(1, { org_id: FOREIGN_ORG })] })
+
+  const result = await register(service)
+
+  assert.deepEqual(
+    result.entries.map((entry) => entry.bill.id),
+    [bill(0).id],
+  )
+})
+
+test("a bill marked received by hand stays held until accepted signed evidence covers it", async () => {
+  const marked = harness({ bills: [bill(0, { lien_waiver_status: "received" })] })
+  const [held] = (await register(marked)).entries
+  assert.equal(held.coverage.heldCents, 9_000)
+  assert.equal(held.coverage.status, "Missing")
+
+  const covered = harness({ bills: [bill(0)], waivers: [acceptedWaiver(bill(0).id)] })
+  const [released] = (await register(covered)).entries
+  assert.equal(released.coverage.heldCents, 0)
+  assert.equal(released.coverage.status, "Accepted")
+  assert.match(released.waivers[0].documentHref, new RegExp(id(30_000)))
+})
+
+test("totals cover every filtered bill while the page shows only its slice", async () => {
+  const count = 6 * WAIVER_REGISTER_BILL_CAP + 1
+  const service = harness({ bills: Array.from({ length: count }, (_, n) => bill(n)) })
+
+  const page = await register(service, "", undefined, { page: 7, status: "outstanding" })
+  assert.equal(page.total, count)
+  assert.equal(page.pages, 7)
+  assert.equal(page.entries.length, 1)
+  assert.equal(page.totals.heldCents, count * 9_000)
+  assert.equal(page.totals.billsHeld, count)
+
+  const exported = await register(service, "", undefined, { exportAll: true })
+  assert.equal(exported.entries.length, count)
+})
+
+test("lower-tier claimants without a matching bill stay visible", async () => {
+  const service = harness({
+    requirements: [
+      {
+        id: id(40_000),
+        org_id: ORG,
+        project_id: PROJECT,
+        commitment_id: id(41_000),
+        period_end: "2026-09-30",
+        claimant_company_name: "Supply",
+        waiver_type: "conditional_progress",
+        amount_cents: 5_000,
+        is_active: true,
+      },
+    ],
+  })
+
+  const result = await register(service)
+
   assert.equal(result.unbilledTotal, 1)
+  assert.equal(result.unbilledClaimants[0].claimant_company_name, "Supply")
   assert.equal(result.unbilledClaimants[0].received, false)
 })
-test("vendor identity falls back to the linked commitment", async () => {
-  reset()
-  rows.vendor_bills[0].company_id = null
-  rows.commitments = [{ id: "commit", company_id: "vendor", project_id: pid }]
-  const result = await getProjectWaiverRegister(pid)
-  assert.equal(result.entries[0].companyName, "Trade")
+
+test("a bill without a vendor is named from its commitment", async () => {
+  const service = harness({
+    bills: [bill(0, { company_id: null })],
+    commitments: [{ id: COMMITMENT, org_id: ORG, project_id: PROJECT, company_id: VENDOR }],
+  })
+
+  const [entry] = (await register(service)).entries
+
+  assert.equal(entry.companyName, "Trade")
 })
-test("default has no date restriction and explicit period uses work coverage", async () => {
-  reset()
-  rows.vendor_bills[0].due_date = "2026-09-30"
-  assert.equal((await getProjectWaiverRegister(pid, "2026-09-30")).total, 0)
-  assert.equal((await getProjectWaiverRegister(pid, "2026-08-31")).total, 1)
+
+test("the period filter reads the work-through date, never the due date", async () => {
+  const service = harness({ bills: [bill(0, { due_date: "2026-09-30" })] })
+
+  assert.equal((await register(service)).total, 1)
+  assert.equal((await register(service, "2026-09-30")).total, 0)
+  assert.equal((await register(service, PERIOD)).total, 1)
 })

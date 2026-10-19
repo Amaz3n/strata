@@ -10,7 +10,8 @@ tools at the bottom, one task bar at the top of the sheet.
 
 **Looking comes first.** Most opens are to read a drawing, so the right panel
 starts closed and the sheet takes the width. It opens on Takeoff the moment an
-item is armed (any measuring tool, a `?condition=` or estimate deep link), and
+item is armed (any measuring tool, a `?condition=` deep link, or a deal line
+being measured), and
 otherwise remembers whether this person left it open (`arc:drawings:panel`).
 There is no instruction row: zoom is a small cluster at the sheet's bottom
 right, and a one-line hint shows over the dock only while a tool has something
@@ -193,8 +194,18 @@ make: it previews every measured item against its line and opens with the lines
 that would change already chosen. Hand-edited lines (`drift`) stay out unless
 overwritten one by one; items that can't be priced yet (revision review,
 unscaled) are held back with the reason instead of blocking the whole send. The
-destination is resolved as before (measuring context → deal worksheet →
-`?estimate=` → the only writable target).
+destination is resolved as before (measuring context → `?estimate=` → the
+only writable target).
+
+**A deal's pricing line is not a handoff.** The deal room hosts the viewer with
+`line` set (`LineMeasuring`): the item is armed and stays armed, the header
+carries "Measuring for {section}" and **Done**, and the panel is `LineLedger`
+instead of the ledger and its send. Done writes the quantity onto the line
+directly. A sheet the deal opens to read is `viewOnly`: the dock offers no
+measuring tools and the ledger arms nothing, so nothing is measured into an
+item no line owns — takeoff starts from a line on Pricing. Measurements a
+revision carried over can still be confirmed there. `EstimateHandoff` never
+renders on a deal.
 
 ## The 3D model
 

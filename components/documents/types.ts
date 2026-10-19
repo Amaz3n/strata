@@ -31,6 +31,8 @@ export interface DocumentsContextValue {
   // Project
   projectId: string | undefined
   projectName: string
+  /** Set when these are a deal's files: links stay on the deal, never its pricing project. */
+  dealId: string | null
 
   // Data
   files: FileWithUrls[]
@@ -81,6 +83,8 @@ export interface DocumentsContextValue {
 export interface UnifiedDocumentsLayoutProps {
   preconstruction?: boolean
   project: { id?: string; name: string }
+  /** A deal's files: the header reads Pipeline › deal › Files › folders, and nothing links to its pricing project. */
+  deal?: { id: string; name: string }
   initialFiles: FileWithUrls[]
   initialCounts: Record<string, number>
   initialFolders: string[]

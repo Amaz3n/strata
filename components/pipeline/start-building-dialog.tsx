@@ -44,7 +44,9 @@ export function StartBuildingDialog({
     ? [
         ["Contract", `${money(review.totalCents)} · ${review.billingModel === "fixed_price" ? "fixed price" : review.billingModel.replaceAll("_", " ")}`],
         ["Job budget", "Drafted at cost from the signed lines"],
-        ["Billing", review.paymentTerms || "From the signed terms"],
+        review.draws.length
+          ? ["Draws", review.draws.map((draw) => `${draw.name} ${draw.percent}%`).join("\n")]
+          : ["Billing", review.paymentTerms || "From the signed terms"],
         ["Allowances to track", review.allowances.length ? review.allowances.join(", ") : "None"],
         ...(review.conditions.length
           ? ([["Still open", review.conditions.map((condition) => condition.title).join(", ")]] as Array<[string, string]>)
@@ -89,7 +91,13 @@ export function StartBuildingDialog({
                 try {
                   const result = unwrapAction(await startBuildingAction(dealId, review?.agreementId ?? agreementId));
                   toast.success(`${dealName} is now a job`, {
-                    description: result.budgetCreated ? "Its draft budget is ready to review." : undefined,
+                    description:
+                      [
+                        result.budgetCreated && "Its draft budget is ready to review.",
+                        result.drawsCreated > 0 && `${result.drawsCreated} draws are set from the payment schedule.`,
+                      ]
+                        .filter(Boolean)
+                        .join(" ") || undefined,
                   });
                   router.push(`/projects/${result.projectId}`);
                 } catch (cause) {

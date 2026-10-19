@@ -211,3 +211,8 @@ export const selectBidForPricingInputSchema = z.object({
     owner: z.string().trim().min(1), note: z.string().default(""),
   })).default([]),
 })
+
+export const bidPackageTermsInputSchema = z.object({
+  site_walk_at: z.string().datetime().nullable(),
+  sheet_ids: z.array(z.string().uuid()).max(1000),
+})

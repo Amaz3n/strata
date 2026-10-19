@@ -1,5 +1,5 @@
-import { DealSkeleton } from "@/components/pipeline/pipeline-skeletons";
+import { DealTabSkeleton } from "@/components/pipeline/pipeline-skeletons";
 
 export default function Loading() {
-  return <DealSkeleton />;
+  return <DealTabSkeleton />;
 }

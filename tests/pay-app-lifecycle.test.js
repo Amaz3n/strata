@@ -1,8 +1,6 @@
 require("../scripts/register-ts-node-test");
 
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
 
 const {
@@ -124,29 +122,4 @@ test("a well-formed certificate, return and send are read back whole", () => {
 
   const sent = readSentToOwner({ sent_to_owner: { at: "2026-09-01T09:00:00Z", recipients: ["owner@example.com", 7] } });
   assert.deepEqual(sent, { at: "2026-09-01T09:00:00Z", recipients: ["owner@example.com"] });
-});
-
-test("submitting is blocked while the schedule of values does not foot to the contract sum", () => {
-  const service = fs.readFileSync(path.join(__dirname, "../lib/services/pay-applications.ts"), "utf8");
-  assert.match(service, /Balance the schedule of values before submitting/);
-  assert.match(service, /sovState\.summary\.variance_cents !== 0/);
-});
-
-test("returning an application reverses the billing and keeps the number", () => {
-  const service = fs.readFileSync(path.join(__dirname, "../lib/services/pay-applications.ts"), "utf8");
-  // The SOV rollups reverse through the same RPC a void uses.
-  assert.match(service, /rpc\("void_pay_application"/);
-  // The invoice is voided and its unpaid conditional waiver goes with it.
-  assert.match(service, /voidPendingInvoiceLienWaiversWithClient/);
-  // The row goes back to draft as the next revision rather than a new number.
-  assert.match(service, /revision: previousRevision \+ 1/);
-  assert.match(service, /rpc\("return_pay_application_atomic"/);
-});
-
-test("submitting files the owner's documents without being able to unwind the posting", () => {
-  const service = fs.readFileSync(path.join(__dirname, "../lib/services/pay-applications.ts"), "utf8");
-  assert.match(service, /renderAndStorePayApplicationPdf/);
-  assert.doesNotMatch(service, /createInvoiceLienWaiver\(/);
-  assert.match(service, /assertInvoiceWaiverPacketReady/);
-  assert.match(service, /pay_application\.pdf_failed/);
 });

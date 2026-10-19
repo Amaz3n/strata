@@ -1,5 +1,6 @@
 import { estimateLineNotes } from "@/lib/financials/estimate-commercial"
 import { renderQuotePdf, type QuoteLine, type QuotePricingDisplay, type QuoteSigner } from "@/lib/pdfs/quote-document"
+import type { ProposalDocument } from "@/lib/precon/proposal-documents"
 
 type EstimateLine = QuoteLine
 
@@ -36,6 +37,8 @@ type EstimatePdfData = {
   validUntil?: string | null
   documentLabel?: string | null
   signers?: QuoteSigner[]
+  proposal?: ProposalDocument | null
+  questions?: Array<{ question: string; answer: string | null }>
   lines: EstimateLine[]
 }
 
@@ -74,6 +77,8 @@ export async function renderEstimatePdf(data: EstimatePdfData): Promise<Buffer> 
     exclusions: data.exclusions,
     validUntil: data.validUntil,
     signers: data.signers,
+    proposal: data.proposal,
+    questions: data.questions,
     lines: [...data.lines, ...(data.builderFeeCents ? [{ description: "Fixed builder fee", quantity: 1, unit_cost_cents: data.builderFeeCents, markup_pct: 0, metadata: {} }] : [])].map((line) => ({ ...line, metadata: { ...line.metadata, notes: estimateLineNotes(line.metadata) } })),
   })
 }

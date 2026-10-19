@@ -10,6 +10,10 @@ const path = (id, points, layer = [], kind = 'stroke') => ({ id, kind, commands:
 const evidence = paths => ({version:1, paths, truncated:false})
 const input = paths => ({segments:[], evidence:evidence(paths), textRuns:[{text:'BEDROOM',x:.3,y:.4,w:.2,h:.02}],imageWidth:1000,imageHeight:1000,feetPerImagePx:.02,region:{x0:0,y0:0,x1:1,y1:1}})
 const observation = (elements, openings = []) => ({id:'test',region:{x0:0,y0:0,x1:1,y1:1},suppliedPathIds:[1,2,3,4,5,6],elements,openings})
+// 175 short, stacked strokes: three 64-path recognition batches. Kept short so
+// the fixture exercises batch paging, not the wall-pair search that long
+// 1px-apart parallels would trigger.
+const densePaths = () => input(Array.from({length:175},(_,i)=>path(i,[[.2,.2+i*.001],[.21,.2+i*.001]])))
 const proposal = (points, label='Room') => ({id:'room',label,points,originalPoints:points,holes:[],boundary:[],areaSqft:Math.abs(points.reduce((n,p,i)=>n+p[0]*points[(i+1)%points.length][1]-p[1]*points[(i+1)%points.length][0],0))/2*400,warnings:[],source:'vector',edited:false})
 
 test('visual classifications cannot invent paths, override CAD, or resolve conflicting votes',()=>{
@@ -133,7 +137,7 @@ test('physical space includes fixture footprints while a separate finish zone ca
 })
 
 test('dense crop classification pages every eligible path and marks a bounded run partial',async()=>{
- const source=input(Array.from({length:175},(_,i)=>path(i,[[.2,.2+i*.001],[.4,.2+i*.001]])))
+ const source=densePaths()
  source.textRuns=[]
  const seen=[]
  const recognize=async request=>{seen.push(...request.catalogue.map(p=>p.id));assert.ok(request.catalogue.length<=64);return {elements:[{kind:'annotation',pathIds:request.catalogue.map(p=>p.id)}],openings:[]}}
@@ -150,7 +154,7 @@ test('omitted or unknown path classifications cannot claim completion',async()=>
  assert.equal(run.recognition,'partial')
 })
 test('bounded recognition advances beyond persisted batches and a cached-only replay makes no new requests',async()=>{
- const source=input(Array.from({length:175},(_,i)=>path(i,[[.2,.2+i*.001],[.4,.2+i*.001]])));source.textRuns=[]
+ const source=densePaths();source.textRuns=[]
  const saved=new Map(),calls=[],key=r=>JSON.stringify(r)
  const recognize=async r=>{calls.push(r.catalogue.map(p=>p.id));const answer={elements:[{kind:'annotation',pathIds:r.catalogue.map(p=>p.id)}],openings:[]};saved.set(key(r),answer);return answer}
  recognize.cached=async r=>saved.get(key(r))??null
@@ -166,7 +170,7 @@ test('bounded recognition advances beyond persisted batches and a cached-only re
  assert.equal(replay.recognition,'completed');assert.equal(calls.length,3)
 })
 test('saved classifications after a failed or corrupt batch remain available without exceeding the request allowance',async()=>{
- const source=input(Array.from({length:175},(_,i)=>path(i,[[.2,.2+i*.001],[.4,.2+i*.001]])));source.textRuns=[]
+ const source=densePaths();source.textRuns=[]
  let calls=0
  const recognize=async()=>{calls++;throw Error('unavailable')}
  recognize.cached=async r=>r.catalogue[0].id===0?{elements:'corrupt'}:{elements:[{kind:'annotation',pathIds:r.catalogue.map(p=>p.id)}],openings:[]}

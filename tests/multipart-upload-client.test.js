@@ -34,12 +34,21 @@ function fixture(t, {failPart, loseComplete = false, storageFails = false, legac
   const options={file,contentType:'application/pdf',resumeKey:'key',createBody:{},endpoints:{create:'create',partUrl:'part',complete:'complete',abort:'abort',...(!legacy&&{partUrls:'batch',status:'status'})},retainCompleted:true}
   return {client,options,saved,remote,puts,calls,repair:()=>{fail=null}}
 }
+// Retries back off on real setTimeout (250ms, 500ms + jitter). Mocked timers advance
+// the clock between turns of the event loop so the retry path runs without waiting.
+async function withFastClock(t,promise){
+  let settled=false;promise.then(()=>{settled=true},()=>{settled=true})
+  while(!settled){await new Promise(resolve=>setImmediate(resolve));t.mock.timers.tick(50)}
+  return promise
+}
 test('failed part retains session, reconciles and resends only missing part',async t=>{
-  const f=fixture(t,{failPart:2});await assert.rejects(f.client.runMultipartUpload(f.options));assert.equal(f.calls.filter(c=>c.url==='abort').length,0)
-  const before=f.puts.length;f.repair();await f.client.runMultipartUpload(f.options);assert.deepEqual(f.puts.slice(before),[2]);assert.equal(f.calls.filter(c=>c.url==='create').length,1)
+  t.mock.timers.enable({apis:['setTimeout']})
+  const f=fixture(t,{failPart:2});await assert.rejects(withFastClock(t,f.client.runMultipartUpload(f.options)));assert.equal(f.calls.filter(c=>c.url==='abort').length,0)
+  const before=f.puts.length;f.repair();await withFastClock(t,f.client.runMultipartUpload(f.options));assert.deepEqual(f.puts.slice(before),[2]);assert.equal(f.calls.filter(c=>c.url==='create').length,1)
 })
 test('lost completion response resolves via authoritative identity status without another PUT',async t=>{
-  const f=fixture(t,{loseComplete:true});await f.client.runMultipartUpload(f.options);const before=f.puts.length;await f.client.runMultipartUpload(f.options);assert.equal(f.puts.length,before)
+  t.mock.timers.enable({apis:['setTimeout']})
+  const f=fixture(t,{loseComplete:true});await withFastClock(t,f.client.runMultipartUpload(f.options));const before=f.puts.length;await withFastClock(t,f.client.runMultipartUpload(f.options));assert.equal(f.puts.length,before)
 })
 test('quota failure does not prevent upload and remote session supports resume without saved data',async t=>{
   const f=fixture(t,{storageFails:true});await f.client.runMultipartUpload(f.options);const before=f.puts.length
@@ -69,17 +78,18 @@ test('explicit cancellation while signing aborts the remote session only after w
 })
 
 test('stalled siblings are all aborted and late callbacks cannot mutate retained progress',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']})
  const f=fixture(t);let active=0,late=0;const progress=[]
  global.XMLHttpRequest=class {
   upload={};status=200;open(method,url){this.number=Number(url.split('/')[1])}setRequestHeader(){}getResponseHeader(){return 'etag-'+this.number}
   send(){active++;this.running=true;if(this.number===1)setTimeout(()=>{this.running=false;active--;this.onload?.()},0)}
   abort(){if(this.running){this.running=false;active--}this.onabort?.();setTimeout(()=>{late++;this.onload?.();this.upload.onprogress?.({lengthComputable:true,loaded:2})},2)}
  }
- await assert.rejects(f.client.runMultipartUpload({...f.options,file:new File(['abcdefghijkl'],'plans.pdf'),stallTimeoutMs:5,onProgress:value=>progress.push(value.loaded)}),/stalled/)
+ await assert.rejects(withFastClock(t,f.client.runMultipartUpload({...f.options,file:new File(['abcdefghijkl'],'plans.pdf'),stallTimeoutMs:5,onProgress:value=>progress.push(value.loaded)})),/stalled/)
  assert.equal(active,0,'Every sibling XHR must settle before returning')
  const receipt=f.saved.get('key'),reportCount=progress.length
  assert.deepEqual(JSON.parse(receipt).completedParts.map(part=>part.partNumber),[1])
- await new Promise(resolve=>setTimeout(resolve,20))
+ t.mock.timers.tick(20);await new Promise(resolve=>setImmediate(resolve))
  assert.ok(late>0);assert.equal(f.saved.get('key'),receipt);assert.equal(progress.length,reportCount,'Late callbacks cannot update progress after settlement')
  assert.equal(f.calls.filter(call=>call.url==='abort').length,0,'A stall preserves remote parts')
 })

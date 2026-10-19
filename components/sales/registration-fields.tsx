@@ -88,6 +88,6 @@ export function Picker({
 }
 
 /** Plain string list to picker options, for the closed vocabularies. */
-export function labelOptions(values: string[]): { value: string; label: string }[] {
+export function labelOptions(values: readonly string[]): { value: string; label: string }[] {
   return values.map((label) => ({ value: label, label }))
 }

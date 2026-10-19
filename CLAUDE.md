@@ -165,7 +165,7 @@ Judgment rules:
   spacing, alignment, and subtle surface shifts — not gradients, glows,
   hero banners, or decorative color. Auth pages, token portals, and
   legal/marketing are expressive: depth, gradient, and motion are welcome
-  there. Three identity elements cross into the ascetic zone (`docs/design.md` §1).
+  there. Four identity elements cross into the ascetic zone (`docs/design.md` §1).
 - **Color reports state** — status, aging, success/late, money deltas — and
   should be used confidently for that. It is never section identity or ornament;
   equally, a screen that reports state in plain gray is hiding information.
@@ -374,18 +374,30 @@ Then the suites your change touches:
   (`null` = whole org, never flattened to an empty list), and it restates the
   ledger status sets and `payableOutstandingCents` because SQL cannot import
   them — `tests/ledger-definition-parity.test.js` compares those literally.
-- **The pipeline is one screen, and every deal has one next move.** `/pipeline`
-  lists deals grouped by whose move it is (you / trades / client), and
-  `/pipeline/[dealId]` is the deal; the app sidebar never changes and plans, files
-  and full quote packages open over the deal as takeovers. `dealMove()`
+- **The pipeline is two views, and every deal has one next move.** `/pipeline`
+  is the overview: a funnel of the derived open stops (it ends at Signed; won
+  and lost deals leave the list for filters), attention chips (your move,
+  waiting on trades or clients, stalled, follow-ups due) and one table that says
+  each deal's stage, last activity, firmness, owner and value. `/pipeline/[dealId]` is the
+  deal room: one header (facts strip and next-move band) from the layout over
+  route tabs — Overview, Pricing, Bids, Proposal, Plans, Files, whose data the
+  layout starts together (`loadDealTabs()`) and the room holds, so switching
+  tabs never loads (autosaves never `revalidatePath`) — with the
+  worksheet state held in the layout so the header follows live edits. `dealMove()`
   (`lib/precon/deal-move.ts`, pure, tested) is the ONLY place a deal's stage,
   sentence and button are decided — never store a stage or branch on
   `prospects.status` in a component. The worksheet is the only place a price is
-  edited; the client gets one document that hardens from a **Budget** (range,
-  approval only) to the **Proposal & agreement** once `SIGNATURE_FIRMNESS` of
-  cost is firm (quote or measured) and every client question is answered — the
-  builder never picks which. Client questions are `client_decision` rows the
-  client answers on the review link. Signing is the handoff: **Start building**
+  edited; a sheet on Plans opens the full-screen viewer over the deal, and
+  measuring always measures into a pricing line (Done puts the quantity on it;
+  new plans change nothing until the builder picks Use new or Keep). The client
+  gets one document, the **Proposal**, and the builder picks
+  how its price goes out: a fixed price to sign (the default) or an estimated
+  range to approve (`price_mode`). Firmness (`FIRM_PRICE_SHARE` of cost quoted or
+  measured) is a warning, never a gate. Sections are the builder's to switch
+  off, rename, reorder and add (`proposal.layout`, normalized by
+  `normalizeProposalLayout()`); price, options, signatures and questions are
+  locked on. Client questions are `client_decision` rows the client answers on
+  the review link, and the proposal cannot be signed while one is open. Signing is the handoff: **Start building**
   (`startBuilding()`) activates the job and drafts its budget from the signed
   lines; there is no separate handoff step. See `docs/reference/pipeline.md`.
 - **Billing is one book, three bands.** `/projects/[id]/financials/billing` is

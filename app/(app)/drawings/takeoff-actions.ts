@@ -378,10 +378,18 @@ export async function acceptTakeoffAreasAction(input: import("@/lib/validation/a
 }
 
 export async function beginWorksheetMeasurementAction(prospectId: string, rowId: string, unit: string) {
+  return run(async () => (await import("@/lib/services/measurement-context")).beginWorksheetMeasurement(prospectId, rowId, unit))
+}
+export async function applyLineMeasurementAction(prospectId: string, input: unknown) {
   return run(async () => {
-    const result = await (await import("@/lib/services/measurement-context")).beginWorksheetMeasurement(prospectId, rowId, unit)
-    revalidatePath("/pipeline", "layout")
-    return result
+    await (await import("@/lib/services/measurement-context")).applyLineMeasurement(prospectId, input)
+    revalidatePath(`/pipeline/${prospectId}`, "layout")
+  })
+}
+export async function resolvePlanChangesAction(prospectId: string, input: unknown) {
+  return run(async () => {
+    await (await import("@/lib/services/measurement-context")).resolvePlanChanges(prospectId, input)
+    revalidatePath(`/pipeline/${prospectId}`, "layout")
   })
 }
 export async function listMeasurementRowsAction(prospectId: string) {

@@ -1,6 +1,4 @@
 import { connection } from "next/server";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { ProjectDocumentsSkeleton } from "@/components/documents/project-documents-skeleton";
@@ -8,38 +6,19 @@ import { PageLayout } from "@/components/layout/page-layout";
 import { getProjectAction } from "@/app/(app)/projects/[id]/actions";
 import { loadDocumentsViewAction } from "@/app/(app)/documents/actions";
 import { UnifiedDocumentsLayout } from "@/components/documents";
-import { DealTakeoverBar } from "@/components/pipeline/deal-takeover-bar";
 
 interface ProjectFilesPageProps {
-  prospectId?: string;
   params: Promise<{ id: string }>;
   searchParams: Promise<{ path?: string }>;
 }
 
-export default function ProjectFilesPage({
-  params,
-  searchParams,
-  prospectId,
-}: ProjectFilesPageProps) {
+export default function ProjectFilesPage({ params, searchParams }: ProjectFilesPageProps) {
   return (
-    <PageLayout title={prospectId ? "Files" : "Documents"} fullBleed>
+    <PageLayout title="Documents" fullBleed>
       <div data-instant-shell="project-documents" className="flex h-full min-h-0 flex-col">
-        {prospectId && (
-          <DealTakeoverBar dealId={prospectId} title="Files">
-            <Button asChild variant="outline" size="sm" className="h-7 text-xs">
-              <Link href={`/pipeline/${prospectId}/plans`}>Open plans</Link>
-            </Button>
-          </DealTakeoverBar>
-        )}
         <div className="min-h-0 flex-1">
-          <Suspense
-            fallback={<ProjectDocumentsSkeleton />}
-          >
-            <ProjectFilesData
-              prospectId={prospectId}
-              params={params}
-              searchParams={searchParams}
-            />
+          <Suspense fallback={<ProjectDocumentsSkeleton />}>
+            <ProjectFilesData params={params} searchParams={searchParams} />
           </Suspense>
         </div>
       </div>
@@ -48,11 +27,9 @@ export default function ProjectFilesPage({
 }
 
 async function ProjectFilesData({
-  prospectId,
   params,
   searchParams,
 }: {
-  prospectId?: string;
   params: Promise<{ id: string }>;
   searchParams: Promise<{ path?: string }>;
 }) {
@@ -80,7 +57,7 @@ async function ProjectFilesData({
 
   return (
     <UnifiedDocumentsLayout
-      preconstruction={Boolean(prospectId) || project.phase === "precon"}
+      preconstruction={project.phase === "precon"}
       project={{ id: project.id, name: project.name }}
       initialFiles={view.files}
       initialTotalCount={view.totalCount}

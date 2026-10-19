@@ -1,5 +1,6 @@
 import { estimateAlternateIssue, normalizeCommercialEstimateLines, calculateCommercialEstimateTotals, type EstimateCommercial } from "@/lib/financials/estimate-commercial"
 import { z } from "zod"
+import type { ProposalDocument } from "@/lib/precon/proposal-documents"
 import { authorizeEstimateDocumentWrite } from "./estimate-document-authorization"
 import { normalizeEstimateCommercial } from "@/lib/financials/estimate-commercial"
 
@@ -118,6 +119,7 @@ const calculateTotals = calculateCommercialEstimateTotals
 
 export async function createEstimate({
   precon,
+  proposal,
   source_budget_estimate_id,
   pricing_worksheet_snapshot,
   project_id,
@@ -141,6 +143,8 @@ export async function createEstimate({
   orgId,
 }: {
   precon?: EstimateCommercial
+  /** A deal proposal's resolved sections; see lib/precon/proposal-documents. */
+  proposal?: ProposalDocument
   source_budget_estimate_id?: string
   pricing_worksheet_snapshot?: { version: number; fingerprint: string; proposal_fingerprint?: string; range?: { low_cents: number; high_cents: number } }
   project_id?: string | null
@@ -219,6 +223,7 @@ export async function createEstimate({
       metadata: {
         ...(pricing_worksheet_snapshot ? { pricing_worksheet: pricing_worksheet_snapshot } : {}),
         ...(precon ? { precon } : {}),
+        ...(proposal ? { proposal } : {}),
         ...(sourceBudget ? { source_budget: sourceBudget } : {}),
         tax_rate: tax_rate ?? 0,
         markup_percent: markup_percent ?? 0,
@@ -573,6 +578,7 @@ export async function createEstimateVersion({
     title: string
     pricing_worksheet_snapshot?: { version: number; fingerprint: string; proposal_fingerprint?: string; range?: { low_cents: number; high_cents: number } }
     precon?: EstimateCommercial
+    proposal?: ProposalDocument
     recipient_contact_id?: string | null
     recipient_name?: string | null
     recipient_email?: string | null
@@ -645,6 +651,8 @@ export async function createEstimateVersion({
         signing_withdrawal: undefined,
         estimate_execution: undefined,
         precon: input.precon ?? existingMetadata.precon,
+        // Each version carries its own proposal; a revision without one has none.
+        proposal: input.proposal ?? null,
         tax_rate: input.tax_rate ?? 0,
         markup_percent: input.markup_percent ?? 0,
         contingency_percent: input.contingency_percent ?? 0,

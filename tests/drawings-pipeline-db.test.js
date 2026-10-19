@@ -474,13 +474,6 @@ function splitPage(home, pageIndex, sheetNumber = "A1") {
   }
 }
 
-// register_drawing_split_batch creates sheets with `on conflict (project_id,
-// sheet_number)`, but the only unique index on those columns is partial
-// (`where sheet_number is not null`), so Postgres cannot infer it and every
-// batch that creates a new sheet fails. Fixed by adding that predicate to both
-// conflict clauses in 20261001164202_drawing_split_registration.sql.
-const SPLIT_BATCH_BUG = "ON CONFLICT misses the partial sheet-number index; owner: drawings pipeline"
-
 function registerBatch(db, home, pages) {
   return rpc(db, "register_drawing_split_batch", {
     p_org_id: home.orgId,
@@ -491,7 +484,6 @@ function registerBatch(db, home, pages) {
 
 test(
   "a split batch keeps colliding sheet numbers apart and carries calibration forward",
-  { todo: SPLIT_BATCH_BUG },
   async (t) => {
     const db = await createDatabase(t)
     const home = await drawingProject(db, { totalPages: 2 })
@@ -520,7 +512,7 @@ test(
   },
 )
 
-test("replaying a split batch returns the pages it already registered", { todo: SPLIT_BATCH_BUG }, async (t) => {
+test("replaying a split batch returns the pages it already registered", async (t) => {
   const db = await createDatabase(t)
   const home = await drawingProject(db, { totalPages: 2 })
   const pages = [splitPage(home, 0), splitPage(home, 1, "A2")]

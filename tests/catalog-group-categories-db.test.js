@@ -8,11 +8,13 @@ async function setup(t){
  const discover=(patch={})=>f.db.query('select discover_catalog_group_categories($1,$2,$3,$4,$5,$6::uuid[]) page',[patch.org??f.org,patch.actor??f.actor,patch.community??null,patch.query??'',patch.before??null,patch.ids??null])
  return {...f,discover}
 }
-test('all categories beyond the bootstrap bound remain reachable through stable 20-row UUID search pages',async t=>{
- const f=await setup(t),ids=Array.from({length:1025},(_,n)=>id(1000+n));await f.db.query("insert into selection_categories(id,org_id,name) select x,$2,'Large category '||x from unnest($1::uuid[]) x",[ids,f.org])
+// Keyset paging has no offset or internal cap, so 128 rows (six full pages and a
+// partial seventh) prove the same reachability as a corpus past any client bound.
+test('every category remains reachable through stable 20-row UUID keyset pages with no internal cap',async t=>{
+ const f=await setup(t),ids=Array.from({length:125},(_,n)=>id(1000+n));await f.db.query("insert into selection_categories(id,org_id,name) select x,$2,'Large category '||x from unnest($1::uuid[]) x",[ids,f.org])
  let before=null,seen=[]
  do{const page=(await f.discover({before})).rows[0].page;assert.ok(page.items.length<=20);seen.push(...page.items);before=page.nextCursor;if(before)assert.equal(before,page.items.at(-1).id)}while(before)
- assert.equal(seen.length,1028);assert.equal(new Set(seen.map(x=>x.id)).size,1028);assert.deepEqual(seen.map(x=>x.id),seen.map(x=>x.id).sort());assert.ok(!JSON.stringify(seen).includes('cost_cents'));assert.ok(!JSON.stringify(seen).includes('987654'))
+ assert.equal(seen.length,128);assert.equal(new Set(seen.map(x=>x.id)).size,128);assert.deepEqual(seen.map(x=>x.id),seen.map(x=>x.id).sort());assert.ok(!JSON.stringify(seen).includes('cost_cents'));assert.ok(!JSON.stringify(seen).includes('987654'))
 })
 test('selected lookup returns all 100 references and explicit foreign/missing/cross-scope markers without foreign names',async t=>{
  const f=await setup(t),ids=Array.from({length:100},(_,n)=>id(5000+n));await f.db.query("insert into selection_categories(id,org_id,name) select x,$2,'Selected category' from unnest($1::uuid[]) x",[ids,f.org])

@@ -10,6 +10,7 @@ import { BidDocumentsTab } from "@/components/bid-portal/tabs/bid-documents-tab"
 import { BidAddendaTab } from "@/components/bid-portal/tabs/bid-addenda-tab"
 import { BidRfisTab } from "@/components/bid-portal/tabs/bid-rfis-tab"
 import { BidForm } from "@/components/bid-portal/bid-form"
+import { BidPlans, BidSiteWalk } from "@/components/bid-portal/bid-plans"
 import { BidPortalPinGate } from "@/components/bid-portal/bid-portal-pin-gate"
 import { cn } from "@/lib/utils"
 import { formatDeadline, getCountdown, packageStatusStyles } from "@/components/bid-portal/lib"
@@ -87,7 +88,13 @@ export function BidPortalClient({
       <main className="mx-auto w-full max-w-4xl space-y-10 px-4 py-6 sm:px-6 sm:py-8 md:space-y-12">
         <PortalSection id="brief" title="Package brief">
           <BidHomeTab access={access} currentSubmission={currentSubmission} />
+          {data.siteWalkAt ? <BidSiteWalk at={data.siteWalkAt} /> : null}
         </PortalSection>
+        {data.sheets.length ? (
+          <PortalSection id="plans" title="Plans">
+            <BidPlans token={token} sheets={data.sheets} />
+          </PortalSection>
+        ) : null}
         <PortalSection id="documents" title="Documents">
           <BidDocumentsTab files={data.packageFiles} />
         </PortalSection>

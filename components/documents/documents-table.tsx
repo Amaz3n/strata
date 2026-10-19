@@ -56,6 +56,7 @@ import {
 } from "@/components/ui/tooltip"
 import type { FileWithUrls } from "@/app/(app)/documents/types"
 import { useDocuments } from "./documents-context"
+import { plansLink } from "./plans-link"
 import {
   FileSharingBadges,
   FileSignatureBadge,
@@ -567,6 +568,7 @@ const FileRow = memo(function FileRow({
   onSendForSignature?: (fileId: string) => void
   onOpenProperties: (fileId: string) => void
 }) {
+  const { dealId } = useDocuments()
   const terms = useProductTerminology()
   const router = useRouter()
   const primarySource = getPrimarySourceContext(file)
@@ -771,8 +773,8 @@ const FileRow = memo(function FileRow({
                 </DropdownMenuItem>
               )}
               {!isArchived && file.project_id && file.mime_type === "application/pdf" && (
-                <DropdownMenuItem onClick={() => router.push(file.source_contexts?.find((source) => source.type === "drawing_set" || source.type === "drawing_sheet")?.href ?? `/projects/${file.project_id}/drawings?sourceFile=${file.id}`)}>
-                  <FileText className="h-4 w-4 mr-2" /> Open in Plans & takeoff
+                <DropdownMenuItem onClick={() => router.push(plansLink(file, dealId).href)}>
+                  <FileText className="h-4 w-4 mr-2" /> {plansLink(file, dealId).label}
                 </DropdownMenuItem>
               )}
               {hasSourceHref && (
@@ -895,7 +897,7 @@ function EmptyState({
     <div
       className={cn("flex flex-col items-center justify-center gap-3 py-24 px-4", preconstruction && "py-16")}
     >
-      <div className={cn("flex h-12 w-12 items-center justify-center rounded-none bg-muted", preconstruction && "rounded-[16px] border border-border/60 bg-muted/40")}>
+      <div className={cn("flex h-12 w-12 items-center justify-center rounded-none bg-muted", preconstruction && "border bg-muted/40")}>
         {hasFilters ? (
           <FileText className="h-6 w-6 text-muted-foreground" />
         ) : (
@@ -904,12 +906,12 @@ function EmptyState({
       </div>
       <div className="text-center max-w-[400px]">
         <p className="font-medium">
-          {hasFilters ? "No files found" : "No documents yet"}
+          {hasFilters ? "No files found" : preconstruction ? "No files yet" : "No documents yet"}
         </p>
         <p className="text-sm text-muted-foreground mt-0.5">
           {hasFilters
             ? "Try adjusting your filters or search query."
-            : preconstruction ? "Add scopes, quotes, permits, and project records." : "Upload drawings, contracts, photos, permits, and closeout files to this document library."}
+            : preconstruction ? "Surveys, photos and the client's drawings go here. Trade quotes and the proposals you send file themselves." : "Upload drawings, contracts, photos, permits, and closeout files to this document library."}
         </p>
       </div>
       <div className="mt-2">

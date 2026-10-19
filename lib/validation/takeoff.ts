@@ -402,3 +402,28 @@ export const acceptSymbolMatchesSchema = z.object({
 })
 
 export type AcceptSymbolMatchesInput = z.infer<typeof acceptSymbolMatchesSchema>
+
+/** Done in the measuring takeover: the line takes its measured quantity at the rate set beside it. */
+export const lineMeasurementSchema = z.object({
+  row_id: z.string().uuid(),
+  unit_cost_cents: z.number().int().min(0).max(100_000_000_00).nullable(),
+})
+
+export type LineMeasurementInput = z.infer<typeof lineMeasurementSchema>
+
+/** After new plans: each changed line takes the quantity the review showed, or keeps its own. */
+export const planChangeResolutionSchema = z.object({
+  lines: z
+    .array(
+      z.object({
+        row_id: z.string().uuid(),
+        choice: z.enum(["use", "keep"]),
+        /** The measured quantity the review showed; refused if the plans moved again since. */
+        quantity: z.number().finite().min(0),
+      }),
+    )
+    .min(1)
+    .max(500),
+})
+
+export type PlanChangeResolution = z.infer<typeof planChangeResolutionSchema>

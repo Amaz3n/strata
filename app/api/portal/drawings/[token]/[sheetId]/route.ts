@@ -2,17 +2,11 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
+import { extractDrawingSheetPdf } from "@/lib/services/drawing-sheet-pdf"
 
 export const maxDuration = 60
 
-/**
- * Serves a single shared drawing sheet as a one-page PDF to portal visitors.
- *
- * Sheets are stored as pages of the full uploaded set PDF, so we extract just
- * the shared page here — handing out a signed URL to the source file would
- * leak every sheet in the set, including unshared ones.
- */
+/** Serves a single shared drawing sheet as a one-page PDF to portal visitors. */
 export async function GET(
   _request: NextRequest,
   context: { params: Promise<{ token: string; sheetId: string }> },
@@ -45,41 +39,16 @@ export async function GET(
     return NextResponse.json({ error: "Sheet not available" }, { status: 404 })
   }
 
-  const { data: version } = await supabase
-    .from("drawing_sheet_versions")
-    .select("file_id, page_index, files!drawing_sheet_versions_file_id_fkey(storage_path)")
-    .eq("drawing_sheet_id", sheet.id)
-    .eq("drawing_revision_id", sheet.current_revision_id)
-    .maybeSingle()
-
-  const storagePath = (version?.files as any)?.storage_path as string | undefined
-  if (!storagePath) {
-    return NextResponse.json({ error: "Sheet file not available" }, { status: 404 })
-  }
-
   try {
-    const pdfBytes = await downloadDrawingPdfObject({
-      supabase,
-      orgId: access.org_id,
-      path: storagePath,
-    })
-
-    const mupdf = await import("mupdf")
-    const doc = mupdf.Document.openDocument(pdfBytes, "application/pdf")
-    const pageIndex = Math.min(
-      Math.max(0, version?.page_index ?? 0),
-      Math.max(0, doc.countPages() - 1),
-    )
-    const single = new mupdf.PDFDocument()
-    single.graftPage(0, doc as any, pageIndex)
-    const singleBytes = single.saveToBuffer("compress").asUint8Array()
-
-    const fileName = `${sheet.sheet_number || "sheet"}.pdf`.replace(/[^\w.-]+/g, "-")
-    return new NextResponse(Buffer.from(singleBytes), {
+    const pdf = await extractDrawingSheetPdf({ supabase, orgId: access.org_id, sheet })
+    if (!pdf) {
+      return NextResponse.json({ error: "Sheet file not available" }, { status: 404 })
+    }
+    return new NextResponse(Buffer.from(pdf.bytes), {
       status: 200,
       headers: {
         "content-type": "application/pdf",
-        "content-disposition": `inline; filename="${fileName}"`,
+        "content-disposition": `inline; filename="${pdf.fileName}"`,
         "cache-control": "private, max-age=300",
       },
     })

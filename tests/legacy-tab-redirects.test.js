@@ -1,55 +1,76 @@
+// Old URLs that live in emails, bookmarks and other people's notes. Each
+// compatibility page must land on the current workspace, and anything it does
+// not recognise must land somewhere safe rather than 404.
+
+require("../scripts/register-ts-node-test")
+
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
 const test = require("node:test")
-const ts = require("typescript")
 
-function loadModule(file) {
-  const exports = {}
-  const code = ts.transpileModule(fs.readFileSync(file, "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
-  new Function("exports", "require", code)(exports, name => {
-    assert.equal(name, "next/navigation")
-    return { redirect: destination => { throw Object.assign(Error("Redirect"), { destination }) } }
-  })
-  return exports
-}
-const load = file => loadModule(file).default
-const id = "00000000-0000-4000-8000-000000000001"
-const company = load("app/(app)/companies/[id]/page.tsx")
-const financials = load("app/(app)/projects/[id]/financials/page.tsx")
-async function destination(page, tab) {
-  let result
-  await assert.rejects(page({ params: Promise.resolve({ id }), searchParams: Promise.resolve({ tab }) }), error => {
-    result = error.destination
-    return typeof result === "string"
-  })
-  return result
+const { freshRequire, stubModule } = require("./support/modules")
+
+stubModule("next/navigation", {
+  redirect: (destination) => {
+    throw Object.assign(new Error("redirect"), { destination })
+  },
+})
+
+const ID = "00000000-0000-4000-8000-000000000001"
+const page = (file) => freshRequire(`app/(app)/${file}/page.tsx`).default
+
+/** Where `render` redirects to. */
+async function destination(render) {
+  try {
+    await render()
+  } catch (error) {
+    if (typeof error.destination === "string") return error.destination
+    throw error
+  }
+  assert.fail("the page rendered instead of redirecting")
 }
 
-test("company tab aliases preserve all supported destinations", async () => {
+const UNKNOWN_TABS = [undefined, "", "unknown", "constructor", "__proto__", "toString"]
+
+function tabRedirects(file, tab) {
+  const render = page(file)
+  return destination(() => render({ params: Promise.resolve({ id: ID }), searchParams: Promise.resolve({ tab }) }))
+}
+
+test("company tabs land on the directory account, or its overview when unknown", async () => {
   for (const tab of ["compliance", "prequalification", "transactions", "commitments", "contacts"]) {
-    assert.equal(await destination(company, tab), `/directory/${id}/${tab}`)
+    assert.equal(await tabRedirects("companies/[id]", tab), `/directory/${ID}/${tab}`)
   }
-})
-test("unknown and repeated company tabs land on the account overview", async () => {
-  for (const tab of [undefined, "", "unknown", "constructor", "__proto__", "toString", ["compliance", "contacts"]]) {
-    assert.equal(await destination(company, tab), `/directory/${id}`)
-  }
-})
-test("financial aliases resolve directly to their current workspaces", async () => {
-  const routes = { budget: "financials/budget", receivables: "financials/billing", billing: "financials/billing", payables: "financials/payables", "cost-plus": "financials/cost-inbox", inbox: "financials/cost-inbox", review: "financials/cost-inbox", "trust-center": "reports/reconciliation" }
-  for (const [tab, route] of Object.entries(routes)) assert.equal(await destination(financials, tab), `/projects/${id}/${route}`)
-})
-test("unknown and repeated financial tabs land on billing", async () => {
-  for (const tab of [undefined, "", "unknown", "constructor", "__proto__", "toString", ["budget", "payables"]]) {
-    assert.equal(await destination(financials, tab), `/projects/${id}/financials/billing`)
+  for (const tab of [...UNKNOWN_TABS, ["compliance", "contacts"]]) {
+    assert.equal(await tabRedirects("companies/[id]", tab), `/directory/${ID}`, JSON.stringify(tab))
   }
 })
 
-test("Books compatibility pages retain their final destinations and redirect contracts", () => {
-  const destinations = { accountant:"/books/exports",chart:"/settings/accounting/chart-of-accounts",cutover:"/settings/accounting/setup","opening-balances":"/settings/accounting/opening-balances",statements:"/reports?collection=statements" }
-  for (const [alias,destination] of Object.entries(destinations)) {
-    const page = loadModule(`app/(app)/books/${alias}/page.tsx`)
-    assert.equal(page.instant,false)
-    assert.throws(() => page.default(), error => error.destination === destination)
+test("financials tabs land on their current workspace, or billing when unknown", async () => {
+  for (const [tab, route] of [
+    ["budget", "financials/budget"],
+    ["receivables", "financials/billing"],
+    ["billing", "financials/billing"],
+    ["payables", "financials/payables"],
+    ["cost-plus", "financials/cost-inbox"],
+    ["inbox", "financials/cost-inbox"],
+    ["review", "financials/cost-inbox"],
+    ["trust-center", "reports/reconciliation"],
+  ]) {
+    assert.equal(await tabRedirects("projects/[id]/financials", tab), `/projects/${ID}/${route}`, tab)
+  }
+  for (const tab of [...UNKNOWN_TABS, ["budget", "payables"]]) {
+    assert.equal(await tabRedirects("projects/[id]/financials", tab), `/projects/${ID}/financials/billing`, JSON.stringify(tab))
+  }
+})
+
+test("retired Books pages land on their replacements", async () => {
+  for (const [alias, expected] of [
+    ["accountant", "/books/exports"],
+    ["chart", "/settings/accounting/chart-of-accounts"],
+    ["cutover", "/settings/accounting/setup"],
+    ["opening-balances", "/settings/accounting/opening-balances"],
+    ["statements", "/reports?collection=statements"],
+  ]) {
+    assert.equal(await destination(page(`books/${alias}`)), expected, alias)
   }
 })

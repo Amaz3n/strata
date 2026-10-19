@@ -4,6 +4,7 @@ import { ArrowUpRight } from "lucide-react";
 import { EstimateLivePreview, type EstimatePreviewBranding } from "@/components/estimates/estimate-live-preview";
 import { worksheetEstimateLines, type PricingWorksheet } from "@/lib/precon/pricing-worksheet";
 import type { DealDocument } from "@/lib/precon/deal-move";
+import type { ProposalDocument, ProposalSectionKey } from "@/lib/precon/proposal-documents";
 import type { EstimateInput } from "@/lib/validation/estimates";
 import type { DealQuestion } from "./deal-questions";
 import type { DealClient } from "./deal-client-sheet";
@@ -13,31 +14,41 @@ const shortDate = (value: string) =>
   new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
 /**
- * What the client sees, rendered from the work as it changes. Whether it is a
- * budget or an agreement follows from the price, never from a choice.
+ * What the client sees, rendered from the work as it changes: a fixed price to
+ * sign or an estimated range to approve, as the builder chose on the proposal.
+ * The pane keeps its height and the document scrolls inside it.
  */
 export function DealDocumentPane({
   className,
   dealName,
   client,
-  notes,
   worksheet,
   signable,
   range,
   documents,
   questions,
   branding,
+  proposal,
+  pricingDisplay,
+  selectedSection,
+  onSelectSection,
+  sectionFlags,
 }: {
   className?: string;
   dealName: string;
   client: DealClient;
-  notes: string;
   worksheet: PricingWorksheet | null;
   signable: boolean;
   range: { low: number; high: number } | null;
   documents: { proposal: DealDocument | null; agreement: DealDocument | null };
   questions: DealQuestion[];
   branding?: EstimatePreviewBranding;
+  /** The sections written around the price; the document the client gets. */
+  proposal: ProposalDocument;
+  pricingDisplay: "sections" | "itemized" | "lump_sum";
+  selectedSection?: ProposalSectionKey | null;
+  onSelectSection?: (id: ProposalSectionKey) => void;
+  sectionFlags?: Record<ProposalSectionKey, string>;
 }) {
   const who = client.name.split(" ")[0] || "The client";
   const current =
@@ -48,12 +59,11 @@ export function DealDocumentPane({
 
   const status = (() => {
     if (!issued) return "Not sent. Updates as you price.";
-    const kind = issued.purpose === "budget" ? "Budget" : "Agreement";
     if (["executed", "converted_to_project"].includes(issued.status)) return "Signed by both sides";
     if (issued.status === "client_signed") return `${who} signed. Waiting on your signature.`;
     if (issued.changed_since)
       return `${who} has v${issued.version}. Your changes go out as v${issued.version + 1}.`;
-    return `${kind} v${issued.version} · sent ${issued.sent_at ? shortDate(issued.sent_at) : ""}${issued.viewed_at ? " · opened" : " · not opened"}`;
+    return `Proposal v${issued.version} · sent ${issued.sent_at ? shortDate(issued.sent_at) : ""}${issued.viewed_at ? " · opened" : " · not opened"}`;
   })();
 
   const input: EstimateInput | null =
@@ -62,7 +72,8 @@ export function DealDocumentPane({
           title: dealName,
           recipient_name: client.name || null,
           recipient_email: client.email || null,
-          summary: notes || undefined,
+          pricing_display: pricingDisplay,
+          valid_until: proposal.valid_until,
           tax_rate: worksheet.tax_rate,
           markup_percent: worksheet.markup_percent,
           contingency_percent: worksheet.contingency_percent,
@@ -107,7 +118,7 @@ export function DealDocumentPane({
       </div>
       {input ? (
         <EstimateLivePreview
-          className="lg:w-full lg:max-w-none lg:border-l-0"
+          className="min-h-0 lg:w-full lg:max-w-none lg:flex-1 lg:border-l-0"
           input={input}
           branding={branding}
           range={showing === "budget" && range ? { lowCents: range.low, highCents: range.high } : null}
@@ -116,6 +127,10 @@ export function DealDocumentPane({
             question: item.title,
             answer: item.status === "open" ? null : item.resolution,
           }))}
+          proposal={proposal}
+          selectedSection={selectedSection}
+          onSelectSection={onSelectSection}
+          sectionFlags={sectionFlags}
         />
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center p-8">

@@ -1,85 +1,174 @@
-require('../scripts/register-ts-node-test')
-const test = require('node:test')
-const assert = require('node:assert/strict')
-const Module = require('node:module')
-const { invoiceWaiverContentHash: hash } = require('../lib/lien-waivers/invoice-content')
-const invoice = { id: 'invoice', project_id: 'project', invoice_number: '1', total_cents: 2500, metadata: { waiver_packet: { enabled: true, waiver_id: 'selected' }, lines: [{ description: 'Work', quantity: 1, unit_price_cents: 2500 }] } }
+"use strict"
 
-test('waiver content survives delivery and row identity changes but detects financial changes', () => {
-  assert.equal(hash(invoice), hash({ ...invoice, status: 'sent', updated_at: 'later', metadata: { ...invoice.metadata, lines: [{ ...invoice.metadata.lines[0], id: 'new-row' }] } }))
-  assert.notEqual(hash(invoice), hash({ ...invoice, total_cents: 2000 }))
-  assert.notEqual(hash(invoice), hash({ ...invoice, metadata: { ...invoice.metadata, lines: [{ description: 'Different work', quantity: 1, unit_price_cents: 2500 }] } }))
+/**
+ * An invoice can carry the builder's own lien waiver as a packet
+ * (`lib/services/invoice-waiver-packet.ts`). The packet may only go out with a
+ * waiver that was signed for exactly this invoice's money; anything else is
+ * held back.
+ */
+
+const assert = require("node:assert/strict")
+const test = require("node:test")
+
+const { createServiceHarness, replies, id, ORG } = require("./support/service")
+const { freshRequire } = require("./support/modules")
+
+const { invoiceWaiverContentHash: hash } = require("@/lib/lien-waivers/invoice-content")
+const { assertInvoiceWaiverPacketReady, setInvoiceWaiverPacket } = freshRequire("lib/services/invoice-waiver-packet.ts")
+
+const INVOICE = id(1)
+const PROJECT = id(2)
+const WAIVER = id(3)
+const SIGNER = id(4)
+const DOCUMENT = id(5)
+const ENVELOPE = id(6)
+const SEEN = "2026-09-01T00:00:00+00:00"
+
+function invoice(packet = { enabled: true, waiver_id: WAIVER }, overrides = {}) {
+  return {
+    id: INVOICE,
+    org_id: ORG,
+    project_id: PROJECT,
+    invoice_number: "1",
+    status: "draft",
+    total_cents: 2500,
+    updated_at: SEEN,
+    metadata: { waiver_packet: packet, lines: [{ description: "Work", quantity: 1, unit_price_cents: 2500 }] },
+    ...overrides,
+  }
+}
+
+function waiver(workflow = {}, overrides = {}) {
+  return {
+    id: WAIVER,
+    org_id: ORG,
+    invoice_id: INVOICE,
+    status: "pending_payment",
+    amount_cents: 2500,
+    updated_at: SEEN,
+    metadata: {
+      workflow: {
+        version: 2,
+        lifecycle: "signed",
+        source: "template",
+        shared: true,
+        document_path: "signed.pdf",
+        invoice_content_hash: hash(invoice()),
+        ...workflow,
+      },
+    },
+    ...overrides,
+  }
+}
+
+function harness(tables = {}) {
+  return createServiceHarness({
+    permissions: ["invoice.write", "invoice.read", "project.read"],
+    tables: {
+      projects: [{ id: PROJECT, org_id: ORG }],
+      invoices: [invoice()],
+      invoice_lien_waivers: [waiver()],
+      documents: [{ id: DOCUMENT, org_id: ORG, metadata: { waiver_signer_id: SIGNER } }],
+      envelopes: [{ id: ENVELOPE, org_id: ORG, document_id: DOCUMENT, status: "sent" }],
+      ...tables,
+    },
+  })
+}
+
+const ready = (service, target = invoice()) => assertInvoiceWaiverPacketReady(service.client, ORG, target)
+
+test("the waiver's fingerprint ignores delivery and row identity but not the money or the work", () => {
+  const base = invoice()
+  const delivered = {
+    ...base,
+    status: "sent",
+    updated_at: "later",
+    metadata: { ...base.metadata, lines: [{ ...base.metadata.lines[0], id: "new-row" }] },
+  }
+  assert.equal(hash(base), hash(delivered))
+  assert.notEqual(hash(base), hash({ ...base, total_cents: 2000 }))
+  assert.notEqual(hash(base), hash({ ...base, notes: "Payment covers framing" }))
+  assert.notEqual(
+    hash(base),
+    hash({ ...base, metadata: { ...base.metadata, lines: [{ description: "Different work", quantity: 1, unit_price_cents: 2500 }] } }),
+  )
 })
 
-test('packet delivery requires the selected signed, shared, current waiver', async () => {
-  const original = Module._load
-  Module._load = function(request, ...args) {
-    if (request === '@/lib/services/invoice-waiver-workflow') return { invoiceWaiverContext: async () => { throw new Error('not used') } }
-    return original.call(this, request, ...args)
-  }
-  try {
-    const { assertInvoiceWaiverPacketReady: ready } = require('../lib/services/invoice-waiver-packet')
-    let rows = []
-    const db = { from(table) { assert.equal(table, 'invoice_lien_waivers'); const q = { select(){return q}, eq(){return q}, neq(){return q}, then(resolve){return Promise.resolve({data: rows, error: null}).then(resolve)} }; return q } }
-    await ready(db, 'org', { ...invoice, metadata: {} })
-    await assert.rejects(ready(db, 'org', invoice), /Finish signing/)
-    const waiver = { id: 'selected', status: 'pending_payment', amount_cents: 2500, metadata: { workflow: { version: 2, lifecycle: 'signed', source: 'template', shared: true, document_path: 'signed.pdf', invoice_content_hash: hash(invoice) } } }
-    rows = [waiver]
-    await ready(db, 'org', invoice)
-    for (const change of [{ lifecycle: 'draft' }, { shared: false }, { needs_review: true }, { invoice_content_hash: 'stale' }]) {
-      rows = [{ ...waiver, metadata: { workflow: { ...waiver.metadata.workflow, ...change } } }]
-      await assert.rejects(ready(db, 'org', invoice), /Finish signing/)
-    }
-    rows = [{ ...waiver, id: 'different' }]
-    await assert.rejects(ready(db, 'org', invoice), /Finish signing/)
-    rows = [{ ...waiver, amount_cents: 3000 }]
-    await assert.rejects(ready(db, 'org', invoice), /Finish signing/)
-  } finally { Module._load = original }
+test("an invoice without a packet needs no waiver", async () => {
+  await ready(harness({ invoice_lien_waivers: [] }), invoice({}))
 })
 
-test('review saves large imported waivers with short version filters and rejects actual races', async () => {
-  let conflict = false, failure = false
-  const waiver = { id: 'selected', org_id: 'org', invoice_id: 'invoice', status: 'pending_payment', updated_at: '2026-09-01T00:00:00Z', metadata: { template: 'Imported wording '.repeat(2000), workflow: { version: 2, lifecycle: 'draft', source: 'template', shared: false } } }
-  const currentInvoice = { ...structuredClone(invoice), org_id: 'org', updated_at: '2026-09-01T00:00:00Z' }
-  const db = { from(table) {
-    const filters = []; let patch, single = false
-    const q = {
-      select(){return q}, order(){return q},
-      eq(key, value){ assert.notEqual(key, 'metadata', 'never put the document in a URL'); assert.ok(String(value).length < 100); filters.push(row => row[key] === value); return q },
-      neq(key, value){ filters.push(row => row[key] !== value); return q },
-      update(value){patch = value; return q}, maybeSingle(){single = true; return q},
-      then(resolve, reject){return Promise.resolve().then(() => {
-        if (patch && table === 'invoice_lien_waivers') {
-          if (failure) return { data: null, error: { message: 'database unavailable' } }
-          if (conflict) waiver.updated_at = 'concurrent-version'
-        }
-        const row = table === 'invoice_lien_waivers' ? waiver : currentInvoice
-        const found = filters.every(f => f(row))
-        if (found && patch) Object.assign(row, structuredClone(patch))
-        return { data: single ? (found ? structuredClone(row) : null) : (found ? [structuredClone(row)] : []), error: null }
-      }).then(resolve, reject)},
-    }; return q
-  } }
-  const original = Module._load
-  const modulePath = require.resolve('../lib/services/invoice-waiver-packet')
-  delete require.cache[modulePath]
-  Module._load = function(request, ...args) {
-    if (request === '@/lib/services/invoice-waiver-workflow') return { invoiceWaiverContext: async () => ({ supabase: db, orgId: 'org', invoice: structuredClone(currentInvoice) }) }
-    return original.call(this, request, ...args)
+test("a packet goes out only with the selected, signed, shared waiver for this exact invoice", async () => {
+  await ready(harness())
+
+  const refusals = {
+    "no waiver": [],
+    "an unsigned waiver": [waiver({ lifecycle: "draft" })],
+    "an unshared waiver": [waiver({ shared: false })],
+    "a waiver needing review": [waiver({ needs_review: true })],
+    "a waiver for an earlier version of the invoice": [waiver({ invoice_content_hash: "stale" })],
+    "a different waiver than the one selected": [waiver({}, { id: id(99) })],
+    "a waiver for more than the invoice": [waiver({}, { amount_cents: 3000 })],
   }
-  try {
-    const { setInvoiceWaiverPacket: save } = require(modulePath)
-    const wording = waiver.metadata.template
-    await save('invoice', true, 'selected')
-    assert.equal(waiver.metadata.template, wording)
-    assert.equal(waiver.metadata.workflow.sharing_requested, true)
-    assert.equal(waiver.metadata.workflow.shared, false, 'review must not publish unsigned waivers')
-    assert.notEqual(waiver.updated_at, '2026-09-01T00:00:00Z')
-    assert.equal(currentInvoice.metadata.waiver_packet.waiver_id, 'selected')
-    conflict = true
-    await assert.rejects(save('invoice', false), /waiver changed/)
-    assert.equal(currentInvoice.metadata.waiver_packet.enabled, true)
-    conflict = false; failure = true
-    await assert.rejects(save('invoice', false), /Could not save the waiver packet/)
-  } finally { Module._load = original; delete require.cache[modulePath] }
+  for (const [name, rows] of Object.entries(refusals)) {
+    await assert.rejects(ready(harness({ invoice_lien_waivers: rows })), /Finish signing/, name)
+  }
+})
+
+test("a waiver sent separately for signature needs its signer's live request and a current fingerprint", async () => {
+  const packet = { enabled: true, waiver_id: WAIVER, delivery_mode: "separate_signature", signer_id: SIGNER, envelope_id: ENVELOPE }
+  const target = invoice(packet)
+  const pending = waiver({ lifecycle: "draft", shared: false, signing_document_id: DOCUMENT, invoice_content_hash: hash(target) })
+  const withEnvelope = (status) => ({ invoice_lien_waivers: [pending], envelopes: [{ id: ENVELOPE, org_id: ORG, document_id: DOCUMENT, status }] })
+
+  await ready(harness(withEnvelope("sent")), target)
+  await ready(harness(withEnvelope("executed")), target)
+
+  await assert.rejects(ready(harness(withEnvelope("draft")), target), /selected signer/)
+  const otherSigner = { ...withEnvelope("sent"), documents: [{ id: DOCUMENT, org_id: ORG, metadata: { waiver_signer_id: id(98) } }] }
+  await assert.rejects(ready(harness(otherSigner), target), /selected signer/)
+
+  const stale = waiver({ lifecycle: "draft", shared: false, signing_document_id: DOCUMENT, invoice_content_hash: "stale" })
+  await assert.rejects(ready(harness({ invoice_lien_waivers: [stale] }), target), /waiver changed/)
+})
+
+test("including an unsigned waiver asks for it to be shared once signed, without publishing it", async () => {
+  // Imported wording is long; it must never ride in a filter (the request URL).
+  const wording = "Imported wording ".repeat(2000)
+  const draft = waiver({ lifecycle: "draft", shared: false })
+  draft.metadata.template = wording
+  const service = harness({ invoice_lien_waivers: [draft], invoices: [invoice({ enabled: false })] })
+  const filters = []
+  service.tamper("invoice_lien_waivers", (result, query) => {
+    filters.push(...Object.values(query.where).map(String))
+    return result
+  })
+
+  await service.run(() => setInvoiceWaiverPacket(INVOICE, true, WAIVER))
+
+  const [saved] = service.db.invoice_lien_waivers
+  assert.equal(saved.metadata.template, wording)
+  assert.equal(saved.metadata.workflow.sharing_requested, true)
+  assert.equal(saved.metadata.workflow.shared, false)
+  assert.equal(service.db.invoices[0].metadata.waiver_packet.waiver_id, WAIVER)
+  assert.equal(service.db.invoices[0].metadata.waiver_packet.enabled, true)
+  assert.ok(filters.every((value) => value.length < 100))
+})
+
+test("a waiver that changed underneath the packet, or a failed save, leaves the invoice alone", async () => {
+  const raced = harness()
+  raced.tamper("invoice_lien_waivers", replies.missing(), { on: "update" })
+  await assert.rejects(raced.run(() => setInvoiceWaiverPacket(INVOICE, false)), /waiver changed/)
+  assert.equal(raced.db.invoices[0].metadata.waiver_packet.enabled, true)
+
+  const failed = harness()
+  failed.tamper("invoice_lien_waivers", replies.error(), { on: "update" })
+  await assert.rejects(failed.run(() => setInvoiceWaiverPacket(INVOICE, false)), /Could not save the waiver packet/)
+  assert.equal(failed.writes("invoices").length, 0)
+})
+
+test("a waiver from another invoice cannot be selected", async () => {
+  const service = harness()
+  await assert.rejects(service.run(() => setInvoiceWaiverPacket(INVOICE, true, id(97))), /does not belong/)
+  assert.deepEqual(service.writes(), [])
 })

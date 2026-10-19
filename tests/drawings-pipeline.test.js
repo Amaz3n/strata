@@ -317,6 +317,66 @@ test("every drawing job type is claimed by exactly one lane", async () => {
 })
 
 // ---------------------------------------------------------------------------
+// Job leases
+// ---------------------------------------------------------------------------
+
+describe("job leases", () => {
+  test("claimed jobs the deadline leaves unstarted are released, not stranded", async () => {
+    for (const pageIndex of [0, 1, 2]) enqueue("process_drawing_page", pagePayload({ pageIndex }))
+    const realNow = Date.now
+    const start = realNow()
+    let clock = start
+    const claim = RPCS.claim_drawing_jobs
+    // The claim itself takes the runner past its shutdown margin.
+    RPCS.claim_drawing_jobs = (args, store) => {
+      clock = start + 80_000
+      return claim(args, store)
+    }
+    Date.now = () => clock
+    let summary
+    try {
+      summary = await runDrawingsPipeline({ deadlineMs: start + 100_000 })
+    } finally {
+      Date.now = realNow
+      RPCS.claim_drawing_jobs = claim
+    }
+
+    assert.deepEqual(jobsOf("process_drawing_page").map((job) => job.status), ["pending", "pending", "pending"])
+    assert.equal(summary.processed, 0)
+    assert.equal(summary.remaining, 3)
+  })
+
+  test("a lease transition that errors throws, and a lost lease reads as not owned", async () => {
+    const job = { job_id: 1, claim_token: "token" }
+    const offline = createFakeSupabase({}, { transition_drawing_job_lease: () => ({ data: null, error: { message: "offline" } }) })
+    const lost = createFakeSupabase({}, { transition_drawing_job_lease: () => ({ data: false, error: null }) })
+
+    await assert.rejects(pipeline.transitionDrawingJobLease(offline, job, "heartbeat"), /offline/)
+    assert.equal(await pipeline.transitionDrawingJobLease(lost, job, "complete"), false)
+  })
+
+  test("a failed claim or queue read is an error, never an empty queue", async () => {
+    const claim = RPCS.claim_drawing_jobs
+    RPCS.claim_drawing_jobs = () => ({ data: null, error: { message: "queue offline" } })
+    try {
+      await assert.rejects(run(), /queue offline/)
+    } finally {
+      RPCS.claim_drawing_jobs = claim
+    }
+
+    enqueue("process_drawing_page", pagePayload())
+    assert.equal(await pipeline.hasPendingDrawingJobs(), true)
+    const from = database.client.from
+    database.client.from = (table) => {
+      const query = from(table)
+      query.run = () => ({ data: null, count: null, error: { message: "read offline" } })
+      return query
+    }
+    await assert.rejects(pipeline.hasPendingDrawingJobs(), /read offline/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Splitting an upload into pages
 // ---------------------------------------------------------------------------
 

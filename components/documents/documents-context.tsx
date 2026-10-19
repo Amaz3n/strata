@@ -68,6 +68,7 @@ export function useDocumentsSearchInput() {
 interface DocumentsProviderProps {
   children: ReactNode
   project: { id?: string; name: string }
+  dealId?: string | null
   initialFiles: FileWithUrls[]
   initialCounts: Record<string, number>
   initialFolders: string[]
@@ -155,6 +156,7 @@ function getExpiringDueRange(quickFilter: QuickFilter) {
 export function DocumentsProvider({
   children,
   project,
+  dealId = null,
   initialFiles,
   initialCounts,
   initialFolders,
@@ -617,6 +619,7 @@ export function DocumentsProvider({
     () => ({
       projectId: project.id,
       projectName: project.name,
+      dealId,
       files: visibleFiles,
       folders,
       folderItemCounts,
@@ -681,6 +684,7 @@ export function DocumentsProvider({
       toggleFolderExpanded,
       project.id,
       project.name,
+      dealId,
     ]
   )
 

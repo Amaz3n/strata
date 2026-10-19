@@ -18,7 +18,7 @@ export const HEARD_ABOUT = [
   "Other",
 ]
 
-export const TIMEFRAMES = ["Immediately", "1–3 months", "3–6 months", "6–12 months", "Over a year"]
+export const TIMEFRAMES = ["Immediately", "1–3 months", "3–6 months", "6–12 months", "Over a year"] as const
 
 export const PRICE_RANGES = [
   "Under $300K",
@@ -36,7 +36,7 @@ export const PRICE_RANGES = [
  * an older vocabulary, or an imported value. Without this the edit sheet would
  * render an unmatched value as "Not set" and quietly erase it on the next save.
  */
-export function withCurrent(options: string[], current: string | null): string[] {
+export function withCurrent(options: readonly string[], current: string | null): readonly string[] {
   const value = current?.trim()
   if (!value || options.includes(value)) return options
   return [value, ...options]

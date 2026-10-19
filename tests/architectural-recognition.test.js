@@ -1,7 +1,6 @@
 const assert = require("node:assert/strict")
 const crypto = require("node:crypto")
 const { beforeEach, describe, test } = require("node:test")
-const sharp = require("sharp")
 
 const { createFakeSupabase } = require("./support/fake-supabase")
 const { freshRequire, stubModule } = require("./support/modules")
@@ -412,31 +411,6 @@ describe("classifying from the original PDF", () => {
   })
 
   // Exercises lib/services/original-sheet-raster directly; it belongs in tests/original-sheet-raster.test.js.
-  test("the advertised window budget renders at off-grid positions without rejection or density loss", async () => {
-    const handle = await realOriginal.openOriginalSheetRaster({
-      supabase,
-      orgId: "org-a",
-      fileId: "file-a",
-      pageIndex: 0,
-      imageWidth: 600,
-      imageHeight: 300,
-      region: wholeSheet,
-    })
-    try {
-      const capacity = handle.recognitionWindowBudget(wholeSheet, 32)
-      const y0 = 0.27257102457077476
-      for (const x0 of [0.18, 0.26560186393319307, 0.3409259259259259, 0.675]) {
-        const crop = await handle.renderSourceWindow({ x0, y0, x1: x0 + capacity.x, y1: y0 + capacity.y }, 32)
-        const { width, height } = await sharp(crop.data).metadata()
-        assert.ok(width <= 32 && height <= 32)
-        assert.equal(crop.renderDpi, 300)
-        assert.equal(crop.sampling.kind, "native-raster")
-      }
-    } finally {
-      handle.close()
-    }
-  })
-
   test("source facts keep original image provenance across a fresh extraction", async () => {
     const first = createArchitecturalRecognizer(calibrated)
     await first(request)

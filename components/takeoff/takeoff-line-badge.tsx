@@ -54,21 +54,17 @@ export function TakeoffLineBadge({
   metadata,
   liveQuantity,
   projectId,
-  prospectId,
   className,
-  rowId,
   sourceMissing,
   measurement,
 }: {
   metadata?: Record<string, any> | null;
   /** The line's current quantity, as edited — string or number, both accepted. */
   liveQuantity: number | string | null | undefined;
-  /** Absent on prospect-scoped work, where there are no project drawings to link to. */
+  /** Absent on deal pricing, which measures through its own takeover. */
   projectId?: string | null;
-  prospectId?: string | null;
   /** Spacing the host row needs; the badge renders nothing when there is no takeoff. */
   sourceMissing?: boolean;
-  rowId?: string;
   measurement?: ConditionRollup;
   className?: string;
 }) {
@@ -95,11 +91,6 @@ export function TakeoffLineBadge({
     condition: takeoff.condition_id,
     takeoff: "1",
   });
-  if (prospectId && rowId) {
-    params.set("destination", "pricing_worksheet");
-    params.set("target", prospectId);
-    params.set("row", rowId);
-  }
 
   return (
     <div
@@ -162,9 +153,9 @@ export function TakeoffLineBadge({
           </div>
         </details>
       )}
-      {(prospectId || projectId) && !takeoff.detached && !sourceMissing && (
+      {projectId && !takeoff.detached && !sourceMissing && (
         <a
-          href={`${prospectId ? `/pipeline/${prospectId}/plans` : `/projects/${projectId}/drawings`}?${params}`}
+          href={`/projects/${projectId}/drawings?${params}`}
           className="inline-flex items-center gap-0.5 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
         >
           {needsReview || changed ? "Review changes" : "Show on plans"}

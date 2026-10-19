@@ -138,8 +138,18 @@ export interface BidPriceBenchmarkSignal {
   deviation_pct?: number | null
 }
 
+export interface BidPortalSheet {
+  id: string
+  sheet_number: string
+  sheet_title: string | null
+  discipline: string | null
+}
+
 export interface BidPortalData {
   packageFiles: FileMetadata[]
+  /** The plan sheets this request is priced from, chosen by the builder. */
+  sheets: BidPortalSheet[]
+  siteWalkAt: string | null
   addenda: BidPortalAddendum[]
   submissions: BidPortalSubmission[]
   currentSubmission?: BidPortalSubmission
@@ -533,7 +543,7 @@ export async function validateBidPortalPin({
 export async function loadBidPortalData(access: BidPortalAccess, token: string): Promise<BidPortalData> {
   const supabase = createServiceSupabaseClient()
 
-  const [packageLinksResult, addendaResult, submissionsResult, scopeItemsResult, draftResult, rfisResult] = await Promise.all([
+  const [packageLinksResult, addendaResult, submissionsResult, scopeItemsResult, draftResult, rfisResult, sheetsResult, termsResult] = await Promise.all([
     supabase
       .from("file_links")
       .select(
@@ -590,7 +600,25 @@ export async function loadBidPortalData(access: BidPortalAccess, token: string):
           .neq("status", "draft")
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [] }),
+    supabase
+      .from("bid_package_sheets")
+      .select("drawing_sheet:drawing_sheets(id, sheet_number, sheet_title, discipline, sort_order)")
+      .eq("org_id", access.org_id)
+      .eq("bid_package_id", access.bidPackage.id),
+    supabase
+      .from("bid_packages")
+      .select("site_walk_at")
+      .eq("org_id", access.org_id)
+      .eq("id", access.bidPackage.id)
+      .maybeSingle(),
   ])
+
+  // Sheets and terms ride a migration that may not be applied yet; without it the request simply has none.
+  const sheets = (sheetsResult.error ? [] : (sheetsResult.data ?? []))
+    .flatMap((link) => resolveRelation(link.drawing_sheet) ?? [])
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.sheet_number.localeCompare(b.sheet_number))
+    .map(({ id, sheet_number, sheet_title, discipline }) => ({ id, sheet_number, sheet_title, discipline }))
+  const terms = termsResult.error ? null : termsResult.data
 
   const packageFiles = (packageLinksResult.data ?? [])
     .filter((link) => link.file)
@@ -668,6 +696,8 @@ export async function loadBidPortalData(access: BidPortalAccess, token: string):
 
   return {
     packageFiles,
+    sheets,
+    siteWalkAt: terms?.site_walk_at ?? null,
     addenda: addenda.map((addendum) => ({
       id: addendum.id,
       number: addendum.number,

@@ -16,10 +16,10 @@ try {
 }
 
 const related = new Set([
-  "deal-documents.test.js", "proposal-documents.test.js", "estimate-draft.test.js",
-  "estimate-precon-lifecycle.test.js", "estimate-qualification.test.js", "draft-save-queue.test.js",
-  "bid-package-parent.test.js", "prospect-contact-logging.test.js", "task-mentions-scope-db.test.js",
-  "prospect-edit.test.js", "prospect-write-access.test.js", "estimate-document-integrity.test.js",
+  "deal-documents.test.js", "proposal-documents.test.js", "estimate-draft.test.js", "draft-save-queue.test.js",
+  "estimate-commercial.test.js", "estimates.test.js", "estimate-portal.test.js", "estimate-issuance.test.js",
+  "estimate-document-authorization.test.js", "bids.test.js", "bid-intelligence.test.js", "prospects.test.js",
+  "prospect-write-access.test.js", "conversions.test.js", "tasks-db.test.js", "prospects-db.test.js",
 ]);
 const files = readdirSync(new URL("../tests/", import.meta.url))
   .filter(name => name.endsWith(".test.js") && (name.startsWith("precon-") || name.startsWith("bid-pricing-") || related.has(name)))

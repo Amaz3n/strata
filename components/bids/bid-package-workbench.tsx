@@ -124,6 +124,8 @@ interface BidPackageWorkbenchProps {
   intelligenceError: string | null
   companies: Company[]
   award: BidPackageAward | null
+  /** Inside a deal's Bids tab: the deal owns the page's padding, entrance and title. */
+  embedded?: boolean
 }
 
 /**
@@ -145,6 +147,7 @@ export function BidPackageWorkbench({
   intelligenceError: initialIntelligenceError,
   companies,
   award: initialAward,
+  embedded = false,
 }: BidPackageWorkbenchProps) {
   const [pkg, setPkg] = useState(initialPackage)
   const [invites, setInvites] = useState(initialInvites)
@@ -600,10 +603,14 @@ export function BidPackageWorkbench({
   const locked = pkg.status === "awarded" || pkg.status === "cancelled"
 
   return (
-    <div className="desk-rise mx-auto w-full max-w-[1600px] space-y-4 px-4 pb-16 pt-5 sm:px-6">
+    <div className={embedded ? "space-y-4" : "desk-rise mx-auto w-full max-w-[1600px] space-y-4 px-4 pb-16 pt-5 sm:px-6"}>
       <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-balance">{pkg.title}</h1>
+          {embedded ? (
+            <h2 className="text-xl font-semibold tracking-tight text-balance">{pkg.title}</h2>
+          ) : (
+            <h1 className="text-2xl font-semibold tracking-tight text-balance">{pkg.title}</h1>
+          )}
           <p className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-muted-foreground">
             <span>
               {pkg.trade ?? "No trade"}

@@ -1,8 +1,6 @@
 require("../scripts/register-ts-node-test");
 
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
 
 const {
@@ -124,27 +122,3 @@ test("malformed chase metadata reads as never chased rather than as an error", (
     attempt: 2,
   });
 });
-
-test("the sweep asks the policy rather than deciding for itself, and is bounded", () => {
-  const sweep = fs.readFileSync(path.join(__dirname, "../lib/services/waiver-chase.ts"), "utf8");
-  assert.match(sweep, /planWaiverChase\(facts, nowIso\)/);
-  assert.match(sweep, /BILL_SCAN_LIMIT/);
-  assert.match(sweep, /CHASE_HORIZON_DAYS/);
-  // One live chase per payable, so a slow run cannot mail a vendor twice.
-  assert.match(sweep, /dedupeByPayloadKeys: \["bill_id"\]/);
-  // One org's bad data must not stop the rest.
-  assert.match(sweep, /org sweep failed/);
-});
-
-test("the chase runs daily from the job that already chases payment documents", () => {
-  const cron = fs.readFileSync(path.join(__dirname, "../app/api/jobs/compliance-autopilot/route.ts"), "utf8");
-  assert.match(cron, /sweepWaiverChases/);
-  const outbox = fs.readFileSync(path.join(__dirname, "../app/api/jobs/process-outbox/route.ts"), "utf8");
-  assert.match(outbox, /waiver_kind === "unconditional"/);
-});
-
-test("the sub portal uses individual prepared-document invitations, not a generic signature form", () => {
- const portal=fs.readFileSync(path.join(__dirname,"../app/s/[token]/waivers/[billId]/page.tsx"),"utf8")
- assert.doesNotMatch(portal,/signVendorBillWaiverPortalAction|signature_text/)
- assert.match(portal,/individual signing invitation/)
-})

@@ -3,7 +3,7 @@
 > Reference. How Arc's area takeoff and 3D recognition are measured: the data
 > split, how references are traced, the scoring tools and the frozen release
 > protocol. The work plan that uses this is
-> [`plans/takeoff-reliability-gameplan.md`](plans/takeoff-reliability-gameplan.md).
+> [`plans/plan-recognition-engine-gameplan.md`](plans/plan-recognition-engine-gameplan.md).
 
 Accuracy is measured against traced references, never inferred from valid
 polygons, label coverage, proposal counts or test passes.

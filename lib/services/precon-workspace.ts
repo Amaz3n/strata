@@ -224,23 +224,30 @@ export async function savePreconDecision(
   return { id: result.data.id };
 }
 
+/**
+ * Open conditions that hold the agreement or the start. A client's question is
+ * not one of them for the agreement: it goes out with the proposal, the client
+ * answers it there, and signing refuses while any is unanswered.
+ */
 export async function assertPreconDecisionGate(
   prospectId: string,
   gate: "agreement" | "start",
 ) {
   const { service, orgId } = await workspaceContext(prospectId, false);
-  const { count, error } = await service
+  let query = service
     .from("precon_decisions")
     .select("id", { count: "exact", head: true })
     .eq("org_id", orgId)
     .eq("prospect_id", prospectId)
     .eq("status", "open")
     .eq(gate === "agreement" ? "blocks_agreement" : "blocks_start", true);
+  if (gate === "agreement") query = query.neq("kind", "client_decision");
+  const { count, error } = await query;
   if (error)
     throw new Error(`Unable to verify outstanding decisions: ${error.message}`);
   if (count)
     throw new Error(
-      `Resolve or explicitly accept the ${count} outstanding ${gate === "agreement" ? "agreement" : "start"} condition${count === 1 ? "" : "s"} in the preconstruction workspace first.`,
+      `Resolve or accept the ${count} open ${gate === "agreement" ? "agreement" : "start"} condition${count === 1 ? "" : "s"} on this deal first.`,
     );
 }
 

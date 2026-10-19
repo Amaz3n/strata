@@ -763,3 +763,86 @@ async function generateAndAttachDrawSummary({
 
   return record.id
 }
+
+/**
+ * The signed agreement's payment schedule becomes the job's draws. Each payment
+ * is its share of the base price, the last absorbing rounding; the options the
+ * client picked are billed with the first, as the agreement told them. A job
+ * that already has draws keeps them: the schedule is a starting point, not a
+ * second source of truth.
+ */
+export async function createDrawsFromPaymentSchedule(input: {
+  projectId: string
+  sourceEstimateId: string
+  baseCents: number
+  optionsCents: number
+  payments: Array<{ name: string; when: string; percent: number }>
+}) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireAuthorization({
+    permission: "project.manage",
+    userId,
+    orgId,
+    projectId: input.projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: input.projectId,
+  })
+  if (!input.payments.length) return { created: 0 }
+  const [{ paymentAmounts, paymentPercentTotal }, existing, contract] = await Promise.all([
+    import("@/lib/precon/proposal-documents"),
+    supabase.from("draw_schedules").select("id").eq("org_id", orgId).eq("project_id", input.projectId).limit(1).maybeSingle(),
+    supabase
+      .from("contracts")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("project_id", input.projectId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+  if (existing.error) throw new Error(`Unable to check the job's draws: ${existing.error.message}`)
+  if (contract.error) throw new Error(`Unable to load the job's contract: ${contract.error.message}`)
+  if (existing.data) return { created: 0 }
+  if (paymentPercentTotal(input.payments) !== 100) throw new Error("The signed payment schedule does not add to 100%.")
+
+  const amounts = paymentAmounts(input.baseCents, input.payments)
+  amounts[0] += input.optionsCents
+  const rows = input.payments.map((payment, index) => ({
+    org_id: orgId,
+    project_id: input.projectId,
+    contract_id: contract.data?.id ?? null,
+    draw_number: index + 1,
+    title: payment.name,
+    description: payment.when || null,
+    amount_cents: amounts[index],
+    percent_of_contract: payment.percent,
+    due_trigger: "approval",
+    status: "pending",
+    metadata: {
+      source: "estimate_execution",
+      source_estimate_id: input.sourceEstimateId,
+      ...(payment.when ? { due_trigger_label: payment.when } : {}),
+    },
+  }))
+  const { data, error } = await supabase.from("draw_schedules").insert(rows).select("id, draw_number, amount_cents")
+  if (error) throw new Error(`Unable to create the job's draws: ${error.message}`)
+
+  await recordEvent({
+    orgId,
+    eventType: "draw_schedule_created",
+    entityType: "project",
+    entityId: input.projectId,
+    payload: { source_estimate_id: input.sourceEstimateId, draws: rows.length, total_cents: amounts.reduce((sum, amount) => sum + amount, 0) },
+  })
+  await recordAudit({
+    orgId,
+    action: "insert",
+    entityType: "draw_schedule",
+    entityId: input.projectId,
+    after: { draws: data ?? [] },
+    source: "draw.from_payment_schedule",
+  })
+  return { created: rows.length }
+}

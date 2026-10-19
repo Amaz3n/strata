@@ -128,6 +128,7 @@ import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
 import { unwrapAction } from "@/lib/action-result"
 import { formatQuantityWithUom } from "@/lib/drawings/measure"
 import { getConditionLandingSheetAction } from "@/app/(app)/drawings/takeoff-actions"
+import { useSheetViewer } from "./use-sheet-viewer"
 
 // The viewer only mounts once a sheet is opened; keep its 2k+ lines (and
 // GPU viewer/react-pdf chunks) out of the register's initial bundle.
@@ -141,7 +142,6 @@ type SaveMarkupInput = import("./drawing-viewer").SaveMarkupInput
 
 interface DrawingsSetsViewProps {
   measurementContext?: MeasurementContext
-  prospectId?: string
   estimateId?: string
   preconstruction?: boolean
   initialSets: DrawingSet[]
@@ -391,7 +391,6 @@ function describeProcessingStage(set: DrawingSet | null) {
 
 export function DrawingsSetsView({
   measurementContext,
-  prospectId,
   estimateId,
   preconstruction = false,
   initialSets,
@@ -454,17 +453,6 @@ export function DrawingsSetsView({
   const [reviewRevisionId, setReviewRevisionId] = useState<string | null>(null)
   const [pendingDraft, setPendingDraft] = useState<RevisionDraftStatus | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const viewerSheetCacheRef = useRef<
-    Map<
-      string,
-      {
-        fileUrl: string | null
-        sheet: DrawingSheet
-        markups: DrawingMarkup[]
-        pins: DrawingPin[]
-      }
-    >
-  >(new Map())
 
   // Delete confirms
   const [setToDelete, setSetToDelete] = useState<DrawingSet | null>(null)
@@ -504,16 +492,7 @@ export function DrawingsSetsView({
   const [knownVersionCount, setKnownVersionCount] = useState(0)
 
   // Viewer state
-  const [viewerOpen, setViewerOpen] = useState(false)
-  const [viewerVersionsOpen, setViewerVersionsOpen] = useState(false)
-  const [viewerSheet, setViewerSheet] = useState<DrawingSheet | null>(null)
-  const [viewerSheets, setViewerSheets] = useState<DrawingSheet[]>([])
-  const [viewerUrl, setViewerUrl] = useState<string | null>(null)
-  const [viewerMarkups, setViewerMarkups] = useState<DrawingMarkup[]>([])
-  const [viewerPins, setViewerPins] = useState<DrawingPin[]>([])
-  const [viewerHighlightedPinId, setViewerHighlightedPinId] = useState<
-    string | null
-  >(null)
+  const viewer = useSheetViewer()
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [createPosition, setCreatePosition] = useState<{
     x: number
@@ -528,7 +507,6 @@ export function DrawingsSetsView({
       !deletedSheetIds.current.has(sheet.id) &&
       !deletedSetIds.current.has(sheet.drawing_set_id)), [])
 
-  const sheetOpenRequestIdRef = useRef(0)
   const initialSheetHandledRef = useRef(false)
   const conditionLandingHandledRef = useRef<string | null>(null)
   const [conditionLandingError, setConditionLandingError] = useState<{ scopeKey: string; message: string } | null>(null)
@@ -1276,115 +1254,11 @@ export function DrawingsSetsView({
     [sheetsBySet],
   )
 
+  const { openSheet } = viewer
   const handleViewSheet = useCallback(
-    async (sheet: DrawingSheet, highlightPinId?: string | null, openVersions?: boolean) => {
-      const requestId = ++sheetOpenRequestIdRef.current
-      const siblings = sheetsBySet.get(sheet.drawing_set_id) ?? [sheet]
-      setViewerSheets(siblings)
-      const cached = viewerSheetCacheRef.current.get(sheet.id)
-      if (cached) {
-        setViewerSheet(cached.sheet)
-        setViewerHighlightedPinId(highlightPinId ?? null)
-        setViewerUrl(cached.fileUrl)
-        setViewerMarkups(cached.markups)
-        setViewerPins(cached.pins)
-        setViewerVersionsOpen(openVersions ?? false)
-        setViewerOpen(true)
-        return
-      }
-
-      setViewerSheet(sheet)
-      setViewerHighlightedPinId(highlightPinId ?? null)
-      setViewerUrl(null)
-      setViewerMarkups([])
-      setViewerPins([])
-      setViewerVersionsOpen(openVersions ?? false)
-      setViewerOpen(true)
-
-      try {
-        const hasTiles =
-          !!(sheet as any).tile_base_url && !!(sheet as any).tile_manifest
-
-        // The user is looking at an unrendered sheet — jump its page job to
-        // the front of the processing queue. Fire-and-forget.
-        if (!hasTiles) {
-          void prioritizeSheetProcessingAction(sheet.id).catch(() => {})
-        }
-        const hasOptimized =
-          !!sheet.image_full_url &&
-          !!sheet.image_medium_url &&
-          !!sheet.image_thumbnail_url
-
-        const [signedImages, url, markups, pins] = await Promise.all([
-          hasOptimized && !hasTiles
-            ? getSheetOptimizedImageUrlsAction(sheet.id).catch(() => null)
-            : Promise.resolve(null),
-          getSheetDownloadUrlAction(sheet.id).catch(() => null),
-          listDrawingMarkupsAction({ drawing_sheet_id: sheet.id }).catch(
-            () => [],
-          ),
-          listDrawingPinsWithEntitiesAction(sheet.id).catch(() => []),
-        ])
-
-        if (sheetOpenRequestIdRef.current !== requestId) return
-
-        if (signedImages && !hasTiles) {
-          setViewerSheet((prev) => {
-            if (!prev || prev.id !== sheet.id) return prev
-            return {
-              ...prev,
-              image_thumbnail_url:
-                signedImages.thumbnailUrl ?? prev.image_thumbnail_url ?? null,
-              image_medium_url:
-                signedImages.mediumUrl ?? prev.image_medium_url ?? null,
-              image_full_url:
-                signedImages.fullUrl ?? prev.image_full_url ?? null,
-              image_width: signedImages.width ?? prev.image_width ?? null,
-              image_height: signedImages.height ?? prev.image_height ?? null,
-            }
-          })
-        }
-
-        if (!hasOptimized && !hasTiles && !url) {
-          toast.error("Sheet file not available")
-          setViewerOpen(false)
-          return
-        }
-
-        const resolvedSheet =
-          signedImages && !hasTiles
-            ? {
-                ...sheet,
-                image_thumbnail_url:
-                  signedImages.thumbnailUrl ?? sheet.image_thumbnail_url ?? null,
-                image_medium_url:
-                  signedImages.mediumUrl ?? sheet.image_medium_url ?? null,
-                image_full_url:
-                  signedImages.fullUrl ?? sheet.image_full_url ?? null,
-                image_width: signedImages.width ?? sheet.image_width ?? null,
-                image_height: signedImages.height ?? sheet.image_height ?? null,
-              }
-            : sheet
-
-        viewerSheetCacheRef.current.set(sheet.id, {
-          fileUrl: url,
-          sheet: resolvedSheet,
-          markups,
-          pins,
-        })
-
-        setViewerSheet(resolvedSheet)
-        setViewerUrl(url)
-        setViewerMarkups(markups)
-        setViewerPins(pins)
-      } catch (err) {
-        console.error("Failed to open sheet:", err)
-        if (sheetOpenRequestIdRef.current === requestId) {
-          toast.error("Failed to load sheet")
-        }
-      }
-    },
-    [sheetsBySet],
+    (sheet: DrawingSheet, highlightPinId?: string | null, openVersions?: boolean) =>
+      openSheet(sheet, sheetsBySet.get(sheet.drawing_set_id) ?? [sheet], { highlightPinId, openVersions }),
+    [openSheet, sheetsBySet],
   )
 
   useEffect(() => {
@@ -1430,85 +1304,6 @@ export function DrawingsSetsView({
     return () => { cancelled = true }
   }, [handleViewSheet, initialConditionId, initialSheetId, selectedProjectId, takeoffPlanVersionId, sheetsBySet, conditionLandingRetry])
 
-  const handleSaveMarkup = async (markup: SaveMarkupInput) => {
-    try {
-      const created = unwrapAction(await createDrawingMarkupAction(markup))
-      setViewerMarkups((prev) => [...prev, created])
-      if (viewerSheet) {
-        const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
-        if (cached) {
-          viewerSheetCacheRef.current.set(viewerSheet.id, {
-            ...cached,
-            markups: [...cached.markups, created],
-          })
-        }
-      }
-    } catch (err) {
-      console.error(err)
-      toast.error("Couldn't save that redline")
-    }
-  }
-
-  /**
-   * Re-read the open sheet's markups after the server saved some on its own
-   * (rooms filled from detection, accepted counts, moved measurements).
-   */
-  const handleMarkupsChanged = useCallback(() => {
-    const sheet = viewerSheet
-    if (!sheet) return
-    void listDrawingMarkupsAction({ drawing_sheet_id: sheet.id })
-      .then((markups) => {
-        setViewerMarkups(markups)
-        const cached = viewerSheetCacheRef.current.get(sheet.id)
-        if (cached) viewerSheetCacheRef.current.set(sheet.id, { ...cached, markups })
-      })
-      .catch(() => {})
-  }, [viewerSheet])
-
-  /**
-   * A finished measurement. Same write path, different feedback: the panel
-   * reports the rollup, so the toast names the quantity instead of saying
-   * "saved" and leaving the user to hunt for the number.
-   */
-  const handleSaveMeasurement = async (markup: SaveMarkupInput) => {
-    const created = unwrapAction(await createDrawingMarkupAction(markup))
-    setViewerMarkups((prev) => [...prev, created])
-    if (viewerSheet) {
-      const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
-      if (cached) {
-        viewerSheetCacheRef.current.set(viewerSheet.id, {
-          ...cached,
-          markups: [...cached.markups, created],
-        })
-      }
-    }
-    if (created.quantity !== null && created.uom) {
-      toast.success(`${formatQuantityWithUom(created.quantity, created.uom)} measured`)
-    } else {
-      toast.success("Measurement saved — set the sheet scale to price it")
-    }
-  }
-
-  const handleDeleteMarkup = async (markupId: string) => {
-    try {
-      unwrapAction(await deleteDrawingMarkupAction(markupId))
-      setViewerMarkups((prev) => prev.filter((m) => m.id !== markupId))
-      if (viewerSheet) {
-        const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
-        if (cached) {
-          viewerSheetCacheRef.current.set(viewerSheet.id, {
-            ...cached,
-            markups: cached.markups.filter((markup) => markup.id !== markupId),
-          })
-        }
-      }
-      toast.success("Markup deleted")
-    } catch (err) {
-      console.error(err)
-      toast.error("Failed to delete markup")
-    }
-  }
-
   const handleCreatePin = (x: number, y: number) => {
     setCreatePosition({ x, y })
     setCreateDialogOpen(true)
@@ -1536,13 +1331,13 @@ export function DrawingsSetsView({
       default:
         router.push(base)
     }
-    setViewerOpen(false)
+    viewer.close()
   }
 
   const handleCreateFromDrawing = async (input: any) => {
-    if (!viewerSheet || !createPosition) return
+    if (!viewer.sheet || !createPosition) return
     try {
-      const pinProjectId = input.project_id ?? viewerSheet.project_id
+      const pinProjectId = input.project_id ?? viewer.sheet.project_id
       let entityId: string | null = null
 
       // Freeze what the item is about. The pin keeps pointing at the live
@@ -1554,7 +1349,7 @@ export function DrawingsSetsView({
       if (input.entityType === "rfi" || input.entityType === "punch_list") {
         const half = SNAPSHOT_REGION_SIZE / 2
         const snapshot = await captureDrawingRegionSnapshotAction({
-          sheetId: viewerSheet.id,
+          sheetId: viewer.sheet.id,
           region: {
             x: Math.max(0, Math.min(1 - SNAPSHOT_REGION_SIZE, createPosition.x - half)),
             y: Math.max(0, Math.min(1 - SNAPSHOT_REGION_SIZE, createPosition.y - half)),
@@ -1618,7 +1413,7 @@ export function DrawingsSetsView({
 
       const pin = unwrapAction(await createDrawingPinAction({
         project_id: pinProjectId,
-        drawing_sheet_id: viewerSheet.id,
+        drawing_sheet_id: viewer.sheet.id,
         x_position: createPosition.x,
         y_position: createPosition.y,
         entity_type: input.entityType,
@@ -1627,19 +1422,9 @@ export function DrawingsSetsView({
         status: "open",
       }))
 
-      setViewerPins((prev) => [...prev, pin])
-      if (viewerSheet) {
-        const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
-        if (cached) {
-          viewerSheetCacheRef.current.set(viewerSheet.id, {
-            ...cached,
-            pins: [...cached.pins, pin],
-          })
-        }
-      }
+      viewer.addPin(pin)
       setCreateDialogOpen(false)
       setCreatePosition(null)
-      setViewerHighlightedPinId(pin.id)
       toast.success("Created and pinned to drawing")
     } catch (err) {
       console.error(err)
@@ -2658,33 +2443,32 @@ export function DrawingsSetsView({
         />
       )}
 
-      {viewerOpen && viewerSheet && (
+      {viewer.open && viewer.sheet && (
         <DrawingViewer
           measurementContext={measurementContext}
-          prospectId={prospectId}
           estimateId={estimateId}
-          sheet={viewerSheet}
-          initialVersionsOpen={viewerVersionsOpen}
-          fileUrl={viewerUrl ?? undefined}
-          markups={viewerMarkups}
-          pins={viewerPins}
-          highlightedPinId={viewerHighlightedPinId ?? undefined}
-          onClose={() => setViewerOpen(false)}
-          onSaveMarkup={handleSaveMarkup}
-          onSaveMeasurement={handleSaveMeasurement}
-          onDeleteMarkup={handleDeleteMarkup}
-          onMarkupsChanged={handleMarkupsChanged}
+          sheet={viewer.sheet}
+          initialVersionsOpen={viewer.versionsOpen}
+          fileUrl={viewer.url ?? undefined}
+          markups={viewer.markups}
+          pins={viewer.pins}
+          highlightedPinId={viewer.highlightedPinId ?? undefined}
+          onClose={viewer.close}
+          onSaveMarkup={viewer.saveMarkup}
+          onSaveMeasurement={viewer.saveMeasurement}
+          onDeleteMarkup={viewer.deleteMarkup}
+          onMarkupsChanged={viewer.markupsChanged}
           onCreatePin={preconstruction ? undefined : handleCreatePin}
-          takeoffProjectId={viewerSheet.project_id ?? selectedProjectId ?? null}
+          takeoffProjectId={viewer.sheet.project_id ?? selectedProjectId ?? null}
           takeoffPlanVersionId={takeoffPlanVersionId ?? null}
           canWriteTakeoff={canWriteTakeoff}
           initialConditionId={initialConditionId ?? null}
           onPinClick={handlePinClick}
-          sheets={viewerSheets}
+          sheets={viewer.sheets}
           onNavigateSheet={handleViewSheet}
-          imageThumbnailUrl={viewerSheet.image_thumbnail_url}
-          imageWidth={viewerSheet.image_width}
-          imageHeight={viewerSheet.image_height}
+          imageThumbnailUrl={viewer.sheet.image_thumbnail_url}
+          imageWidth={viewer.sheet.image_width}
+          imageHeight={viewer.sheet.image_height}
           modelTarget={modelTarget}
           modelUnavailable={modelUnavailable}
           canWriteModel={canWriteModel}
@@ -2697,9 +2481,9 @@ export function DrawingsSetsView({
         open={createDialogOpen}
         onOpenChange={setCreateDialogOpen}
         onCreate={handleCreateFromDrawing}
-        sheet={viewerSheet}
+        sheet={viewer.sheet}
         position={createPosition || { x: 0, y: 0 }}
-        projectId={viewerSheet?.project_id ?? selectedProjectId ?? ""}
+        projectId={viewer.sheet?.project_id ?? selectedProjectId ?? ""}
       />
 
       {isDragActive && (

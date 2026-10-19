@@ -20,8 +20,8 @@ export type DealQuestion = {
 
 /**
  * What the client must decide before they sign. Questions print in the client's
- * document, where the client can answer them; an open question keeps the price
- * at budget, because a signed number cannot rest on an unanswered one.
+ * proposal, where the client answers them; the proposal cannot be signed while
+ * one is open, because a signed number cannot rest on an unanswered question.
  */
 export function DealQuestions({
   dealId,
@@ -59,10 +59,10 @@ export function DealQuestions({
           Questions for {who}
         </h2>
         <p className="text-xs text-muted-foreground">
-          They appear in {who}&apos;s document. Open questions hold the price at budget.
+          They appear in {who}&apos;s proposal, and {who} answers them there before signing.
         </p>
       </div>
-      <ul className="divide-y border">
+      <ul className="divide-y border bg-card">
         {!questions.length && (
           <li className="px-4 py-3 text-sm text-muted-foreground">
             Nothing to ask yet. Add anything {who} must decide before signing.

@@ -12,6 +12,7 @@ const {
   worksheetTotals,
   worksheetEstimateLines,
   worksheetQuoteIssues,
+  parseQuickLine,
 } = require("../lib/precon/pricing-worksheet");
 const row = (description, cost, extra = {}) =>
   pricingRowSchema.parse({
@@ -173,3 +174,15 @@ test("overlapping coverage, mixed optionality and inconsistent lump-sum markup c
   );
 });
 
+
+test("a typed line reads its quantity, unit and rate, or a lump sum, and never invents a price", () => {
+  assert.deepEqual(parseQuickLine("Gutters 180 lf 12"), { description: "Gutters", quantity: 180, unit: "lf", unit_cost_cents: 1200 });
+  assert.deepEqual(parseQuickLine("Drywall 3,900 SF x $2.85"), { description: "Drywall", quantity: 3900, unit: "sf", unit_cost_cents: 285 });
+  assert.deepEqual(parseQuickLine("Tile 240 sf"), { description: "Tile", quantity: 240, unit: "sf", unit_cost_cents: null });
+  assert.deepEqual(parseQuickLine("Permits $2,400"), { description: "Permits", quantity: 1, unit: "ls", unit_cost_cents: 240000 });
+  assert.deepEqual(parseQuickLine("Dumpsters 4.5k"), { description: "Dumpsters", quantity: 1, unit: "ls", unit_cost_cents: 450000 });
+  // A number that reads as part of the name is not a price.
+  assert.deepEqual(parseQuickLine("Level 2 framing"), { description: "Level 2 framing", quantity: 1, unit: "ls", unit_cost_cents: null });
+  assert.deepEqual(parseQuickLine("Bath 2"), { description: "Bath 2", quantity: 1, unit: "ls", unit_cost_cents: null });
+  assert.equal(parseQuickLine("   "), null);
+});

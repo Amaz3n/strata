@@ -53,15 +53,16 @@ built from `--primary` is fine; one built from `#4f46e5` is not).
 
 ### The crossing allowlist
 
-Three identity elements may appear **inside** the ascetic zone:
+Four identity elements may appear **inside** the ascetic zone:
 
 | Element | Where | Why |
 |---|---|---|
 | `components/ui/project-avatar.tsx` | Anywhere a project is named | Identity + fast visual keying across 200 rows |
 | Empty-state illustration | The empty state only | Nothing to scan yet; the page is not doing work |
 | Brand mark | Sidebar, header | It is the brand |
+| `.deal-cta` (`components/pipeline/pipeline.css`) | The pipeline's New deal button only | A deal is where every job begins; one glossy control marks the desk's single creating action |
 
-Nothing else crosses. If you want to add a fourth, it goes in this table in the
+Nothing else crosses. If you want to add a fifth, it goes in this table in the
 same change — an undocumented exception is drift.
 
 ---

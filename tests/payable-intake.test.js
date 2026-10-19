@@ -1,127 +1,181 @@
-require("../scripts/register-ts-node-test")
-const test = require("node:test")
+"use strict"
+
+/**
+ * Reading a vendor invoice into a draft bill (`processPayableIntake`,
+ * lib/services/payable-intake.ts) and the upload rules in front of it
+ * (lib/payables/intake.ts).
+ *
+ * A scan only ever fills a DRAFT, it never overwrites a person's edit, and a
+ * stuck or failed scan leaves an editable draft rather than a spinner.
+ * Replaced boundaries: the model extraction, storage, and file linking.
+ */
+
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
-const vm = require("node:vm")
-const ts = require("typescript")
-const { invoiceFileError, INVOICE_MAX_BYTES } = require("../lib/payables/intake")
+const test = require("node:test")
 
-function harness(extract, overrides = {}, timers = {}) {
-  let row = { id: "bill", org_id: "org", updated_at: "v0", status: "pending", total_cents: 0,
-    metadata: { creation_state: "draft", intake: { actor_id: "actor", name: "bill.pdf", stage: "queued" } }, ...overrides }
-  let revision = 0
-  let writes = 0
-  const db = { from(table) {
-    assert.equal(table, "vendor_bills")
-    let patch; const filters = []
-    const query = {
-      select() { return query }, update(value) { patch = structuredClone(value); return query },
-      eq(key, value) { filters.push([key, value]); return query },
-      maybeSingle() { return query },
-      then(resolve, reject) {
-        return Promise.resolve().then(() => {
-          const matched = filters.every(([key, value]) => (key === "metadata->>creation_state" ? row.metadata.creation_state : row[key]) === value)
-          if (!matched) return { data: null, error: null }
-          if (patch) { row = { ...row, ...patch, updated_at: `v${++revision}` }; writes++ }
-          return { data: structuredClone(row), error: null }
-        }).then(resolve, reject)
-      },
-    }
-    return query
-  } }
-  const testModule = { exports: {} }
-  const stubs = {
-    "server-only": {},
-    "@/lib/payables/intake": require("../lib/payables/intake"),
-    "@/lib/services/payable-file-duplicates": { payableFileDuplicateWarning: async () => null }, "@/lib/supabase/server": { createServiceSupabaseClient: () => db },
-    "@/lib/services/document-extraction": { extractPayableInvoiceFromFile: (_, options) => extract(options, {
-      edit: patch => { row = { ...row, ...patch, updated_at: `v${++revision}` } },
-    }) },
-    "@/lib/services/file-links": { attachFileWithServiceRole: async () => {} },
-    "@/lib/storage/files-storage": {}, "@/lib/services/audit": { recordAudit: async () => {} },
-  }
-  vm.runInNewContext(ts.transpileModule(fs.readFileSync("lib/services/payable-intake.ts", "utf8"), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText, { module: testModule, exports: testModule.exports, require: name => {
-    if (!(name in stubs)) throw new Error(`Unexpected dependency ${name}`)
-    return stubs[name]
-  }, Date, JSON, Error, console, setTimeout: timers.setTimeout ?? setTimeout, clearTimeout })
-  return { view: bill => testModule.exports.intakeRow(bill), run: () => testModule.exports.processPayableIntake("bill", "org", {}), row: () => row, writes: () => writes }
+const { createServiceHarness, id, ORG, ACTOR } = require("./support/service")
+const { freshRequire, stubModule } = require("./support/modules")
+
+const { invoiceFileError, payableIntakeError, INVOICE_MAX_BYTES } = require("@/lib/payables/intake")
+
+let extract
+stubModule("@/lib/services/document-extraction", {
+  extractPayableInvoiceFromFile: (_file, options) => extract(options),
+})
+stubModule("@/lib/services/file-links", { attachFileWithServiceRole: async () => {} })
+stubModule("@/lib/storage/files-storage", { downloadFilesObject: async () => Buffer.from("%PDF") })
+
+const { intakeRow, processPayableIntake } = freshRequire("lib/services/payable-intake.ts")
+
+const BILL = id(1)
+const PDF = new File([Buffer.from("%PDF")], "bill.pdf", { type: "application/pdf" })
+
+const INVOICE = {
+  billable: true,
+  vendorName: "Vendor",
+  vendorId: null,
+  billNumber: "INV-1",
+  totalDollars: 125,
+  billDate: "2026-09-07",
+  dueDate: null,
+  lines: [{ description: "Work", amountCents: 12500 }],
+  notes: [],
+  model: "test",
 }
-const invoice = { billable: true, vendorName: "Vendor", vendorId: null, billNumber: "INV-1", totalDollars: 125,
-  billDate: "2026-09-07", dueDate: null, lines: [{ description: "Work", amountCents: 12500 }], notes: [], model: "test" }
 
-test("rejects empty, unsupported and oversized uploads before scanning", () => {
+function setup(intake = {}) {
+  return createServiceHarness({
+    tables: {
+      vendor_bills: [
+        {
+          id: BILL,
+          org_id: ORG,
+          status: "pending",
+          total_cents: 0,
+          updated_at: "2026-09-07T00:00:00+00:00",
+          metadata: { creation_state: "draft", intake: { actor_id: ACTOR, name: "bill.pdf", stage: "queued", ...intake } },
+        },
+      ],
+    },
+  })
+}
+
+const bill = (service) => service.db.vendor_bills[0]
+const run = (service) => service.run(() => processPayableIntake(BILL, ORG, PDF))
+const later = (ms) => new Date(Date.now() + ms).toISOString()
+
+test("empty, unsupported and oversized uploads are refused before any scan", () => {
   assert.match(invoiceFileError({ size: 0, type: "application/pdf" }), /empty/)
   assert.match(invoiceFileError({ size: INVOICE_MAX_BYTES + 1, type: "application/pdf" }), /20 MB/)
   assert.match(invoiceFileError({ size: 10, type: "text/html" }), /Choose a PDF/)
   assert.equal(invoiceFileError({ size: INVOICE_MAX_BYTES, type: "application/pdf" }), null)
 })
-test("streamed values remain provisional, and final extraction stays a draft", async () => {
-  const h = harness(async options => {
-    await options.onPartial({ vendor_name: "Vendor", total: 100 })
-    assert.equal(h.row().total_cents, 0)
-    assert.equal(h.row().metadata.intake.preview.amount, 10000)
-    return invoice
-  })
-  await h.run()
-  assert.equal(h.row().total_cents, 12500)
-  assert.equal(h.row().metadata.creation_state, "draft")
-  assert.equal(h.row().status, "pending")
-  assert.equal(h.row().metadata.intake.stage, "ready")
-  const writes = h.writes()
-  await h.run()
-  assert.equal(h.writes(), writes, "outbox redelivery must not reapply extraction")
-})
-test("late extraction cannot overwrite a human edit", async () => {
-  const h = harness(async (_, { edit }) => { edit({ total_cents: 9900 }); return invoice })
-  await h.run()
-  assert.equal(h.row().total_cents, 9900)
-  assert.equal(h.row().metadata.intake.stage, "failed")
-  assert.match(h.row().metadata.intake.error, /edits were kept/)
-})
-test("failed scans and non-invoices leave an editable draft", async () => {
-  for (const extract of [async () => { throw new Error("Provider unavailable") }, async () => ({ ...invoice, billable: false })]) {
-    const h = harness(extract)
-    await h.run()
-    assert.equal(h.row().metadata.intake.stage, "failed")
-    assert.equal(h.row().metadata.creation_state, "draft")
-    assert.equal(h.row().total_cents, 0)
-  }
-})
-test("an active lease prevents duplicate model calls", async () => {
-  let called = false
-  const h = harness(async () => { called = true; return invoice }, { metadata: { creation_state: "draft", intake: {
-    stage: "reading", lease_until: new Date(Date.now() + 60000).toISOString(),
-  } } })
-  await assert.rejects(h.run(), /already running/)
-  assert.equal(called, false)
-})
-test("expired leases recover without creating another payable", async () => {
-  const h = harness(async () => invoice, { metadata: { creation_state: "draft", intake: {
-    stage: "reading", lease_until: new Date(Date.now() - 1000).toISOString(),
-  } } })
-  await h.run()
-  assert.equal(h.row().id, "bill")
-  assert.equal(h.row().metadata.intake.stage, "ready")
+
+test("a scan error keeps its cause but never a credential", () => {
+  assert.equal(payableIntakeError(new Error("The PDF is password protected")), "The PDF is password protected")
+  assert.equal(payableIntakeError({ message: "Storage unavailable" }), "Storage unavailable")
+  assert.doesNotMatch(payableIntakeError(new Error("Invalid Bearer secret-token key=sk-secret123")), /secret-token|sk-secret123/)
 })
 
-test("expired scans display an actionable failure instead of an endless reading status", () => {
-  const h = harness(async () => invoice)
-  const row = h.view({ id: "bill", total_cents: 0, metadata: { intake: { name: "bill.pdf", stage: "reading", lease_until: new Date(Date.now() - 1000).toISOString() } } })
+test("streamed values are only a preview; the finished scan fills the draft and stays a draft", async () => {
+  const service = setup()
+  extract = async (options) => {
+    await options.onPartial({ vendor_name: "Vendor", total: 100 })
+    assert.equal(bill(service).total_cents, 0)
+    assert.equal(bill(service).metadata.intake.preview.amount, 10000)
+    return INVOICE
+  }
+  await run(service)
+
+  assert.equal(bill(service).total_cents, 12500)
+  assert.equal(bill(service).bill_number, "INV-1")
+  assert.equal(bill(service).status, "pending")
+  assert.equal(bill(service).metadata.creation_state, "draft")
+  assert.equal(bill(service).metadata.intake.stage, "ready")
+  assert.equal(service.audits.length, 1)
+
+  const writes = service.writes().length
+  await run(service)
+  assert.equal(service.writes().length, writes, "a redelivered job does not apply the scan again")
+})
+
+test("a scan that finishes after a person edited the draft keeps the person's edit", async () => {
+  const service = setup()
+  extract = async () => {
+    Object.assign(bill(service), { total_cents: 9900, updated_at: "2026-09-07T01:00:00+00:00" })
+    return INVOICE
+  }
+  await run(service)
+
+  assert.equal(bill(service).total_cents, 9900)
+  assert.equal(bill(service).metadata.intake.stage, "failed")
+  assert.match(bill(service).metadata.intake.error, /edits were kept/)
+})
+
+test("a failed scan or a document that is not an invoice leaves an editable draft", async () => {
+  for (const failure of [
+    async () => {
+      throw new Error("Provider unavailable")
+    },
+    async () => ({ ...INVOICE, billable: false }),
+  ]) {
+    const service = setup()
+    extract = failure
+    await run(service)
+    assert.equal(bill(service).metadata.intake.stage, "failed")
+    assert.equal(bill(service).metadata.creation_state, "draft")
+    assert.equal(bill(service).total_cents, 0)
+  }
+})
+
+test("a running scan holds a lease, and an expired lease is taken over without a second bill", async () => {
+  const running = setup({ stage: "reading", lease_until: later(60_000) })
+  let called = false
+  extract = async () => {
+    called = true
+    return INVOICE
+  }
+  await assert.rejects(run(running), /already running/)
+  assert.equal(called, false)
+
+  const abandoned = setup({ stage: "reading", lease_until: later(-1000) })
+  await run(abandoned)
+  assert.equal(abandoned.db.vendor_bills.length, 1)
+  assert.equal(bill(abandoned).metadata.intake.stage, "ready")
+})
+
+test("an abandoned scan shows as a failure to retry, not an endless reading state", () => {
+  const row = intakeRow({
+    id: BILL,
+    total_cents: 0,
+    metadata: { intake: { name: "bill.pdf", stage: "reading", lease_until: later(-1000) } },
+  })
   assert.equal(row.stage, "failed")
   assert.match(row.error, /timed out/)
 })
 
-test("a stalled extraction fails within its overall deadline and ignores late streaming updates", async () => {
-  let partial
-  const h = harness(async options => { partial = options.onPartial; return new Promise(() => {}) }, {}, {
-    setTimeout: callback => setTimeout(callback, 1),
+test("a stalled scan fails at its deadline and ignores anything it streams afterwards", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const service = setup()
+  let stream
+  let started
+  const scanning = new Promise((resolve) => {
+    started = resolve
   })
-  await h.run()
-  assert.equal(h.row().metadata.intake.stage, "failed")
-  assert.match(h.row().metadata.intake.error, /timed out/)
-  const writes = h.writes()
-  await partial({ vendor_name: "Late vendor", total: 55 })
-  assert.equal(h.writes(), writes)
+  extract = (options) => {
+    stream = options.onPartial
+    started()
+    return new Promise(() => {})
+  }
+
+  const done = run(service)
+  await scanning
+  t.mock.timers.tick(110_000)
+  await done
+
+  assert.equal(bill(service).metadata.intake.stage, "failed")
+  assert.match(bill(service).metadata.intake.error, /timed out/)
+  const writes = service.writes().length
+  await stream({ vendor_name: "Late vendor", total: 55 })
+  assert.equal(service.writes().length, writes)
 })

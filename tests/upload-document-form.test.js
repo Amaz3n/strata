@@ -1,52 +1,95 @@
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('typescript')
-function load(relative,mocks={}){
-  const code=ts.transpileModule(fs.readFileSync(path.resolve(__dirname,'..',relative),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText
-  const loadedModule={exports:{}}
-  Function('exports','require','module',code)(loadedModule.exports,name=>name in mocks?mocks[name]:require(name),loadedModule)
-  return loadedModule.exports
+const assert = require("node:assert/strict")
+const { beforeEach, test } = require("node:test")
+
+const { freshRequire, stubModule } = require("./support/modules")
+
+// Boundaries: the browser transfer queue (IndexedDB + storage) and the
+// organization upload server action.
+const queued = []
+const orgUploads = []
+stubModule("lib/files/active-transfer-queue.ts", {
+  getActiveDocumentTransferQueue: () => ({
+    async enqueue(file, options) {
+      queued.push({ file, options })
+      return { id: "project-file", file_name: file.name }
+    },
+  }),
+})
+stubModule("app/(app)/documents/actions.ts", {
+  async uploadFileAction(form) {
+    orgUploads.push(form)
+    return { success: true, data: { id: "org-file" } }
+  },
+})
+
+const { uploadDocumentForm } = freshRequire("lib/files/upload-document-form.ts")
+
+function projectForm(fields = {}) {
+  const form = new FormData()
+  form.set("file", new File(["content"], "report.pdf", { type: "application/pdf" }))
+  form.set("projectId", "project")
+  for (const [key, value] of Object.entries(fields)) form.set(key, value)
+  return form
 }
-function fixture(){
-  const uploads=[],legacy=[]
-  const api=load('lib/files/upload-document-form.ts',{
-    '@/app/(app)/documents/actions':{uploadFileAction:async form=>{legacy.push(form);return {success:true,data:{id:'org-file'}}}},
-    '@/lib/action-result':load('lib/action-result.ts'),
-    '@/lib/validation/files':load('lib/validation/files.ts'),
-    './active-transfer-queue':{getActiveDocumentTransferQueue:()=>({enqueue:async(file,options)=>{uploads.push({file,options});return {id:'project-file',file_name:file.name}}})},
+
+beforeEach(() => {
+  queued.length = 0
+  orgUploads.length = 0
+})
+
+test("a project upload carries every form field through the transfer queue", async () => {
+  const result = await uploadDocumentForm(
+    projectForm({
+      folderPath: "/Contracts",
+      category: "contracts",
+      visibility: "private",
+      description: "Signed copy",
+      tags: " one, two , ,three",
+      shareWithClients: "true",
+      shareWithSubs: "false",
+    }),
+  )
+
+  assert.deepEqual(result, { success: true, data: { id: "project-file", file_name: "report.pdf" } })
+  assert.deepEqual(queued[0].options, {
+    projectId: "project",
+    folderPath: "/Contracts",
+    category: "contracts",
+    visibility: "private",
+    description: "Signed copy",
+    tags: ["one", "two", "three"],
+    shareWithClients: true,
+    shareWithSubs: false,
   })
-  return {...api,uploads,legacy}
-}
-function form(project=true){const value=new FormData();value.set('file',new File(['content'],'report.pdf',{type:'application/pdf'}));if(project)value.set('projectId','project');return value}
-test('project forms preserve folder, category, visibility, description, tags and explicit share flags through the queue',async()=>{
-  const f=fixture(),value=form()
-  for(const [key,item]of Object.entries({folderPath:'/Contracts',category:'contracts',visibility:'private',description:'Signed copy',tags:' one, two , ,three',shareWithClients:'true',shareWithSubs:'false'}))value.set(key,item)
-  const result=await f.uploadDocumentForm(value)
-  assert.equal(result.success,true)
-  assert.equal(result.data.id,'project-file')
-  assert.deepEqual(f.uploads[0].options,{projectId:'project',folderPath:'/Contracts',category:'contracts',visibility:'private',description:'Signed copy',tags:['one','two','three'],shareWithClients:true,shareWithSubs:false})
-  assert.equal(f.legacy.length,0)
+  assert.equal(orgUploads.length, 0)
 })
-test('absent folder keeps category defaults while an explicitly empty folder selects root',async()=>{
-  const f=fixture(),defaultFolder=form(),root=form()
-  root.set('folderPath','')
-  await f.uploadDocumentForm(defaultFolder);await f.uploadDocumentForm(root)
-  assert.equal(f.uploads[0].options.folderPath,undefined)
-  assert.equal(f.uploads[1].options.folderPath,'')
-  assert.equal(f.uploads[0].options.visibility,'public')
-  assert.equal(f.uploads[0].options.shareWithClients,undefined)
-  assert.deepEqual(f.uploads[0].options.tags,[])
+
+test("an absent folder keeps the category default; an empty one selects the root", async () => {
+  await uploadDocumentForm(projectForm())
+  await uploadDocumentForm(projectForm({ folderPath: "" }))
+
+  const [absent, root] = queued.map((entry) => entry.options)
+  assert.equal(absent.folderPath, undefined)
+  assert.equal(root.folderPath, "")
+  assert.equal(absent.visibility, "public")
+  assert.equal(absent.shareWithClients, undefined)
+  assert.deepEqual(absent.tags, [])
 })
-test('organization-owned uploads retain the existing authenticated action contract',async()=>{
-  const f=fixture(),value=form(false)
-  assert.deepEqual(await f.uploadDocumentForm(value),{success:true,data:{id:'org-file'}})
-  assert.equal(f.uploads.length,0)
-  assert.equal(f.legacy[0],value)
+
+test("an upload without a project goes through the organization action unchanged", async () => {
+  const form = projectForm()
+  form.delete("projectId")
+
+  assert.deepEqual(await uploadDocumentForm(form), { success: true, data: { id: "org-file" } })
+  assert.equal(orgUploads[0], form)
+  assert.equal(queued.length, 0)
 })
-test('invalid files and categories return action failures without enqueueing uploads',async()=>{
-  const f=fixture(),value=new FormData()
-  value.set('file','not a file')
-  assert.deepEqual(await f.uploadDocumentForm(value),{success:false,error:'No file provided'})
-  const badCategory=form();badCategory.set('category','invalid')
-  assert.equal((await f.uploadDocumentForm(badCategory)).success,false)
-  assert.equal(f.uploads.length,0)
-  assert.equal(f.legacy.length,0)
+
+test("a missing file or an unknown category fails the action without uploading", async () => {
+  const noFile = new FormData()
+  noFile.set("file", "not a file")
+
+  assert.deepEqual(await uploadDocumentForm(noFile), { success: false, error: "No file provided" })
+  assert.equal((await uploadDocumentForm(projectForm({ category: "invalid" }))).success, false)
+  assert.equal(queued.length + orgUploads.length, 0)
 })

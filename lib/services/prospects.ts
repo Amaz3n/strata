@@ -583,10 +583,16 @@ export async function createProspect({
 export async function setProspectFollowUp({
   prospectId,
   nextFollowUpAt,
+  note = null,
+  outcome = "cleared",
   orgId,
 }: {
   prospectId: string;
   nextFollowUpAt: string | null;
+  /** What the follow-up is for; it reads back in the deal's timeline. */
+  note?: string | null;
+  /** Clearing one either means it was done or that it no longer applies. */
+  outcome?: "done" | "cleared";
   orgId?: string;
 }): Promise<Prospect> {
   const {
@@ -625,7 +631,7 @@ export async function setProspectFollowUp({
       : "prospect_follow_up_cleared",
     entityType: "prospect",
     entityId: prospectId,
-    payload: nextFollowUpAt ? { next_follow_up_at: nextFollowUpAt } : {},
+    payload: nextFollowUpAt ? { next_follow_up_at: nextFollowUpAt, note: note?.trim() || null } : { outcome },
   });
 
   const contacts = await listProspectContacts(prospectId, resolvedOrgId);
@@ -835,7 +841,7 @@ export async function completeProspectFollowUp({
   orgId?: string;
 }): Promise<Prospect> {
   await logProspectContact({ prospectId, input, orgId });
-  return setProspectFollowUp({ prospectId, nextFollowUpAt: null, orgId });
+  return setProspectFollowUp({ prospectId, nextFollowUpAt: null, outcome: "done", orgId });
 }
 
 /**

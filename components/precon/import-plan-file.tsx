@@ -8,19 +8,17 @@ import { createDrawingSetFromDocument } from "@/app/(app)/drawings/actions";
 import { unwrapAction } from "@/lib/action-result";
 
 export function ImportPlanFile({
-  prospectId,
   projectId,
   fileId,
   fileName,
 }: {
-  prospectId?: string;
   projectId: string;
   fileId: string;
   fileName: string;
 }) {
   const [pending, startTransition] = useTransition();
   const router = useRouter();
-  const base = prospectId ? `/pipeline/prospects/${prospectId}` : `/projects/${projectId}`;
+  const base = `/projects/${projectId}`;
   return (
     <section className="flex flex-wrap items-center justify-between gap-4 border border-border/60 bg-card p-5">
       <div>

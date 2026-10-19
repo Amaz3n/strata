@@ -1,48 +1,34 @@
 import { Suspense } from "react";
-import { notFound } from "next/navigation";
-import { connection } from "next/server";
-import { PageLayout } from "@/components/layout/page-layout";
-import { DealWorkbench } from "@/components/pipeline/deal-workbench";
-import { DealSkeleton } from "@/components/pipeline/pipeline-skeletons";
-import { getDealWorkbench } from "@/lib/services/precon-deals";
+import { cacheLife } from "next/cache";
+import { DealOverview } from "@/components/pipeline/deal-overview";
+import { DealTabSkeleton } from "@/components/pipeline/pipeline-skeletons";
+import { listDealActivity } from "@/lib/services/precon-deals";
 
-type Props = {
-  params: Promise<{ dealId: string }>;
-  searchParams: Promise<{ row?: string }>;
-};
+type Props = { params: Promise<{ dealId: string }> };
 
-// A fabricated deal id cannot pass authorization; validate with real ids in dev.
 export const instant = {
   unstable_disableBuildValidation: true,
 };
 
-async function Deal({ params, searchParams }: Props) {
-  await connection();
-  const [{ dealId }, query] = await Promise.all([params, searchParams]);
-  const data = await getDealWorkbench(dealId);
-  if (!data) notFound();
-  return (
-    <PageLayout
-      fullBleed
-      title={data.deal.name}
-      breadcrumbs={[{ label: "Pipeline", href: "/pipeline" }, { label: data.deal.name }]}
-    >
-      <DealWorkbench
-        // Starting pricing turns notes into a saved worksheet; remount so the
-        // worksheet state starts from the saved version instead of an unsaved empty one.
-        key={`${dealId}:${data.workspace.worksheet ? "pricing" : "notes"}`}
-        {...data}
-        focusRow={query.row ?? null}
-        now={new Date().toISOString()}
-      />
-    </PageLayout>
-  );
+// Cached in this browser for the deal's lifetime (see next.config `deal`), so a
+// prefetch carries it and coming back to the tab does not load it again.
+async function loadOverview(dealId: string) {
+  "use cache: private";
+  cacheLife("deal");
+  return listDealActivity(dealId);
 }
 
-export default function DealPage(props: Props) {
+async function Overview({ params }: Props) {
+  const { dealId } = await params;
+  const { activity, truncated } = await loadOverview(dealId);
+  return <DealOverview activity={activity} truncated={truncated} />;
+}
+
+/** The deal's overview: what happened, and what is known about the client and the job. */
+export default function DealOverviewPage(props: Props) {
   return (
-    <Suspense fallback={<DealSkeleton />}>
-      <Deal {...props} />
+    <Suspense fallback={<DealTabSkeleton />}>
+      <Overview {...props} />
     </Suspense>
   );
 }

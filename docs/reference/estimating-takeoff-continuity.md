@@ -4,18 +4,18 @@ The working estimate and Plans & quantities are two views of preconstruction est
 
 ## Entry and return
 
-- An estimate scope row offers Measure, then area/length/count units and Measure from plans. Save the worksheet before navigating. The server provisions the precon resource project if necessary and links a reusable takeoff item to the exact row. Geometry is saved independently; returning without applying never changes its commercial quantity.
+- A deal's pricing line offers Measure, then area/length/count units. The worksheet saves, the server provisions the precon resource project if necessary and links a reusable takeoff item to the exact line, and the full-screen viewer opens over the deal in line mode. Done applies the quantity and rate to that line in one step. Geometry is saved independently; cancelling never changes the line's commercial quantity. See `docs/reference/pipeline.md` (Plans and measuring).
 - Drawings offer Start takeoff. The quantity review can attach a measured item to an existing compatible scope row or create one. An already-linked row cannot be reassigned accidentally, and two selected quantities cannot target one row.
-- A contextual measurement session displays its scope and destination. Applying a row's reviewed quantity returns to that expanded estimate row. Other sessions let the user continue measuring.
+- A contextual measurement session on project drawings (estimate, bid scope, change order) displays its destination and returns there.
 - Project draft estimates, bid packages and unissued draft/pricing change orders have contextual measurement entry points. Production plan-version destinations retain their existing dedicated route. Takeoff never writes directly into an approved budget or issued agreement.
 
 ## Takeoff sidebar
 
 The viewer mode buttons use the primary blue accent for the active mode. Takeoff has one home screen containing measurement entry points and saved quantities; there are no Measure/Quantities tabs or working-item selector.
 
-Area takeoff follows two steps: select and review geometry, then name and save the quantity. Detection and manual floor-area drawing need no condition or price. Saving can create a quantity using only a name and SF/SY unit, or add to an existing compatible quantity. A save retry reuses a newly created destination. Sheet geometry remains reusable for other finishes, with duplicate protection for the same destination. A session opened from an estimate row retains that row's bound quantity.
+Area takeoff follows two steps: select and review geometry, then name and save the quantity. Detection and manual floor-area drawing need no condition or price. Saving can create a quantity using only a name and SF/SY unit, or add to an existing compatible quantity. A save retry reuses a newly created destination. Sheet geometry remains reusable for other finishes, with duplicate protection for the same destination.
 
-Lengths and counts use a compact name/type setup that immediately activates the drawing tool and labels its destination. Converted measurements remain available through advanced setup. Saved rows offer an explicit Measure more action; selecting a row opens its detail instead of silently changing the drawing destination. Applying saved quantities remains a separate review through Use in estimate.
+Lengths and counts use a compact name/type setup that immediately activates the drawing tool and labels its destination. Converted measurements remain available through advanced setup. Saved rows offer an explicit Measure more action; selecting a row opens its detail instead of silently changing the drawing destination. On project drawings, applying saved quantities remains a separate review through Use in estimate; a deal line applies on Done.
 
 ## Quantity and price ownership
 
@@ -39,8 +39,8 @@ Deploy `20260929011236_takeoff_estimating_continuity.sql` before using the new c
 
 ## Verification
 
-- `tests/measurement-context.test.js`: reusable row bindings, permission failures, missing rows and contextual destinations.
+- `tests/measurement-context.test.js`: reusable line bindings, permission failures, missing lines and contextual destinations.
+- `tests/precon-deal-move.test.js`: what new plans do to measured lines (`planChanges()`) and the next move they produce.
 - `tests/precon-takeoff-destinations.test.js`: existing-row mapping, rate protection, quote evidence, mismatched units, missing/foreign mappings, reviewed quantities and lump-sum conversion.
 - `tests/takeoff-continuity-db.test.js`: transactional change-order writes, totals, issued-state/permission/project checks, stale snapshots and rollback. Set `ARC_TEST_PGLITE_MODULE` when PGlite is supplied outside the repository.
-- `pnpm test:estimating-continuity`: real scope-row/review components with deterministic server fixtures; verifies return mapping, provenance, revised quantity warning, light/dark/mobile layouts and browser errors. This is an isolated UI flow, not a live customer mutation.
-- Existing drawing-workspace browser suite and takeoff/drawings/precon regression suites remain part of verification.
+- The drawing-workspace browser suite opens the viewer in line mode; takeoff/drawings/precon regression suites remain part of verification.

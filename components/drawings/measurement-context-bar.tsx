@@ -14,10 +14,8 @@ export function MeasurementContextBar({
       <div className="flex min-w-0 items-center gap-2">
         <Ruler className="size-3.5 shrink-0 text-primary" />
         <span className="truncate">
-          {context.rowLabel
-            ? `Measuring ${context.rowLabel}`
-            : "Measuring scope"}
-          <span className="text-muted-foreground"> · {context.label}</span>
+          Measuring for
+          <span className="text-muted-foreground"> {context.label}</span>
         </span>
       </div>
       <Link
@@ -26,10 +24,10 @@ export function MeasurementContextBar({
       >
         <ArrowLeft className="size-3" />
         Return to{" "}
-        {context.destination === "pricing_worksheet"
-          ? "estimate"
-          : context.destination === "change_order"
-            ? "change order"
+        {context.destination === "change_order"
+          ? "change order"
+          : context.destination === "estimate"
+            ? "estimate"
             : "scope"}
       </Link>
     </div>

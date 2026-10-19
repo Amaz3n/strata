@@ -166,7 +166,8 @@ export function rowPricing(row: PricingRow, worksheet: PricingWorksheet) {
     covered,
     cost,
     source: request?.quote?.company_name ?? row.source,
-    basis: request?.quote ? "quote" : row.basis,
+    // A line marked for bids is your number until a trade's quote lands on it.
+    basis: request?.quote ? "quote" : row.basis === "quote" ? "estimate" : row.basis,
   };
 }
 
@@ -314,4 +315,37 @@ export function worksheetQuoteIssues(
       return [];
     }),
   ];
+}
+
+/** The units a line is measured in; "ls" is a lump sum. */
+export const PRICING_UNITS = ["sf", "lf", "ea", "sy", "sq", "cy", "ls"] as const;
+
+const amount = (text: string) => {
+  const thousands = /k$/i.test(text);
+  const value = Number(text.replace(/k$/i, "").replace(/[$,]/g, ""));
+  return Number.isFinite(value) ? Math.round(value * (thousands ? 1000 : 1) * 100) : null;
+};
+
+/**
+ * A line typed the way people say it: "Gutters 180 lf 12" is 180 LF at $12,
+ * "Permits $2,400" (or "Permits 2.4k") is a lump sum, anything else is just a
+ * name to price later. Never guesses a price the text does not state.
+ */
+export function parseQuickLine(text: string): Pick<PricingRow, "description" | "quantity" | "unit" | "unit_cost_cents"> | null {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (!line) return null;
+  const measured = line.match(/^(.+?) ([\d,]*\.?\d+) ?(sf|lf|ea|sy|sq|cy)\b(?: ?[x×@] ?)? ?(\$?[\d,]*\.?\d+)?$/i);
+  if (measured) {
+    const quantity = Number(measured[2].replace(/,/g, ""));
+    return {
+      description: measured[1],
+      quantity,
+      unit: measured[3].toLowerCase(),
+      unit_cost_cents: measured[4] ? amount(measured[4]) : null,
+    };
+  }
+  const lump = line.match(/^(.+?) (\$?[\d,]*\.?\d+k?)$/i);
+  if (lump && (lump[2].startsWith("$") || /[,k]|\d{3,}/i.test(lump[2])))
+    return { description: lump[1], quantity: 1, unit: "ls", unit_cost_cents: amount(lump[2]) };
+  return { description: line, quantity: 1, unit: "ls", unit_cost_cents: null };
 }

@@ -21,8 +21,8 @@ export async function GET(request: NextRequest, { params }: Context) {
   let destination = base
   if (section === "drawings") destination = `${base}/plans${suffix}`
   else if (section === "documents") destination = `${base}/files${suffix}`
-  else if (section === "bids" && packageId) destination = `${base}/quotes/${encodeURIComponent(packageId)}`
-  else if (search.get("row")) destination = `${base}?row=${encodeURIComponent(search.get("row")!)}`
+  else if (section === "bids" && packageId) destination = `${base}/bids/${encodeURIComponent(packageId)}`
+  else if (search.get("row")) destination = `${base}/pricing?row=${encodeURIComponent(search.get("row")!)}`
 
   // A relative Location preserves the browser's host, including local aliases
   // and reverse-proxy domains, instead of using the server's internal origin.

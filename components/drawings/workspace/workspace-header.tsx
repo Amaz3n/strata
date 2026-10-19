@@ -39,6 +39,8 @@ export interface LayerToggle {
 }
 
 export interface WorkspaceHeaderProps {
+  /** What the workspace was opened to do, said first, with the one button that finishes it. */
+  task?: { label: string; title: string; color: string | null; action: ReactNode };
   sheet: DrawingSheet;
   hasPrev: boolean;
   hasNext: boolean;
@@ -68,6 +70,7 @@ export interface WorkspaceHeaderProps {
 }
 
 export function WorkspaceHeader({
+  task,
   sheet,
   hasPrev,
   hasNext,
@@ -97,6 +100,15 @@ export function WorkspaceHeader({
   const revision = sheet.current_revision_label;
   return (
     <header className="flex h-12 shrink-0 items-center gap-1.5 border-b bg-background px-2">
+      {task && (
+        <div className="mr-1 flex min-w-0 max-w-[40%] items-center gap-2.5 border-r pl-1 pr-3">
+          {task.color && <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: task.color }} aria-hidden />}
+          <span className="grid min-w-0 leading-tight">
+            <span className="truncate text-[11px] text-muted-foreground">{task.label}</span>
+            <span className="truncate text-sm font-semibold">{task.title}</span>
+          </span>
+        </div>
+      )}
       <Button variant="ghost" size="icon-sm" onClick={onToggleRail} aria-label={railOpen ? "Hide sheets" : "Show sheets"} aria-pressed={railOpen}>
         <PanelLeft className="size-4" />
       </Button>
@@ -216,7 +228,8 @@ export function WorkspaceHeader({
           <PanelRight className="size-4" />
         </Button>
       )}
-      <Button variant="ghost" size="icon-sm" onClick={onClose} disabled={closeDisabled} aria-label="Close drawing" className={cn("ml-0.5")}>
+      {task?.action}
+      <Button variant="ghost" size="icon-sm" onClick={onClose} disabled={closeDisabled} aria-label={task ? "Cancel measuring" : "Close drawing"} className={cn("ml-0.5")}>
         <X className="size-4" />
       </Button>
     </header>

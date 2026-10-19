@@ -33,6 +33,7 @@ export function BidPricingPanel({
   context,
   onSelect,
   actionLabel,
+  defaultAlternateIds = [],
   disabled = false,
 }: {
   bidPackage: BidPackage;
@@ -46,13 +47,15 @@ export function BidPricingPanel({
     rationale: string;
   }) => Promise<void>;
   actionLabel?: string;
+  /** Alternates to start ticked when no decision exists yet (the leveling grid's choice). */
+  defaultAlternateIds?: string[];
   disabled?: boolean;
 }) {
   const [rationale, setRationale] = useState(
     submission.pricing_decision?.rationale ?? "",
   );
   const [alternates, setAlternates] = useState<string[]>(
-    submission.pricing_decision?.accepted_alternate_ids ?? [],
+    submission.pricing_decision?.accepted_alternate_ids ?? defaultAlternateIds,
   );
   const [selected, setSelected] = useState(!!submission.pricing_decision);
   const [pending, startTransition] = useTransition();

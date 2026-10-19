@@ -56,12 +56,11 @@ const money = (cents: number) =>
   (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 /** Where the estimator goes to see what they just sent. */
-export function destinationHref(
+function destinationHref(
   target: Pick<TakeoffSyncTarget, "destination" | "id">,
   projectId: string | null,
-  prospectId?: string,
 ): string | null {
-  if (target.destination === "pricing_worksheet") return `/pipeline/${prospectId ?? target.id}`;
+  if (target.destination === "pricing_worksheet") return `/pipeline/${target.id}`;
   if (target.destination === "estimate") return `/estimates/${target.id}`;
   if (target.destination === "change_order" && projectId) return `/projects/${projectId}/change-orders`;
   if (target.destination === "bid_scope" && projectId) return `/projects/${projectId}/bids/${target.id}`;
@@ -86,7 +85,6 @@ export interface EstimateHandoffProps {
   projectId: string | null;
   housePlanVersionId: string | null;
   measurementContext?: MeasurementContext;
-  prospectId?: string;
   estimateId?: string;
   onSent: () => void;
   /** "Review 2 measurements" from a held-back line. */
@@ -102,7 +100,6 @@ export function EstimateHandoff({
   projectId,
   housePlanVersionId,
   measurementContext,
-  prospectId,
   estimateId,
   onSent,
   onReviewRevision,
@@ -116,25 +113,16 @@ export function EstimateHandoff({
   const [included, setIncluded] = useState<Set<string>>(new Set());
   const [overwrites, setOverwrites] = useState<Set<string>>(new Set());
   const [worksheetRows, setWorksheetRows] = useState<Array<{ id: string; label: string; unit: string; conditionId?: string }>>([]);
-  const [mappings, setMappings] = useState<Record<string, string>>(
-    measurementContext?.rowId && measurementContext.conditionId ? { [measurementContext.conditionId]: measurementContext.rowId } : {},
-  );
+  const [mappings, setMappings] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
 
-  const rowMode = !!measurementContext?.rowId;
-  const candidates = useMemo(
-    () =>
-      rowMode
-        ? rollups.filter((row) => row.condition.id === measurementContext?.conditionId)
-        : rollups.filter((row) => row.markup_count > 0),
-    [rollups, rowMode, measurementContext?.conditionId],
-  );
+  const candidates = useMemo(() => rollups.filter((row) => row.markup_count > 0), [rollups]);
   const candidateIds = useMemo(() => candidates.map((row) => row.condition.id), [candidates]);
   const rollupById = useMemo(() => new Map(rollups.map((row) => [row.condition.id, row])), [rollups]);
 
-  // Destinations: the measuring context, then the deal's working estimate,
-  // then the estimate in the URL, then the only writable one.
+  // Destinations: the measuring context, then the estimate in the URL, then
+  // the only writable one.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -158,11 +146,9 @@ export function EstimateHandoff({
         const writable = result.data.filter((candidate) => candidate.writable);
         const preferred = measurementContext
           ? writable.find((candidate) => candidate.destination === measurementContext.destination && candidate.id === measurementContext.targetId)
-          : prospectId
-            ? writable.find((candidate) => candidate.destination === "pricing_worksheet")
-            : estimateId
-              ? writable.find((candidate) => candidate.destination === "estimate" && candidate.id === estimateId)
-              : undefined;
+          : estimateId
+            ? writable.find((candidate) => candidate.destination === "estimate" && candidate.id === estimateId)
+            : undefined;
         setTarget((current) => current && writable.some((candidate) => candidate.id === current.id) ? current : (preferred ?? (writable.length === 1 ? writable[0] : null)));
       })
       .catch(() => {
@@ -174,7 +160,7 @@ export function EstimateHandoff({
     return () => {
       cancelled = true;
     };
-  }, [open, projectId, housePlanVersionId, measurementContext, prospectId, estimateId]);
+  }, [open, projectId, housePlanVersionId, measurementContext, estimateId]);
 
   useEffect(() => {
     if (!open || target?.destination !== "pricing_worksheet") {
@@ -237,7 +223,7 @@ export function EstimateHandoff({
     (row) => included.has(row.condition_id) && !row.blocked_reason && (row.action !== "drift" || overwrites.has(row.condition_id)),
   );
   const deltaCents = toSend.reduce((sum, row) => sum + lineDeltaCents(row), 0);
-  const href = target ? destinationHref(target, projectId, prospectId) : null;
+  const href = target ? destinationHref(target, projectId) : null;
 
   const send = useCallback(async () => {
     if (!target || toSend.length === 0) return;
@@ -264,13 +250,12 @@ export function EstimateHandoff({
       setSent(parts.join(" · ") || "Nothing to change");
       router.refresh();
       onSent();
-      if (measurementContext?.rowId) router.push(measurementContext.returnHref);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Couldn't send these quantities");
     } finally {
       setSending(false);
     }
-  }, [target, toSend, lineMappings, router, onSent, measurementContext]);
+  }, [target, toSend, lineMappings, router, onSent]);
 
   const toggle = (set: Set<string>, id: string) => {
     const next = new Set(set);
@@ -284,7 +269,7 @@ export function EstimateHandoff({
       <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-xl">
         <SheetHeader className="space-y-1 border-b px-5 py-4 text-left">
           <SheetTitle className="text-base">
-            {rowMode && measurementContext?.rowLabel ? `Use measurements for ${measurementContext.rowLabel}` : "Send to estimate"}
+            Send to estimate
           </SheetTitle>
           <SheetDescription className="text-xs">
             Each line keeps a link to its measurements, so a re-measure can update it later.
@@ -297,12 +282,10 @@ export function EstimateHandoff({
                 {targetsError ??
                   (housePlanVersionId
                     ? "This plan version can't take lines — it may already be released."
-                    : prospectId
-                      ? "Create a draft estimate in Pricing first. Your measurements are saved."
-                      : "This project has no draft estimate, bid package or change order to send to yet.")}
+                    : "This project has no draft estimate, bid package or change order to send to yet.")}
               </p>
             ) : (
-              <DestinationPicker targets={targets} value={target} onChange={(next) => { setTarget(next); setMappings({}); }} locked={rowMode} />
+              <DestinationPicker targets={targets} value={target} onChange={(next) => { setTarget(next); setMappings({}); }} />
             )}
           </div>
         </SheetHeader>
@@ -361,7 +344,7 @@ export function EstimateHandoff({
                       overwriting={overwrites.has(row.condition_id)}
                       onOverwrite={() => setOverwrites((set) => toggle(set, row.condition_id))}
                       mapping={
-                        target.destination === "pricing_worksheet" && !rowMode
+                        target.destination === "pricing_worksheet"
                           ? {
                               rows: worksheetRows.filter((item) => !item.conditionId || item.conditionId === row.condition_id),
                               value: mappings[row.condition_id] ?? worksheetRows.find((item) => item.conditionId === row.condition_id)?.id ?? "",
@@ -439,9 +422,7 @@ export function EstimateHandoff({
               {sending && <Loader2 className="size-3.5 animate-spin" />}
               {toSend.length === 0
                 ? "Nothing to send"
-                : rowMode
-                  ? "Use quantity & return to estimate"
-                  : `Send ${toSend.length} to ${DESTINATION_LABELS[target.destination].toLowerCase()}`}
+                : `Send ${toSend.length} to ${DESTINATION_LABELS[target.destination].toLowerCase()}`}
             </Button>
           </div>
         )}
@@ -460,16 +441,14 @@ function DestinationPicker({
   targets,
   value,
   onChange,
-  locked,
 }: {
   targets: Target[];
   value: Target | null;
   onChange: (target: Target) => void;
-  locked: boolean;
 }) {
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild disabled={locked}>
+      <DropdownMenuTrigger asChild>
         <button
           type="button"
           className="flex w-full items-center justify-between gap-3 border bg-card px-3 py-2 text-left transition-colors hover:border-line-strong disabled:pointer-events-none"
@@ -481,7 +460,7 @@ function DestinationPicker({
               {value ? [DESTINATION_LABELS[value.destination], value.detail].filter(Boolean).join(" · ") : `${targets.filter((target) => target.writable).length} available`}
             </span>
           </span>
-          {!locked && <ChevronDown className="size-4 shrink-0 text-muted-foreground" />}
+          <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)] max-w-[34rem]">

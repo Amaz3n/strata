@@ -3,49 +3,35 @@
 import { revalidatePath } from "next/cache";
 import { actionError, type ActionResult } from "@/lib/action-result";
 import {
-  getPricingRequestResources,
   resendPricingInvitation,
   savePricingRequestDetails,
   savePricingWorksheet,
-  createPricingRequest,
-  getPricingQuotes,
   selectPricingQuote,
   sendPricingRequest,
   recordPricingQuote,
 } from "@/lib/services/precon-pricing";
 
-async function run<T>(work: () => Promise<T>): Promise<ActionResult<T>> {
+async function attempt<T>(work: () => Promise<T>): Promise<ActionResult<T>> {
   try {
-    const data = await work();
-    revalidatePath("/pipeline", "layout");
-    return { success: true, data };
+    return { success: true, data: await work() };
   } catch (error) {
     return actionError(error);
   }
 }
+
+async function run<T>(work: () => Promise<T>): Promise<ActionResult<T>> {
+  const result = await attempt(work);
+  if (result.success) revalidatePath("/pipeline", "layout");
+  return result;
+}
+// Autosave: the room holds the live worksheet, so re-running the deal's
+// loaders (and dropping every tab's cached data) on each save only slows it.
 export async function savePricingWorksheetAction(
   id: string,
   input: unknown,
   version: number,
 ) {
-  return run(() => savePricingWorksheet(id, input, version));
-}
-export async function createPricingRequestAction(
-  id: string,
-  input: unknown,
-  version: number,
-) {
-  return run(() => createPricingRequest(id, input, version));
-}
-export async function getPricingQuotesAction(id: string, packageId: string) {
-  try {
-    return {
-      success: true as const,
-      data: await getPricingQuotes(id, packageId),
-    };
-  } catch (error) {
-    return actionError(error);
-  }
+  return attempt(() => savePricingWorksheet(id, input, version));
 }
 export async function selectPricingQuoteAction(
   id: string,
@@ -70,17 +56,6 @@ export async function recordPricingQuoteAction(
   return run(() => recordPricingQuote(id, packageId, input));
 }
 
-export async function getPricingRequestResourcesAction(id: string) {
-  try {
-    return {
-      success: true as const,
-      data: await getPricingRequestResources(id),
-    };
-  } catch (error) {
-    return actionError(error);
-  }
-}
-
 export async function resendPricingInvitationAction(
   id: string,
   packageId: string,
@@ -96,7 +71,6 @@ export async function savePricingRequestDetailsAction(
   return run(() => savePricingRequestDetails(id, packageId, input));
 }
 
-
 export async function getLatestPricingWorksheetAction(id: string) {
   return run(async () => {
     const { getPreconWorkspace } = await import("@/lib/services/precon-workspace");
@@ -105,10 +79,18 @@ export async function getLatestPricingWorksheetAction(id: string) {
   });
 }
 
-export async function retryPricingNoticeAction(id: string, packageId: string, addendumId: string) {
-  return run(async () => (await import("@/lib/services/precon-pricing")).retryPricingNotice(id, packageId, addendumId));
-}
-
 export async function revisePricingRequestScopeAction(id: string, packageId: string, version: number, reason: string) {
   return run(async () => (await import("@/lib/services/precon-pricing")).revisePricingRequestScope(id, packageId, version, reason));
+}
+
+export async function issuePricingRequestAction(id: string, input: unknown, version: number) {
+  return run(async () => (await import("@/lib/services/precon-pricing")).issuePricingRequest(id, input, version));
+}
+
+export async function setPricingBidPlugAction(id: string, packageId: string, itemId: string, plugCents: number | null) {
+  return run(async () => (await import("@/lib/services/precon-pricing")).setPricingBidPlug(id, packageId, itemId, plugCents));
+}
+
+export async function answerPricingQuestionAction(id: string, packageId: string, rfiId: string, body: string) {
+  return run(async () => (await import("@/lib/services/precon-pricing")).answerPricingQuestion(id, packageId, rfiId, body));
 }

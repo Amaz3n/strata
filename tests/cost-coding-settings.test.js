@@ -1,77 +1,139 @@
-require('../scripts/register-ts-node-test')
-const test = require('node:test')
-const assert = require('node:assert/strict')
-const fs = require('node:fs')
-const ts = require('typescript')
-function load(file, modules) {
-  const exports = {}
-  const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
-  new Function('exports', 'require', code)(exports, name => {
-    if (name in modules) return modules[name]
-    throw Error(`Unstubbed dependency: ${name}`)
-  })
-  return exports
-}
-function harness({ permitted = true, reply, rpcError } = {}) {
-  const calls = [], settings = { cost_codes_enabled: true, fiscal_calendar: 'original', billing: { approval: 'dual' } }
-  const client = { rpc: async (name, args) => {
-    calls.push(['rpc', name, args]); Object.assign(settings, args.p_patch)
-    return { data: reply === undefined ? { ...settings } : reply, error: rpcError }
-  } }
-  const service = load('lib/services/cost-coding-settings.ts', {
-    '@/lib/auth/context': { requireOrgMembership: async () => ({ orgId: 'org-a', user: { id: 'actor-a' }, supabase: 'actor-client' }) },
-    '@/lib/supabase/server': { createServiceSupabaseClient: () => { calls.push(['client']); return client } },
-    '@/lib/services/permissions': {
-      requireAnyPermission: async (keys, context) => { calls.push(['guard', keys, context]); if (!permitted) throw Error('Forbidden') },
-      getCurrentUserPermissions: async () => ({ permissions: permitted ? ['org.admin'] : ['org.member'] }),
+"use strict"
+
+/**
+ * The org-wide cost-coding default (`lib/services/cost-coding-settings.ts`), the
+ * settings action that saves it, and how a project resolves its own flag
+ * against it (`lib/financials/cost-codes-enabled.ts`).
+ */
+
+const test = require("node:test")
+const assert = require("node:assert/strict")
+
+const { stubModule, freshRequire } = require("./support/modules")
+
+// This service resolves its caller through `requireOrgMembership()` (the
+// request scope) rather than `requireOrgContext()`; answer it with the
+// harness's actor and client.
+let current = null
+stubModule("@/lib/auth/context", {
+  requireOrgMembership: async () => ({
+    orgId: current.orgId,
+    user: { id: current.userId },
+    supabase: current.client,
+    membership: { org_product_tier: "residential" },
+  }),
+  hasActivePlatformMembership: async () => false,
+})
+const revalidated = []
+stubModule("next/cache", { revalidatePath: (path) => revalidated.push(path) })
+
+const { createServiceHarness, replies, id, ORG, ACTOR } = require("./support/service")
+
+const { getCostCodingSettings, updateCostCodesEnabled } = freshRequire("lib/services/cost-coding-settings.ts")
+const { updateCostCodesEnabledAction } = freshRequire("app/(app)/settings/cost-coding/actions.ts")
+const { getProjectCostCodesEnabled } = freshRequire("lib/financials/cost-codes-enabled.ts")
+
+const PROJECT = id(1)
+const OTHER_SETTINGS = { fiscal_calendar: "original", billing: { approval: "dual" } }
+
+/** An org whose settings already hold other keys; `reply` overrides what the merge RPC answers. */
+function org({ permissions = ["org.admin"], reply, rpcError } = {}) {
+  const service = createServiceHarness({
+    tables: {
+      org_settings: [{ org_id: ORG, settings: { cost_codes_enabled: true, ...OTHER_SETTINGS } }],
+      project_financial_settings: [],
     },
-    '@/lib/financials/cost-codes-enabled': { getOrgCostCodesEnabled: async () => settings.cost_codes_enabled },
-    '@/lib/services/orgs': { getOrgSettings: async () => ({ ...settings }) },
-    '@/lib/services/audit': { recordAudit: async args => calls.push(['audit', args]) },
-    '@/lib/services/events': { recordEvent: async args => calls.push(['event', args]) },
-    '@/lib/validation/cost-coding-settings': require('../lib/validation/cost-coding-settings'),
+    permissions,
+    rpc: {
+      merge_org_settings: ({ p_org_id, p_patch, p_delete_keys }, store) => {
+        const row = store.org_settings.find((entry) => entry.org_id === p_org_id)
+        row.settings = { ...row.settings, ...p_patch }
+        for (const key of p_delete_keys) delete row.settings[key]
+        return { data: reply === undefined ? structuredClone(row.settings) : reply, error: rpcError ?? null }
+      },
+    },
   })
-  return { service, calls, settings }
+  current = service
+  return service
 }
-for (const input of ['false', 'true', 0, 1, null, undefined, {}, []]) test(`rejects nonboolean ${JSON.stringify(input)} before privileged client or mutation`, async () => {
-  const h = harness(); await assert.rejects(h.service.updateCostCodesEnabled(input)); assert.deepEqual(h.calls, [])
+
+const storedSettings = (service) => service.db.org_settings[0].settings
+
+test("an admin turns the default off and on without touching other settings", async () => {
+  for (const enabled of [false, true]) {
+    const service = org()
+    assert.deepEqual(await service.run(() => updateCostCodesEnabled(enabled)), { costCodesEnabled: enabled })
+    assert.deepEqual(storedSettings(service), { cost_codes_enabled: enabled, ...OTHER_SETTINGS })
+    const [audit] = service.audits
+    assert.equal(audit.actorId, ACTOR)
+    assert.equal(audit.orgId, ORG)
+    assert.deepEqual(audit.after, { cost_codes_enabled: enabled })
+  }
 })
-test('direct service mutation requires current actor org admin before privileged access', async () => {
-  const h = harness({ permitted: false }); await assert.rejects(h.service.updateCostCodesEnabled(false), /Forbidden/)
-  assert.deepEqual(h.calls, [['guard', ['org.admin'], { orgId: 'org-a', userId: 'actor-a', supabase: 'actor-client' }]])
+
+test("a non-boolean value or a non-admin caller is refused before anything is written", async () => {
+  for (const input of ["false", "true", 0, 1, null, undefined, {}, []]) {
+    const service = org()
+    await assert.rejects(service.run(() => updateCostCodesEnabled(input)), JSON.stringify(input))
+    assert.deepEqual(service.writes(), [], JSON.stringify(input))
+  }
+
+  const member = org({ permissions: [] })
+  await assert.rejects(member.run(() => updateCostCodesEnabled(false)), /Missing permission/)
+  assert.deepEqual(member.writes(), [])
+  assert.equal(storedSettings(member).cost_codes_enabled, true)
+  assert.deepEqual(member.audits, [])
 })
-for (const enabled of [false, true]) test(`confirmed ${enabled} merges only the flag and audits the actual actor`, async () => {
-  const h = harness(); assert.deepEqual(await h.service.updateCostCodesEnabled(enabled), { costCodesEnabled: enabled })
-  assert.deepEqual(h.calls.find(c => c[0] === 'rpc'), ['rpc', 'merge_org_settings', { p_org_id: 'org-a', p_patch: { cost_codes_enabled: enabled }, p_delete_keys: [] }])
-  assert.equal(h.settings.fiscal_calendar, 'original'); assert.deepEqual(h.settings.billing, { approval: 'dual' })
-  const audit = h.calls.find(c => c[0] === 'audit')[1]; assert.equal(audit.actorId, 'actor-a'); assert.equal(audit.orgId, 'org-a'); assert.deepEqual(audit.after, { cost_codes_enabled: enabled })
+
+test("a save the database cannot confirm is never reported or audited as done", async () => {
+  const cases = [
+    { reply: null },
+    { reply: {} },
+    { reply: [] },
+    { reply: { cost_codes_enabled: "false" } },
+    { reply: { cost_codes_enabled: true } },
+    { rpcError: { message: "unavailable" } },
+  ]
+  for (const options of cases) {
+    const service = org(options)
+    await assert.rejects(service.run(() => updateCostCodesEnabled(false)), /Reload settings|unavailable/)
+    assert.deepEqual(service.audits, [], JSON.stringify(options))
+    assert.deepEqual(service.events, [], JSON.stringify(options))
+  }
 })
-for (const reply of [null, {}, [], { cost_codes_enabled: 'false' }, { cost_codes_enabled: true }]) test(`unverified response ${JSON.stringify(reply)} cannot report a confirmed save`, async () => {
-  const h = harness({ reply }); await assert.rejects(h.service.updateCostCodesEnabled(false), /Reload settings/)
-  assert.ok(!h.calls.some(c => ['audit', 'event'].includes(c[0])))
-})
-test('RPC error propagates without claiming success', async () => {
-  const h = harness({ rpcError: { message: 'unavailable' } }); await assert.rejects(h.service.updateCostCodesEnabled(false), /unavailable/)
-  assert.ok(!h.calls.some(c => c[0] === 'audit'))
-})
-test('member read is available with management permission accurately disclosed', async () => {
-  const h = harness({ permitted: false }); assert.deepEqual(await h.service.getCostCodingSettings(), { costCodesEnabled: true, canManage: false }); assert.deepEqual(h.calls, [])
-})
-test('action returns failure and does not revalidate when service refuses save', async () => {
-  const calls = []
-  const action = load('app/(app)/settings/cost-coding/actions.ts', {
-    'next/cache': { revalidatePath: path => calls.push(path) },
-    '@/lib/action-result': { actionError: e => ({ success: false, error: e.message }) },
-    '@/lib/services/cost-coding-settings': { updateCostCodesEnabled: async () => { throw Error('Forbidden') } },
+
+test("any member reads the default, and is told whether they may change it", async () => {
+  assert.deepEqual(await org({ permissions: [] }).run(() => getCostCodingSettings()), {
+    costCodesEnabled: true,
+    canManage: false,
   })
-  assert.deepEqual(await action.updateCostCodesEnabledAction(false), { success: false, error: 'Forbidden' }); assert.deepEqual(calls, [])
+  assert.deepEqual(await org().run(() => getCostCodingSettings()), { costCodesEnabled: true, canManage: true })
 })
-for (const failed of [true, false]) test(`project override ${failed ? 'read failure is surfaced' : 'absence inherits org default'}`, async () => {
-  const filters = []
-  const query = { select() { return this }, eq(key, value) { filters.push([key, value]); return this }, maybeSingle: async () => ({ data: null, error: failed ? { message: 'policy unavailable' } : null }) }
-  const service = load('lib/financials/cost-codes-enabled.ts', { '@/lib/services/orgs': { getOrgSettings: async () => ({ cost_codes_enabled: false }) } })
-  const work = service.getProjectCostCodesEnabled({ from: () => query }, 'org-a', 'project-a')
-  if (failed) await assert.rejects(work, /policy unavailable/)
-  else assert.equal(await work, false)
-  assert.deepEqual(filters, [['org_id', 'org-a'], ['project_id', 'project-a']])
+
+test("the settings action reports a refused save as a failure and revalidates only on success", async () => {
+  revalidated.length = 0
+  const member = org({ permissions: [] })
+  const refused = await member.run(() => updateCostCodesEnabledAction(false))
+  assert.equal(refused.success, false)
+  assert.match(refused.error, /Missing permission/)
+  assert.deepEqual(revalidated, [])
+
+  const admin = org()
+  assert.deepEqual(await admin.run(() => updateCostCodesEnabledAction(false)), {
+    success: true,
+    data: { costCodesEnabled: false },
+  })
+  assert.deepEqual(revalidated, ["/settings/cost-coding"])
+})
+
+test("a project follows its override, inherits the org default without one, and surfaces a failed read", async () => {
+  const service = org()
+  storedSettings(service).cost_codes_enabled = false
+  assert.equal(await getProjectCostCodesEnabled(service.client, ORG, PROJECT), false)
+
+  service.db.project_financial_settings.push({ org_id: ORG, project_id: PROJECT, cost_codes_enabled: true })
+  assert.equal(await getProjectCostCodesEnabled(service.client, ORG, PROJECT), true)
+
+  service.tamper("project_financial_settings", replies.error("policy unavailable"))
+  await assert.rejects(getProjectCostCodesEnabled(service.client, ORG, PROJECT), /policy unavailable/)
 })

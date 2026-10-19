@@ -606,15 +606,15 @@ function EmptyState({
 }) {
   return (
     <div className={cn("flex flex-col items-center justify-center gap-3 px-6 py-20 text-center", preconstruction && "py-16")}>
-      <div className={cn("flex h-14 w-14 items-center justify-center rounded-none bg-muted", preconstruction && "h-12 w-12 rounded-[16px] border border-border/60 bg-muted/40")}>
+      <div className={cn("flex h-14 w-14 items-center justify-center rounded-none bg-muted", preconstruction && "h-12 w-12 border bg-muted/40")}>
         <Upload className="h-6 w-6 text-muted-foreground" />
       </div>
       <div>
-        <p className="font-medium">{hasFilters ? "No files found" : "No documents yet"}</p>
+        <p className="font-medium">{hasFilters ? "No files found" : preconstruction ? "No files yet" : "No documents yet"}</p>
         <p className="mt-0.5 text-sm text-muted-foreground">
           {hasFilters
             ? "Try adjusting your search or filters."
-            : preconstruction ? "Add scopes, quotes, permits, and project records." : "Upload drawings, contracts, photos, and more to this document library."}
+            : preconstruction ? "Surveys, photos and the client's drawings go here. Trade quotes and the proposals you send file themselves." : "Upload drawings, contracts, photos, and more to this document library."}
         </p>
       </div>
       {!hasFilters ? (

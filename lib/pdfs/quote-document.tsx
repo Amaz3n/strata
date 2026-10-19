@@ -1,5 +1,7 @@
 import { documentTheme } from "@/lib/pdfs/document-theme"
+import { isBuiltInSection, paymentAmounts, type ProposalDocument, type ProposalSectionId } from "@/lib/precon/proposal-documents"
 import { Document, Image, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer"
+import type { ReactNode } from "react"
 import sharp from "sharp"
 
 /**
@@ -14,7 +16,7 @@ import sharp from "sharp"
 
 export type QuoteVariant = "estimate" | "proposal"
 
-export type QuotePricingDisplay = "itemized" | "subtotals" | "lump_sum"
+export type QuotePricingDisplay = "itemized" | "subtotals" | "lump_sum" | "sections"
 
 export type QuoteLine = {
   id?: string | null
@@ -75,6 +77,10 @@ export type QuoteDocumentData = {
   validUntil?: string | null
   /** Signature lines (proposal variant). Builder places real e-sign fields over these. */
   signers?: QuoteSigner[]
+  /** A deal proposal: the sections written around the price, replacing intro, summary, qualifications and terms. */
+  proposal?: ProposalDocument | null
+  /** The builder's questions for the client, and the answers given. */
+  questions?: Array<{ question: string; answer: string | null }>
   lines: QuoteLine[]
 }
 
@@ -163,6 +169,12 @@ const styles = StyleSheet.create({
   sigLabel: { fontSize: 8, color: "#6b6b6b", marginTop: 4 },
   sigMeta: { fontSize: 9, marginTop: 2 },
 
+  sectionTitle: { fontSize: 11, fontWeight: "bold", marginTop: 24, paddingBottom: 5, borderBottomWidth: 1 },
+  subTitle: { fontSize: 10, fontWeight: "bold", marginTop: 10 },
+  faintText: { fontSize: 8.5, color: MUTED, marginTop: 3, lineHeight: 1.4 },
+  twoCols: { flexDirection: "row", gap: 24, marginTop: 8 },
+  bullet: { fontSize: 9.5, lineHeight: 1.5 },
+
   footer: {
     position: "absolute",
     bottom: 28,
@@ -237,6 +249,213 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
     `${line.quantity ?? 1}${line.unit ? ` ${line.unit}` : ""} × ${formatCurrency(unitSellCents(line))}`
 
   const addressLines = (data.orgAddress ?? "").split("\n").map((l) => l.trim()).filter(Boolean)
+  const proposal = data.proposal ?? null
+  const sectionTitle = (title: string) => (
+    <Text style={[styles.sectionTitle, { borderColor: accent }]} minPresenceAhead={40}>{title}</Text>
+  )
+  // "By section": each section's total, with its lines listed by name.
+  const sections: Array<{ name: string; lines: QuoteLine[] }> = []
+  for (const line of mainLines) {
+    if (line.item_type === "group") sections.push({ name: line.description, lines: [] })
+    else {
+      if (!sections.length) sections.push({ name: "Work", lines: [] })
+      sections[sections.length - 1].lines.push(line)
+    }
+  }
+  const basePrice = data.totalCents ?? 0
+  const payments = proposal ? paymentAmounts(basePrice, proposal.payments) : []
+  const proposalSigners: QuoteSigner[] = proposal
+    ? data.signers?.length
+      ? data.signers
+      : [...proposal.signers.map((signer) => ({ role: "Client", name: signer.name })), { role: data.orgName ?? "Builder", name: null }]
+    : signers
+
+  const lineItems = (
+    <>
+      <View style={[styles.breakdownHeader, proposal ? { marginTop: 10, borderColor: HAIRLINE } : { borderColor: accent }]} minPresenceAhead={48}>
+        <Text style={styles.breakdownLabel}>{proposal ? (pricing === "sections" ? "Section" : "Work") : "Scope & pricing"}</Text>
+        {showAmounts ? <Text style={styles.breakdownLabel}>Amount</Text> : null}
+      </View>
+      {pricing === "sections" ? sections.map((section, idx) => (
+        <View key={`section-${idx}`} style={styles.itemRow} wrap={false}>
+          <View style={styles.itemLeft}>
+            <Text style={styles.itemDesc}>{section.name}</Text>
+            <Text style={styles.itemNotes}>
+              {section.lines.map((line) => `${line.description}${line.metadata?.is_allowance === true ? " (allowance)" : ""}`).join(" · ")}
+            </Text>
+          </View>
+          <Text style={styles.itemAmount}>{formatCurrency(section.lines.reduce((sum, line) => sum + lineTotalCents(line), 0))}</Text>
+        </View>
+      )) : mainLines.map((line, idx) =>
+        line.item_type === "group" ? (
+          <View key={`group-${idx}`} style={styles.sectionRow} minPresenceAhead={36}>
+            <Text style={[styles.sectionText, { color: accent }]}>{line.description}</Text>
+          </View>
+        ) : (
+          <View key={`line-${line.id ?? idx}`} style={styles.itemRow} wrap={false}>
+            <View style={styles.itemLeft}>
+              <Text style={styles.itemDesc}>
+                {line.description}
+                {line.metadata?.is_allowance === true ? "  (Allowance)" : ""}
+              </Text>
+              {line.metadata?.notes && !proposal ? <Text style={styles.itemNotes}>{line.metadata.notes}</Text> : null}
+              {showUnitLine ? <Text style={styles.itemUnitLine}>{unitLineText(line)}</Text> : null}
+            </View>
+            {showAmounts ? <Text style={styles.itemAmount}>{formatCurrency(lineTotalCents(line))}</Text> : null}
+          </View>
+        ),
+      )}
+    </>
+  )
+  const optionRows = optionalLines.map((line, idx) => {
+    const isAccepted = isAcceptedOptional(line)
+    return (
+      <View key={`opt-${line.id ?? idx}`} style={styles.optionalRow} wrap={false}>
+        <View style={styles.itemLeft}>
+          <Text style={styles.itemDesc}>{line.description}</Text>
+          {line.metadata?.notes ? <Text style={styles.itemNotes}>{line.metadata.notes}</Text> : null}
+        </View>
+        {isAccepted ? (
+          <Text style={[styles.optionalAmount, { color: accent }]}>
+            Included{showAmounts ? ` · ${formatCurrency(lineTotalCents(line))}` : ""}
+          </Text>
+        ) : showAmounts ? (
+          <Text style={[styles.optionalAmount, { color: MUTED }]}>+ {formatCurrency(lineTotalCents(line))}</Text>
+        ) : null}
+      </View>
+    )
+  })
+  const optionsList = (
+    <View style={styles.optionalSection}>
+      <View style={[styles.breakdownHeader, { marginTop: 0, borderColor: HAIRLINE }]}>
+        <Text style={styles.breakdownLabel}>Optional add-ons</Text>
+      </View>
+      {optionRows}
+    </View>
+  )
+  const totalsBlock = (
+    <View style={styles.totals} wrap={false}>
+      {showAmounts && data.subtotalCents != null ? (
+        <View style={styles.contingencyRow}><Text style={styles.contingencyText}>Subtotal</Text><Text>{formatCurrency(data.totalCents != null ? data.totalCents - (data.taxCents ?? 0) - (data.contingencyCents ?? 0) : data.subtotalCents)}</Text></View>
+      ) : null}
+      {(data.contingencyCents ?? 0) > 0 ? (
+        <View style={styles.contingencyRow}><Text style={styles.contingencyText}>Contingency{data.contingencyPercent ? ` (${data.contingencyPercent}%)` : ""}</Text><Text>{formatCurrency(data.contingencyCents)}</Text></View>
+      ) : null}
+      {(data.taxCents ?? 0) > 0 ? (
+        <View style={styles.contingencyRow}><Text style={styles.contingencyText}>Tax</Text><Text>{formatCurrency(data.taxCents)}</Text></View>
+      ) : null}
+      {data.totalRange ? (
+        <>
+          <View style={[styles.totalRow, { borderColor: accent }]}>
+            <Text style={styles.totalLabel}>Expected range</Text>
+            <Text style={styles.totalValue}>{formatCurrency(data.totalRange.lowCents)} – {formatCurrency(data.totalRange.highCents)}</Text>
+          </View>
+          <Text style={styles.contingencyText}>An estimate to plan with, not a contract. The fixed price follows once trade quotes and measurements are in.</Text>
+        </>
+      ) : (
+        <View style={[styles.totalRow, { borderColor: accent }]}>
+          <Text style={styles.totalLabel}>Total</Text>
+          <Text style={styles.totalValue}>{formatCurrency(data.totalCents)} USD</Text>
+        </View>
+      )}
+    </View>
+  )
+  const questionsList = (data.questions ?? []).map((item, index) => (
+    <View key={index} style={{ marginTop: 6 }}>
+      <Text style={styles.scopeText}>{index + 1}. {item.question}</Text>
+      <Text style={styles.faintText}>{item.answer ?? "Not answered yet."}</Text>
+    </View>
+  ))
+  const signatureLines = (
+    <View style={[styles.sigRow, { flexWrap: "wrap" }]}>
+      {proposalSigners.map((signer, idx) => (
+        <View key={`sig-${idx}`} style={styles.sigCol}>
+          <View style={styles.sigImageBox}>
+            {/* eslint-disable-next-line jsx-a11y/alt-text -- @react-pdf Image has no alt prop */}
+            {signer.signatureImage ? <Image src={signer.signatureImage} style={styles.sigImage} /> : signer.signedAt && signer.name ? (
+              // A typed signature is the signature: the signer's name, as they typed it.
+              <Text style={{ fontFamily: "Times-Italic", fontSize: 16, marginBottom: 4 }}>{signer.name}</Text>
+            ) : null}
+          </View>
+          <Text style={styles.sigLabel}>
+            Signature{signer.role ? ` · ${signer.role}` : ""}
+          </Text>
+          {signer.name ? <Text style={styles.sigMeta}>{signer.name}</Text> : null}
+          <View style={[styles.sigLine, { marginTop: 18 }]}>
+            {signer.signedAt ? <Text style={styles.sigLineText}>{formatDate(signer.signedAt)}</Text> : null}
+          </View>
+          <Text style={styles.sigLabel}>Date</Text>
+        </View>
+      ))}
+    </View>
+  )
+  // Each built-in section's content, or null when it has nothing to show. The
+  // proposal decides the order, the headings and which sections are on.
+  const sectionContent: Record<ProposalSectionId, ReactNode> | null = proposal ? {
+    cover: proposal.cover.trim() ? <Text style={[styles.introText, { marginTop: 8 }]}>{proposal.cover}</Text> : null,
+    scope: proposal.scope.length ? proposal.scope.map((paragraph, index) => (
+      <View key={index} wrap={paragraph.text.length > 1200}>
+        {paragraph.section ? <Text style={styles.subTitle} minPresenceAhead={24}>{paragraph.section}</Text> : null}
+        {paragraph.text ? <Text style={[styles.scopeText, { marginTop: 3 }]}>{paragraph.text}</Text> : null}
+        <Text style={styles.faintText}>{paragraph.lines.join(" · ")}</Text>
+      </View>
+    )) : null,
+    price: <>{lineItems}{totalsBlock}</>,
+    options: optionRows.length ? optionRows : null,
+    allowances: proposal.allowances.length ? (
+      <>
+        {proposal.allowances.map((item, index) => (
+          <View key={index} style={styles.itemRow} wrap={false}>
+            <View style={styles.itemLeft}>
+              <Text style={styles.itemDesc}>{item.description}</Text>
+              {item.section ? <Text style={styles.itemNotes}>{item.section}</Text> : null}
+            </View>
+            <Text style={styles.itemAmount}>{formatCurrency(item.amount_cents)}</Text>
+          </View>
+        ))}
+        <Text style={styles.faintText}>{proposal.allowance_policy}</Text>
+      </>
+    ) : null,
+    inclusions: proposal.inclusions.length || proposal.exclusions.length ? (
+      <View style={styles.twoCols}>
+        {([["Included", proposal.inclusions], ["Not included", proposal.exclusions]] satisfies Array<[string, string[]]>).filter(([, items]) => items.length).map(([name, items]) => (
+          <View key={name} style={{ flex: 1 }}>
+            <Text style={[styles.blockLabel, { marginBottom: 3 }]}>{name}</Text>
+            {items.map((item, index) => <Text key={index} style={styles.bullet}>• {item}</Text>)}
+          </View>
+        ))}
+      </View>
+    ) : null,
+    payments: proposal.payments.length ? proposal.payments.map((payment, index) => (
+      <View key={index} style={styles.itemRow}>
+        <View style={styles.itemLeft}>
+          <Text style={styles.itemDesc}>{payment.name}</Text>
+          {payment.when ? <Text style={styles.itemNotes}>{payment.when}</Text> : null}
+        </View>
+        <Text style={[styles.itemAmount, { color: MUTED, width: 40 }]}>{payment.percent}%</Text>
+        <Text style={[styles.itemAmount, { width: 90 }]}>{formatCurrency(payments[index])}</Text>
+      </View>
+    )) : null,
+    schedule: proposal.start_window ? (
+      <Text style={[styles.scopeText, { marginTop: 8 }]}>
+        We plan to start {proposal.start_window}{proposal.duration_weeks ? ` and finish in about ${proposal.duration_weeks} weeks` : ""}.
+        {proposal.kind === "agreement" ? " We confirm the start date when you sign." : ""}
+      </Text>
+    ) : null,
+    terms: (
+      <>
+        {proposal.terms.trim() ? <Text style={[styles.termsText, { marginTop: 8 }]}>{proposal.terms}</Text> : null}
+        <Text style={styles.faintText}>
+          This proposal is valid until {formatDate(proposal.valid_until)}.
+          {proposal.kind === "budget" ? " It is an estimate for your approval, not a contract. The fixed price follows once it is firm." : ""}
+        </Text>
+      </>
+    ),
+    signatures: proposal.kind === "agreement" ? signatureLines : null,
+    questions: questionsList.length ? questionsList : null,
+  } : null
+  // Short sections stay on one page; long ones may break.
+  const keepTogether = new Set<string>(["allowances", "inclusions", "payments", "schedule", "signatures", "questions"])
 
   return (
     <Document>
@@ -270,138 +489,61 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
         </View>
         <Text style={styles.title} minPresenceAhead={36}>{data.title}</Text>
 
-        {/* Cover note */}
-        {data.intro ? <Text style={styles.introText}>{data.intro}</Text> : null}
-
-        {/* Scope */}
-        {data.summary ? (
-          <View style={styles.scopeBlock}>
-
-            <Text style={styles.scopeText}>{data.summary}</Text>
-          </View>
-        ) : null}
-
-        {/* Line items */}
-        <View style={[styles.breakdownHeader, { borderColor: accent }]} minPresenceAhead={48}>
-          <Text style={styles.breakdownLabel}>Scope & pricing</Text>
-          {showAmounts ? <Text style={styles.breakdownLabel}>Amount</Text> : null}
-        </View>
-        {mainLines.map((line, idx) =>
-          line.item_type === "group" ? (
-            <View key={`group-${idx}`} style={styles.sectionRow} minPresenceAhead={36}>
-              <Text style={[styles.sectionText, { color: accent }]}>{line.description}</Text>
-            </View>
-          ) : (
-            <View key={`line-${line.id ?? idx}`} style={styles.itemRow} wrap={false}>
-              <View style={styles.itemLeft}>
-                <Text style={styles.itemDesc}>
-                  {line.description}
-                  {line.metadata?.is_allowance === true ? "  (Allowance)" : ""}
-                </Text>
-                {line.metadata?.notes ? <Text style={styles.itemNotes}>{line.metadata.notes}</Text> : null}
-                {showUnitLine ? <Text style={styles.itemUnitLine}>{unitLineText(line)}</Text> : null}
+        {proposal ? (
+          proposal.sections.map((section) => {
+            const content = isBuiltInSection(section.key) ? sectionContent?.[section.key] : section.body.trim() ? (
+              <Text style={[styles.scopeText, { marginTop: 8 }]}>{section.body}</Text>
+            ) : null
+            return content ? (
+              <View key={section.key} wrap={!keepTogether.has(section.key) && (isBuiltInSection(section.key) || section.body.length > 1200)}>
+                {sectionTitle(section.title)}
+                {content}
               </View>
-              {showAmounts ? <Text style={styles.itemAmount}>{formatCurrency(lineTotalCents(line))}</Text> : null}
-            </View>
-          ),
+            ) : null
+          })
+        ) : (
+          <>
+            {data.intro ? <Text style={styles.introText}>{data.intro}</Text> : null}
+            {data.summary ? (
+              <View style={styles.scopeBlock}>
+                <Text style={styles.scopeText}>{data.summary}</Text>
+              </View>
+            ) : null}
+            {lineItems}
+            {optionalLines.length > 0 ? optionsList : null}
+            {totalsBlock}
+            {data.questions?.length ? (
+              <View wrap={false}>
+                <Text style={[styles.blockLabel, { marginTop: 20 }]}>Questions for you</Text>
+                {questionsList}
+              </View>
+            ) : null}
+            {data.inclusions ? (
+              <View style={styles.termsBox} wrap={data.inclusions.length > 1200}>
+                <Text style={styles.blockLabel} minPresenceAhead={28}>Included in this price</Text>
+                <Text style={styles.termsText}>{data.inclusions}</Text>
+              </View>
+            ) : null}
+            {data.exclusions ? (
+              <View style={styles.termsBox} wrap={data.exclusions.length > 1200}>
+                <Text style={styles.blockLabel} minPresenceAhead={28}>Not included</Text>
+                <Text style={styles.termsText}>{data.exclusions}</Text>
+              </View>
+            ) : null}
+            {data.terms ? (
+              <View style={styles.termsBox} wrap={data.terms.length > 1200}>
+                <Text style={styles.blockLabel} minPresenceAhead={28}>Terms &amp; conditions</Text>
+                <Text style={styles.termsText}>{data.terms}</Text>
+              </View>
+            ) : null}
+            {data.variant === "proposal" ? (
+              <View style={styles.sigSection} wrap={false}>
+                <Text style={styles.blockLabel} minPresenceAhead={28}>Acceptance &amp; Signatures</Text>
+                {signatureLines}
+              </View>
+            ) : null}
+          </>
         )}
-
-        {/* Optional add-ons */}
-        {optionalLines.length > 0 ? (
-          <View style={styles.optionalSection}>
-            <View style={[styles.breakdownHeader, { marginTop: 0, borderColor: HAIRLINE }]}>
-              <Text style={styles.breakdownLabel}>Optional add-ons</Text>
-            </View>
-            {optionalLines.map((line, idx) => {
-              const isAccepted = isAcceptedOptional(line)
-              return (
-                <View key={`opt-${line.id ?? idx}`} style={styles.optionalRow} wrap={false}>
-                  <View style={styles.itemLeft}>
-                    <Text style={styles.itemDesc}>{line.description}</Text>
-                    {line.metadata?.notes ? <Text style={styles.itemNotes}>{line.metadata.notes}</Text> : null}
-                  </View>
-                  {isAccepted ? (
-                    <Text style={[styles.optionalAmount, { color: accent }]}>
-                      Included{showAmounts ? ` · ${formatCurrency(lineTotalCents(line))}` : ""}
-                    </Text>
-                  ) : showAmounts ? (
-                    <Text style={[styles.optionalAmount, { color: MUTED }]}>+ {formatCurrency(lineTotalCents(line))}</Text>
-                  ) : null}
-                </View>
-              )
-            })}
-          </View>
-        ) : null}
-
-        <View style={styles.totals} wrap={false}>
-          {showAmounts && data.subtotalCents != null ? (
-            <View style={styles.contingencyRow}><Text style={styles.contingencyText}>Subtotal</Text><Text>{formatCurrency(data.totalCents != null ? data.totalCents - (data.taxCents ?? 0) - (data.contingencyCents ?? 0) : data.subtotalCents)}</Text></View>
-          ) : null}
-          {(data.contingencyCents ?? 0) > 0 ? (
-            <View style={styles.contingencyRow}><Text style={styles.contingencyText}>Contingency{data.contingencyPercent ? ` (${data.contingencyPercent}%)` : ""}</Text><Text>{formatCurrency(data.contingencyCents)}</Text></View>
-          ) : null}
-          {(data.taxCents ?? 0) > 0 ? (
-            <View style={styles.contingencyRow}><Text style={styles.contingencyText}>Tax</Text><Text>{formatCurrency(data.taxCents)}</Text></View>
-          ) : null}
-          {data.totalRange ? (
-            <>
-              <View style={[styles.totalRow, { borderColor: accent }]}>
-                <Text style={styles.totalLabel}>Expected range</Text>
-                <Text style={styles.totalValue}>{formatCurrency(data.totalRange.lowCents)} – {formatCurrency(data.totalRange.highCents)}</Text>
-              </View>
-              <Text style={styles.contingencyText}>A budget to plan with, not a contract. The fixed price follows once trade quotes and measurements are in.</Text>
-            </>
-          ) : (
-            <View style={[styles.totalRow, { borderColor: accent }]}>
-              <Text style={styles.totalLabel}>Total</Text>
-              <Text style={styles.totalValue}>{formatCurrency(data.totalCents)} USD</Text>
-            </View>
-          )}
-        </View>
-
-        {data.inclusions ? (
-          <View style={styles.termsBox} wrap={data.inclusions.length > 1200}>
-            <Text style={styles.blockLabel} minPresenceAhead={28}>Included in this price</Text>
-            <Text style={styles.termsText}>{data.inclusions}</Text>
-          </View>
-        ) : null}
-        {data.exclusions ? (
-          <View style={styles.termsBox} wrap={data.exclusions.length > 1200}>
-            <Text style={styles.blockLabel} minPresenceAhead={28}>Not included</Text>
-            <Text style={styles.termsText}>{data.exclusions}</Text>
-          </View>
-        ) : null}
-
-        {data.terms ? (
-          <View style={styles.termsBox} wrap={data.terms.length > 1200}>
-            <Text style={styles.blockLabel} minPresenceAhead={28}>Terms &amp; conditions</Text>
-            <Text style={styles.termsText}>{data.terms}</Text>
-          </View>
-        ) : null}
-
-        {data.variant === "proposal" ? (
-          <View style={styles.sigSection} wrap={false}>
-            <Text style={styles.blockLabel} minPresenceAhead={28}>Acceptance &amp; Signatures</Text>
-            <View style={styles.sigRow}>
-              {signers.map((signer, idx) => (
-                <View key={`sig-${idx}`} style={styles.sigCol}>
-                  <View style={styles.sigImageBox}>
-                    {/* eslint-disable-next-line jsx-a11y/alt-text -- @react-pdf Image has no alt prop */}
-                    {signer.signatureImage ? <Image src={signer.signatureImage} style={styles.sigImage} /> : null}
-                  </View>
-                  <Text style={styles.sigLabel}>
-                    Signature{signer.role ? ` · ${signer.role}` : ""}
-                  </Text>
-                  {signer.name ? <Text style={styles.sigMeta}>{signer.name}</Text> : null}
-                  <View style={[styles.sigLine, { marginTop: 18 }]}>
-                    {signer.signedAt ? <Text style={styles.sigLineText}>{formatDate(signer.signedAt)}</Text> : null}
-                  </View>
-                  <Text style={styles.sigLabel}>Date</Text>
-                </View>
-              ))}
-            </View>
-          </View>
-        ) : null}
 
         <View style={styles.footer} fixed>
           <Text>{[data.orgName, data.number].filter(Boolean).join(" · ")}</Text>

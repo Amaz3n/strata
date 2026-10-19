@@ -31,6 +31,8 @@ export const metadata = {
 
 const EMPTY_BID_PORTAL_DATA = {
   packageFiles: [],
+  sheets: [],
+  siteWalkAt: null,
   addenda: [],
   submissions: [],
   currentSubmission: undefined,

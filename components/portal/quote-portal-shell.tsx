@@ -28,6 +28,10 @@ interface QuotePortalShellProps {
   document: ReactNode
   /** Right-rail content: the action panel + thread. */
   children: ReactNode
+  /** Beside the PDF link, e.g. a version picker. */
+  headerExtra?: ReactNode
+  /** Above the document and rail, e.g. what changed since the last version. */
+  banner?: ReactNode
 }
 
 export function QuotePortalShell({
@@ -39,6 +43,8 @@ export function QuotePortalShell({
   pdfUrl,
   document,
   children,
+  headerExtra,
+  banner,
 }: QuotePortalShellProps) {
   return (
     <div className="min-h-screen bg-gradient-to-b from-muted/50 via-muted/20 to-background">
@@ -56,6 +62,7 @@ export function QuotePortalShell({
             <span className="text-sm font-semibold">{orgName ?? "Arc"}</span>
           </div>
           <div className="flex items-center gap-2">
+            {headerExtra}
             {pdfUrl ? (
               <Button variant="ghost" size="sm" asChild className="text-muted-foreground">
                 <a href={pdfUrl} target="_blank" rel="noopener noreferrer">
@@ -72,6 +79,7 @@ export function QuotePortalShell({
       </header>
 
       <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-8">
+        {banner ? <div className="mb-5">{banner}</div> : null}
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] lg:gap-8">
           <div>{document}</div>
           <aside className="flex flex-col gap-4 lg:sticky lg:top-[5.25rem] lg:self-start">{children}</aside>

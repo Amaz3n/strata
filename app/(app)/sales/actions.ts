@@ -54,7 +54,7 @@ import {
   setProspectFollowUp,
   updateDealDetails,
 } from "@/lib/services/prospects"
-import { registerProductionInquiry, searchBuyerContacts } from "@/lib/services/sales-inquiries"
+import { registerProductionInquiry, searchDirectoryPeople } from "@/lib/services/sales-inquiries"
 import type { SearchPickerPage } from "@/components/ui/search-picker"
 import { SEARCH_PICKER_PAGE_SIZE, searchPickerPage, searchPickerQuerySchema } from "@/lib/search-picker"
 import {
@@ -313,9 +313,9 @@ export async function registerInquiryAction(input: unknown) {
 export async function searchBuyersAction(input: unknown): Promise<ActionResult<SearchPickerPage>> {
   return run(async () => {
     const query = searchPickerQuerySchema.parse(input)
-    const result = await searchBuyerContacts({ search: query.search, page: query.page, pageSize: SEARCH_PICKER_PAGE_SIZE })
+    const result = await searchDirectoryPeople({ search: query.search, page: query.page, pageSize: SEARCH_PICKER_PAGE_SIZE })
     return searchPickerPage(
-      result.buyers.map((buyer) => ({
+      result.people.map((buyer) => ({
         id: buyer.id,
         name: buyer.name,
         detail: [buyer.email, buyer.phone, buyer.roles.join(", ")].filter(Boolean).join(" · "),

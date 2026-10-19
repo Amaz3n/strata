@@ -24,22 +24,20 @@ function Harness() {
   const [sheet, setSheet] = useState(sheets[0]);
   return (
     <DrawingViewer
-      measurementContext={
+      line={
         new URLSearchParams(location.search).has("bound")
           ? {
-              destination: "pricing_worksheet",
-              targetId: "prospect-test",
-              label: "Example estimate",
-              returnHref: "/estimate",
-              rowId: "row-test",
-              rowLabel: "LVP Flooring",
               conditionId: "22222222-2222-4222-8222-222222222222",
+              name: "LVP Flooring",
+              section: "Flooring",
+              quantity: 1200,
+              unit: "sf",
+              rateCents: 450,
+              basis: "guess",
+              onDone: async () => {
+                Object.assign(window, { lineDone: true });
+              },
             }
-          : undefined
-      }
-      initialConditionId={
-        new URLSearchParams(location.search).has("bound")
-          ? "22222222-2222-4222-8222-222222222222"
           : undefined
       }
       sheet={sheet}

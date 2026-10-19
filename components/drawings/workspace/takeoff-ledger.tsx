@@ -76,7 +76,8 @@ export interface TakeoffLedgerProps {
   onChanged: () => void;
   onNewItem: () => void;
   onOpenSheet: (sheetId: string) => void;
-  onSendToEstimate: () => void;
+  /** Absent where measuring writes straight onto a line, as on a deal's plans. */
+  onSendToEstimate?: () => void;
   /** Above the list: the revision band, the measuring context. */
   notices?: React.ReactNode;
 }
@@ -261,7 +262,8 @@ export function TakeoffLedger({
         )}
       </div>
 
-      {rollups && rollups.length > 0 && (
+      {/* A deal prices its lines on Pricing, so its plans carry no takeoff total at item rates. */}
+      {rollups && rollups.length > 0 && onSendToEstimate && (
         <footer className="space-y-2.5 border-t px-4 py-3">
           <div className="flex items-baseline justify-between">
             <span className="microlabel">Takeoff total</span>

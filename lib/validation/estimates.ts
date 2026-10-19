@@ -5,6 +5,8 @@ export const PRICING_DISPLAY_MODES = [
   "itemized",
   "subtotals",
   "lump_sum",
+  /** Each section's total, with its lines listed by name. */
+  "sections",
 ] as const;
 export type PricingDisplayMode = (typeof PRICING_DISPLAY_MODES)[number];
 

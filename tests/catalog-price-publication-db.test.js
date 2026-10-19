@@ -63,10 +63,13 @@ test('matrix selects latest released version, community precedence and scope-spe
 })
 test('matrix pages remain reachable beyond 100 versions; a page returns at most 20 columns and 400 cells',async t=>{
  const f=await database(t)
- for(let n=0;n<105;n++){
-  await f.db.query('insert into house_plans(id,org_id,name) values($1,$2,$3)',[id(1000+n),f.org,`Plan ${String(n).padStart(3,'0')}`])
-  for(let v=1;v<=3;v++)await f.db.query('insert into house_plan_versions(id,org_id,house_plan_id,version_number) values($1,$2,$3,$4)',[id(2000+n*3+v),f.org,id(1000+n),v])
- }
+ const plans=Array.from({length:105},(_,n)=>n)
+ await f.db.query('insert into house_plans(id,org_id,name) select x.id,$3,x.name from unnest($1::uuid[],$2::text[]) x(id,name)',[plans.map(n=>id(1000+n)),plans.map(n=>`Plan ${String(n).padStart(3,'0')}`),f.org])
+ const versions=plans.flatMap(n=>[1,2,3].map(v=>({id:id(2000+n*3+v),plan:id(1000+n),v})))
+ await f.db.query('insert into house_plan_versions(id,org_id,house_plan_id,version_number) select x.id,$4,x.plan,x.v from unnest($1::uuid[],$2::uuid[],$3::int[]) x(id,plan,v)',[versions.map(x=>x.id),versions.map(x=>x.plan),versions.map(x=>x.v),f.org])
+ // Planner statistics, as production has them; without them the latest-version
+ // anti-join seq-scans every version per row (~0.5s per page in PGlite).
+ await f.db.exec('analyze')
  const seen=new Set()
  for(let page=1;page<=6;page++){
   const result=(await f.matrix(undefined,page)).rows[0].result

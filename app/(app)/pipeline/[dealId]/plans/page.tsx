@@ -1,56 +1,37 @@
-import { connection } from "next/server"
-import { redirect } from "next/navigation";
-import ProjectDrawingsPage from "@/components/drawings/project-drawings-page";
-import { getPreconProjectId } from "@/lib/services/precon-workspace";
 import { Suspense } from "react";
-import { PageLayout } from "@/components/layout/page-layout";
-import { Skeleton } from "@/components/ui/skeleton";
+import { cacheLife } from "next/cache";
+import { DealPlans } from "@/components/pipeline/deal-plans";
+import { DealWithoutProject } from "@/components/pipeline/deal-without-project";
+import { DealPlansSkeleton } from "@/components/pipeline/pipeline-skeletons";
+import { getDealPlans } from "@/lib/services/precon-deals";
+import { getPreconProjectId } from "@/lib/services/precon-workspace";
 
 type Props = {
   params: Promise<{ dealId: string }>;
-  searchParams: Promise<{
-    set?: string;
-    sheetId?: string;
-    condition?: string;
-    sourceFile?: string;
-    estimate?: string;
-    destination?: string;
-    target?: string;
-    row?: string;
-    takeoff?: string;
-  }>;
+  searchParams: Promise<{ sourceFile?: string }>;
 };
 
 export const instant = { unstable_disableBuildValidation: true };
 
-/** The deal's plans, open over the pipeline. A deal only has plans once pricing starts. */
-export default function DealPlansPage(props: Props) {
-  return (
-    <Suspense fallback={
-      <PageLayout title="Plans & quantities" fullBleed>
-        <div className="space-y-4 p-6" role="status" aria-label="Loading plans">
-          <Skeleton className="h-8 w-48" />
-          <div className="grid gap-4 sm:grid-cols-3">
-            {Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-40" />)}
-          </div>
-        </div>
-      </PageLayout>
-    }>
-      <DealPlansData {...props} />
-    </Suspense>
-  );
+async function loadPlans(dealId: string, sourceFile: string | undefined) {
+  "use cache: private";
+  cacheLife("deal");
+  const projectId = await getPreconProjectId(dealId);
+  return projectId ? { projectId, data: await getDealPlans(dealId, projectId, sourceFile) } : null;
 }
 
-async function DealPlansData({ params, searchParams }: Props) {
-  await connection()
-  const { dealId } = await params;
-  const projectId = await getPreconProjectId(dealId);
-  if (!projectId) redirect(`/pipeline/${dealId}`);
+async function Plans({ params, searchParams }: Props) {
+  const [{ dealId }, query] = await Promise.all([params, searchParams]);
+  const plans = await loadPlans(dealId, query.sourceFile);
+  if (!plans) return <DealWithoutProject tab="plans" />;
+  return <DealPlans data={plans.data} projectId={plans.projectId} />;
+}
+
+/** The deal's plans: the sheets its lines are measured from. They become the job's drawings when it starts. */
+export default function DealPlansPage(props: Props) {
   return (
-    <ProjectDrawingsPage
-      prospectId={dealId}
-      params={Promise.resolve({ id: projectId })}
-      searchParams={searchParams}
-    />
+    <Suspense fallback={<DealPlansSkeleton />}>
+      <Plans {...props} />
+    </Suspense>
   );
 }

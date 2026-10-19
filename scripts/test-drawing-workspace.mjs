@@ -73,7 +73,7 @@ const areas = [
   warnings: ["Check the doorway threshold."],
 }));
 const special = {
-  getSheetCalibrationAction: `async(id)=>({sheet_version_id:id==='sheet-1'?'11111111-1111-4111-8111-111111111111':'33333333-3333-4333-8333-333333333333',feet_per_image_px:.02,source_label:'¼″ = 1′',method:'manual'})`,
+  getSheetCalibrationAction: `async(id)=>({success:true,data:{sheet_version_id:id==='sheet-1'?'11111111-1111-4111-8111-111111111111':'33333333-3333-4333-8333-333333333333',feet_per_image_px:.02,source_label:'¼″ = 1′',method:'manual'}})`,
   getConditionRollupAction: `async()=>{const rows=(${JSON.stringify(items.map((condition) => ({ condition, effective_quantity: 0, extended_cents: null, effective_unit_cost_cents: null, sheets: [], markup_count: 0, stale_markup_count: 0, pending_review_count: 0, unscaled_markup_count: 0, duplicate_suspect_sheets: [], sync: null, cost_code: null })))});return rows.concat(window.createdItem?[{condition:window.createdItem,effective_quantity:window.lastAreaAccept?56.76:0,extended_cents:null,effective_unit_cost_cents:null,sheets:[],markup_count:window.lastAreaAccept?1:0,stale_markup_count:0,pending_review_count:0,unscaled_markup_count:0,duplicate_suspect_sheets:[],sync:null,cost_code:null}]:[])}`,
   proposeTakeoffAreasAction: `async()=>(await new Promise((done)=>setTimeout(done,900)),{success:true,data:{scale:.02,engine:12,proposals:${JSON.stringify(areas)},warnings:['Review areas against the finish schedule.'],segmentCount:16,coverage:{labels:[]}}})`,
   acceptTakeoffAreasAction: `async(input)=>{if(window.rejectAreaSave)return {success:false,error:'Please try saving again.'};window.lastAreaAccept=input;return {success:true,data:{ids:['saved'],accepted:input.areas.length}}}`,
@@ -259,15 +259,16 @@ try {
   await page.screenshot({ path: "/tmp/arc-drawing-workspace-mobile.png" });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false, "no horizontal overflow on a phone");
 
-  // A deep link from an estimate row arrives armed.
+  // Measuring a pricing line opens on the line, with Done in the header.
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(`http://localhost:${server.port}/?bound`);
-  await page.getByRole("status", { name: "Current task" }).getByText("LVP Flooring", { exact: true }).waitFor();
-  await page.getByText("Measuring LVP Flooring", { exact: false }).waitFor();
+  await page.getByText("Measuring for Flooring", { exact: true }).waitFor();
+  await page.getByText("Done puts the quantity on the line.", { exact: false }).waitFor();
+  await page.getByRole("button", { name: "Cancel measuring" }).waitFor();
 
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: modeless workspace, item-first area fill, split 3D view, design-tab finish edit, draw outline, new item creation, keyboard sheet navigation, rail, find, zoom, shortcuts, light/dark/mobile, estimate deep link; no browser errors.",
+    "PASS: modeless workspace, item-first area fill, split 3D view, design-tab finish edit, draw outline, new item creation, keyboard sheet navigation, rail, find, zoom, shortcuts, light/dark/mobile, pricing-line takeover; no browser errors.",
   );
 } finally {
   await browser.close();

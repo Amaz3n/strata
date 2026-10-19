@@ -1273,7 +1273,6 @@ export function EstimateEditor({
                                         <TakeoffLineBadge
                                           metadata={line.metadata}
                                           liveQuantity={line.quantity}
-                                          prospectId={defaultProspectId}
                                           projectId={projectId}
                                         />
                                         {/* Row 1: reorder · description · qty · unit cost */}

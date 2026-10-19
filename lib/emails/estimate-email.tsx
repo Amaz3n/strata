@@ -28,6 +28,12 @@ export interface EstimateEmailProps {
   validUntil?: string | null
   message?: string | null
   previewText?: string
+  /** The document's own name, e.g. "Budget" or "Proposal & agreement", in place of the generic kind. */
+  documentName?: string | null
+  /** The button's words, e.g. "Review and sign". */
+  actionLabel?: string | null
+  /** The link always opens the newest version, so the client can keep this email. */
+  persistentLink?: boolean
 }
 
 export function EstimateEmail({
@@ -42,8 +48,11 @@ export function EstimateEmail({
   validUntil,
   message,
   previewText,
+  documentName,
+  actionLabel,
+  persistentLink = false,
 }: EstimateEmailProps) {
-  const documentLabel = documentKind.charAt(0).toUpperCase() + documentKind.slice(1)
+  const documentLabel = documentName ?? documentKind.charAt(0).toUpperCase() + documentKind.slice(1)
   const displayOrgName = orgName ?? "Arc"
   const greeting = recipientName?.trim() ? `Hi ${recipientName.trim()},` : "Hello,"
   const resolvedPreview = previewText ?? `${displayOrgName} sent you ${documentKind === "proposal" ? "a" : "an"} ${documentKind}: ${estimateTitle}`
@@ -56,11 +65,12 @@ export function EstimateEmail({
       orgLogoUrl={orgLogoUrl}
     >
       <Text style={eventLabelText}>{documentLabel}</Text>
-      <Heading style={heading}>Your {documentKind} is ready</Heading>
+      <Heading style={heading}>Your {documentName ? documentName.toLowerCase() : documentKind} is ready</Heading>
       <Text style={subjectText}>{estimateTitle}</Text>
 
-      <Text style={paragraph}>{greeting}</Text>
-      <Text style={paragraph}>
+      {/* A written message carries its own greeting. */}
+      {message?.trim() ? null : <Text style={paragraph}>{greeting}</Text>}
+      <Text style={{ ...paragraph, whiteSpace: "pre-line" }}>
         {message?.trim() ? (
           message
         ) : (
@@ -92,9 +102,15 @@ export function EstimateEmail({
 
       <Section style={buttonWrap}>
         <Button style={button} href={reviewLink}>
-          Review {documentKind}
+          {actionLabel ?? `Review ${documentKind}`}
         </Button>
       </Section>
+
+      {persistentLink ? (
+        <Text style={fallbackText}>
+          This link is yours and keeps working. If we send a new version, it opens the latest one.
+        </Text>
+      ) : null}
 
       <Text style={fallbackText}>
         If the button does not open,{" "}

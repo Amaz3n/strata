@@ -8,7 +8,7 @@
  * REFERENCE_DIR defaults to $ARC_DEV_REFERENCES or ~/Desktop/arc-holdout/traces.
  * Holdout references are skipped, never scored. A sheet that loses more than one
  * found room against the previous run is flagged as a regression (exit code 1).
- * See docs/plans/takeoff-reliability-gameplan.md, "Rules of the game".
+ * See docs/plans/plan-recognition-engine-gameplan.md, "Rules of the game".
  */
 import fs from 'node:fs'
 import os from 'node:os'

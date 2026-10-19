@@ -34,18 +34,27 @@ export async function submitEstimateDecisionAction(input: {
     signature_image?: string | null
     consent_accepted: boolean
   } | null
-}) {
-  const ip = await clientIp()
-  return submitEstimateDecision({ ...input, ip })
+}): Promise<ActionResult<{ status: string; waitingOn: string[] }>> {
+  try {
+    const ip = await clientIp()
+    return { success: true, data: await submitEstimateDecision({ ...input, ip }) }
+  } catch (error) {
+    return actionError(error)
+  }
 }
 
+/** A question on one section of the document; the builder answers it there. */
 export async function addClientEstimateCommentAction(input: {
   token: string
-  name: string
-  email?: string
   body: string
-}) {
-  return addClientEstimateComment(input)
+  section?: string | null
+}): Promise<ActionResult<null>> {
+  try {
+    await addClientEstimateComment(input)
+    return { success: true, data: null }
+  } catch (error) {
+    return actionError(error)
+  }
 }
 
 /**
