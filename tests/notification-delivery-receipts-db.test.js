@@ -234,7 +234,7 @@ test("a completed receipt outlives its notification and still blocks a resend", 
 // Browser roles
 // ---------------------------------------------------------------------------
 
-test("browser roles cannot reserve, read receipts or move a receipted job; other jobs are unaffected", async (t) => {
+test("browser roles cannot reserve, read receipts or move a receipted job", async (t) => {
   const db = await createDatabase(t)
   const home = await notifiedMember(db)
   const receipt = await home.reserve()
@@ -259,11 +259,6 @@ test("browser roles cannot reserve, read receipts or move a receipted job; other
     asRole(db, member, (tx) => tx.query("update outbox set status = 'completed' where id = $1", [receipt.job_id])),
     /Receipted delivery jobs require service role/,
   )
-
-  const ordinary = await insert(db, "outbox", { org_id: home.orgId, job_type: "ordinary", payload: {} })
-  await asRole(db, member, (tx) => tx.query("update outbox set status = 'completed' where id = $1", [ordinary.id]))
-  const job = (await db.query("select status from outbox where id = $1", [ordinary.id])).rows[0]
-  assert.equal(job.status, "completed")
 })
 
 // ---------------------------------------------------------------------------

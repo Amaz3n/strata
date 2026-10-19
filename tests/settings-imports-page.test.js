@@ -39,11 +39,11 @@ test("the importer list offers only what the actor may import, and never Open WI
   const gated = [
     ["plan_library", "plan.write"],
     ["option_catalog", "selections.catalog.manage"],
-    ["price_book", "commitment.write"],
+    ["price_book", "price_book.write"],
     ["communities_lots", "lot.write"],
     ["team", "members.manage"],
   ]
-  for (const grants of [["plan.write"], ["selections.catalog.manage"], ["commitment.write"], ["lot.write"], ["members.manage"], ["*"], []]) {
+  for (const grants of [["plan.write"], ["selections.catalog.manage"], ["price_book.write"], ["lot.write"], ["members.manage"], ["*"], []]) {
     const hrefs = elements(await open(grants))
       .filter((node) => node.type === Link)
       .map((node) => node.props.href)
