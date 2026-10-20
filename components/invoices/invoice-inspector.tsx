@@ -73,8 +73,11 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import { MoreHorizontal } from "@/components/icons"
 
+import { connectedReceivableOf } from "@/lib/receivables/connected"
+
 import { ReceivableAdjustmentDialog } from "./receivable-adjustment-dialog"
 import {
+  ConnectedSourceLine,
   InvoiceStatusBadge,
   balanceCentsOf,
   customerNameOf,
@@ -638,8 +641,9 @@ function InvoiceInspectorBody({
     })
 
   // One primary action per invoice, chosen by what the invoice actually needs.
+  const connected = connectedReceivableOf(invoice.metadata) !== null
   const primary = (() => {
-    if (status === "void") return null
+    if (status === "void" || connected) return null
     if (status === "draft" && invoice.metadata?.waiver_packet?.enabled && invoice.metadata.waiver_packet.delivery_mode === "after_physical_execution") return null
     if (status === "draft" && scheduledSendAt) {
       return { label: "Cancel scheduled send", onClick: handleCancelSchedule, key: "schedule" }
@@ -662,8 +666,8 @@ function InvoiceInspectorBody({
     return null
   })()
 
-  const canRecordPayment = wasIssued && balance > 0 && status !== "void"
-  const canAdjust = Boolean(wasIssued && balance > 0 && status !== "void" && (invoice.metadata as any)?.invoice_kind !== "earnest_deposit")
+  const canRecordPayment = !connected && wasIssued && balance > 0 && status !== "void"
+  const canAdjust = Boolean(!connected && wasIssued && balance > 0 && status !== "void" && (invoice.metadata as any)?.invoice_kind !== "earnest_deposit")
 
   const provenanceHref = (() => {
     if (!resolvedProjectId) return null
@@ -722,11 +726,12 @@ function InvoiceInspectorBody({
             onAdjust={() => setAdjusting(true)}
             onDuplicate={onDuplicate ? () => onDuplicate(invoice) : undefined}
             onMakeRecurring={onMakeRecurring ? () => onMakeRecurring(invoice) : undefined}
-            onRevise={onRevise ? () => onRevise(invoice) : undefined}
-            onMove={onMove ? () => onMove(invoice) : undefined}
-            onVoid={onVoid ? () => onVoid(invoice) : undefined}
+            onRevise={onRevise && !connected ? () => onRevise(invoice) : undefined}
+            onMove={onMove && !connected ? () => onMove(invoice) : undefined}
+            onVoid={onVoid && !connected ? () => onVoid(invoice) : undefined}
           />
         </div>
+        <ConnectedSourceLine invoice={invoice} className="px-4 pt-0.5" />
 
         <div className="flex items-center justify-between gap-3 px-4 pb-2 pt-1">
           <p className="flex min-w-0 items-baseline gap-2">

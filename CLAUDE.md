@@ -90,6 +90,12 @@ inline in a component is a defect — it breaks mixed orgs.
 - `PROJECT_MODULES` + `isProjectModuleEnabled()` — `lib/project-modules.ts`
 - `getProjectFinancialFeatureConfig()` — `lib/financials/billing-model.ts`
 - `components/layout/project-nav-items.ts` (`postures:` field)
+- **Business profile (Arc Trade) is a separate axis from posture:**
+  `isTradeProfile()` — `lib/business-profile.ts`, and `lib/workspace-surface.ts` /
+  `loadWorkspaceSurface()` (the plan is the gate, the profile is the shape).
+  Writing `profile.kind === "trade"` inline is a defect, enforced by
+  `PROFILE_BRANCH_RULE` in `.eslintrc.js`. Anything hidden from a trade also gets
+  a guard (`guardWorkspaceDesk()` / `guardProjectTab()`), never nav-only hiding.
 
 **Naming:** never bake a posture into a table, column, or service name. It is
 `prime_sov_lines`, not `commercial_sov_lines`; `budget_templates`, not
@@ -241,6 +247,7 @@ Then the suites your change touches:
 | Mobile API contract | `pnpm test:mobile` |
 | Schedule math | `pnpm test:schedule` |
 | Posture, terminology, land foundation | `pnpm test:land` |
+| Arc Trade: profile, surface, quotes, receivables policy | `pnpm test:land` (runs `arc-trade`, `trade-workspace`, `trade-quotes` and `receivables-policy`; it has no suite of its own beyond that — its surface-authorization cases run in `test:auth`, its time, expense, network and compliance tests in `test:financials`, its mobile tests in `test:mobile`) |
 | Starts / even-flow | `pnpm test:starts` |
 | Importers / onboarding | `pnpm test:onboarding` |
 | Takeoff: rollup, axis factors, deductions, drift, symbol matching | `pnpm test:takeoff` |
@@ -540,6 +547,18 @@ Then the suites your change touches:
   reset — but `external_identities` stays a separate store from Supabase auth by
   design: RLS assumes `auth.uid()` is an org member. `/access` is a router, not a
   hub. Builder-facing roster: `listProjectAccessRoster()`.
+- **Arc Trade** is a business profile, not a posture or a tier — a specialty
+  contractor's company workspace (`docs/reference/arc-trade.md`; read it before
+  touching trade, time, quotes or the builder↔trade network). Load-bearing:
+  the **plan is the gate, the profile is the shape** (`authorize()` refuses any
+  permission the surface refuses, so actions, APIs and mobile refuse alike);
+  receivables are resolved from the profile through `resolveReceivablesPolicy()`,
+  never from posture; **time is clock → approve (`time.approve`) → close the pay
+  period (`time.close`, locks entries)**, and locked time changes only by a
+  reversing correction; an expense's home is a job, an overhead category or
+  unsorted; a builder's portal bill reaches the sub only through
+  `syncConnectedReceivable()` (one invoice per bill, never a second entry).
+  `docs/plans/arc-trade/` is the live tracker until every item is accepted.
 - **Acceptance testing runs in the dedicated QA org.** There is no staging
   environment. Never run acceptance scenarios in a customer org.
 

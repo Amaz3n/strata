@@ -282,10 +282,57 @@ test("browser roles cannot call the pay application transactions", async () => {
     [
       [
         "public.post_pay_application(uuid,uuid,uuid,jsonb)",
+        "public.post_retainage_release(uuid,uuid,uuid,integer,jsonb)",
         "public.certify_pay_application_atomic(uuid,uuid,uuid,jsonb,text[],integer)",
         "public.return_pay_application_atomic(uuid,uuid,uuid,jsonb,integer)",
       ],
     ],
   )
   for (const row of rows) assert.deepEqual([row.anon, row.authenticated], [false, false], row.signature)
+})
+
+test("a retainage release posts with the SOV release in one transaction, and a mismatched one changes nothing", async () => {
+  const home = await contract()
+  await db.query("update prime_sov_lines set retainage_held_cents = 5000, previous_billed_cents = 50000 where id = $1", [home.sov.id])
+  const release = async (amount, invoiceTotal = amount) => {
+    const application = await insert(db, "pay_applications", {
+      org_id: home.orgId,
+      project_id: home.project.id,
+      contract_id: home.contract.id,
+      application_number: (await one("select coalesce(max(application_number), 0) + 1 as n from pay_applications where contract_id = $1", [home.contract.id])).n,
+      period_end: "2026-10-30",
+      status: "draft",
+      metadata: { type: "retainage_release", release_amount_cents: amount, current_retainage_cents: 0 },
+    })
+    const invoice = await insert(db, "invoices", {
+      org_id: home.orgId,
+      project_id: home.project.id,
+      source_pay_application_id: application.id,
+      status: "draft",
+      total_cents: invoiceTotal,
+      token: `token-${application.id}`,
+    })
+    const call = () =>
+      rpc(db, "post_retainage_release", {
+        p_org_id: home.orgId,
+        p_pay_application_id: application.id,
+        p_invoice_id: invoice.id,
+        p_amount_cents: amount,
+        p_summary: { retainage_cents: 5000 - amount, contract_sum_to_date_cents: 100000 },
+      })
+    return { application, call }
+  }
+
+  const mismatched = await release(2000, 1999)
+  await assert.rejects(mismatched.call(), /does not reconcile/)
+  assert.equal(Number((await one("select retainage_released_cents from prime_sov_lines where id = $1", [home.sov.id])).retainage_released_cents), 0)
+  await db.query("delete from invoices where source_pay_application_id = $1", [mismatched.application.id])
+  await db.query("delete from pay_applications where id = $1", [mismatched.application.id])
+
+  const full = await release(5000)
+  await full.call()
+  assert.equal(Number((await one("select retainage_released_cents from prime_sov_lines where id = $1", [home.sov.id])).retainage_released_cents), 5000)
+  const posted = await one("select status, current_payment_due_cents from pay_applications where id = $1", [full.application.id])
+  assert.deepEqual([posted.status, Number(posted.current_payment_due_cents)], ["invoiced", 5000])
+  await assert.rejects(full.call(), /already been submitted/)
 })

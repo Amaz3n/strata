@@ -1,5 +1,5 @@
-import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
-import { Briefcase, Flag, Hammer, LayoutDashboard, Wallet } from "@/components/icons"
+import { BUILDER_SURFACE, isTradeSurface, surfaceAllowsPath, type WorkspaceSurface } from "@/lib/workspace-surface"
+import { Briefcase, Calendar, Camera, ClipboardList, Clock, DollarSign, FileText, Flag, Hammer, LayoutDashboard, Receipt, Wallet } from "@/components/icons"
 import type { LucideIcon } from "@/components/icons"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import type { Project, ProjectNavigationItem } from "@/lib/types"
@@ -285,7 +285,7 @@ export function buildProjectNavGroups({
   reviewBadgeCount,
   correspondenceBadgeCount,
   orgTier = "residential",
-  businessProfile = BUILDER_PROFILE,
+  workspaceSurface = BUILDER_SURFACE,
 }: {
   projectId: string
   section: ProjectSection
@@ -294,7 +294,7 @@ export function buildProjectNavGroups({
   /** Filed mail nobody has ruled on. The only signal that the log has work in it. */
   correspondenceBadgeCount?: number
   orgTier?: ProductTier
-  businessProfile?: BusinessProfile
+  workspaceSurface?: WorkspaceSurface
 }): ProjectNavGroup[] {
   const base = `/projects/${projectId}`
   const url = (suffix = "") => `${base}${suffix}`
@@ -305,6 +305,7 @@ export function buildProjectNavGroups({
       )
     : null
   const posture = getProjectPosture(project?.property_type, orgTier)
+  const isTrade = isTradeSurface(workspaceSurface)
   const moduleOverrides = project?.module_overrides ?? {}
 
   const planSubs: ProjectNavSubItem[] = [
@@ -395,12 +396,12 @@ export function buildProjectNavGroups({
       badge: visibleBadge(correspondenceBadgeCount),
       requiredAny: ["correspondence.read"],
     },
-    config?.showTime === false
+    config?.showTime === false && !isTrade
       ? null
       : {
-          title: businessProfile.kind === "trade" ? "Crew time" : "Time",
+          title: isTrade ? "Crew time" : "Time",
           moduleKey: "time",
-          postures: ["residential", "commercial"],
+          postures: isTrade ? undefined : ["residential", "commercial"],
           url: url("/time"),
           isActive: section === "time",
           requiredAny: ["time.read", "time.write"],
@@ -560,14 +561,70 @@ export function buildProjectNavGroups({
     },
   ]
 
+  // A trade job is a short working list, not the builder's plan/build/close
+  // lifecycle. The override-only modules join it only when this job's
+  // module override switches them on (visibleForPosture drops them otherwise).
+  const subByTitle = (list: ProjectNavSubItem[], title: string) => list.find((sub) => sub.title === title)
+  const tradeLeaf = (sub: ProjectNavSubItem | undefined, icon: LucideIcon): ProjectNavItem[] =>
+    sub ? [{ ...sub, icon }] : []
+  const tradeCostSubs = ["Expenses", "Payables", "T&M Tickets"].flatMap((title) => subByTitle(financialSubs, title) ?? [])
+  const tradeGroups: ProjectNavGroup[] = [
+    {
+      items: [
+        {
+          title: "Overview",
+          url: url(),
+          icon: LayoutDashboard,
+          isActive: section === "overview",
+          requiredAny: ["org.member", "project.read"],
+        },
+        ...tradeLeaf(subByTitle(buildSubs, "Schedule"), Calendar),
+        ...tradeLeaf(subByTitle(buildSubs, "Crew time"), Clock),
+        ...tradeLeaf(subByTitle(buildSubs, "Daily Logs"), ClipboardList),
+        ...tradeLeaf(subByTitle(buildSubs, "Photos"), Camera),
+        ...tradeLeaf(subByTitle(planSubs, "Documents"), FileText),
+        ...tradeLeaf(subByTitle(financialSubs, "Billing"), Receipt),
+        ...(tradeCostSubs.length
+          ? [{
+              title: "Costs",
+              url: tradeCostSubs[0].url,
+              icon: Wallet,
+              isActive: tradeCostSubs.some((sub) => sub.isActive),
+              items: tradeCostSubs,
+            }]
+          : []),
+        ...tradeLeaf(subByTitle(financialSubs, "Change Orders"), DollarSign),
+        ...tradeLeaf(subByTitle(buildSubs, "Punch"), Flag),
+        ...[
+          subByTitle(buildSubs, "RFIs"),
+          subByTitle(buildSubs, "Submittals"),
+          subByTitle(planSubs, "Permits"),
+          subByTitle(buildSubs, "Inspections"),
+          subByTitle(planSubs, "Drawings"),
+          subByTitle(buildSubs, "Safety"),
+          // Builder-only tabs a module override can still reopen for one job.
+          subByTitle(planSubs, "Bids"),
+          subByTitle(planSubs, "Specifications"),
+          subByTitle(buildSubs, "Meeting Minutes"),
+          subByTitle(buildSubs, "Transmittals"),
+          subByTitle(buildSubs, "Decisions"),
+          subByTitle(closeSubs, "Closeout"),
+          subByTitle(closeSubs, "Warranty"),
+        ].flatMap((sub) => tradeLeaf(sub, Hammer)),
+      ],
+    },
+  ]
+
   const visibleForPosture = <T extends ProjectNavItem | ProjectNavSubItem>(item: T) => {
-    if (businessProfile.kind === "trade" && item.moduleKey && ["bids", "selections", "decisions", "closing"].includes(item.moduleKey) && moduleOverrides[item.moduleKey] === undefined) return false
+    // A group parent's own URL is only its landing page; its sub-items carry the decision.
+    const isGroup = "items" in item && Boolean(item.items?.length)
+    if (!isGroup && !surfaceAllowsPath(workspaceSurface, item.url, moduleOverrides)) return false
     if (item.url === url("/drawings/model") && !isProjectModelEnabled(project?.org_id)) return false
     const override = item.moduleKey ? moduleOverrides[item.moduleKey] : undefined
     return override ?? (!item.postures || item.postures.includes(posture))
   }
 
-  return groups
+  return (isTrade && !isPrecon ? tradeGroups : groups)
     .map((group) => ({
       ...group,
       items: group.items

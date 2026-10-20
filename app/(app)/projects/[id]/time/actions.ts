@@ -149,7 +149,7 @@ export async function listProjectTimeEntriesAction(projectId: string) {
 }
 
 export async function canManageCrewTimeAction() {
-      return hasPermission("time.write")
+      return hasPermission("time.manage")
 }
 
 export async function approveTimeEntryFormAction(projectId: string, timeEntryId: string) {

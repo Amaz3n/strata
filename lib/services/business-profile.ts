@@ -3,6 +3,7 @@ import { cache } from "react";
 import { z } from "zod";
 import {
   businessProfileSchema,
+  isTradeProfile,
   resolveBusinessProfile,
 } from "@/lib/business-profile";
 import { requireOrgContext } from "@/lib/services/context";
@@ -30,7 +31,7 @@ export async function requireTradeContext() {
     requireOrgContext(),
     getBusinessProfile(),
   ]);
-  if (profile.kind !== "trade")
+  if (!isTradeProfile(profile))
     throw new Error("Enable Arc Trade in Company setup first.");
   return { ...context, profile };
 }

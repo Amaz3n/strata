@@ -1,0 +1,1007 @@
+{
+  "scenario": "TRADE-SETUP-01",
+  "reviewedFrom": "TR01-01..07, TR02-09 and TR07-01 (docs/plans/arc-trade/completion-checklist.json); docs/plans/arc-trade/README.md section 5; docs/reference/arc-trade.md (what the workspace includes); lib/workspace-surface.ts (WORKSPACE_DESKS, WORKSPACE_PROJECT_TABS, permissionRefusal, surfaceOffersRole, TRADE_PLAN_FEATURES); migration 20261025100000_arc_trade_plan_and_crew_roles.sql (trade plan limits, time.approve, Foreman and Crew member); components/layout/trade-nav-items.ts and project-nav-items.ts (requiredAny per item); lib/settings/sections.ts; lib/trade/workspace.ts (tradeJobBilling); the role_permissions catalog on the acceptance stack. Route guards run as each actor through the functions the pages call (guardWorkspaceDesk, guardPayoutRailDesk, guardProjectTab), reading Next's redirect from its digest.",
+  "subcases": {
+    "provisioned-on-the-trade-plan": {
+      "derivation": "Platform provisioning of an electrical trade company: provisionOrganization with businessProfile {kind: trade, specialty: Electrical} and planCode defaultPlanCode(profile) = 'trade' (lib/workspace-surface.ts), residential product tier, subscription billing model. The subscription starts on the trade plan and trialing; syncOrgEntitlementsFromPlan copies plan_feature_limits for 'trade' into entitlements, and migration 20261025100000 gives that plan exactly 14 enabled features: projects, schedule, daily_logs, files_drawings, client_portal, rfis_submittals, bids_proposals, financials_ap, financials_ar, change_orders, qbo, esign, ai_search, cost_plus. The workspace surface is the profile plus those rows, and the 16-feature billing catalog minus them leaves Selections and Closeout & Warranty withheld. The brand of a trade profile is Arc Trade whatever the tier. The owner invite provisioning writes is activated by the seed (acceptance), under org_owner.",
+      "expected": {
+        "profile": {
+          "kind": "trade",
+          "specialty": "Electrical"
+        },
+        "organization": {
+          "product_tier": "residential",
+          "billing_model": "subscription",
+          "status": "active"
+        },
+        "subscription": {
+          "plan_code": "trade",
+          "status": "trialing"
+        },
+        "entitlementRows": [
+          "ai_search",
+          "bids_proposals",
+          "change_orders",
+          "client_portal",
+          "cost_plus",
+          "daily_logs",
+          "esign",
+          "files_drawings",
+          "financials_ap",
+          "financials_ar",
+          "projects",
+          "qbo",
+          "rfis_submittals",
+          "schedule"
+        ],
+        "entitlementRowsEqualThePlansLimits": true,
+        "surface": {
+          "kind": "trade",
+          "specialty": "Electrical",
+          "planName": "Arc Trade",
+          "features": [
+            "ai_search",
+            "bids_proposals",
+            "change_orders",
+            "client_portal",
+            "cost_plus",
+            "daily_logs",
+            "esign",
+            "files_drawings",
+            "financials_ap",
+            "financials_ar",
+            "projects",
+            "qbo",
+            "rfis_submittals",
+            "schedule"
+          ]
+        },
+        "featuresTheTradePlanWithholds": [
+          "closeout_warranty",
+          "selections"
+        ],
+        "brand": "Arc Trade",
+        "owner": {
+          "key": "org_owner",
+          "status": "active"
+        }
+      }
+    },
+    "team-holds-the-trade-roles": {
+      "derivation": "The seed invites an office admin, a foreman and two crew members as the owner through inviteTeamMember (foreman and crew with project scope 'assigned', as Foreman and Crew member hold no project.read and see only assigned jobs; the others 'all') and activates them; the owner is the provisioned owner invite. Role keys are org_owner, org_office_admin, org_foreman, org_crew_member x2. Rates are what the seed's saveLaborRate set, effective 2026-01-01: office admin 38.00 cost no bill, foreman 52.00 cost 95.00 bill, crew 34.00 and 32.00 cost 75.00 bill, burden 1.25, so a date after the effective date resolves them; the owner has no rate. The role picker is ASSIGNABLE_ORG_ROLE_KEYS minus the six builder-only roles surfaceOffersRole hides from a trade company (design studio coordinator, land manager, purchasing manager, sales agent, starts coordinator, warranty manager).",
+      "expected": {
+        "roster": {
+          "owner": {
+            "role": "org_owner",
+            "status": "active",
+            "projectScope": "all",
+            "costRateCents": 0,
+            "billRateCents": 0
+          },
+          "officeAdmin": {
+            "role": "org_office_admin",
+            "status": "active",
+            "projectScope": "all",
+            "costRateCents": 3800,
+            "billRateCents": 0
+          },
+          "foreman": {
+            "role": "org_foreman",
+            "status": "active",
+            "projectScope": "assigned",
+            "costRateCents": 5200,
+            "billRateCents": 9500
+          },
+          "crew": {
+            "role": "org_crew_member",
+            "status": "active",
+            "projectScope": "assigned",
+            "costRateCents": 3400,
+            "billRateCents": 7500
+          },
+          "crewTwo": {
+            "role": "org_crew_member",
+            "status": "active",
+            "projectScope": "assigned",
+            "costRateCents": 3200,
+            "billRateCents": 7500
+          }
+        },
+        "rolePickerOffers": [
+          "org_admin",
+          "org_office_admin",
+          "org_bookkeeper",
+          "org_accountant",
+          "org_books_reviewer",
+          "org_project_lead",
+          "org_estimator",
+          "org_superintendent",
+          "org_foreman",
+          "org_crew_member",
+          "org_user",
+          "org_viewer"
+        ],
+        "ratesInForceOn20261015": {
+          "foreman": {
+            "costRateCents": 5200,
+            "burden": 1.25,
+            "billRateCents": 9500,
+            "effectiveOn": "2026-01-01"
+          },
+          "crew": {
+            "costRateCents": 3400,
+            "burden": 1.25,
+            "billRateCents": 7500,
+            "effectiveOn": "2026-01-01"
+          }
+        }
+      }
+    },
+    "fixtures-jobs-and-customers": {
+      "derivation": "Three jobs created through createTradeJob; tradeJobBilling turns the answers into project billing terms (project_financial_settings and the primary contract). The GC job: customer_kind company, billing_basis progress, retainage 10, contract 180,000.00 -> fixed-price billing with fixed_price_billing_basis 'progress' on a fixed contract of 18,000,000 cents; the receivables terms keep company / certifies true (progress billing only) / net 30 / no review; residential posture; active delivery-phase job whose client is the GC's contact. The homeowner service job: time_and_materials -> billing_model time_and_materials on a time_materials contract with no amount (basis 'draws', the non-progress value), zero retainage, homeowner customer, net 15. The commercial job: commercial property_type, billing_basis invoices -> fixed price on draws, fixed contract of 7,500,000 cents, retainage 5, company customer who does not certify (not a pay application), net 30, billed through the GC's contact. The GC company is a directory company created with role_key client, and its contact is linked to it as primary; the homeowner is a contact with the homeowner role.",
+      "expected": {
+        "jobs": {
+          "gc": {
+            "posture": "residential",
+            "billingModel": "fixed_price",
+            "billingBasis": "progress",
+            "contractType": "fixed",
+            "retainagePercent": 10,
+            "contractCents": 18000000,
+            "status": "active",
+            "phase": "delivery",
+            "receivables": {
+              "customer_kind": "company",
+              "customer_certifies": true,
+              "payment_terms_days": 30,
+              "review_before_send": false
+            },
+            "customer": "gc"
+          },
+          "homeowner": {
+            "posture": "residential",
+            "billingModel": "time_and_materials",
+            "billingBasis": "draws",
+            "contractType": "time_materials",
+            "retainagePercent": 0,
+            "contractCents": null,
+            "status": "active",
+            "phase": "delivery",
+            "receivables": {
+              "customer_kind": "homeowner",
+              "customer_certifies": false,
+              "payment_terms_days": 15,
+              "review_before_send": false
+            },
+            "customer": "homeowner"
+          },
+          "commercial": {
+            "posture": "commercial",
+            "billingModel": "fixed_price",
+            "billingBasis": "draws",
+            "contractType": "fixed",
+            "retainagePercent": 5,
+            "contractCents": 7500000,
+            "status": "active",
+            "phase": "delivery",
+            "receivables": {
+              "customer_kind": "company",
+              "customer_certifies": false,
+              "payment_terms_days": 30,
+              "review_before_send": false
+            },
+            "customer": "gc"
+          }
+        },
+        "customerRoles": [
+          {
+            "kind": "company",
+            "role": "client",
+            "status": "active"
+          },
+          {
+            "kind": "contact",
+            "role": "client",
+            "status": "active"
+          },
+          {
+            "kind": "contact",
+            "role": "homeowner",
+            "status": "active"
+          }
+        ],
+        "gcContactIsPrimaryAtTheGcCompany": true
+      }
+    },
+    "builder-routes-refuse-every-role": {
+      "derivation": "lib/workspace-surface.ts names 22 org desks and settings pages and 23 project tabs the workspace can refuse (the expected lists below are the declared areas; a new area fails the sweep until it is reviewed). Each is guarded by guardWorkspaceDesk / guardProjectTab (guardPayoutRailDesk for payment runs and reconciliation, which a trade company opens by setting up vendor payouts and has not), which redirect to refusedRouteHref(area) = /?unavailable=<area> (a 307 replace) for every member regardless of role: the refusal is the plan's and the profile's, never the member's. The one exception is templates (a trade keeps its waiver templates there). The reason the home page prints is unavailableNotice: 'X isn't part of Arc Trade.' for a builder-only area (X is its declared label), the plan sentence for an area carried by a feature the trade plan lacks (Design Studio and released/selections tabs: Selections; warranty desks and tab: Closeout & Warranty), and the payout-rail sentence for the two controller desks. 'bids', 'safety' and 'warranty' name both a desk and a project tab, and unavailableNotice reads desks first, so those three tab notices are the desk's.",
+      "expected": {
+        "desks": {
+          "bids": {
+            "owner": "redirect /?unavailable=bids",
+            "officeAdmin": "redirect /?unavailable=bids",
+            "foreman": "redirect /?unavailable=bids",
+            "crew": "redirect /?unavailable=bids"
+          },
+          "communities": {
+            "owner": "redirect /?unavailable=communities",
+            "officeAdmin": "redirect /?unavailable=communities",
+            "foreman": "redirect /?unavailable=communities",
+            "crew": "redirect /?unavailable=communities"
+          },
+          "deal_room": {
+            "owner": "redirect /?unavailable=deal_room",
+            "officeAdmin": "redirect /?unavailable=deal_room",
+            "foreman": "redirect /?unavailable=deal_room",
+            "crew": "redirect /?unavailable=deal_room"
+          },
+          "design_studio": {
+            "owner": "redirect /?unavailable=design_studio",
+            "officeAdmin": "redirect /?unavailable=design_studio",
+            "foreman": "redirect /?unavailable=design_studio",
+            "crew": "redirect /?unavailable=design_studio"
+          },
+          "estimates": {
+            "owner": "redirect /?unavailable=estimates",
+            "officeAdmin": "redirect /?unavailable=estimates",
+            "foreman": "redirect /?unavailable=estimates",
+            "crew": "redirect /?unavailable=estimates"
+          },
+          "plans": {
+            "owner": "redirect /?unavailable=plans",
+            "officeAdmin": "redirect /?unavailable=plans",
+            "foreman": "redirect /?unavailable=plans",
+            "crew": "redirect /?unavailable=plans"
+          },
+          "purchasing": {
+            "owner": "redirect /?unavailable=purchasing",
+            "officeAdmin": "redirect /?unavailable=purchasing",
+            "foreman": "redirect /?unavailable=purchasing",
+            "crew": "redirect /?unavailable=purchasing"
+          },
+          "safety": {
+            "owner": "redirect /?unavailable=safety",
+            "officeAdmin": "redirect /?unavailable=safety",
+            "foreman": "redirect /?unavailable=safety",
+            "crew": "redirect /?unavailable=safety"
+          },
+          "sales": {
+            "owner": "redirect /?unavailable=sales",
+            "officeAdmin": "redirect /?unavailable=sales",
+            "foreman": "redirect /?unavailable=sales",
+            "crew": "redirect /?unavailable=sales"
+          },
+          "starts": {
+            "owner": "redirect /?unavailable=starts",
+            "officeAdmin": "redirect /?unavailable=starts",
+            "foreman": "redirect /?unavailable=starts",
+            "crew": "redirect /?unavailable=starts"
+          },
+          "trade_lookahead": {
+            "owner": "redirect /?unavailable=trade_lookahead",
+            "officeAdmin": "redirect /?unavailable=trade_lookahead",
+            "foreman": "redirect /?unavailable=trade_lookahead",
+            "crew": "redirect /?unavailable=trade_lookahead"
+          },
+          "warranty": {
+            "owner": "redirect /?unavailable=warranty",
+            "officeAdmin": "redirect /?unavailable=warranty",
+            "foreman": "redirect /?unavailable=warranty",
+            "crew": "redirect /?unavailable=warranty"
+          },
+          "settings_divisions": {
+            "owner": "redirect /?unavailable=settings_divisions",
+            "officeAdmin": "redirect /?unavailable=settings_divisions",
+            "foreman": "redirect /?unavailable=settings_divisions",
+            "crew": "redirect /?unavailable=settings_divisions"
+          },
+          "settings_lead_intake": {
+            "owner": "redirect /?unavailable=settings_lead_intake",
+            "officeAdmin": "redirect /?unavailable=settings_lead_intake",
+            "foreman": "redirect /?unavailable=settings_lead_intake",
+            "crew": "redirect /?unavailable=settings_lead_intake"
+          },
+          "settings_milestone_feeds": {
+            "owner": "redirect /?unavailable=settings_milestone_feeds",
+            "officeAdmin": "redirect /?unavailable=settings_milestone_feeds",
+            "foreman": "redirect /?unavailable=settings_milestone_feeds",
+            "crew": "redirect /?unavailable=settings_milestone_feeds"
+          },
+          "settings_purchasing": {
+            "owner": "redirect /?unavailable=settings_purchasing",
+            "officeAdmin": "redirect /?unavailable=settings_purchasing",
+            "foreman": "redirect /?unavailable=settings_purchasing",
+            "crew": "redirect /?unavailable=settings_purchasing"
+          },
+          "settings_starts": {
+            "owner": "redirect /?unavailable=settings_starts",
+            "officeAdmin": "redirect /?unavailable=settings_starts",
+            "foreman": "redirect /?unavailable=settings_starts",
+            "crew": "redirect /?unavailable=settings_starts"
+          },
+          "settings_takeoff": {
+            "owner": "redirect /?unavailable=settings_takeoff",
+            "officeAdmin": "redirect /?unavailable=settings_takeoff",
+            "foreman": "redirect /?unavailable=settings_takeoff",
+            "crew": "redirect /?unavailable=settings_takeoff"
+          },
+          "payment_runs": {
+            "owner": "redirect /?unavailable=payment_runs",
+            "officeAdmin": "redirect /?unavailable=payment_runs",
+            "foreman": "redirect /?unavailable=payment_runs",
+            "crew": "redirect /?unavailable=payment_runs"
+          },
+          "payment_reconciliation": {
+            "owner": "redirect /?unavailable=payment_reconciliation",
+            "officeAdmin": "redirect /?unavailable=payment_reconciliation",
+            "foreman": "redirect /?unavailable=payment_reconciliation",
+            "crew": "redirect /?unavailable=payment_reconciliation"
+          },
+          "settings_templates": {
+            "owner": "allowed",
+            "officeAdmin": "allowed",
+            "foreman": "allowed",
+            "crew": "allowed"
+          },
+          "settings_warranty": {
+            "owner": "redirect /?unavailable=settings_warranty",
+            "officeAdmin": "redirect /?unavailable=settings_warranty",
+            "foreman": "redirect /?unavailable=settings_warranty",
+            "crew": "redirect /?unavailable=settings_warranty"
+          }
+        },
+        "projectTabs": {
+          "bids": {
+            "owner": "redirect /?unavailable=bids",
+            "officeAdmin": "redirect /?unavailable=bids",
+            "foreman": "redirect /?unavailable=bids",
+            "crew": "redirect /?unavailable=bids"
+          },
+          "selections": {
+            "owner": "redirect /?unavailable=selections",
+            "officeAdmin": "redirect /?unavailable=selections",
+            "foreman": "redirect /?unavailable=selections",
+            "crew": "redirect /?unavailable=selections"
+          },
+          "released": {
+            "owner": "redirect /?unavailable=released",
+            "officeAdmin": "redirect /?unavailable=released",
+            "foreman": "redirect /?unavailable=released",
+            "crew": "redirect /?unavailable=released"
+          },
+          "decisions": {
+            "owner": "redirect /?unavailable=decisions",
+            "officeAdmin": "redirect /?unavailable=decisions",
+            "foreman": "redirect /?unavailable=decisions",
+            "crew": "redirect /?unavailable=decisions"
+          },
+          "closing": {
+            "owner": "redirect /?unavailable=closing",
+            "officeAdmin": "redirect /?unavailable=closing",
+            "foreman": "redirect /?unavailable=closing",
+            "crew": "redirect /?unavailable=closing"
+          },
+          "closeout": {
+            "owner": "redirect /?unavailable=closeout",
+            "officeAdmin": "redirect /?unavailable=closeout",
+            "foreman": "redirect /?unavailable=closeout",
+            "crew": "redirect /?unavailable=closeout"
+          },
+          "warranty": {
+            "owner": "redirect /?unavailable=warranty",
+            "officeAdmin": "redirect /?unavailable=warranty",
+            "foreman": "redirect /?unavailable=warranty",
+            "crew": "redirect /?unavailable=warranty"
+          },
+          "specs": {
+            "owner": "redirect /?unavailable=specs",
+            "officeAdmin": "redirect /?unavailable=specs",
+            "foreman": "redirect /?unavailable=specs",
+            "crew": "redirect /?unavailable=specs"
+          },
+          "transmittals": {
+            "owner": "redirect /?unavailable=transmittals",
+            "officeAdmin": "redirect /?unavailable=transmittals",
+            "foreman": "redirect /?unavailable=transmittals",
+            "crew": "redirect /?unavailable=transmittals"
+          },
+          "meetings": {
+            "owner": "redirect /?unavailable=meetings",
+            "officeAdmin": "redirect /?unavailable=meetings",
+            "foreman": "redirect /?unavailable=meetings",
+            "crew": "redirect /?unavailable=meetings"
+          },
+          "budget": {
+            "owner": "redirect /?unavailable=budget",
+            "officeAdmin": "redirect /?unavailable=budget",
+            "foreman": "redirect /?unavailable=budget",
+            "crew": "redirect /?unavailable=budget"
+          },
+          "cost_inbox": {
+            "owner": "redirect /?unavailable=cost_inbox",
+            "officeAdmin": "redirect /?unavailable=cost_inbox",
+            "foreman": "redirect /?unavailable=cost_inbox",
+            "crew": "redirect /?unavailable=cost_inbox"
+          },
+          "inventory": {
+            "owner": "redirect /?unavailable=inventory",
+            "officeAdmin": "redirect /?unavailable=inventory",
+            "foreman": "redirect /?unavailable=inventory",
+            "crew": "redirect /?unavailable=inventory"
+          },
+          "commitments": {
+            "owner": "redirect /?unavailable=commitments",
+            "officeAdmin": "redirect /?unavailable=commitments",
+            "foreman": "redirect /?unavailable=commitments",
+            "crew": "redirect /?unavailable=commitments"
+          },
+          "cost_plus": {
+            "owner": "redirect /?unavailable=cost_plus",
+            "officeAdmin": "redirect /?unavailable=cost_plus",
+            "foreman": "redirect /?unavailable=cost_plus",
+            "crew": "redirect /?unavailable=cost_plus"
+          },
+          "trust_center": {
+            "owner": "redirect /?unavailable=trust_center",
+            "officeAdmin": "redirect /?unavailable=trust_center",
+            "foreman": "redirect /?unavailable=trust_center",
+            "crew": "redirect /?unavailable=trust_center"
+          },
+          "proposals": {
+            "owner": "redirect /?unavailable=proposals",
+            "officeAdmin": "redirect /?unavailable=proposals",
+            "foreman": "redirect /?unavailable=proposals",
+            "crew": "redirect /?unavailable=proposals"
+          },
+          "rfis": {
+            "owner": "redirect /?unavailable=rfis",
+            "officeAdmin": "redirect /?unavailable=rfis",
+            "foreman": "redirect /?unavailable=rfis",
+            "crew": "redirect /?unavailable=rfis"
+          },
+          "submittals": {
+            "owner": "redirect /?unavailable=submittals",
+            "officeAdmin": "redirect /?unavailable=submittals",
+            "foreman": "redirect /?unavailable=submittals",
+            "crew": "redirect /?unavailable=submittals"
+          },
+          "permits": {
+            "owner": "redirect /?unavailable=permits",
+            "officeAdmin": "redirect /?unavailable=permits",
+            "foreman": "redirect /?unavailable=permits",
+            "crew": "redirect /?unavailable=permits"
+          },
+          "inspections": {
+            "owner": "redirect /?unavailable=inspections",
+            "officeAdmin": "redirect /?unavailable=inspections",
+            "foreman": "redirect /?unavailable=inspections",
+            "crew": "redirect /?unavailable=inspections"
+          },
+          "drawings": {
+            "owner": "redirect /?unavailable=drawings",
+            "officeAdmin": "redirect /?unavailable=drawings",
+            "foreman": "redirect /?unavailable=drawings",
+            "crew": "redirect /?unavailable=drawings"
+          },
+          "safety": {
+            "owner": "redirect /?unavailable=safety",
+            "officeAdmin": "redirect /?unavailable=safety",
+            "foreman": "redirect /?unavailable=safety",
+            "crew": "redirect /?unavailable=safety"
+          }
+        },
+        "notices": {
+          "bids": "The bid board isn't part of Arc Trade.",
+          "communities": "Communities isn't part of Arc Trade.",
+          "deal_room": "The builder deal room isn't part of Arc Trade.",
+          "design_studio": "Selections isn't included in the Arc Trade plan.",
+          "estimates": "Estimates isn't part of Arc Trade.",
+          "plans": "House plans isn't part of Arc Trade.",
+          "purchasing": "Purchasing isn't part of Arc Trade.",
+          "safety": "The safety desk isn't part of Arc Trade.",
+          "sales": "Sales isn't part of Arc Trade.",
+          "starts": "Starts isn't part of Arc Trade.",
+          "trade_lookahead": "The trade look-ahead isn't part of Arc Trade.",
+          "warranty": "Closeout & Warranty isn't included in the Arc Trade plan.",
+          "settings_divisions": "Divisions isn't part of Arc Trade.",
+          "settings_lead_intake": "Lead intake isn't part of Arc Trade.",
+          "settings_milestone_feeds": "Lender and title feeds isn't part of Arc Trade.",
+          "settings_purchasing": "Purchasing settings isn't part of Arc Trade.",
+          "settings_starts": "Start settings isn't part of Arc Trade.",
+          "settings_takeoff": "Takeoff settings isn't part of Arc Trade.",
+          "payment_runs": "Payment runs and reconciliation open once supplier payouts are set up in Settings → Supplier payments.",
+          "payment_reconciliation": "Payment runs and reconciliation open once supplier payouts are set up in Settings → Supplier payments.",
+          "settings_templates": null,
+          "settings_warranty": "Closeout & Warranty isn't included in the Arc Trade plan.",
+          "tab:bids": "The bid board isn't part of Arc Trade.",
+          "tab:selections": "Selections isn't included in the Arc Trade plan.",
+          "tab:released": "Selections isn't included in the Arc Trade plan.",
+          "tab:decisions": "Decisions isn't part of Arc Trade.",
+          "tab:closing": "Closing isn't part of Arc Trade.",
+          "tab:closeout": "Closeout isn't part of Arc Trade.",
+          "tab:warranty": "Closeout & Warranty isn't included in the Arc Trade plan.",
+          "tab:specs": "Specifications isn't part of Arc Trade.",
+          "tab:transmittals": "Transmittals isn't part of Arc Trade.",
+          "tab:meetings": "Meeting minutes isn't part of Arc Trade.",
+          "tab:budget": "The budget isn't part of Arc Trade.",
+          "tab:cost_inbox": "The cost inbox isn't part of Arc Trade.",
+          "tab:inventory": "Inventory isn't part of Arc Trade.",
+          "tab:commitments": "Commitments isn't part of Arc Trade.",
+          "tab:cost_plus": "Cost-plus billing isn't part of Arc Trade.",
+          "tab:trust_center": "The trust center isn't part of Arc Trade.",
+          "tab:proposals": "Proposals isn't part of Arc Trade.",
+          "tab:rfis": "RFIs isn't part of Arc Trade.",
+          "tab:submittals": "Submittals isn't part of Arc Trade.",
+          "tab:permits": "Permits isn't part of Arc Trade.",
+          "tab:inspections": "Inspections isn't part of Arc Trade.",
+          "tab:drawings": "Drawings isn't part of Arc Trade.",
+          "tab:safety": "The safety desk isn't part of Arc Trade."
+        },
+        "deskAreasKnown": [
+          "bids",
+          "communities",
+          "deal_room",
+          "design_studio",
+          "estimates",
+          "payment_reconciliation",
+          "payment_runs",
+          "plans",
+          "purchasing",
+          "safety",
+          "sales",
+          "settings_divisions",
+          "settings_lead_intake",
+          "settings_milestone_feeds",
+          "settings_purchasing",
+          "settings_starts",
+          "settings_takeoff",
+          "settings_templates",
+          "settings_warranty",
+          "starts",
+          "trade_lookahead",
+          "warranty"
+        ],
+        "projectTabAreasKnown": [
+          "bids",
+          "budget",
+          "closeout",
+          "closing",
+          "commitments",
+          "cost_inbox",
+          "cost_plus",
+          "decisions",
+          "drawings",
+          "inspections",
+          "inventory",
+          "meetings",
+          "permits",
+          "proposals",
+          "released",
+          "rfis",
+          "safety",
+          "selections",
+          "specs",
+          "submittals",
+          "transmittals",
+          "trust_center",
+          "warranty"
+        ]
+      }
+    },
+    "trade-routes-stay-open": {
+      "derivation": "buildTradeNavGroups lists eleven destinations (Today, Tasks, Jobs, Opportunities, Schedule & crew, Builder connections, Billing, Payables, Directory, Reports, Company setup). None of those paths, nor the job pages a trade company works in (overview, schedule, crew time, daily logs, punch, documents, photos, billing, expenses, change orders, payables), is among the refused desk or project-tab paths in lib/workspace-surface.ts, so the surface allows them; the templates page is the one settings page a trade keeps and passes every role's guard.",
+      "expected": {
+        "navUrlsAllowed": {
+          "/": true,
+          "/tasks": true,
+          "/projects": true,
+          "/pipeline": true,
+          "/trade/crew": true,
+          "/trade/connections": true,
+          "/billing": true,
+          "/payables": true,
+          "/directory": true,
+          "/reports": true,
+          "/trade/setup": true
+        },
+        "jobPathsAllowed": {
+          "/": true,
+          "/schedule": true,
+          "/time": true,
+          "/daily-logs": true,
+          "/punch": true,
+          "/documents": true,
+          "/photos": true,
+          "/financials/billing": true,
+          "/financials/expenses": true,
+          "/change-orders": true,
+          "/payables": true
+        },
+        "templatesPage": {
+          "owner": "allowed",
+          "officeAdmin": "allowed",
+          "foreman": "allowed",
+          "crew": "allowed"
+        }
+      }
+    },
+    "module-override-reopens-one-jobs-tab": {
+      "derivation": "Bids is a builder-only project tab with moduleKey 'bids', so projectTabRefusal accepts an override that switches it on for one job (project_module_overrides, set through setProjectModuleOverride as the owner on the GC job). Before the override it redirects. With it on, the owner and the foreman (assigned to the GC job, so he can read its override through the same guard) pass on that job, and the same tab on the commercial job still redirects. Warranty is carried by the 'closeout_warranty' plan feature the trade plan lacks: areaRefusal checks the feature before the override is consulted, so enabling the warranty override changes nothing (Selections is not a project module and cannot be overridden at all). Switching both overrides off returns Bids to refused.",
+      "expected": {
+        "before": "redirect /?unavailable=bids",
+        "afterOnTheGcJob": "allowed",
+        "theForemanOnTheGcJob": "allowed",
+        "afterOnAnotherJob": "redirect /?unavailable=bids",
+        "planFeatureStaysRefusedDespiteOverride": "redirect /?unavailable=warranty",
+        "afterSwitchedBackOff": "redirect /?unavailable=bids"
+      }
+    },
+    "builder-mutations-are-refused-centrally": {
+      "derivation": "createDivision requires division.manage, createCommunity community.write and createHousePlan plan.write. The role catalog (role_permissions) grants division.manage to the owner only, and community.write and plan.write to the owner and the office admin; Foreman and Crew member hold none of them. permissionRefusal() refuses any permission in a builder-only domain for a trade surface with shapeRefusal(label) ('Divisions', 'Communities', 'House plans' isn't part of Arc Trade.), so a role that HOLDS the key (the owner for all three, the office admin for communities and plans) is refused with the sentence that names the plan: the key is in their role and the workspace still says no. A role that does not hold the key is refused for the missing key (a clean 'Missing permission: <key>'), as in any organization. Nothing is written. The identical calls by the owner of a builder organization (no business profile, no plan entitlements) succeed, so the refusal comes from the trade surface and not from the services.",
+      "expected": {
+        "tradeCompany": {
+          "divisions: create a division": {
+            "owner": "refused: Divisions isn't part of Arc Trade.",
+            "officeAdmin": "refused: Missing permission: division.manage",
+            "foreman": "refused: Missing permission: division.manage",
+            "crew": "refused: Missing permission: division.manage"
+          },
+          "communities: create a community": {
+            "owner": "refused: Communities isn't part of Arc Trade.",
+            "officeAdmin": "refused: Communities isn't part of Arc Trade.",
+            "foreman": "refused: Missing permission: community.write",
+            "crew": "refused: Missing permission: community.write"
+          },
+          "house plans: create a plan": {
+            "owner": "refused: House plans isn't part of Arc Trade.",
+            "officeAdmin": "refused: House plans isn't part of Arc Trade.",
+            "foreman": "refused: Missing permission: plan.write",
+            "crew": "refused: Missing permission: plan.write"
+          }
+        },
+        "controlBuilderOrg": {
+          "divisions: create a division": "allowed",
+          "communities: create a community": "allowed",
+          "house plans: create a plan": "allowed"
+        },
+        "rowsTheTradeCompanyWrote": {
+          "divisions": 0,
+          "communities": 0,
+          "house_plans": 0
+        }
+      }
+    },
+    "menus-and-settings-hold-no-builder-modules": {
+      "derivation": "Effective permissions are the role's catalog keys minus denies, filtered by the workspace surface. The office admin's catalog role grants community.write, lot.write, plan.write, sales.manage, start.write, price_book.read, design_studio.manage and land_contract.write among others (role_permissions), and the owner role holds every key; the surface strips every builder-only domain from both, so none is effective. Foreman and Crew member (migration 20261025100000) hold no builder domain at all. time.approve is held by the roles that held bill.approve (owner, office admin) and by Foreman, never by Crew member. Trade navigation (buildTradeNavGroups) shows an item when the member holds any of its requiredAny keys or is an administrator: the owner and office admin (org.admin) see all eleven; the foreman holds org.member, schedule.read and directory.read, so Today, Tasks, Jobs, Schedule & crew, Builder connections and Directory; the crew member the same without Directory (no directory.read) so the Office group is empty and absent; Opportunities needs pipeline.read/write, Billing invoice.read, Payables bill.read/payment.read, Reports report.read, Company setup org.admin. Settings: items without requiredAny show to every member unless the surface refuses their path; External access needs project.manage, Supplier payments payment.release/approve_run/manage_rail, Data imports import.manage (administrators pass them all); Divisions, Takeoff, Warranty, Purchasing, Lead intake, Lender and title feeds and Payment reconciliation are refused by the surface for a trade company, so only the first four sections' remaining items stay. The T&M homeowner job's tabs (buildProjectNavGroups, trade list): Overview, Schedule, Crew time, Daily Logs, Photos, Documents, Billing (invoice.read, payment.read or draw.read), Costs with Expenses (invoice.read/write or bill.read), Payables (bill.read or commitment.read) and T&M Tickets (invoice.write; time-and-materials jobs only), Change Orders (change_order.read) and Punch; the builder-only tabs are dropped by the surface. A parent whose sub-items all drop away drops (the foreman and crew member have no cost tab). Billing, costs and change orders need keys the foreman and crew lack, except Change Orders for the foreman (change_order.read).",
+      "expected": {
+        "owner": {
+          "builderDomainsTheRoleCatalogGrants": true,
+          "builderDomainsEffective": [],
+          "holdsTimeApproval": true,
+          "nav": [
+            {
+              "label": "Arc Trade",
+              "items": [
+                "Today",
+                "Tasks",
+                "Jobs",
+                "Opportunities",
+                "Schedule & crew",
+                "Builder connections"
+              ]
+            },
+            {
+              "label": "Office",
+              "items": [
+                "Billing",
+                "Payables",
+                "Directory",
+                "Reports",
+                "Company setup"
+              ]
+            }
+          ],
+          "settings": [
+            {
+              "label": "You",
+              "items": [
+                "Profile",
+                "Notifications"
+              ]
+            },
+            {
+              "label": "Organization",
+              "items": [
+                "Organization",
+                "Team",
+                "External access",
+                "Billing"
+              ]
+            },
+            {
+              "label": "Financial",
+              "items": [
+                "Invoicing",
+                "Accounting",
+                "Cost coding",
+                "Supplier compliance",
+                "Supplier payments",
+                "Integrations"
+              ]
+            },
+            {
+              "label": "Operations",
+              "items": [
+                "Templates",
+                "Data imports"
+              ]
+            }
+          ],
+          "jobNav": [
+            "Overview",
+            "Schedule",
+            "Crew time",
+            "Daily Logs",
+            "Photos",
+            "Documents",
+            "Billing",
+            "Costs/Expenses",
+            "Costs/Payables",
+            "Costs/T&M Tickets",
+            "Change Orders",
+            "Punch"
+          ]
+        },
+        "officeAdmin": {
+          "builderDomainsTheRoleCatalogGrants": true,
+          "builderDomainsEffective": [],
+          "holdsTimeApproval": true,
+          "nav": [
+            {
+              "label": "Arc Trade",
+              "items": [
+                "Today",
+                "Tasks",
+                "Jobs",
+                "Opportunities",
+                "Schedule & crew",
+                "Builder connections"
+              ]
+            },
+            {
+              "label": "Office",
+              "items": [
+                "Billing",
+                "Payables",
+                "Directory",
+                "Reports",
+                "Company setup"
+              ]
+            }
+          ],
+          "settings": [
+            {
+              "label": "You",
+              "items": [
+                "Profile",
+                "Notifications"
+              ]
+            },
+            {
+              "label": "Organization",
+              "items": [
+                "Organization",
+                "Team",
+                "External access",
+                "Billing"
+              ]
+            },
+            {
+              "label": "Financial",
+              "items": [
+                "Invoicing",
+                "Accounting",
+                "Cost coding",
+                "Supplier compliance",
+                "Supplier payments",
+                "Integrations"
+              ]
+            },
+            {
+              "label": "Operations",
+              "items": [
+                "Templates",
+                "Data imports"
+              ]
+            }
+          ],
+          "jobNav": [
+            "Overview",
+            "Schedule",
+            "Crew time",
+            "Daily Logs",
+            "Photos",
+            "Documents",
+            "Billing",
+            "Costs/Expenses",
+            "Costs/Payables",
+            "Costs/T&M Tickets",
+            "Change Orders",
+            "Punch"
+          ]
+        },
+        "foreman": {
+          "builderDomainsTheRoleCatalogGrants": false,
+          "builderDomainsEffective": [],
+          "holdsTimeApproval": true,
+          "nav": [
+            {
+              "label": "Arc Trade",
+              "items": [
+                "Today",
+                "Tasks",
+                "Jobs",
+                "Schedule & crew",
+                "Builder connections"
+              ]
+            },
+            {
+              "label": "Office",
+              "items": [
+                "Directory"
+              ]
+            }
+          ],
+          "settings": [
+            {
+              "label": "You",
+              "items": [
+                "Profile",
+                "Notifications"
+              ]
+            },
+            {
+              "label": "Organization",
+              "items": [
+                "Organization",
+                "Team",
+                "Billing"
+              ]
+            },
+            {
+              "label": "Financial",
+              "items": [
+                "Invoicing",
+                "Accounting",
+                "Cost coding",
+                "Supplier compliance",
+                "Integrations"
+              ]
+            },
+            {
+              "label": "Operations",
+              "items": [
+                "Templates"
+              ]
+            }
+          ],
+          "jobNav": [
+            "Overview",
+            "Schedule",
+            "Crew time",
+            "Daily Logs",
+            "Photos",
+            "Documents",
+            "Change Orders",
+            "Punch"
+          ]
+        },
+        "crew": {
+          "builderDomainsTheRoleCatalogGrants": false,
+          "builderDomainsEffective": [],
+          "holdsTimeApproval": false,
+          "nav": [
+            {
+              "label": "Arc Trade",
+              "items": [
+                "Today",
+                "Tasks",
+                "Jobs",
+                "Schedule & crew",
+                "Builder connections"
+              ]
+            }
+          ],
+          "settings": [
+            {
+              "label": "You",
+              "items": [
+                "Profile",
+                "Notifications"
+              ]
+            },
+            {
+              "label": "Organization",
+              "items": [
+                "Organization",
+                "Team",
+                "Billing"
+              ]
+            },
+            {
+              "label": "Financial",
+              "items": [
+                "Invoicing",
+                "Accounting",
+                "Cost coding",
+                "Supplier compliance",
+                "Integrations"
+              ]
+            },
+            {
+              "label": "Operations",
+              "items": [
+                "Templates"
+              ]
+            }
+          ],
+          "jobNav": [
+            "Overview",
+            "Schedule",
+            "Crew time",
+            "Daily Logs",
+            "Photos",
+            "Documents",
+            "Punch"
+          ]
+        }
+      }
+    },
+    "crew-sees-only-assigned-jobs": {
+      "derivation": "Foreman and Crew member hold no project.read, and the seed gives them project scope 'assigned'; project visibility is the memberships' scope plus project_members rows. The owner and office admin (project scope 'all', project.read) see all three jobs; the foreman is assigned to the GC job and the homeowner job; both crew members to the homeowner job only. hasProjectPermission(schedule.read) is true on a job only for members who may see it, so the crew member is refused the GC job and allowed the homeowner job. Billing of a job he is not on is refused for a missing project membership.",
+      "expected": {
+        "visibleJobs": {
+          "owner": [
+            "commercial",
+            "gc",
+            "homeowner"
+          ],
+          "officeAdmin": [
+            "commercial",
+            "gc",
+            "homeowner"
+          ],
+          "foreman": [
+            "gc",
+            "homeowner"
+          ],
+          "crew": [
+            "homeowner"
+          ]
+        },
+        "scheduleReadOnGcJob": {
+          "owner": true,
+          "officeAdmin": true,
+          "foreman": true,
+          "crew": false
+        },
+        "scheduleReadOnHomeownerJob": {
+          "owner": true,
+          "officeAdmin": true,
+          "foreman": true,
+          "crew": true
+        },
+        "crewTwoVisibleJobs": [
+          "homeowner"
+        ],
+        "crewOpensTheGcJobsBilling": "refused: Missing permission: invoice.read"
+      }
+    },
+    "trade-vocabulary-is-clean": {
+      "derivation": "A trade company's nouns are Job/Jobs, Customer/Customers, Customer portal, Markup, Supplier/Suppliers and Opportunities (terminology(posture, profile) for its residential and commercial jobs and profileTerminology), and what it reads in navigation, settings, job tabs and refusal sentences must contain none of Owner, Client, Project, Vendor, Trade partner or Pipeline. The check also renders what the company's customer receives, with the company's own project noun: the portal invite, invoice and estimate emails (React Email components rendered to HTML, reduced to visible text), the pay application certification email's copy, and the G702 / draw summary labels (payApplicationLabels over the job's receivables policy for a company or person customer, residential and commercial jobs); the rendered emails must also contain no Builder (the pay application labels name a company customer \"Builder\" on purpose). Expected: no leak anywhere.",
+      "expected": {
+        "leaks": []
+      }
+    }
+  }
+}

@@ -1,0 +1,380 @@
+{
+  "scenario": "TRADE-BILL-01",
+  "reviewedFrom": "TR02-03 (docs/plans/arc-trade/completion-checklist.json); docs/plans/arc-trade/README.md section 5 (TRADE-BILL-01); docs/reference/arc-trade.md; lib/services/prime-sov.ts (upsertPrimeSovLines, applyApprovedChangeOrderToSov); lib/services/pay-applications.ts (createPayApplication, updatePayApplicationLines, submitPayApplication, sendPayApplication, certifyPayApplicationWithActor, releasePrimeRetainage) and lib/financials/pay-app-math.ts (the G702 lines); app/p/[token]/pay-applications (the portal's register loaders in load-portal.ts and its certify action, called directly); lib/services/invoice-lien-waivers.ts (createInvoiceLienWaiver, releaseInvoiceLienWaiversIfPaid) and lib/services/retainage.ts (createRetainageReleaseWaiver); lib/services/change-orders.ts approveChangeOrder; lib/services/payments.ts recordMultiInvoicePayment; lib/services/billing-book.ts getProjectBillingSummary; the post_pay_application, certify_pay_application_atomic and release_prime_sov_retainage functions on the acceptance stack; trade-seed.cjs (the Harbor Tower job: $180,000, residential, SOV, 10% retainage, customer certifies). Two outside services are stood in for, only for the length of each subcase: the mail provider (sendEmail captures the message instead of sending it, so the GC's link is the one in the email) and Next's revalidatePath, which the portal's server action calls after certifying and which has no request outside a server. The waivers are the typed-signature waivers the invoice's waiver action creates; the native-signing waiver packet needs object storage, which the stack does not have.",
+  "subcases": {
+    "pay-application-1-is-submitted-with-a-conditional-waiver": {
+      "derivation": "The schedule of values has four lines, 8,000,000 + 5,000,000 + 3,500,000 + 1,500,000 = 18,000,000, the contract sum ($180,000), so it foots with no variance. Application 1 (October 2026) enters work completed of 4,000,000 on line 1 (50%), 1,000,000 on line 2 (20%), 1,400,000 on line 3 (40%) and nothing on line 4: 6,400,000. The job holds 10% retainage: 10% x 6,400,000 = 640,000. Its G702: original contract sum 18,000,000, no change orders, contract sum to date 18,000,000; total completed and stored 6,400,000; retainage 640,000; total earned less retainage 5,760,000; previous certificates 0; current payment due 5,760,000; balance to finish (contract sum to date less earned less retainage) 18,000,000 - 5,760,000 = 12,240,000. Submitting creates its invoice as a draft: a line for each SOV line with work, in line order and numbered (line 4 has none), and a negative retainage line of 640,000, so the invoice nets 4,000,000 + 1,000,000 + 1,400,000 - 640,000 = 5,760,000. The retainage withheld, 640,000, is held on that invoice. The office admin (invoice.write) attaches a conditional progress waiver, typed-signed in her own name, Dana Office, for the invoice's balance, 5,760,000, pending payment. The GC is a company customer that certifies, so sending the application emails the GC's contact on the job (gina@harbor-gc.example.test) a link to certify it in the portal (the link names this application's certificate page) and the stage becomes awaiting certification. The mail provider is stood in for (the message is captured, not sent).",
+      "expected": {
+        "sov": {
+          "contractSumCents": 18000000,
+          "scheduledTotalCents": 18000000,
+          "lines": [
+            [
+              "Rough-in and distribution",
+              8000000
+            ],
+            [
+              "Fixtures and devices",
+              5000000
+            ],
+            [
+              "Panels and switchgear",
+              3500000
+            ],
+            [
+              "Trim-out, testing and commissioning",
+              1500000
+            ]
+          ]
+        },
+        "application": {
+          "number": 1,
+          "originalContractSumCents": 18000000,
+          "changeOrderSumCents": 0,
+          "contractSumToDateCents": 18000000,
+          "totalCompletedAndStoredCents": 6400000,
+          "retainageCents": 640000,
+          "totalEarnedLessRetainageCents": 5760000,
+          "previousCertificatesCents": 0,
+          "currentPaymentDueCents": 5760000,
+          "balanceToFinishCents": 12240000
+        },
+        "invoice": {
+          "status": "draft",
+          "totalCents": 5760000,
+          "lines": [
+            [
+              "1. Rough-in and distribution",
+              4000000
+            ],
+            [
+              "2. Fixtures and devices",
+              1000000
+            ],
+            [
+              "3. Panels and switchgear",
+              1400000
+            ],
+            [
+              "Retainage held (this application)",
+              -640000
+            ]
+          ]
+        },
+        "retainageWithheld": [
+          {
+            "status": "held",
+            "cents": 640000
+          }
+        ],
+        "waiver": [
+          {
+            "waiver_type": "conditional_progress",
+            "status": "pending_payment",
+            "amount_cents": 5760000,
+            "signer": "Dana Office"
+          }
+        ],
+        "sentToTheGc": {
+          "stage": "awaiting_certification",
+          "recipients": [
+            "gina@harbor-gc.example.test"
+          ],
+          "linkIsThisApplicationsCertificatePage": true
+        }
+      }
+    },
+    "gc-certifies-on-the-portal-and-the-invoice-issues": {
+      "derivation": "The GC opens the link from the email: the portal's pay-applications register (the loader the page calls) lists application 1 awaiting its certificate, for the 5,760,000 payment due, with its invoice still a draft. A second portal link granted only to view invoices (can_certify_pay_applications false), such as the GC's accounting clerk's, is refused the certificate action (This portal link does not have permission for that action). Gina Harbor certifies on the certifying link, through the portal's server action: success, and the invoice it returns is the application's own. The register then shows the application certified by Gina Harbor for 5,760,000 (the amount requested; she deferred nothing) and its invoice issued (status sent), at 5,760,000 with that balance due. A certified application cannot be certified again (This pay application is already certified.). Next's cache invalidation after the action has no request outside a server and is stood in for.",
+      "expected": {
+        "portalBefore": [
+          {
+            "number": 1,
+            "stage": "awaiting_certification",
+            "awaitingCertificate": true,
+            "currentPaymentDueCents": 5760000,
+            "certifiedBy": null,
+            "certifiedCents": null,
+            "invoiceStatus": "draft"
+          }
+        ],
+        "linkWithoutCertifyPermission": {
+          "success": false,
+          "error": "This portal link does not have permission for that action"
+        },
+        "certificate": {
+          "success": true,
+          "invoiceIsTheApplicationsInvoice": true
+        },
+        "portalAfter": [
+          {
+            "number": 1,
+            "stage": "certified",
+            "awaitingCertificate": false,
+            "currentPaymentDueCents": 5760000,
+            "certifiedBy": "Gina Harbor",
+            "certifiedCents": 5760000,
+            "invoiceStatus": "sent"
+          }
+        ],
+        "invoice": {
+          "status": "sent",
+          "totalCents": 5760000,
+          "balanceDueCents": 5760000
+        },
+        "certifyingAgain": {
+          "success": false,
+          "error": "This pay application is already certified."
+        }
+      }
+    },
+    "partial-ach-payment-is-recorded": {
+      "derivation": "The GC's bank sends $30,000.00 (3,000,000) by ACH against the issued 5,760,000 invoice; the office admin (payment.release) records it with its bank reference ACH-HARBOR-0001. One succeeded ACH payment of 3,000,000 exists on the invoice. 5,760,000 - 3,000,000 = 2,760,000 is still due, so the invoice is partially paid, and the GC's portal reads the same 2,760,000 balance from the application's invoice. A conditional waiver releases only when the invoice is paid in full, so it is still pending payment.",
+      "expected": {
+        "payments": [
+          {
+            "method": "ach",
+            "status": "succeeded",
+            "amountCents": 3000000,
+            "reference": "ACH-HARBOR-0001"
+          }
+        ],
+        "invoice": {
+          "status": "partial",
+          "balanceDueCents": 2760000
+        },
+        "portalBalanceCents": 2760000,
+        "waiver": [
+          {
+            "type": "conditional_progress",
+            "status": "pending_payment"
+          }
+        ]
+      }
+    },
+    "retainage-is-held-on-the-job": {
+      "derivation": "Retainage is 10% of the work billed: 10% x 6,400,000 = 640,000, withheld from the invoice, not billed. It is recorded as one held retainage record on application 1's invoice, and the schedule of values reports the same: 6,400,000 billed to date, 640,000 retainage held and none released.",
+      "expected": {
+        "retainageRecords": [
+          {
+            "status": "held",
+            "cents": 640000
+          }
+        ],
+        "recordsOnTheApplicationsInvoice": 1,
+        "sov": {
+          "billedCents": 6400000,
+          "heldCents": 640000,
+          "releasedCents": 0
+        }
+      }
+    },
+    "billing-book-shows-held-retainage-once": {
+      "derivation": "The job's billing book is where the retainage the GC holds appears as a receivable. For a job that bills by schedule of values the billing page asks for the SOV's retainage too (getProjectBillingSummary with includeSovRetainage). The retainage held is 640,000 (10% of 6,400,000 billed), one amount that the retainage record and the SOV both carry, so the summary should read 640,000. Beside it: 2,760,000 still owed on the invoice (5,760,000 - 3,000,000) and 3,000,000 collected.",
+      "expected": {
+        "retainageHeldCents": 640000,
+        "outstandingCents": 2760000,
+        "collectedCents": 3000000
+      }
+    },
+    "change-order-is-approved-between-pay-applications": {
+      "derivation": "A $20,000.00 change order (one line, no tax or markup, no signature needed) is approved by the owner (change_order.approve) after application 1 was certified and part-paid. Approval adds the change order's total, 2,000,000, to the contract sum (18,000,000 + 2,000,000 = 20,000,000) and appends one SOV line for it ('CO - <title>', scheduled 2,000,000, nothing billed), so the schedule 8,000,000 + 5,000,000 + 3,500,000 + 1,500,000 + 2,000,000 = 20,000,000 still foots with no variance. Application 1 is a posted record and does not move: its G702 figures are those of the first subcase (change orders 0, contract sum to date 18,000,000), its invoice still owes 2,760,000, and the SOV's retainage held stays 640,000. Billed to date per line is 4,000,000, 1,000,000, 1,400,000, 0 and 0.",
+      "expected": {
+        "changeOrder": {
+          "status": "approved",
+          "lifecycle": "approved",
+          "totalCents": 2000000
+        },
+        "sov": {
+          "contractSumCents": 20000000,
+          "scheduledTotalCents": 20000000,
+          "varianceCents": 0,
+          "lines": [
+            [
+              "Rough-in and distribution",
+              8000000,
+              4000000
+            ],
+            [
+              "Fixtures and devices",
+              5000000,
+              1000000
+            ],
+            [
+              "Panels and switchgear",
+              3500000,
+              1400000
+            ],
+            [
+              "Trim-out, testing and commissioning",
+              1500000,
+              0
+            ],
+            [
+              "CO — Add EV charging circuits, level 2",
+              2000000,
+              0
+            ]
+          ],
+          "retainageHeldCents": 640000
+        },
+        "applicationOne": {
+          "originalContractSumCents": 18000000,
+          "changeOrderSumCents": 0,
+          "contractSumToDateCents": 18000000,
+          "totalCompletedAndStoredCents": 6400000,
+          "retainageCents": 640000,
+          "totalEarnedLessRetainageCents": 5760000,
+          "previousCertificatesCents": 0,
+          "currentPaymentDueCents": 5760000,
+          "balanceToFinishCents": 12240000,
+          "invoiceBalanceCents": 2760000
+        }
+      }
+    },
+    "final-pay-application-bills-the-rest-with-retainage": {
+      "derivation": "Application 2 bills every line to 100%: the rest of line 1 is 8,000,000 - 4,000,000 = 4,000,000, of line 2 5,000,000 - 1,000,000 = 4,000,000, of line 3 3,500,000 - 1,400,000 = 2,100,000, all of line 4, 1,500,000, and all of the change order's line, 2,000,000: 13,600,000 of work. Retainage on it is 10% x 13,600,000 = 1,360,000, so 2,000,000 is held in all (640,000 + 1,360,000, which is 10% of the 20,000,000 contract sum). Its G702: original contract sum 18,000,000, change orders 2,000,000, contract sum to date 20,000,000; total completed and stored 20,000,000; retainage 2,000,000; total earned less retainage 18,000,000; previous certificates 5,760,000 (application 1's); current payment due 18,000,000 - 5,760,000 = 12,240,000 (= 13,600,000 - 1,360,000); balance to finish 20,000,000 - 18,000,000 = 2,000,000, the retainage still held. The email goes to the GC with this application's certificate link, the GC certifies, and the invoice issues at 12,240,000: the five work lines (numbered, the change order's line included) and a negative retainage line of 1,360,000. Held retainage records total 2,000,000, and the SOV shows 20,000,000 billed and 2,000,000 held.",
+      "expected": {
+        "application": {
+          "number": 2,
+          "originalContractSumCents": 18000000,
+          "changeOrderSumCents": 2000000,
+          "contractSumToDateCents": 20000000,
+          "totalCompletedAndStoredCents": 20000000,
+          "retainageCents": 2000000,
+          "totalEarnedLessRetainageCents": 18000000,
+          "previousCertificatesCents": 5760000,
+          "currentPaymentDueCents": 12240000,
+          "balanceToFinishCents": 2000000
+        },
+        "emailedToTheGc": {
+          "recipients": [
+            "gina@harbor-gc.example.test"
+          ],
+          "linkIsThisApplicationsCertificatePage": true
+        },
+        "certificate": {
+          "success": true
+        },
+        "invoice": {
+          "status": "sent",
+          "totalCents": 12240000,
+          "lines": [
+            [
+              "1. Rough-in and distribution",
+              4000000
+            ],
+            [
+              "2. Fixtures and devices",
+              4000000
+            ],
+            [
+              "3. Panels and switchgear",
+              2100000
+            ],
+            [
+              "4. Trim-out, testing and commissioning",
+              1500000
+            ],
+            [
+              "5. CO — Add EV charging circuits, level 2",
+              2000000
+            ],
+            [
+              "Retainage held (this application)",
+              -1360000
+            ]
+          ]
+        },
+        "retainageWithheld": [
+          {
+            "status": "held",
+            "cents": 2000000
+          }
+        ],
+        "sov": {
+          "billedCents": 20000000,
+          "retainageHeldCents": 2000000
+        }
+      }
+    },
+    "ach-payment-clears-both-invoices-and-releases-the-waiver": {
+      "derivation": "The GC pays 15,000,000 ($150,000.00) by ACH, allocated 2,760,000 to application 1's invoice (what remained after the first 3,000,000) and 12,240,000 to application 2's. Each allocation is recorded as one payment on its invoice, beside the earlier 3,000,000 on application 1's: payments on application 1 of 2,760,000 and 3,000,000 and on application 2 of 12,240,000 (in that order). Both invoices are paid in full (5,760,000 and 12,240,000, nothing due). Paying application 1's invoice in full releases its conditional progress waiver.",
+      "expected": {
+        "invoices": [
+          {
+            "status": "paid",
+            "totalCents": 5760000,
+            "balanceDueCents": 0
+          },
+          {
+            "status": "paid",
+            "totalCents": 12240000,
+            "balanceDueCents": 0
+          }
+        ],
+        "achPayments": [
+          {
+            "method": "ach",
+            "amountCents": 2760000,
+            "onApplication": 1
+          },
+          {
+            "method": "ach",
+            "amountCents": 3000000,
+            "onApplication": 1
+          },
+          {
+            "method": "ach",
+            "amountCents": 12240000,
+            "onApplication": 2
+          }
+        ],
+        "conditionalWaiver": [
+          {
+            "type": "conditional_progress",
+            "status": "released"
+          }
+        ]
+      }
+    },
+    "retainage-release-with-an-unconditional-final-waiver": {
+      "derivation": "With the work complete and paid, the office admin releases all the retainage held, 640,000 + 1,360,000 = 2,000,000 ($20,000.00), as the final application: application 3, a retainage release application whose invoice is for 2,000,000 (it bills no new work). The unconditional final waiver rides that invoice (the builder's statement that once the release is paid nothing more is owed on the job), for the invoice's balance, 2,000,000, pending payment. The GC certifies the release application on the portal, which issues its invoice, and pays 2,000,000 by ACH: the invoice is paid with nothing due and the final waiver is released. The SOV shows 2,000,000 held in all and 2,000,000 released, the billing book holds no retainage and nothing owed, and a second release is refused (Enter a release amount, nothing remains). Once the release invoice is paid the application reads paid and the retainage records it released read paid (the invoice's paid status moves them from invoiced).",
+      "expected": {
+        "application": {
+          "number": 3,
+          "isRetainageRelease": true,
+          "currentPaymentDueCents": 2000000,
+          "stage": "paid"
+        },
+        "invoice": {
+          "status": "paid",
+          "totalCents": 2000000,
+          "balanceDueCents": 0
+        },
+        "finalWaiver": [
+          {
+            "type": "unconditional_final",
+            "status": "released",
+            "amountCents": 2000000
+          }
+        ],
+        "sov": {
+          "heldCents": 2000000,
+          "releasedCents": 2000000
+        },
+        "retainageRecords": [
+          {
+            "status": "paid",
+            "cents": 2000000
+          }
+        ],
+        "billingBook": {
+          "retainageHeldCents": 0,
+          "outstandingCents": 0
+        },
+        "releasingAgain": "refused: Enter a release amount"
+      }
+    }
+  }
+}

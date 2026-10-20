@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface";
 import { connection } from "next/server"
 import { ProjectInventoryLink } from "@/components/books/project-accounting-tools";
 import { Suspense } from "react";
@@ -33,6 +34,7 @@ export default function FinancialsBudgetPage({ params }: PageProps) {
 async function FinancialsBudgetPageRoute({ params }: PageProps) {
   await connection()
   const { id } = await params;
+  await guardProjectTab(id, "budget");
 
   return <FinancialsBudgetData id={id} />
 }

@@ -135,3 +135,60 @@ test("a purchasing manager holding the baseline reads reaches projects it is not
   assert.equal(denied.allowed, false)
   assert.equal(denied.reasonCode, "deny_no_project_membership")
 })
+
+// ── The workspace surface bounds every decision (service tier) ───────────────
+// A trade company holding a builder permission through its role still cannot use
+// it; a builder org holding the same key can. Real authorization service over the
+// in-memory database: the surface is read from org_settings, as in production.
+const { createServiceHarness, id, ORG, ACTOR } = require("./support/service")
+const { freshRequire } = require("./support/modules")
+
+const authorization = freshRequire("lib/services/authorization.ts")
+const SURFACE_PROJECT = id(77)
+const TRADE_SETTINGS = [{ org_id: ORG, settings: { business_profile: { kind: "trade", specialty: "Electrical" } } }]
+
+const surfaceOrg = ({ trade, permissions = ["sales.read", "invoice.read"] }) =>
+  createServiceHarness({
+    permissions,
+    tables: {
+      org_settings: trade ? TRADE_SETTINGS : [],
+      projects: [{ id: SURFACE_PROJECT, org_id: ORG, division_id: null }],
+    },
+  })
+
+test("authorize refuses a trade company a builder permission its role holds, and says why", async () => {
+  const trade = surfaceOrg({ trade: true })
+  const refused = await trade.run(() => authorization.authorize({ permission: "sales.read", userId: ACTOR, orgId: ORG }))
+  assert.equal(refused.allowed, false)
+  assert.equal(refused.reasonCode, "deny_workspace_surface")
+  assert.equal(refused.surfaceRefusal, "Sales isn't part of Arc Trade.")
+
+  const kept = await trade.run(() => authorization.authorize({ permission: "invoice.read", userId: ACTOR, orgId: ORG }))
+  assert.equal(kept.allowed, true)
+
+  const builder = surfaceOrg({ trade: false })
+  const open = await builder.run(() => authorization.authorize({ permission: "sales.read", userId: ACTOR, orgId: ORG }))
+  assert.equal(open.allowed, true)
+})
+
+test("a trade company's effective permissions drop the builder keys, and a wildcard survives", async () => {
+  const trade = surfaceOrg({ trade: true, permissions: ["sales.read", "po.read", "invoice.read", "schedule.read"] })
+  const held = await trade.run(() => authorization.getEffectiveOrgPermissions(ORG, ACTOR))
+  assert.deepEqual([...held].sort(), ["invoice.read", "schedule.read"])
+
+  const builder = surfaceOrg({ trade: false, permissions: ["sales.read", "invoice.read"] })
+  assert.deepEqual([...(await builder.run(() => authorization.getEffectiveOrgPermissions(ORG, ACTOR)))].sort(), ["invoice.read", "sales.read"])
+
+  const admin = surfaceOrg({ trade: true, permissions: ["*"] })
+  assert.deepEqual(await admin.run(() => authorization.getEffectiveOrgPermissions(ORG, ACTOR)), ["*"])
+})
+
+test("authorizeMany refuses every project for a builder permission on a trade surface and answers a builder normally", async () => {
+  const trade = surfaceOrg({ trade: true, permissions: ["sales.read", "project.read"] })
+  const refused = await trade.run(() => authorization.authorizeMany({ permission: "sales.read", userId: ACTOR, orgId: ORG, projectIds: [SURFACE_PROJECT] }))
+  assert.equal(refused.get(SURFACE_PROJECT), false)
+
+  const builder = surfaceOrg({ trade: false, permissions: ["sales.read", "project.read"] })
+  const open = await builder.run(() => authorization.authorizeMany({ permission: "sales.read", userId: ACTOR, orgId: ORG, projectIds: [SURFACE_PROJECT] }))
+  assert.equal(open.get(SURFACE_PROJECT), true)
+})

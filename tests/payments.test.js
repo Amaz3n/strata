@@ -12,9 +12,12 @@ stubModule("@/lib/services/financial-parties", {
   getFinancialPartyReceivables: async () => structuredClone(party),
 })
 
+stubModule("@/lib/services/invoice-lien-waivers", { releaseInvoiceLienWaiversIfPaid: async () => undefined })
+stubModule("@/lib/services/accounting-sync", { enqueuePaymentSync: async () => undefined })
+
 const { createServiceHarness, id, ORG, ACTOR } = require("./support/service")
 
-const { getReceivePaymentWorkspace, recordMultiInvoicePayment } = freshRequire("lib/services/payments.ts")
+const { getReceivePaymentWorkspace, recordMultiInvoicePayment, recordPayment } = freshRequire("lib/services/payments.ts")
 
 const CUSTOMER = id(1)
 const OTHER_CUSTOMER = id(2)
@@ -141,4 +144,27 @@ test("a receipt is refused for mixed customers, another customer's invoice, or a
     assert.deepEqual(rpcCalls(service), [], name)
     assert.deepEqual(service.audits, [], name)
   }
+})
+
+test("a card payment confirmed by the processor is recorded even though it carries no receipt time", async () => {
+  // The webhook sends no received_at. The database function has no default for it, so
+  // the key must arrive as null (the payment then takes now()), never be left out.
+  const service = createServiceHarness({
+    tables: { invoices, payments: [], payment_intents: [] },
+    permissions: ["payment.release"],
+    rpc: {
+      apply_invoice_payment_with_details_atomic: (args) =>
+        args.p_received_at !== undefined
+          ? { data: { id: id(70), status: "succeeded", amount_cents: 100 }, error: null }
+          : { data: null, error: { message: "Could not find the function in the schema cache" } },
+    },
+  })
+  await service.run(() =>
+    recordPayment(
+      { invoice_id: GENERAL, amount_cents: 100, method: "card", provider: "stripe", provider_payment_id: "pi_1", status: "succeeded", idempotency_key: "pi_1" },
+      ORG,
+    ),
+  )
+  const call = service.queries.find((query) => query.table === "rpc:apply_invoice_payment_with_details_atomic")
+  assert.equal(call.payload.p_received_at, null)
 })

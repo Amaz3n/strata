@@ -13,6 +13,13 @@ import {
 } from "@/lib/financials/invoice-lifecycle"
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { PAY_APPLICATION_STAGE_LABELS } from "@/lib/financials/pay-app-lifecycle"
+import {
+  earliestRetainageRelease,
+  expectedRetainageRelease,
+  RETAINAGE_RELEASE_BASIS_LABELS,
+  RETAINAGE_RELEASE_NOT_SET,
+  type ExpectedRetainageRelease,
+} from "@/lib/financials/retainage-release"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { getBillingAutopilotState, type BillingAutopilotState } from "@/lib/services/billing-autopilot"
 import { listProjectBillingPeriods, type ProjectBillingPeriod } from "@/lib/services/billing-periods"
@@ -54,6 +61,11 @@ export interface ProjectBillingSummary extends ArAgingTotals {
   creditedCents: number
   /** Retainage the customer is holding on this job, from the ledger and the SOV. */
   retainageHeldCents: number
+  /**
+   * When that retainage is expected back: the soonest across jobs on the org desk.
+   * Retainage is a receivable the customer owes on release, never an aging bucket.
+   */
+  retainageRelease: ExpectedRetainageRelease
 }
 
 type SummaryRow = {
@@ -69,6 +81,7 @@ function summarizeBillingRows(
   rows: SummaryRow[],
   creditedCents: number,
   retainageHeldCents: number,
+  retainageRelease: ExpectedRetainageRelease,
 ): ProjectBillingSummary {
   const billedSet: ReadonlySet<string> = new Set(BILLED_INVOICE_STATUSES)
   const bands: BillingBandCounts = { drafts: 0, awaitingApproval: 0, readyToIssue: 0, open: 0, overdue: 0, exceptions: 0, paid: 0, void: 0 }
@@ -99,7 +112,57 @@ function summarizeBillingRows(
     creditedCents,
     collectedCents: Math.max(0, billedCents - aging.outstandingCents - creditedCents),
     retainageHeldCents,
+    retainageRelease,
   }
+}
+
+/**
+ * Expected release per job, from the contract's trigger and the dates the job
+ * already has: substantial completion on its closeout package and its end date.
+ * A job with neither maps to "not set". One read per source, whatever the job count.
+ */
+async function loadRetainageReleases(input: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string
+  projectIds: string[]
+}): Promise<Map<string, ExpectedRetainageRelease>> {
+  const releases = new Map<string, ExpectedRetainageRelease>()
+  const ids = [...new Set(input.projectIds)]
+  if (ids.length === 0) return releases
+  const { supabase, orgId } = input
+  const [projects, packages, contracts] = await Promise.all([
+    supabase.from("projects").select("id, end_date").eq("org_id", orgId).in("id", ids).throwOnError(),
+    supabase.from("closeout_packages").select("project_id, substantial_completion_date").eq("org_id", orgId).in("project_id", ids).not("substantial_completion_date", "is", null).throwOnError(),
+    supabase.from("contracts").select("project_id, retainage_release_trigger, created_at").eq("org_id", orgId).in("project_id", ids).order("created_at", { ascending: false }).throwOnError(),
+  ])
+  const endByProject = new Map((projects.data ?? []).map((row) => [String(row.id), row.end_date as string | null]))
+  const completionByProject = new Map<string, string>()
+  for (const row of packages.data ?? []) {
+    const id = String(row.project_id)
+    const date = String(row.substantial_completion_date)
+    const known = completionByProject.get(id)
+    if (!known || date > known) completionByProject.set(id, date)
+  }
+  const triggerByProject = new Map<string, string | null>()
+  for (const row of contracts.data ?? []) {
+    const id = String(row.project_id)
+    if (!triggerByProject.has(id)) triggerByProject.set(id, row.retainage_release_trigger as string | null)
+  }
+  for (const id of ids) {
+    releases.set(id, expectedRetainageRelease({
+      releaseTrigger: triggerByProject.get(id),
+      substantialCompletionDate: completionByProject.get(id),
+      projectEndDate: endByProject.get(id),
+    }))
+  }
+  return releases
+}
+
+/** "Expected Mar 4 · Substantial completion", or "Expected release: Not set". */
+export function describeRetainageRelease(release: ExpectedRetainageRelease): string {
+  const day = formatDay(release.date)
+  if (!day || !release.basis) return `Expected release: ${RETAINAGE_RELEASE_NOT_SET}`
+  return `Expected ${day} · ${RETAINAGE_RELEASE_BASIS_LABELS[release.basis]}`
 }
 
 export async function getProjectBillingSummary(
@@ -134,7 +197,7 @@ export async function getProjectBillingSummary(
       .throwOnError(),
     supabase
       .from("retainage")
-      .select("amount_cents")
+      .select("amount_cents, invoice:invoices!retainage_invoice_id_fkey(source_pay_application_id)")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
       .eq("status", "held")
@@ -143,12 +206,24 @@ export async function getProjectBillingSummary(
   ])
 
   const creditedCents = (adjustmentsResult.data ?? []).reduce((sum, row) => sum + Number(row.amount_cents ?? 0), 0)
-  const ledgerRetainage = (retainageResult.data ?? []).reduce((sum, row) => sum + Number(row.amount_cents ?? 0), 0)
   const sovRetainage = sovResult?.summary
     ? Math.max(0, sovResult.summary.retainage_held_cents - sovResult.summary.retainage_released_cents)
-    : 0
+    : null
+  // A pay application's invoice writes a ledger row mirroring the retainage the
+  // SOV already holds; where the SOV is counted, only the other rows are added.
+  const ledgerRetainage = (retainageResult.data ?? []).reduce((sum, row) => {
+    const invoice = Array.isArray(row.invoice) ? row.invoice[0] : row.invoice
+    return sovRetainage !== null && invoice?.source_pay_application_id ? sum : sum + Number(row.amount_cents ?? 0)
+  }, 0)
 
-  return summarizeBillingRows((invoicesResult.data ?? []) as SummaryRow[], creditedCents, ledgerRetainage + sovRetainage)
+  const retainageHeldCents = ledgerRetainage + (sovRetainage ?? 0)
+  const releases = retainageHeldCents > 0 ? await loadRetainageReleases({ supabase, orgId, projectIds: [projectId] }) : null
+  return summarizeBillingRows(
+    (invoicesResult.data ?? []) as SummaryRow[],
+    creditedCents,
+    retainageHeldCents,
+    releases?.get(projectId) ?? { date: null, basis: null },
+  )
 }
 
 export async function getOrgBillingSummary(orgId?: string): Promise<ProjectBillingSummary> {
@@ -157,11 +232,18 @@ export async function getOrgBillingSummary(orgId?: string): Promise<ProjectBilli
   const [invoices, adjustments, retainage] = await Promise.all([
     supabase.from("invoices").select("status, approval_status, delivery_status, balance_due_cents, total_cents, due_date").eq("org_id", resolvedOrgId).throwOnError(),
     supabase.from("receivable_adjustments").select("amount_cents").eq("org_id", resolvedOrgId).eq("status", "posted").throwOnError(),
-    supabase.from("retainage").select("amount_cents").eq("org_id", resolvedOrgId).eq("status", "held").throwOnError(),
+    supabase.from("retainage").select("amount_cents, project_id").eq("org_id", resolvedOrgId).eq("status", "held").throwOnError(),
   ])
   const creditedCents = (adjustments.data ?? []).reduce((sum, row) => sum + Number(row.amount_cents ?? 0), 0)
   const retainageHeldCents = (retainage.data ?? []).reduce((sum, row) => sum + Number(row.amount_cents ?? 0), 0)
-  return summarizeBillingRows((invoices.data ?? []) as SummaryRow[], creditedCents, retainageHeldCents)
+  const heldProjectIds = (retainage.data ?? []).flatMap((row) => (row.project_id ? [String(row.project_id)] : []))
+  const releases = await loadRetainageReleases({ supabase, orgId: resolvedOrgId, projectIds: heldProjectIds })
+  return summarizeBillingRows(
+    (invoices.data ?? []) as SummaryRow[],
+    creditedCents,
+    retainageHeldCents,
+    earliestRetainageRelease([...releases.values()]),
+  )
 }
 
 /**
@@ -437,7 +519,7 @@ export async function getProjectBillingUpNext(
     return null
   }
 
-  const [draws, inbox, periods, fee, payApps, sov, retainageLedger, gmp, autopilot] = await Promise.all([
+  const [draws, inbox, periods, fee, payApps, sov, retainageLedger, gmp, autopilot, releases] = await Promise.all([
     wants.has("draws")
       ? loadDrawRows({ supabase, orgId, projectId, contractTotalCents: options.contractTotalCents ?? 0 }).catch(
           note("Draw schedule"),
@@ -459,7 +541,12 @@ export async function getProjectBillingUpNext(
       ? getProjectGmpControlSummary(projectId, orgId).catch(note("GMP control"))
       : Promise.resolve(null),
     wants.has("periods") ? getBillingAutopilotState(projectId).catch(note("Arc Autopilot")) : Promise.resolve(null),
+    wants.has("retainage")
+      ? loadRetainageReleases({ supabase, orgId, projectIds: [projectId] }).catch(note("Retainage release date"))
+      : Promise.resolve(null),
   ])
+  const retainageRelease = releases?.get(projectId) ?? { date: null, basis: null }
+  const heldBy = profile.customerLabel.toLowerCase()
 
   const rows: UpNextRow[] = []
 
@@ -561,8 +648,8 @@ export async function getProjectBillingUpNext(
         rows.push({
           key: "retainage:sov",
           kind: "retainage",
-          title: "Retainage held by the owner",
-          detail: "Release creates a retainage-release pay application and its invoice",
+          title: `Retainage held by the ${heldBy}`,
+          detail: `${describeRetainageRelease(retainageRelease)} · Release creates a retainage-release pay application and its invoice`,
           amountCents: available,
           state: "upcoming",
           actionLabel: "Release",
@@ -575,8 +662,8 @@ export async function getProjectBillingUpNext(
         rows.push({
           key: "retainage:ledger",
           kind: "retainage",
-          title: "Retainage held",
-          detail: "Release it into an invoice when the contract allows",
+          title: `Retainage held by the ${heldBy}`,
+          detail: `${describeRetainageRelease(retainageRelease)} · Release it into an invoice when the contract allows`,
           amountCents: available,
           state: "upcoming",
           actionLabel: "Release",

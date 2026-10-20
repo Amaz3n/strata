@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface";
 import { cacheLife } from "next/cache";
 import { DealFiles } from "@/components/pipeline/deal-files";
 import { DealWithoutProject } from "@/components/pipeline/deal-without-project";
@@ -29,6 +30,7 @@ async function loadFiles(dealId: string, path: string | undefined) {
 
 async function Files({ params, searchParams }: Props) {
   const [{ dealId }, query] = await Promise.all([params, searchParams]);
+  await guardWorkspaceDesk("deal_room");
   const path = query.path?.trim() || undefined;
   const files = await loadFiles(dealId, path);
   if (!files) return <DealWithoutProject tab="files" />;

@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 
@@ -14,6 +15,7 @@ import { getAmbientDeskContext } from "@/lib/services/desk-context"
 
 async function PlanLibraryData() {
   await connection()
+  await guardWorkspaceDesk("plans")
   const ambientPromise = getAmbientDeskContext()
   const ladderPromise = ambientPromise.then((ambient) => getPlanLadder({ divisionId: ambient.divisionId, communityId: ambient.communityId }))
   const communitiesPromise = ambientPromise.then((ambient) => listCommunities(ambient.divisionId ? { divisionId: ambient.divisionId } : {}).catch(() => []))

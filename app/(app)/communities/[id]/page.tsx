@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
@@ -65,7 +66,7 @@ function sortByMargin(
 
 export default async function CommunityInventoryPage({ params, searchParams }: InventoryPageProps) {
   await connection()
-  const [{ id }, query] = await Promise.all([params, searchParams])
+  const [, { id }, query] = await Promise.all([guardWorkspaceDesk("communities"), params, searchParams])
   const view = query.view === "map" ? "map" : "table"
   const direction = query.dir === "desc" ? "desc" : "asc"
   const page = Number(query.page) > 0 ? Number(query.page) : 1

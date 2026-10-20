@@ -97,7 +97,7 @@ function pageFixture(detail, rosterError=false) {
     '@/components/sales/agreement-signing-recovery':{AgreementSigningRecovery:leaf('Signing')},'@/components/sales/deal-stage-track':{DealStageTrack:leaf('Stages')},
     '@/components/sales/deal-actions-menu':{DealActionsMenu:menu},'@/components/sales/deal-primary-action':{DealPrimaryAction:primary},'@/components/sales/overview':overview,
     '@/lib/sales/activity':require('../lib/sales/activity'),'@/lib/sales/deal-attention':require('../lib/sales/deal-attention'),'@/lib/sales/lost-reasons':require('../lib/sales/lost-reasons'),'@/lib/sales/primary-action':require('../lib/sales/primary-action'),
-    '@/lib/services/desk-context':{getAmbientDeskContext:async()=>({communities:[]})},'@/lib/services/sales-deals':{getSalesDealDetail:async()=>detail},'@/lib/services/team':{listTeamMembers:async()=>{if(rosterError)throw Error('Roster unavailable');return[]}},'@/lib/utils':{cn:(...args)=>args.join(' ')},
+    '@/lib/services/desk-context':{getAmbientDeskContext:async()=>({communities:[]})},'@/lib/services/workspace-surface':{guardWorkspaceDesk:async()=>{}},'@/lib/services/sales-deals':{getSalesDealDetail:async()=>detail},'@/lib/services/team':{listTeamMembers:async()=>{if(rosterError)throw Error('Roster unavailable');return[]}},'@/lib/utils':{cn:(...args)=>args.join(' ')},
   })
   const shell=page.default({params:Promise.resolve({dealId:'reservation:'+RES})})
   return { result:shell.props.children.type(shell.props.children.props), menu,primary,...overview }

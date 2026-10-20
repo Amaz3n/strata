@@ -34,10 +34,7 @@ import {
 
 import type { Invoice, Project } from "@/lib/types";
 import type { InvoiceInput } from "@/lib/validation/invoices";
-import {
-  getReceivablesPosturePolicy,
-  getGeneralReceivablesPolicy,
-} from "@/lib/receivables/policy";
+import { getGeneralReceivablesPolicy } from "@/lib/receivables/policy";
 import type { BillingProfile } from "@/lib/financials/billing-profile";
 import type { NewInvoiceKind } from "@/lib/financials/invoice-destinations";
 import {
@@ -198,9 +195,7 @@ export function InvoiceComposer({
   onClose,
   onIssued,
 }: InvoiceComposerProps) {
-  const policy = project
-    ? getReceivablesPosturePolicy(profile.posture)
-    : getGeneralReceivablesPolicy();
+  const policy = project ? profile.policy : getGeneralReceivablesPolicy();
   const reducedMotion = useReducedMotion();
   const [sendFeedback, setSendFeedback] = useState<{
     invoice?: Invoice;
@@ -1646,6 +1641,7 @@ export function InvoiceComposer({
                 initialInvoice={initialInvoice}
                 projectId={project?.id}
                 projects={project ? [project] : []}
+                receivablesPolicy={policy}
                 builderInfo={bootstrap?.branding ?? undefined}
                 contacts={bootstrap?.contacts ?? []}
                 costCodes={bootstrap?.costCodes ?? []}

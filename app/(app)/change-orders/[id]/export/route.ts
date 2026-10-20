@@ -5,6 +5,7 @@ import { fetchChangeOrder } from "@/lib/services/change-orders"
 import { renderChangeOrderPdf } from "@/lib/pdfs/change-order"
 import { getProjectPosture, normalizeProductTier } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
 
 export async function GET(
   _request: Request,
@@ -18,7 +19,7 @@ export async function GET(
     return NextResponse.json({ error: "Change order not found" }, { status: 404 })
   }
 
-  const [orgResult, projectResult] = await Promise.all([
+  const [orgResult, projectResult, surface] = await Promise.all([
     supabase.from("orgs").select("name, logo_url, product_tier").eq("id", orgId).maybeSingle(),
     supabase
       .from("projects")
@@ -26,6 +27,7 @@ export async function GET(
       .eq("org_id", orgId)
       .eq("id", changeOrder.project_id)
       .maybeSingle(),
+    loadWorkspaceSurface(orgId),
   ])
 
   const project = projectResult.data as any
@@ -43,7 +45,7 @@ export async function GET(
     projectName: project?.name ?? null,
     recipientName: contactResult.data?.full_name ?? null,
     recipientEmail: contactResult.data?.email ?? null,
-    signerRole: terminology(getProjectPosture(project?.property_type, normalizeProductTier(orgResult.data?.product_tier))).owner,
+    signerRole: terminology(getProjectPosture(project?.property_type, normalizeProductTier(orgResult.data?.product_tier)), surface.profile).owner,
     changeOrder,
   })
 

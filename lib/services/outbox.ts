@@ -8,6 +8,8 @@ interface OutboxJobInput {
   eventId?: string
   runAt?: string
   dedupeByPayloadKeys?: string[]
+  /** An exact key, for a job another writer (a database trigger) also enqueues. */
+  dedupeKey?: string
 }
 
 function buildDedupeKey(jobType: string, payload: Record<string, unknown>, keys?: string[]) {
@@ -35,7 +37,7 @@ export async function enqueueOutboxJob(input: OutboxJobInput) {
       return { enqueued: false as const, reason: "error" as const }
     }
     const payload = input.payload ?? {}
-    const dedupeKey = buildDedupeKey(input.jobType, payload, input.dedupeByPayloadKeys)
+    const dedupeKey = input.dedupeKey ?? buildDedupeKey(input.jobType, payload, input.dedupeByPayloadKeys)
 
     const { data, error } = await supabase
       .from("outbox")

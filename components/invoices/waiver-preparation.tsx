@@ -1,6 +1,8 @@
 "use client";
 import { WaiverAdditionalSigners, WaiverCustomFields } from "./waiver-custom-fields";
 import dynamic from "next/dynamic";
+import { usePageTitle } from "@/components/layout/page-title-context";
+import { isTradeSurface } from "@/lib/workspace-surface";
 import { motion, useReducedMotion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
@@ -124,6 +126,7 @@ export default function WaiverPreparation({
   onClose: () => void;
   onSaved: (waiver: InvoiceLienWaiver) => void;
 }) {
+  const customerNoun = isTradeSurface(usePageTitle().workspaceSurface) ? "customer" : "client";
   const [context, setContext] = useState<Preparation | null>(null);
   const [loadError, setLoadError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -559,7 +562,7 @@ export default function WaiverPreparation({
                       Include with invoice after signing
                       <span className="mt-1 block text-muted-foreground">
                         The completed PDF will be available on the invoice’s
-                        client link.
+                        {customerNoun} link.
                       </span>
                     </span>
                   </label>}

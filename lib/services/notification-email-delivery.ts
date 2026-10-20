@@ -21,6 +21,8 @@ import { readReleaseKind } from "@/lib/payments/payment-run-notification-copy"
 import { formatDigestMoney } from "@/lib/services/books/reconciliation-digest"
 import { loadReconciliationDigest } from "@/lib/services/books/reconciliation"
 import { EMAIL_NOTIFICATION_TYPES } from "@/lib/types/notifications"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { profileTerminology } from "@/lib/terminology"
 
 /** How many findings the email lists before it falls back to "+ N more". */
 const TOP_FINDINGS_IN_EMAIL = 6
@@ -464,8 +466,10 @@ async function renderPaymentReturnEmail(args: {
   // template would, with less ceremony.
   if (amountCents === null && !documentLabel && !counterpartyName) return null
 
+  const projectLabel = profileTerminology((await loadWorkspaceSurface(args.orgId)).profile).project
   return renderEmailTemplate(
     PaymentReturnedEmail({
+      projectLabel,
       orgName: args.orgName,
       orgLogoUrl: args.orgLogoUrl,
       recipientName: args.recipientName,

@@ -12,7 +12,8 @@ export async function uploadCostPlusFile({
 }: {
   file: File | null
   orgId: string
-  projectId: string
+  /** Null for an overhead receipt, which belongs to no job. */
+  projectId: string | null
   companyId?: string | null
   kind: "expense_receipt" | "time_attachment"
 }) {
@@ -24,7 +25,7 @@ export async function uploadCostPlusFile({
   const supabase = createServiceSupabaseClient()
   const timestamp = Date.now()
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
-  const storagePath = `${orgId}/${projectId}/cost-plus/${kind}/${timestamp}_${safeName}`
+  const storagePath = `${orgId}/${projectId ?? "overhead"}/cost-plus/${kind}/${timestamp}_${safeName}`
   const bytes = Buffer.from(await file.arrayBuffer())
 
   await uploadFilesObject({

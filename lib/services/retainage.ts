@@ -6,6 +6,7 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { getNextInvoiceNumber, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
+import { createInvoiceLienWaiver } from "@/lib/services/invoice-lien-waivers"
 import { chunk } from "@/lib/utils"
 import { z } from "zod"
 
@@ -209,3 +210,39 @@ export async function releaseProjectRetainage(projectId: string, input: { amount
 }
 
 const releaseResultSchema = z.object({ invoice_id: z.string().uuid(), released_cents: z.number().int() })
+
+/**
+ * The waiver that goes out with a retainage release, and which one is decided
+ * by what the release leaves behind. A release that clears everything held on
+ * the job is the builder's signed statement that nothing more is owed on it:
+ * the unconditional final waiver. A partial release leaves retainage still
+ * owing, so it carries the conditional progress waiver for that payment only.
+ * It rides the release invoice (from either release path) and is filed pending
+ * payment like every invoice waiver. Refuses an invoice that is not a release
+ * on this project.
+ */
+export async function createRetainageReleaseWaiver(projectId: string, invoiceId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const [release, stillHeld] = await Promise.all([
+    supabase
+      .from("retainage")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .eq("release_invoice_id", invoiceId)
+      .limit(1),
+    supabase
+      .from("retainage")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .eq("status", "held")
+      .gt("amount_cents", 0)
+      .limit(1),
+  ])
+  if (release.error) throw new Error(`Failed to check the retainage release: ${release.error.message}`)
+  if (stillHeld.error) throw new Error(`Failed to check the retainage still held: ${stillHeld.error.message}`)
+  if ((release.data ?? []).length === 0) throw new Error("That invoice is not a retainage release on this project")
+  const waiver_type = (stillHeld.data ?? []).length === 0 ? "unconditional_final" : "conditional_progress"
+  return createInvoiceLienWaiver({ invoice_id: invoiceId, waiver_type }, resolvedOrgId)
+}

@@ -227,39 +227,115 @@ export async function shareComplianceDocumentToOrg(params: {
   const sourceFile = Array.isArray(source.files) ? source.files[0] : source.files
   if (!sourceFile?.storage_path) throw new Error("That document has no file attached")
 
+  const { documentId } = await copyDocumentIntoOrg(supabase, {
+    source: {
+      orgId: source.org_id,
+      documentTypeCode: sourceType?.code ?? "",
+      file: sourceFile,
+      facts: source,
+    },
+    targetOrgId: params.targetOrgId,
+    targetCompanyId: params.targetCompanyId,
+    portalTokenId: params.portalTokenId,
+  })
+
+  await supabase.from("vendor_document_shares").insert({
+    source_org_id: source.org_id,
+    source_document_id: source.id,
+    target_org_id: params.targetOrgId,
+    target_document_id: documentId,
+    external_identity_id: params.externalIdentityId,
+    shared_by_contact_email: params.identityEmail.trim().toLowerCase(),
+    portal_token_id: params.portalTokenId,
+  })
+
+  return { documentId }
+}
+
+/** The receiving builder has no active document type for what is being shared. */
+export class DocumentNotRequestedError extends Error {
+  constructor() {
+    super("This builder does not ask for that document")
+    this.name = "DocumentNotRequestedError"
+  }
+}
+
+export interface ShareableDocumentSource {
+  orgId: string
+  documentTypeCode: string
+  file: { file_name: string | null; storage_path: string; mime_type: string | null }
+  facts: {
+    effective_date: string | null
+    expiry_date: string | null
+    policy_number: string | null
+    coverage_amount_cents: number | null
+    carrier_name: string | null
+    additional_insured: boolean
+    primary_noncontributory: boolean
+    waiver_of_subrogation: boolean
+    license_number: string | null
+    license_jurisdiction: string | null
+    license_classification: string | null
+  }
+}
+
+/**
+ * File a copy of one document in another org, as that org's own pending
+ * submission for one of its vendors. The single place a document crosses orgs:
+ * the portal's per-document share and the trade's compliance vault both end here.
+ *
+ * Recording WHO shared it (and from which source row) is the caller's job — the
+ * two origins keep different evidence in `vendor_document_shares`.
+ *
+ * Deliberately does NOT supersede what the receiving builder already holds.
+ * A shared certificate arrives as an ordinary pending submission, and until
+ * their reviewer approves it, whatever they had on file is still the answer.
+ * Superseding here took a compliant vendor out of compliance the moment they
+ * offered a document, which is the opposite of the point.
+ */
+async function copyDocumentIntoOrg(
+  supabase: SupabaseClient,
+  params: {
+    source: ShareableDocumentSource
+    targetOrgId: string
+    targetCompanyId: string
+    portalTokenId: string | null
+  },
+): Promise<{ documentId: string }> {
+  const { source } = params
   const { data: targetType } = await supabase
     .from("compliance_document_types")
     .select("id, name")
     .eq("org_id", params.targetOrgId)
-    .eq("code", sourceType?.code ?? "")
+    .eq("code", source.documentTypeCode)
     .eq("is_active", true)
     .maybeSingle()
 
-  if (!targetType) throw new Error("This builder does not ask for that document")
+  if (!targetType) throw new DocumentNotRequestedError()
 
   // A real copy, not a cross-org pointer: each org owns its own object, so
   // access ending in one org can never pull a document out of another.
   const bytes = await downloadFilesObject({
     supabase,
-    orgId: source.org_id,
-    path: sourceFile.storage_path,
+    orgId: source.orgId,
+    path: source.file.storage_path,
   })
-  const safeName = (sourceFile.file_name ?? "compliance-document.pdf").replace(/[^\w.\-]+/g, "_")
+  const safeName = (source.file.file_name ?? "compliance-document.pdf").replace(/[^\w.\-]+/g, "_")
   const { storagePath } = await uploadFilesObject({
     supabase,
     orgId: params.targetOrgId,
     path: `${params.targetOrgId}/compliance/${params.targetCompanyId}/${Date.now()}_${safeName}`,
     bytes,
-    contentType: sourceFile.mime_type ?? "application/pdf",
+    contentType: source.file.mime_type ?? "application/pdf",
   })
 
   const { data: newFile, error: fileError } = await supabase
     .from("files")
     .insert({
       org_id: params.targetOrgId,
-      file_name: sourceFile.file_name ?? safeName,
+      file_name: source.file.file_name ?? safeName,
       storage_path: storagePath,
-      mime_type: sourceFile.mime_type ?? "application/pdf",
+      mime_type: source.file.mime_type ?? "application/pdf",
       size_bytes: bytes.byteLength,
       visibility: "private",
       source: "portal",
@@ -268,7 +344,7 @@ export async function shareComplianceDocumentToOrg(params: {
         portal_token_id: params.portalTokenId,
         company_id: params.targetCompanyId,
         file_type: "compliance_document",
-        shared_from_org_id: source.org_id,
+        shared_from_org_id: source.orgId,
       },
     })
     .select("id")
@@ -295,37 +371,22 @@ export async function shareComplianceDocumentToOrg(params: {
       status: "pending_review",
       submitted_via_portal: true,
       portal_token_id: params.portalTokenId,
-      effective_date: source.effective_date,
-      expiry_date: source.expiry_date,
-      policy_number: source.policy_number,
-      coverage_amount_cents: source.coverage_amount_cents,
-      carrier_name: source.carrier_name,
-      additional_insured: source.additional_insured,
-      primary_noncontributory: source.primary_noncontributory,
-      waiver_of_subrogation: source.waiver_of_subrogation,
-      license_number: source.license_number,
-      license_jurisdiction: source.license_jurisdiction,
-      license_classification: source.license_classification,
+      effective_date: source.facts.effective_date,
+      expiry_date: source.facts.expiry_date,
+      policy_number: source.facts.policy_number,
+      coverage_amount_cents: source.facts.coverage_amount_cents,
+      carrier_name: source.facts.carrier_name,
+      additional_insured: source.facts.additional_insured,
+      primary_noncontributory: source.facts.primary_noncontributory,
+      waiver_of_subrogation: source.facts.waiver_of_subrogation,
+      license_number: source.facts.license_number,
+      license_jurisdiction: source.facts.license_jurisdiction,
+      license_classification: source.facts.license_classification,
     })
     .select("id")
     .single()
 
   if (createError || !created) throw new Error("Could not file the shared document")
-
-  // Deliberately does NOT supersede what the receiving builder already holds.
-  // A shared certificate arrives as an ordinary pending submission, and until
-  // their reviewer approves it, whatever they had on file is still the answer.
-  // Superseding here took a compliant vendor out of compliance the moment they
-  // offered a document, which is the opposite of the point.
-  await supabase.from("vendor_document_shares").insert({
-    source_org_id: source.org_id,
-    source_document_id: source.id,
-    target_org_id: params.targetOrgId,
-    target_document_id: created.id,
-    external_identity_id: params.externalIdentityId,
-    shared_by_contact_email: params.identityEmail.trim().toLowerCase(),
-    portal_token_id: params.portalTokenId,
-  })
 
   const { data: company } = await supabase
     .from("companies")
@@ -354,4 +415,59 @@ export async function shareComplianceDocumentToOrg(params: {
   }).catch(() => null)
 
   return { documentId: created.id }
+}
+
+/**
+ * The trade's own vault document, filed with one builder it works for. The
+ * builder's `companyId` is the trade's company row in THAT org.
+ */
+export async function shareOwnComplianceDocumentToOrg(
+  supabase: SupabaseClient,
+  params: {
+    ownDocumentId: string
+    source: ShareableDocumentSource
+    targetOrgId: string
+    targetCompanyId: string
+    portalTokenId: string | null
+  },
+): Promise<{ documentId: string | null; alreadyShared: boolean }> {
+  // The share row is the claim on (document, builder): taking it first, under
+  // its unique key, is what keeps a retry or a second member from filing the
+  // same certificate twice. Its copy is attached once it exists.
+  const claim = await supabase
+    .from("vendor_document_shares")
+    .insert({
+      source_org_id: params.source.orgId,
+      source_own_document_id: params.ownDocumentId,
+      target_org_id: params.targetOrgId,
+      portal_token_id: params.portalTokenId,
+    })
+    .select("id")
+    .single()
+  if (claim.error) {
+    if (claim.error.code === "23505") return { documentId: null, alreadyShared: true }
+    throw new Error(`Failed to record the shared document: ${claim.error.message}`)
+  }
+
+  let documentId: string
+  try {
+    documentId = (
+      await copyDocumentIntoOrg(supabase, {
+        source: params.source,
+        targetOrgId: params.targetOrgId,
+        targetCompanyId: params.targetCompanyId,
+        portalTokenId: params.portalTokenId,
+      })
+    ).documentId
+  } catch (error) {
+    await supabase.from("vendor_document_shares").delete().eq("id", claim.data.id)
+    throw error
+  }
+
+  const { error: linkError } = await supabase
+    .from("vendor_document_shares")
+    .update({ target_document_id: documentId })
+    .eq("id", claim.data.id)
+  if (linkError) throw new Error(`Failed to link the shared document: ${linkError.message}`)
+  return { documentId, alreadyShared: false }
 }

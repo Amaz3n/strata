@@ -6,7 +6,7 @@ require("../register-ts-node-test")
 const fs = require("node:fs"),
   path = require("node:path")
 const { GOLDEN_SCENARIOS } = require("./runtime.cjs")
-const { IMPLEMENTED, NOT_IMPLEMENTED, LONG_RUNNING, OPEN_SUBCASES, PRODUCTION } = require("./catalog.cjs")
+const { IMPLEMENTED, NOT_IMPLEMENTED, LONG_RUNNING, OPEN_SUBCASES, PRODUCTION, ARC_TRADE } = require("./catalog.cjs")
 
 const root = path.join(__dirname, "../..")
 
@@ -57,6 +57,11 @@ function verifyCatalog({ trackerPath = path.join(root, "advisor-plans/013-arc-bo
   const checklistIds = new Set(fs.existsSync(checklistPath) ? (JSON.parse(fs.readFileSync(checklistPath, "utf8")).items ?? []).map((item) => item.id) : [])
   for (const [id, entry] of Object.entries(PRODUCTION)) if (!checklistIds.has(entry.checklist)) findings.push(`${id} names checklist item ${entry.checklist}, which is not in the enterprise-production checklist`)
   for (const id of checklistIds) ids.add(id)
+  // Arc Trade scenarios (TR07-01) are owned by the Arc Trade checklist.
+  const tradePath = path.join(root, "docs/plans/arc-trade/completion-checklist.json")
+  const tradeIds = new Set(fs.existsSync(tradePath) ? (JSON.parse(fs.readFileSync(tradePath, "utf8")).items ?? []).map((item) => item.id) : [])
+  if (tradeIds.size) for (const [id, entry] of Object.entries(ARC_TRADE)) if (!tradeIds.has(entry.checklist)) findings.push(`${id} names checklist item ${entry.checklist}, which is not in the Arc Trade checklist`)
+  for (const id of tradeIds) ids.add(id)
   const owners = [...Object.values(NOT_IMPLEMENTED).flatMap((entry) => entry.packages), ...Object.values(OPEN_SUBCASES).flatMap((open) => Object.values(open))]
   for (const owner of owners) if (!ids.has(owner) && ![...ids].some((id) => id.startsWith(`${owner}.`))) findings.push(`package ${owner} is not in the tracker`)
   for (const item of items) {

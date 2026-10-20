@@ -53,7 +53,9 @@ import {
 } from "@/lib/services/mailer";
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers";
 import { enqueueProjectExpenseSync } from "@/lib/services/accounting-sync";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { authorize, requireAuthorization } from "@/lib/services/authorization";
+import { resolveLaborRate } from "@/lib/services/labor-rates";
+import { applyOvertimeRule } from "@/lib/services/time-overtime";
 import { getProjectGmpControlSummary } from "@/lib/services/gmp-control";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { assertPortalActionAccess } from "@/lib/services/portal-access";
@@ -479,6 +481,80 @@ async function requireProjectFinancialAccess({
     resourceType: "project",
     resourceId: projectId,
   });
+}
+
+/**
+ * Crew time is approved by the foreman (`time.approve`) or by anyone who already
+ * approves costs (`bill.approve`); either key is enough, so nobody loses access.
+ */
+async function requireTimeApprovalAccess(args: {
+  supabase: SupabaseClient;
+  orgId: string;
+  userId: string;
+  projectId: string;
+}) {
+  const decision = await authorize({
+    permission: "time.approve",
+    userId: args.userId,
+    orgId: args.orgId,
+    projectId: args.projectId,
+    supabase: args.supabase,
+    resourceType: "project",
+    resourceId: args.projectId,
+  });
+  if (decision.allowed) return;
+  await requireProjectFinancialAccess({ ...args, permission: "bill.approve" });
+}
+
+// Approving your own hours is the office's call, not the crew's.
+async function assertNotOwnTime(
+  supabase: SupabaseClient,
+  orgId: string,
+  userId: string,
+  entry: { worker_user_id?: string | null; project_id: string },
+) {
+  if (entry.worker_user_id !== userId) return;
+  const decision = await authorize({ permission: "org.admin", userId, orgId, supabase });
+  if (!decision.allowed) throw new Error("You cannot approve your own time. Ask another approver.");
+}
+
+// A locked entry is the payroll record; it changes only through a correction.
+function assertTimeEntryNotLocked(entry: { status?: string | null }) {
+  if (entry.status === "locked")
+    throw new Error("This time is in a closed pay period. Correct it instead.");
+}
+
+// Hours dated inside a closed pay period would change a payroll record.
+export async function isPayPeriodClosed(supabase: SupabaseClient, orgId: string, workDate: string) {
+  const { data, error } = await supabase
+    .from("pay_periods")
+    .select("id")
+    .eq("org_id", orgId)
+    .lte("starts_on", workDate)
+    .gte("ends_on", workDate)
+    .limit(1);
+  if (error) throw new Error(`Failed to check the pay period: ${error.message}`);
+  return Boolean(data?.length);
+}
+
+async function assertPayPeriodOpen(supabase: SupabaseClient, orgId: string, workDate: string) {
+  const { data, error } = await supabase
+    .from("pay_periods")
+    .select("id")
+    .eq("org_id", orgId)
+    .lte("starts_on", workDate)
+    .gte("ends_on", workDate)
+    .limit(1);
+  if (error) throw new Error(`Failed to check the pay period: ${error.message}`);
+  if (data?.length)
+    throw new Error("That pay period is closed. Record the hours in the current period or ask the office for a correction.");
+}
+
+function isClientApprovedTime(entry: {
+  status?: string | null;
+  approved_by_client_at?: string | null;
+}) {
+  return entry.status === "client_approved" || Boolean(entry.approved_by_client_at);
 }
 
 export async function getProjectCostContract(
@@ -1264,6 +1340,7 @@ export async function upsertBillableCostFromTimeEntry(args: {
     sourceType: "time_entry",
     sourceStatus: String(entry.status),
     clientCostApprovalRequired: contract.requires_client_cost_approval,
+    clientApproved: isClientApprovedTime(entry),
   });
 
   const costCents = calculateTimeEntryCostCents(entry);
@@ -1508,7 +1585,7 @@ export async function propagateApprovalToLedger(args: {
 
   const { data: entry, error } = await supabase
     .from("time_entries")
-    .select("id, project_id, status")
+    .select("id, project_id, status, approved_by_client_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", args.sourceId)
     .maybeSingle();
@@ -1519,7 +1596,7 @@ export async function propagateApprovalToLedger(args: {
     resolvedOrgId,
     entry.project_id,
   );
-  if (isCostPlusContract(contract) && (!contract.requires_client_cost_approval || ["client_approved", "locked"].includes(entry.status))) {
+  if (isCostPlusContract(contract) && (!contract.requires_client_cost_approval || isClientApprovedTime(entry))) {
     await upsertBillableCostFromTimeEntry({
       timeEntryId: args.sourceId,
       orgId: resolvedOrgId,
@@ -1532,7 +1609,11 @@ export async function propagateApprovalToLedger(args: {
   await scanVariance([entry.project_id]);
 }
 
-export async function createTimeEntry(input: TimeEntryInput, orgId?: string) {
+export async function createTimeEntry(
+  input: TimeEntryInput,
+  orgId?: string,
+  options?: { fallbackToOpenDay?: Date },
+) {
   const parsed = timeEntryInputSchema.parse(input);
   const {
     supabase,
@@ -1547,15 +1628,57 @@ export async function createTimeEntry(input: TimeEntryInput, orgId?: string) {
     permission: "time.write",
   });
 
+  // time.write is your own time; recording someone else's needs time.manage.
+  const forSomeoneElse = parsed.workerUserId
+    ? parsed.workerUserId !== userId
+    : Boolean(parsed.workerName?.trim());
+  if (forSomeoneElse) {
+    await requireProjectFinancialAccess({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      projectId: parsed.projectId,
+      permission: "time.manage",
+    });
+  }
+
+  // Rates, burden and overtime flags are the office's call: a worker's own
+  // entry is priced from the rate on file, whatever the caller sends.
+  const mayPrice = (
+    await authorize({
+      permission: "time.manage",
+      userId,
+      orgId: resolvedOrgId,
+      projectId: parsed.projectId,
+      supabase,
+    })
+  ).allowed;
+
+  const requestedWorkDate = toDateOnly(parsed.workDate);
+  // A clock session that began in a period closed since is dated on the first
+  // open day (today), with its real start kept in metadata.
+  let workDate = requestedWorkDate;
+  let metadata: Record<string, unknown> = {};
+  if (options?.fallbackToOpenDay && (await isPayPeriodClosed(supabase, resolvedOrgId, requestedWorkDate))) {
+    workDate = toDateOnly(options.fallbackToOpenDay);
+    metadata = { clock_started_on: requestedWorkDate };
+  }
+  await assertPayPeriodOpen(supabase, resolvedOrgId, workDate);
+
   const contract = await getProjectCostContract(
     supabase,
     resolvedOrgId,
     parsed.projectId,
   );
-  let burdenMultiplier =
-    parsed.burdenMultiplier ?? Number(contract?.labor_burden_multiplier ?? 1);
-  let baseRateCents = parsed.baseRateCents ?? 0;
-  let isBillable = parsed.isBillable;
+  let burdenMultiplier = mayPrice
+    ? (parsed.burdenMultiplier ?? Number(contract?.labor_burden_multiplier ?? 1))
+    : Number(contract?.labor_burden_multiplier ?? 1);
+  let baseRateCents = mayPrice ? (parsed.baseRateCents ?? 0) : 0;
+  let isBillable = mayPrice ? parsed.isBillable : true;
+  const isOvertime = mayPrice ? parsed.isOvertime : false;
+  const otMultiplier = mayPrice ? parsed.otMultiplier : 1.5;
+  const isDoubleTime = mayPrice ? parsed.isDoubleTime : false;
+  const dtMultiplier = mayPrice ? parsed.dtMultiplier : 2;
 
   let workerName = parsed.workerName?.trim();
   let workerUserId = parsed.workerUserId ?? null;
@@ -1570,26 +1693,27 @@ export async function createTimeEntry(input: TimeEntryInput, orgId?: string) {
   }
 
   if (workerUserId) {
-    const { data: laborDefaults } = await supabase
-      .from("memberships")
-      .select(
-        "labor_cost_rate_cents, labor_burden_multiplier, labor_is_billable_default",
-      )
-      .eq("org_id", resolvedOrgId)
-      .eq("user_id", workerUserId)
-      .maybeSingle();
-
-    if (laborDefaults) {
-      if (!baseRateCents)
-        baseRateCents = laborDefaults.labor_cost_rate_cents ?? 0;
-      if (!parsed.burdenMultiplier || parsed.burdenMultiplier === 1) {
-        burdenMultiplier = Number(
-          laborDefaults.labor_burden_multiplier ?? burdenMultiplier,
-        );
-      }
-      if (input.isBillable === undefined) {
-        isBillable = laborDefaults.labor_is_billable_default ?? true;
-      }
+    // The rate in force on the work date, so a raise never reprices past work.
+    const [rate, { data: laborDefaults }] = await Promise.all([
+      resolveLaborRate({
+        supabase,
+        orgId: resolvedOrgId,
+        userId: workerUserId,
+        onDate: workDate,
+      }),
+      supabase
+        .from("memberships")
+        .select("labor_is_billable_default")
+        .eq("org_id", resolvedOrgId)
+        .eq("user_id", workerUserId)
+        .maybeSingle(),
+    ]);
+    if (!baseRateCents) baseRateCents = rate.costRateCents;
+    if (!mayPrice || !parsed.burdenMultiplier || parsed.burdenMultiplier === 1) {
+      burdenMultiplier = rate.burdenMultiplier;
+    }
+    if (!mayPrice || input.isBillable === undefined) {
+      isBillable = laborDefaults?.labor_is_billable_default ?? true;
     }
   }
 
@@ -1600,18 +1724,19 @@ export async function createTimeEntry(input: TimeEntryInput, orgId?: string) {
     worker_user_id: workerUserId,
     worker_company_id: parsed.workerCompanyId ?? null,
     worker_name: workerName,
-    work_date: toDateOnly(parsed.workDate),
+    work_date: workDate,
     hours: parsed.hours,
     base_rate_cents: baseRateCents,
     burden_multiplier: burdenMultiplier,
     is_billable: isBillable,
-    is_overtime: parsed.isOvertime,
-    ot_multiplier: parsed.otMultiplier,
-    is_double_time: parsed.isDoubleTime,
-    dt_multiplier: parsed.dtMultiplier,
+    is_overtime: isOvertime,
+    ot_multiplier: otMultiplier,
+    is_double_time: isDoubleTime,
+    dt_multiplier: dtMultiplier,
     notes: parsed.notes ?? null,
     attached_file_ids: parsed.attachedFileIds ?? [],
     status: "submitted",
+    ...(Object.keys(metadata).length ? { metadata } : {}),
   };
 
   const { data, error } = await supabase
@@ -1659,13 +1784,42 @@ export async function updateTimeEntry(
     .eq("id", timeEntryId)
     .maybeSingle();
   if (beforeError || !before) throw new Error("Time entry not found");
+  assertTimeEntryNotLocked(before);
   await requireProjectFinancialAccess({
     supabase,
     orgId: resolvedOrgId,
     userId,
     projectId: before.project_id,
-    permission: "time.write",
+    permission: before.worker_user_id === userId ? "time.write" : "time.manage",
   });
+
+  const mayManage = (
+    await authorize({
+      permission: "time.manage",
+      userId,
+      orgId: resolvedOrgId,
+      projectId: before.project_id,
+      supabase,
+    })
+  ).allowed;
+  if (before.status !== "submitted" && before.status !== "rejected" && !mayManage) {
+    await requireTimeApprovalAccess({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      projectId: before.project_id,
+    });
+  }
+  const pricingTouched =
+    parsed.baseRateCents !== undefined ||
+    parsed.burdenMultiplier !== undefined ||
+    parsed.isBillable !== undefined ||
+    parsed.isOvertime !== undefined ||
+    parsed.otMultiplier !== undefined ||
+    parsed.isDoubleTime !== undefined ||
+    parsed.dtMultiplier !== undefined;
+  if (pricingTouched && !mayManage)
+    throw new Error("Rates and overtime on time are set by the office.");
 
   const updates: Record<string, unknown> = {};
   if (parsed.costCodeId !== undefined)
@@ -1791,13 +1945,14 @@ export async function approveTimeEntry(timeEntryId: string, orgId?: string) {
     .maybeSingle();
 
   if (beforeError || !before) throw new Error("Time entry not found");
-  await requireProjectFinancialAccess({
+  assertTimeEntryNotLocked(before);
+  await requireTimeApprovalAccess({
     supabase,
     orgId: resolvedOrgId,
     userId,
     projectId: before.project_id,
-    permission: "bill.approve",
   });
+  await assertNotOwnTime(supabase, resolvedOrgId, userId, before);
 
   const gateSettings = await loadApprovalGateSettings({
     supabase,
@@ -1808,43 +1963,46 @@ export async function approveTimeEntry(timeEntryId: string, orgId?: string) {
     getTimeEntryApprovalBlockingReasons(before, gateSettings),
   );
 
+  // Hours past the company's overtime lines become overtime parts before approval.
+  const ids = await applyOvertimeRule({ supabase, orgId: resolvedOrgId, entry: before });
+
   // PM approval is the canonical internal approval state; client-gated projects
   // stay here until the client approval token moves them to `client_approved`.
-  const nextStatus = "pm_approved";
-  const { data, error } = await supabase
+  const { data: approved, error } = await supabase
     .from("time_entries")
     .update({
-      status: nextStatus,
+      status: "pm_approved",
       approved_by_pm_at: new Date().toISOString(),
       approved_by_pm_user_id: userId,
     })
     .eq("org_id", resolvedOrgId)
-    .eq("id", timeEntryId)
-    .select("*")
-    .single();
+    .in("id", ids)
+    .select("*");
 
-  if (error || !data)
+  if (error || !approved?.length)
     throw new Error(`Failed to approve time entry: ${error?.message}`);
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "update",
-    entityType: "time_entry",
-    entityId: data.id,
-    before,
-    after: data,
-  });
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "time_entry_pm_approved",
-    entityType: "time_entry",
-    entityId: data.id,
-    payload: { project_id: data.project_id },
-  });
+  for (const data of approved) {
+    await recordAudit({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      action: "update",
+      entityType: "time_entry",
+      entityId: data.id,
+      before: data.id === before.id ? before : null,
+      after: data,
+    });
+    await recordEvent({
+      orgId: resolvedOrgId,
+      eventType: "time_entry_pm_approved",
+      entityType: "time_entry",
+      entityId: data.id,
+      payload: { project_id: data.project_id, approved_by: userId },
+    });
 
-  // Employer cost is incurred at PM approval; client approval gates invoicing only.
-  await propagateApprovalToLedger({ source: "time_entry", sourceId: data.id, orgId: resolvedOrgId });
-  return data;
+    // Employer cost is incurred at PM approval; client approval gates invoicing only.
+    await propagateApprovalToLedger({ source: "time_entry", sourceId: data.id, orgId: resolvedOrgId });
+  }
+  return approved.find((data) => data.id === before.id) ?? approved[0];
 }
 
 export async function rejectTimeEntry(
@@ -1866,12 +2024,12 @@ export async function rejectTimeEntry(
     .maybeSingle();
 
   if (beforeError || !before) throw new Error("Time entry not found");
-  await requireProjectFinancialAccess({
+  assertTimeEntryNotLocked(before);
+  await requireTimeApprovalAccess({
     supabase,
     orgId: resolvedOrgId,
     userId,
     projectId: before.project_id,
-    permission: "bill.approve",
   });
 
   const { data, error } = await supabase
@@ -1901,7 +2059,11 @@ export async function rejectTimeEntry(
     eventType: "time_entry_rejected",
     entityType: "time_entry",
     entityId: data.id,
-    payload: { project_id: data.project_id },
+    payload: {
+      project_id: data.project_id,
+      worker_user_id: data.worker_user_id,
+      rejection_reason: data.rejection_reason,
+    },
   });
   if (
     ["pm_approved", "client_approved", "locked"].includes(String(before.status))
@@ -1926,7 +2088,7 @@ export async function createTimeEntryApprovalLink(
   } = await requireOrgContext(orgId);
   const { data: entry, error } = await supabase
     .from("time_entries")
-    .select("id, project_id, status")
+    .select("id, project_id, status, approved_by_client_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", timeEntryId)
     .maybeSingle();
@@ -1940,7 +2102,10 @@ export async function createTimeEntryApprovalLink(
     permission: "bill.approve",
   });
 
-  if (!["submitted", "pm_approved"].includes(entry.status)) {
+  // Locked time was PM-approved before its period closed; it still awaits the client.
+  const lockedAwaitingClient =
+    entry.status === "locked" && !entry.approved_by_client_at;
+  if (!["submitted", "pm_approved"].includes(entry.status) && !lockedAwaitingClient) {
     throw new Error(
       "Only submitted or PM-approved time entries can be sent for client approval",
     );
@@ -1953,9 +2118,14 @@ export async function createTimeEntryApprovalLink(
   const { error: updateError } = await supabase
     .from("time_entries")
     .update({
-      status: "pm_approved",
-      approved_by_pm_at: new Date().toISOString(),
-      approved_by_pm_user_id: userId,
+      // Payroll's record never moves; only the approval link is added to it.
+      ...(lockedAwaitingClient
+        ? {}
+        : {
+            status: "pm_approved",
+            approved_by_pm_at: new Date().toISOString(),
+            approved_by_pm_user_id: userId,
+          }),
       approval_token_hash: hashToken(token),
       approval_token_expires_at: expiresAt,
     })
@@ -2110,14 +2280,15 @@ export async function approveTimeEntryByToken(token: string) {
   ) {
     throw new Error("Approval link has expired");
   }
-  if (entry.status === "client_approved") return entry;
-  if (entry.status !== "pm_approved")
+  if (isClientApprovedTime(entry)) return entry;
+  // A locked entry is already payroll; the client's approval only releases it to billing.
+  if (entry.status !== "pm_approved" && entry.status !== "locked")
     throw new Error("Time entry is not ready for client approval");
 
   const { data, error: updateError } = await supabase
     .from("time_entries")
     .update({
-      status: "client_approved",
+      ...(entry.status === "locked" ? {} : { status: "client_approved" }),
       approved_by_client_at: new Date().toISOString(),
       approval_token_hash: null,
       approval_token_expires_at: null,
@@ -2722,13 +2893,15 @@ export async function createTimeEntryFromPortal({
     projectId: portalToken.project_id,
   });
   const supabase = createServiceSupabaseClient();
+  const workDate = toDateOnly(parsed.workDate);
+  await assertPayPeriodOpen(supabase, portalToken.org_id, workDate);
   const payload = {
     org_id: portalToken.org_id,
     project_id: portalToken.project_id,
     cost_code_id: parsed.costCodeId ?? null,
     worker_company_id: portalToken.company_id,
     worker_name: parsed.workerName,
-    work_date: toDateOnly(parsed.workDate),
+    work_date: workDate,
     hours: parsed.hours,
     base_rate_cents: parsed.baseRateCents,
     burden_multiplier: parsed.burdenMultiplier,
@@ -2812,6 +2985,15 @@ export async function createProjectExpenseFromPortal({
   return data;
 }
 
+// Waiting on someone: submitted, PM-approved, or locked by payroll (which only
+// locks PM-approved time) while the client's cost approval is still outstanding.
+export const AWAITING_REVIEW_FILTER =
+  "status.in.(submitted,pm_approved),and(status.eq.locked,approved_by_client_at.is.null,billable_cost_id.is.null)";
+
+const TIME_ENTRY_LIST_COLUMNS =
+  "id, project_id, cost_code_id, worker_user_id, worker_company_id, worker_name, work_date, hours, is_billable, is_overtime, is_double_time, ot_multiplier, dt_multiplier, notes, attached_file_ids, approved_by_pm_at, approved_by_client_at, status, rejection_reason, created_at, updated_at";
+const TIME_ENTRY_RATE_COLUMNS = "base_rate_cents, burden_multiplier, cost_cents";
+
 export async function listProjectTimeEntries(
   projectId: string,
   orgId?: string,
@@ -2829,23 +3011,43 @@ export async function listProjectTimeEntries(
     permission: "time.read",
   });
 
-  const [reviewableTimeEntries, recentTimeEntries] = await Promise.all([
-    supabase
-      .from("time_entries")
-      .select("*, cost_code:cost_codes(code, name)")
-      .eq("org_id", resolvedOrgId)
-      .eq("project_id", projectId)
-      .in("status", ["submitted", "pm_approved"])
-      .order("work_date", { ascending: false }),
-    supabase
-      .from("time_entries")
-      .select("*, cost_code:cost_codes(code, name)")
-      .eq("org_id", resolvedOrgId)
-      .eq("project_id", projectId)
-      .in("status", ["client_approved", "locked", "rejected"])
-      .order("work_date", { ascending: false })
-      .limit(50),
+  // Crew see their own hours; the foreman's queue and payroll see everyone's.
+  // Pay rates reach only the people who price, close or bill time.
+  const can = async (permission: string) =>
+    (await authorize({ permission, userId, orgId: resolvedOrgId, projectId, supabase })).allowed;
+  const [approve, manage, close, billApprove] = await Promise.all([
+    can("time.approve"),
+    can("time.manage"),
+    can("time.close"),
+    can("bill.approve"),
   ]);
+  const seesCrew = approve || manage || close;
+  const seesRates = manage || close || billApprove;
+  const columns = seesRates
+    ? `${TIME_ENTRY_LIST_COLUMNS}, ${TIME_ENTRY_RATE_COLUMNS}, cost_code:cost_codes(code, name)`
+    : `${TIME_ENTRY_LIST_COLUMNS}, cost_code:cost_codes(code, name)`;
+
+  let reviewable = supabase
+    .from("time_entries")
+    .select(columns)
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .or(AWAITING_REVIEW_FILTER)
+    .order("work_date", { ascending: false })
+    .limit(500);
+  let recent = supabase
+    .from("time_entries")
+    .select(columns)
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .in("status", ["client_approved", "locked", "rejected"])
+    .order("work_date", { ascending: false })
+    .limit(50);
+  if (!seesCrew) {
+    reviewable = reviewable.eq("worker_user_id", userId);
+    recent = recent.eq("worker_user_id", userId);
+  }
+  const [reviewableTimeEntries, recentTimeEntries] = await Promise.all([reviewable, recent]);
 
   if (reviewableTimeEntries.error)
     throw new Error(
@@ -2900,7 +3102,7 @@ export async function listCostPlusTabData(projectId: string, orgId?: string) {
       .select("*, cost_code:cost_codes(code, name)")
       .eq("org_id", resolvedOrgId)
       .eq("project_id", projectId)
-      .in("status", ["submitted", "pm_approved"])
+      .or(AWAITING_REVIEW_FILTER)
       .order("work_date", { ascending: false }),
     supabase
       .from("time_entries")

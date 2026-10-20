@@ -1,0 +1,502 @@
+{
+  "scenario": "TRADE-NET-01",
+  "reviewedFrom": "TR06-01, TR06-02 and TR06-03 (docs/plans/arc-trade/completion-checklist.json); docs/plans/arc-trade/README.md section 5 (TRADE-NET-01; the sub portal takes invoices, not pay apps, so the scenario covers invoices); docs/reference/arc-trade.md (Builder connections); migration 20261029100000_project_connections.sql (project_connections, the grant-follow trigger, the vendor_bills enqueue trigger, the connected-invoice unique index); lib/services/project-connections.ts (linkBuilderProject, listProjectConnectionsForGrants, getProjectConnection); lib/services/connected-receivables.ts (syncConnectedReceivable, createMirror); lib/receivables/connected.ts (planConnectedSync, assertNotConnectedReceivable); lib/services/external-portal-auth.ts (getTradeBuilderWorkspace, authenticateExternalPortalAccountWithToken, openTradeBuilderConnection, cascadeGrantStatusForPortalToken); lib/services/portal-access.ts (createPortalAccessToken, pause, resume, revoke); lib/services/vendor-bills.ts (createVendorBillFromPortal, updateVendorBillStatus); lib/services/billing-book.ts getProjectBillingSummary; lib/services/invoices.ts and payments.ts (the mirror refusals). The builder is a second, Books-official organization on the stack; the trade owner claims its invitations with the invited email.",
+  "subcases": {
+    "builder-invites-the-owner-who-claims-it": {
+      "derivation": "The builder is a Books-official residential organization with two jobs, Marina Way residence and Harbor Avenue addition, and the trade company in its directory (a company and the owner as its contact, by the owner's email). It invites the owner to each job through createPortalAccessToken as a sub portal link with the contact and company (the default sub permissions include submitting invoices), so there are two sub tokens for the invited email. Until the owner claims one, the trade workspace has no verified external identity and lists no connections. Claiming a link with the invited email creates one external identity (the second claim signs into the existing one, so created is false for it) and, once the emailed verification link is followed, its email is verified. Each claim writes a grant on the builder's organization for its token. The identity is then verified and active, so Builder connections lists both invitations ordered by project name: kind sub, the builder's organization name, the project, its formatted address and the trade company's name there. Another member of the trade company (the office admin, a different email) has no external identity, so company membership alone grants nothing and they see no connections. Opening a connection resolves the grant again and returns the sub portal link for its token.",
+      "expected": {
+        "builderSide": [
+          {
+            "project": "Harbor Avenue addition",
+            "portal": "sub",
+            "forPurpose": "portal",
+            "invitee": true,
+            "company": "Voltline Electric (acceptance)",
+            "mayInvoice": true
+          },
+          {
+            "project": "Marina Way residence",
+            "portal": "sub",
+            "forPurpose": "portal",
+            "invitee": true,
+            "company": "Voltline Electric (acceptance)",
+            "mayInvoice": true
+          }
+        ],
+        "beforeAnyClaim": "no verified identity: no connections",
+        "claims": {
+          "first": {
+            "created": true,
+            "forTheInvitedEmail": true
+          },
+          "second": {
+            "created": false
+          }
+        },
+        "identity": [
+          {
+            "status": "active",
+            "verified": true
+          }
+        ],
+        "grants": [
+          {
+            "project": "Harbor Avenue addition",
+            "status": "active",
+            "inTheBuildersOrganization": true,
+            "onTheInvitedToken": true
+          },
+          {
+            "project": "Marina Way residence",
+            "status": "active",
+            "inTheBuildersOrganization": true,
+            "onTheInvitedToken": true
+          }
+        ],
+        "builderConnections": [
+          {
+            "kind": "sub",
+            "builder": "TRADE-NET-01 builder",
+            "project": "Harbor Avenue addition",
+            "address": "88 Harbor Avenue, Stuart, FL 34994",
+            "company": "Voltline Electric (acceptance)"
+          },
+          {
+            "kind": "sub",
+            "builder": "TRADE-NET-01 builder",
+            "project": "Marina Way residence",
+            "address": "500 Marina Way, Stuart, FL 34994",
+            "company": "Voltline Electric (acceptance)"
+          }
+        ],
+        "anotherMemberWithADifferentEmail": "no verified identity: no connections",
+        "openingAConnection": {
+          "opensTheSubPortalLink": true
+        }
+      }
+    },
+    "linking-creates-a-job-with-the-builder-as-customer": {
+      "derivation": "The office admin has no verified external identity, so linking is refused with the invitation-unavailable message. The owner links the Marina Way invitation in create mode as a residential job billed by progress with a 5,000,000-cent contract: linkBuilderProject makes a trade job named for the builder's project at its address (active, delivery phase, residential), with the company-customer billing defaults (fixed price billed by progress, 10% retainage, net 30, customer certifies, no review) and a fixed contract of 5,000,000 cents. The builder becomes the customer: one directory company named for the builder with the client role (no duplicate), and a contact of the same name with the client role, primary at that company, which is the job's customer and the connection's customer. One active connection records the builder's organization, project, company, the sub token and the grant, the names for display, the owner as the linking member, and is never synced yet; no earlier invoices means nothing is backfilled. The job overview reads it as active for a member who can manage the job. Linking the same invitation again is refused ('This builder project is already linked to a job.'). The link is an event on the job.",
+      "expected": {
+        "officeAdminWithoutAVerifiedIdentity": "refused: This invitation is no longer available. Ask the builder to check your access.",
+        "result": {
+          "customerKept": false,
+          "backfillQueued": 0,
+          "backfillFailed": false
+        },
+        "job": {
+          "name": "Marina Way residence",
+          "status": "active",
+          "phase": "delivery",
+          "posture": "residential",
+          "address": "500 Marina Way, Stuart, FL 34994",
+          "contractType": "fixed",
+          "contractCents": 5000000,
+          "billingModel": "fixed_price",
+          "billingBasis": "progress",
+          "retainagePercent": 10,
+          "receivables": {
+            "customer_kind": "company",
+            "customer_certifies": true,
+            "payment_terms_days": 30,
+            "review_before_send": false
+          },
+          "customer": "TRADE-NET-01 builder",
+          "customerIsTheConnectionsCustomer": true
+        },
+        "builderInTheDirectory": {
+          "companies": 1,
+          "roles": [
+            {
+              "kind": "company",
+              "role": "client",
+              "status": "active"
+            },
+            {
+              "kind": "contact",
+              "role": "client",
+              "status": "active"
+            }
+          ],
+          "contactIsPrimaryThere": true
+        },
+        "connection": {
+          "status": "active",
+          "builderOrganization": true,
+          "builderProject": true,
+          "builderCompany": true,
+          "builderName": "TRADE-NET-01 builder",
+          "projectName": "Marina Way residence",
+          "onTheInvitedToken": true,
+          "onTheGrant": true,
+          "linkedByTheOwner": true,
+          "neverSynced": true
+        },
+        "linkingAgain": "refused: This builder project is already linked to a job.",
+        "jobOverview": {
+          "status": "active",
+          "builder": "TRADE-NET-01 builder",
+          "project": "Marina Way residence",
+          "endedAt": null,
+          "canManage": true
+        },
+        "event": [
+          {
+            "builder": "TRADE-NET-01 builder",
+            "project": "Marina Way residence"
+          }
+        ]
+      }
+    },
+    "builder-connections-lists-the-linked-jobs": {
+      "derivation": "Builder connections asks which of the owner's invitations already feed one of the company's jobs (listProjectConnectionsForGrants). With the Marina Way grant linked in create mode, the answer is one active link on the job that link created, named for it, and none for the Harbor Avenue grant. Expected: that list.",
+      "expected": {
+        "linkedJobs": [
+          {
+            "project": "Marina Way residence",
+            "status": "active",
+            "onTheCreatedJob": true
+          }
+        ]
+      }
+    },
+    "linking-an-existing-job-keeps-its-terms": {
+      "derivation": "The owner creates an ordinary job for the Harbor Avenue work (company customer, billed by invoices, no retainage, net 30, no certification, contract 3,000,000 cents). The link picker offers jobs with no live link: the new job is offered and the job the first link created is not. Linking the Harbor Avenue grant in link mode changes none of the job's terms and, because the job had no customer, sets the builder as its customer (customerKept is false: nothing different was kept). Its retainage stays 0, billing stays on draws with the receivables terms it had, contract 3,000,000, and the connection is active. The same grant cannot be linked to another job: refused with the already-linked message.",
+      "expected": {
+        "pickedFrom": {
+          "offersTheNewJob": true,
+          "offersTheJobLinkedInCreateMode": false
+        },
+        "result": {
+          "customerKept": false,
+          "backfillQueued": 0
+        },
+        "job": {
+          "name": "Harbor Avenue electrical",
+          "retainagePercent": 0,
+          "billingBasis": "draws",
+          "receivables": {
+            "customer_kind": "company",
+            "customer_certifies": false,
+            "payment_terms_days": 30,
+            "review_before_send": false
+          },
+          "contractCents": 3000000,
+          "customer": "TRADE-NET-01 builder"
+        },
+        "connection": {
+          "status": "active"
+        },
+        "linkingTheGrantToAnotherJob": "refused: This builder project is already linked to a job."
+      }
+    },
+    "sub-invoice-is-one-issued-receivable": {
+      "derivation": "The sub submits invoice ELEC-101 for 1,200,000 cents through the builder portal service against its approved subcontract on Harbor Avenue (dated today, due in 30 days). The vendor_bills trigger queues one sync_connected_receivable job for the link in the sub's organization (pending until the worker runs) and none in the builder's. Submitting the same invoice again is refused as one already submitted. The worker mirrors the bill as one issued invoice on the linked job: number ELEC-101 as typed, title 'Invoice ELEC-101', status sent (issued), total 1,200,000 and balance 1,200,000 (the job holds no retainage), one line carrying the description at the full amount, customer the builder (the connection's customer), issue date the bill date, due date the bill's, builder status pending and paid 0, an immutable issued snapshot. It is never sent: delivery builder_portal, delivery status not_sent, not client-visible and no invoice email or schedule job is queued. The job's billing book shows one invoice, open, with billed 1,200,000, nothing collected and 1,200,000 outstanding. The connection records the sync. Running the sync again twice reports synced with no change, and the job still has exactly one invoice.",
+      "expected": {
+        "queuedForTheSubsOrganization": [
+          {
+            "job": "sync_connected_receivable",
+            "status": "pending",
+            "forTheLink": true,
+            "forTheBill": true
+          }
+        ],
+        "queuedForTheBuilder": 0,
+        "resubmittingTheSameInvoice": "refused: looks like one already submitted",
+        "billingBook": {
+          "invoices": 1,
+          "mirrors": [
+            {
+              "number": "ELEC-101",
+              "status": "sent",
+              "totalCents": 1200000,
+              "balanceCents": 1200000,
+              "sourceIsTheBill": true,
+              "builderStatus": "pending",
+              "builderPaidCents": 0,
+              "title": "Invoice ELEC-101",
+              "issued": true
+            }
+          ],
+          "summary": {
+            "open": 1,
+            "overdue": 0,
+            "paid": 0,
+            "void": 0,
+            "drafts": 0,
+            "billedCents": 1200000,
+            "collectedCents": 0,
+            "outstandingCents": 1200000
+          }
+        },
+        "nothingSentToAnyone": {
+          "delivery": "builder_portal",
+          "deliveryStatus": "not_sent",
+          "visibleToTheCustomer": false,
+          "invoiceEmailJobsQueued": []
+        },
+        "customerAndDates": {
+          "customer": "TRADE-NET-01 builder",
+          "isTheConnectionsCustomer": true,
+          "dueMatchesTheBill": true,
+          "issuedOnTheBillDate": true
+        },
+        "lines": [
+          {
+            "description": "Progress invoice 1 - rough-in",
+            "quantity": 1,
+            "unitCostCents": 1200000
+          }
+        ],
+        "rerunningTheSync": {
+          "first": {
+            "status": "synced",
+            "changed": false,
+            "needsReview": false
+          },
+          "second": {
+            "status": "synced",
+            "changed": false
+          }
+        },
+        "connectionRecordsTheSync": true
+      }
+    },
+    "builder-approval-and-partial-payment-record-once": {
+      "derivation": "The builder approves the bill (coded to its electrical cost code): the status change queues a sync, which only records the builder's status on the mirror, so the invoice stays issued (sent), still owing 1,200,000, with no payment and one invoice. The builder then pays 500,000 cents by check against its cash account, marking the bill partial with 500,000 paid. The next sync brings the mirror to the builder's paid amount: a payment of 500,000 cents is recorded once, keyed connected:<bill>:500000, as a builder-portal payment that succeeded, carrying the method the builder paid with (check), and the invoice moves to partial with balance 1,200,000 - 500,000 = 700,000 while its total stays the bill's 1,200,000. Running the sync twice more reports synced with nothing changed, and the invoice still has the one payment, because a payment is recorded only for the amount by which the builder's paid figure exceeds what the mirror last heard. The billing book shows one open invoice: billed 1,200,000, collected 500,000, outstanding 700,000. The trail on the invoice reads created, synced (the approval), paid.",
+      "expected": {
+        "afterApproval": {
+          "invoices": 1,
+          "status": "sent",
+          "builderStatus": "approved",
+          "balanceCents": 1200000,
+          "payments": 0
+        },
+        "afterPartialPayment": {
+          "status": "partial",
+          "builderStatus": "partial",
+          "builderPaidCents": 500000,
+          "totalCents": 1200000,
+          "balanceCents": 700000
+        },
+        "paymentsOnTheInvoice": [
+          {
+            "cents": 500000,
+            "provider": "builder_portal",
+            "identity": true,
+            "method": "check",
+            "status": "succeeded"
+          }
+        ],
+        "rerunningTheSyncTwice": [
+          {
+            "status": "synced",
+            "changed": false
+          },
+          {
+            "status": "synced",
+            "changed": false
+          }
+        ],
+        "paymentsAfterTheReruns": 1,
+        "billingBook": {
+          "open": 1,
+          "overdue": 0,
+          "paid": 0,
+          "void": 0,
+          "drafts": 0,
+          "billedCents": 1200000,
+          "collectedCents": 500000,
+          "outstandingCents": 700000
+        },
+        "trail": [
+          "connected_receivable_created",
+          "connected_receivable_synced",
+          "connected_receivable_paid"
+        ]
+      }
+    },
+    "builder-final-payment-closes-the-receivable": {
+      "derivation": "The builder pays the remaining 700,000 cents, so the bill is paid with 1,200,000 paid. The sync records a second payment of exactly the new amount, 700,000, keyed by the paid total it brought the mirror to (connected:<bill>:1200000), and the one invoice is paid with balance 0 and total 1,200,000; the two payments sum to the bill's total and the builder's status is paid with 1,200,000 paid. Two further syncs change nothing. The billing book now has no open invoice, one paid, billed and collected 1,200,000 and nothing outstanding.",
+      "expected": {
+        "builderBill": {
+          "status": "paid",
+          "paidCents": 1200000
+        },
+        "invoice": {
+          "status": "paid",
+          "totalCents": 1200000,
+          "balanceCents": 0,
+          "builderStatus": "paid",
+          "builderPaidCents": 1200000
+        },
+        "payments": [
+          {
+            "cents": 500000,
+            "identity": "connected:<bill>:500000"
+          },
+          {
+            "cents": 700000,
+            "identity": "connected:<bill>:1200000"
+          }
+        ],
+        "paymentsTotalCents": 1200000,
+        "rerunningTheSyncTwice": [
+          {
+            "status": "synced",
+            "changed": false
+          },
+          {
+            "status": "synced",
+            "changed": false
+          }
+        ],
+        "billingBook": {
+          "open": 0,
+          "overdue": 0,
+          "paid": 1,
+          "void": 0,
+          "drafts": 0,
+          "billedCents": 1200000,
+          "collectedCents": 1200000,
+          "outstandingCents": 0
+        }
+      }
+    },
+    "rejected-bills-void-or-never-mirror": {
+      "derivation": "A second invoice, ELEC-102 for 300,000, mirrors as an issued invoice for 300,000. The builder rejects it with a reason; the sync voids the mirror through the same atomic void a person's void uses (balance 0), records the builder's status rejected and the void reason rejected, and, with nothing paid on it, needs no review. A third invoice, ELEC-103 for 150,000, is rejected before the worker ever runs, so it never produces an invoice and a sync of it is skipped with reason rejected_before_mirror. The first, paid invoice is untouched. The billing book reads one paid and one void invoice with billed and collected still 1,200,000 (a void invoice is not billed) and nothing outstanding; the job holds ELEC-101 paid and ELEC-102 void only.",
+      "expected": {
+        "beforeTheRejection": {
+          "number": "ELEC-102",
+          "status": "sent",
+          "totalCents": 300000
+        },
+        "afterTheRejection": {
+          "status": "void",
+          "balanceCents": 0,
+          "builderStatus": "rejected",
+          "voidReason": "rejected"
+        },
+        "billRejectedBeforeItMirrored": {
+          "invoicesForIt": 0,
+          "sync": {
+            "status": "skipped",
+            "reason": "rejected_before_mirror"
+          }
+        },
+        "theFirstInvoiceIsUntouched": [
+          "paid"
+        ],
+        "billingBook": {
+          "open": 0,
+          "overdue": 0,
+          "paid": 1,
+          "void": 1,
+          "drafts": 0,
+          "billedCents": 1200000,
+          "collectedCents": 1200000,
+          "outstandingCents": 0
+        },
+        "mirrorsOnTheJob": [
+          "ELEC-101:paid",
+          "ELEC-102:void"
+        ]
+      }
+    },
+    "mirrored-invoices-refuse-user-edits": {
+      "derivation": "A fourth invoice, ELEC-104 for 600,000, mirrors as an open issued invoice. The owner, who holds every invoice permission, tries each user-driven change: edit its lines and number, void it, delete it, revise it, schedule it to send, and receive a payment against it. Each service reads the invoice's connected-receivable metadata first and refuses with the one sentence naming the builder: 'This invoice is managed in <builder>'s portal. Its status follows what the builder records.' The same changes from the owner's own data-API session (update total, void, delete, plant a payment) are refused by table privileges, since an authenticated member holds no write on invoices or payments. After all of it the invoice's status, total, balance, update time, payment count and the job's invoice count are exactly as they were: sent, 600,000, 600,000 owed, no payments.",
+      "expected": {
+        "refusals": {
+          "edit": "refused: This invoice is managed in TRADE-NET-01 builder's portal. Its status follows what the builder records.",
+          "void": "refused: This invoice is managed in TRADE-NET-01 builder's portal. Its status follows what the builder records.",
+          "delete": "refused: This invoice is managed in TRADE-NET-01 builder's portal. Its status follows what the builder records.",
+          "revise": "refused: This invoice is managed in TRADE-NET-01 builder's portal. Its status follows what the builder records.",
+          "scheduleSend": "refused: This invoice is managed in TRADE-NET-01 builder's portal. Its status follows what the builder records.",
+          "receivePayment": "refused: This invoice is managed in TRADE-NET-01 builder's portal. Its status follows what the builder records."
+        },
+        "dataApi": {
+          "rewriteTheTotal": "refused: permission denied for table invoices",
+          "voidIt": "refused: permission denied for table invoices",
+          "deleteIt": "refused: permission denied for table invoices",
+          "plantAPayment": "refused: permission denied for table payments"
+        },
+        "unchanged": true,
+        "invoiceState": {
+          "status": "sent",
+          "totalCents": 600000,
+          "balanceCents": 600000,
+          "payments": 0
+        }
+      }
+    },
+    "pausing-the-builder-access-pauses-the-link": {
+      "derivation": "The builder pauses the Harbor Avenue sub portal access: pausePortalToken cascades to the grant (paused) and the trigger on the grant pauses the connection, so Builder connections no longer lists Harbor Avenue (only the live Marina Way grant) while the job overview reads the link as paused. While paused the builder approves ELEC-104 and a fifth invoice, ELEC-105, is submitted: the vendor_bills trigger queues sync jobs only for active links, so none is queued for either; a direct sync of the new bill is skipped (connection_inactive), no invoice exists for it, and the open mirror still shows the builder status it last heard, pending. Resuming the access reactivates the connection. Revoking it ends the connection for good: status ended with reason access_revoked and an end time; resuming a revoked access changes nothing (the connection stays ended), Builder connections still lists only Marina Way, and the owner cannot link the revoked grant again (the invitation is no longer available).",
+      "expected": {
+        "paused": {
+          "connection": "paused",
+          "grant": "paused",
+          "builderConnectionsLists": [
+            "Marina Way residence"
+          ],
+          "overviewShowsIt": "paused"
+        },
+        "whilePaused": {
+          "syncJobsQueuedForTheBuildersChanges": 0,
+          "aDirectSyncOfANewBill": {
+            "status": "skipped",
+            "reason": "connection_inactive"
+          },
+          "invoicesForTheNewBill": 0,
+          "theOpenMirrorStaysAt": "pending"
+        },
+        "resumed": {
+          "connection": "active"
+        },
+        "revoked": {
+          "connection": "ended",
+          "reason": "access_revoked",
+          "endedAtSet": true
+        },
+        "resumingARevokedAccess": {
+          "connection": "ended"
+        },
+        "afterRevoke": {
+          "builderConnectionsLists": [
+            "Marina Way residence"
+          ],
+          "relinkingTheGrant": "refused: This invitation is no longer available. Ask the builder to check your access."
+        }
+      }
+    },
+    "resuming-a-link-catches-up-on-the-builders-changes": {
+      "derivation": "The mirror follows the builder's lifecycle, so when a paused link is resumed it should be brought in line with what the builder did meanwhile. During the pause the builder approved ELEC-104 and the sub submitted ELEC-105. After the access is resumed and the worker has run, the open mirror should read the builder's current status, approved, and the bill submitted while paused should have its receivable (one).",
+      "expected": {
+        "openMirrorBuilderStatus": "approved",
+        "receivablesForTheBillSubmittedWhilePaused": 1
+      }
+    },
+    "mirror-equals-the-bill-on-a-job-that-holds-retainage": {
+      "derivation": "A sub invoice of 800,000 cents on the job the link created (company-customer defaults: 10% retainage) is the same receivable as the bill, so the mirror should be 800,000 cents and a second sync should leave one issued invoice.",
+      "expected": {
+        "billCents": 800000,
+        "firstSync": [
+          {
+            "number": "ELEC-301",
+            "status": "sent",
+            "totalCents": 800000
+          }
+        ],
+        "secondSync": {
+          "status": "synced",
+          "changed": false
+        },
+        "afterSecondSync": [
+          {
+            "number": "ELEC-301",
+            "status": "sent"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
@@ -18,6 +19,7 @@ async function ProjectSpecsContent({
 }) {
   await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
+  await guardProjectTab(id, "specs")
   const project = await getProjectAction(id)
   if (!project) notFound()
 

@@ -93,3 +93,65 @@ test("assignment is refused without permission, for an archived schedule, a fixe
     assert.deepEqual(service.events, [], name)
   }
 })
+
+const { approveTimeEntry } = freshRequire("lib/services/cost-plus.ts")
+
+const ENTRY = id(10)
+
+function pendingTime(permissions, { trade = false } = {}) {
+  return createServiceHarness({
+    tables: {
+      org_settings: trade ? [{ org_id: ORG, settings: { business_profile: { kind: "trade", specialty: "Electrical" } } }] : [],
+      projects: [{ id: PROJECT, org_id: ORG, name: "T&M job", property_type: "residential" }],
+      contracts: [
+        {
+          id: CONTRACT,
+          org_id: ORG,
+          project_id: PROJECT,
+          status: "active",
+          contract_type: "time_materials",
+          total_cents: 0,
+          snapshot: {},
+          requires_client_cost_approval: false,
+          created_at: "2026-09-01T00:00:00Z",
+        },
+      ],
+      project_financial_settings: [{ id: id(4), org_id: ORG, project_id: PROJECT, cost_codes_enabled: false, billing_model: "time_and_materials" }],
+      time_entries: [
+        {
+          id: ENTRY,
+          org_id: ORG,
+          project_id: PROJECT,
+          status: "submitted",
+          worker_name: "Crew",
+          hours: 8,
+          work_date: "2026-10-01",
+          base_rate_cents: 3000,
+          burden_multiplier: 1,
+          is_billable: true,
+        },
+      ],
+    },
+    permissions,
+  })
+}
+
+test("a foreman's time.approve is enough to approve crew time, in a trade or builder org; bill.approve still is; neither is refused", async () => {
+  for (const trade of [true, false]) {
+    for (const permissions of [["time.approve", "project.read"], ["bill.approve", "project.read"]]) {
+      const service = pendingTime(permissions, { trade })
+      const approved = await service.run(() => approveTimeEntry(ENTRY))
+      const label = `${trade ? "trade" : "builder"} ${permissions[0]}`
+      assert.equal(approved.status, "pm_approved", label)
+      assert.equal(approved.approved_by_pm_user_id, ACTOR, label)
+      assert.equal(service.db.billable_costs?.length, 1, `${label}: approval makes the time a billable cost without a second step`)
+      assert.equal(service.db.billable_costs[0].status, "open", label)
+      // No rate schedule, person rate or membership bill rate: the hours are kept at $0, never guessed.
+      assert.equal(service.db.billable_costs[0].metadata.billing_rate_source, "none", label)
+    }
+
+    const refused = pendingTime(["time.write", "invoice.write", "project.read"], { trade })
+    await assert.rejects(refused.run(() => approveTimeEntry(ENTRY)))
+    assert.deepEqual(refused.writes("time_entries"), [])
+  }
+})

@@ -1,5 +1,7 @@
 "use server"
 
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { profileTerminology } from "@/lib/terminology"
 import { revalidatePath } from "next/cache"
 
 import {
@@ -298,14 +300,16 @@ export async function sendPortalInviteAction({
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
       const portalPath = `/${portalType === "sub" ? "s" : portalType === "reviewer" ? "r" : "p"}/${token.token}`
       const portalUrl = appUrl ? `${appUrl}${portalPath}` : portalPath
+      const projectLabel = profileTerminology((await loadWorkspaceSurface(orgId)).profile).project
       const emailSent = await sendProjectPortalInviteEmail({
         to: contact.email,
         recipientName: contact.full_name?.trim() || null,
-        projectName: projectRow?.name ?? "your project",
+        projectName: projectRow?.name ?? `your ${projectLabel.toLowerCase()}`,
         portalType,
         orgName: orgRow?.name ?? "Arc",
         orgLogoUrl: (orgRow as any)?.logo_url ?? null,
         portalLink: portalUrl,
+        projectLabel,
       })
 
       revalidatePath(`/projects/${projectId}`)

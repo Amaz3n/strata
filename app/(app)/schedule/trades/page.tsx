@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import Link from "next/link"
@@ -25,7 +26,7 @@ type Props = { searchParams: Promise<{ weeks?: string; page?: string; q?: string
 
 async function TradeLookaheadPageContent({ searchParams }: Props) {
   await connection()
-  const [params, ambient, context] = await Promise.all([searchParams, getAmbientDeskContext(), requireOrgContext()])
+  const [, params, ambient, context] = await Promise.all([guardWorkspaceDesk("trade_lookahead"), searchParams, getAmbientDeskContext(), requireOrgContext()])
   const weeks = params.weeks === "2" || params.weeks === "4" ? Number(params.weeks) as 2 | 4 : 3
   const page = positivePage(params.page), itemPage = positivePage(params.itemPage)
   const q = (params.q ?? "").trim().slice(0, 120)

@@ -673,6 +673,7 @@ export interface ProjectPortalInviteEmailPayload {
   orgName?: string | null
   orgLogoUrl?: string | null
   portalLink: string
+  projectLabel?: string
   orgSlug?: string | null
 }
 
@@ -685,6 +686,7 @@ export async function sendProjectPortalInviteEmail(payload: ProjectPortalInviteE
       orgName: payload.orgName,
       orgLogoUrl: payload.orgLogoUrl,
       portalLink: payload.portalLink,
+      projectLabel: payload.projectLabel,
     }),
   )
 

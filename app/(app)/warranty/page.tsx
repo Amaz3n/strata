@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import Link from "next/link"
 import { QueuePagination } from "@/components/layout/queue-pagination"
 import { warrantyDeskUrlPage, warrantyDispatchWeek, normalizeWarrantyDeskSearch, warrantyQueueSlaFilter, warrantyDeskUrlValue } from "@/lib/warranty/desk-query"
@@ -18,7 +19,7 @@ export default function WarrantyDeskPage(props: { searchParams: Promise<{ tab?: 
 
 async function WarrantyDeskData({ searchParams }: { searchParams: Promise<{ tab?: string; page?: string; week?: string; [key: string]: string | string[] | undefined }> }) {
   await connection()
-  const [ambient, params] = await Promise.all([getAmbientDeskContext(), searchParams])
+  const [, ambient, params] = await Promise.all([guardWorkspaceDesk("warranty"), getAmbientDeskContext(), searchParams])
   const requestedTab = warrantyDeskUrlValue(params.tab)
   const tab = ["queue", "dispatch", "verify", "backcharges", "analytics"].includes(requestedTab ?? "") ? requestedTab! : "queue"
   const page = warrantyDeskUrlPage(warrantyDeskUrlValue(params.page)), pageSize = 100

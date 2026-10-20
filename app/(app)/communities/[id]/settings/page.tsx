@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
@@ -15,6 +16,7 @@ import { listTeamMembers } from "@/lib/services/team"
 /** Only what you configure once. Phases and takedowns moved to the Land tab. */
 export default async function CommunitySettingsPage({ params }: { params: Promise<{ id: string }> }) {
   await connection()
+  await guardWorkspaceDesk("communities")
   const { id } = await params
   const [community, divisions, permissions, assignments, members, permitAuthority] = await Promise.all([
     getCommunity(id).catch((error: unknown) => {

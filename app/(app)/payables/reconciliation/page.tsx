@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { requirePermissionGuard } from "@/lib/auth/guards"
 import { listOpenPaymentReconciliationExceptions, listPaymentReconciliations } from "@/lib/services/payment-reconciliation"
 import { listReleaseBlockedIncidents } from "@/lib/services/payment-runs"
+import { guardPayoutRailDesk } from "@/lib/services/workspace-surface"
 import { reconcileVendorPaymentsAction, resolveVendorPaymentExceptionAction } from "./actions"
 import { cancelPaymentRunAction, retryPaymentRunReleaseAction } from "../payment-runs/actions"
 
@@ -17,6 +18,7 @@ function money(cents: number) {
 
 async function PaymentReconciliationPageContent() {
   await connection()
+  await guardPayoutRailDesk("payment_reconciliation")
   await requirePermissionGuard("payment.reconcile")
   const [runs, exceptions, blockedReleases] = await Promise.all([
     listPaymentReconciliations(),

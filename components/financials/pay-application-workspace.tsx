@@ -182,6 +182,7 @@ export function PayApplicationWorkspace({
 
   const detail = data?.detail ?? null
   const context = data?.context ?? null
+  const customer = (context?.customerLabel ?? "Owner").toLowerCase()
   const application = detail?.application ?? null
   useEffect(()=>{
     if(!application?.invoice_id)return
@@ -329,6 +330,8 @@ export function PayApplicationWorkspace({
       projectName: context.projectName,
       propertyDescription: context.propertyDescription,
       ownerName: context.ownerName,
+      customerLabel: context.customerLabel,
+      projectLabel: context.projectLabel,
       contractorName: context.contractorName,
       contractDateIso: context.contractDateIso,
       invoiceNumber: null,
@@ -510,8 +513,8 @@ export function PayApplicationWorkspace({
       onChanged()
       toast.success(
         detailResult.application.certification_required
-          ? "Sent to the owner for certification"
-          : "Sent to the customer",
+          ? `Sent to the ${customer} for certification`
+          : `Sent to the ${customer}`,
       )
     })
   }
@@ -560,7 +563,7 @@ export function PayApplicationWorkspace({
     void act("package", async () => {
       const result = unwrapAction(await generatePayApplicationPackageAction(projectId, application.id, { includeGcCompliance: true }))
       downloadBase64(result.pdfBase64, result.fileName)
-      toast.success("Owner package generated", {
+      toast.success(`${context?.customerLabel ?? "Owner"} package generated`, {
         description: `${result.package.proof_count} supporting file${result.package.proof_count === 1 ? "" : "s"} listed on the manifest.`,
       })
     })
@@ -645,6 +648,7 @@ export function PayApplicationWorkspace({
           onDownloadPackage={downloadPackage}
           onDelete={deleteDraft}
           onVoid={voidApplication}
+          customer={customer}
         />
         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={requestClose} aria-label="Close workspace">
           <X className="h-4 w-4" />
@@ -710,7 +714,7 @@ export function PayApplicationWorkspace({
             <div className="space-y-4">
               {latestReturn && stage === "returned" ? (
                 <div className="border border-warning/40 bg-warning/10 p-3 text-sm">
-                  <p className="font-medium text-warning">Returned by the owner</p>
+                  <p className="font-medium text-warning">Returned by the {customer}</p>
                   <p className="mt-1 text-foreground">{latestReturn.reason}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {latestReturn.actor_name ? `${latestReturn.actor_name} · ` : ""}
@@ -727,7 +731,7 @@ export function PayApplicationWorkspace({
                   <p className="mt-1 text-xs text-muted-foreground">
                     {application.certification.signer_name} ·{" "}
                     {formatDay(application.certification.certified_at.slice(0, 10))}
-                    {application.certification.source === "internal" ? " · recorded in Arc" : " · signed in the owner portal"}
+                    {application.certification.source === "internal" ? " · recorded in Arc" : ` · signed in the ${customer} portal`}
                   </p>
                   {application.certification.note ? (
                     <p className="mt-1 text-foreground">{application.certification.note}</p>
@@ -905,7 +909,7 @@ export function PayApplicationWorkspace({
           <Button disabled={busy !== null} onClick={() => void act("save", async () => { if (await saveDraft()) { setDiscardOpen(false); onClose() } })}>Save and close</Button>
         </DialogFooter></DialogContent>
       </Dialog>
-      {progressEvidence ? <ProgressEvidenceDialog evidence={progressEvidence} projectId={projectId} onClose={() => setProgressEvidence(null)} onAccept={() => {
+      {progressEvidence ? <ProgressEvidenceDialog evidence={progressEvidence} projectId={projectId} customer={customer} onClose={() => setProgressEvidence(null)} onAccept={() => {
         const line = detail?.lines.find((item) => item.prime_sov_line_id === progressEvidence.primeSovLineId)
         if (line && progressEvidence.suggestedPercentComplete != null) setPercent(line, String(progressEvidence.suggestedPercentComplete), progressEvidence)
         setProgressEvidence(null)
@@ -922,6 +926,7 @@ export function PayApplicationWorkspace({
             amountCents={application.current_payment_due_cents}
             busy={busy === "send"}
             onSend={send}
+            customer={customer}
           />
           <CertifyDialog
             open={certifyOpen}
@@ -930,6 +935,7 @@ export function PayApplicationWorkspace({
             amountCents={application.requested_payment_cents ?? application.current_payment_due_cents}
             busy={busy === "certify"}
             onCertify={certify}
+            customer={customer}
           />
           <ReturnDialog
             open={returnOpen}
@@ -937,6 +943,7 @@ export function PayApplicationWorkspace({
             applicationNumber={application.application_number}
             busy={busy === "return"}
             onReturn={returnApplication}
+            customer={customer}
           />
         </>
       ) : null}
@@ -960,7 +967,9 @@ function WorkspaceActions({
   onDownloadPackage,
   onDelete,
   onVoid,
+  customer,
 }: {
+  customer: string
   application: PayApplication | null
   stage: PayApplicationStage
   busy: string | null
@@ -1044,11 +1053,11 @@ function WorkspaceActions({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuItem onSelect={onCertify}>Record the owner&apos;s certificate…</DropdownMenuItem>
+              <DropdownMenuItem onSelect={onCertify}>Record the {customer}&apos;s certificate…</DropdownMenuItem>
               <DropdownMenuItem onSelect={onReturn}>Return for revision…</DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={onDownloadPdf}>Download application</DropdownMenuItem>
-              <DropdownMenuItem onSelect={onDownloadPackage}>Download owner package</DropdownMenuItem>
+              <DropdownMenuItem onSelect={onDownloadPackage}>Download {customer} package</DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={onVoid}>
                 Void application
@@ -1073,7 +1082,7 @@ function WorkspaceActions({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuItem onSelect={onDownloadPackage}>Download owner package</DropdownMenuItem>
+              <DropdownMenuItem onSelect={onDownloadPackage}>Download {customer} package</DropdownMenuItem>
               {stage !== "paid" ? (
                 <>
                   <DropdownMenuSeparator />
@@ -1199,6 +1208,7 @@ function DocumentPreview({ data }: { data: PayApplicationDocumentData }) {
 }
 
 function SendDialog({
+  customer,
   includesWaiver,
   open,
   onOpenChange,
@@ -1208,6 +1218,7 @@ function SendDialog({
   busy,
   onSend,
 }: {
+  customer: string
   open: boolean
   onOpenChange: (open: boolean) => void
   defaultRecipient: string
@@ -1243,7 +1254,7 @@ function SendDialog({
               id="payapp-recipients"
               value={recipients}
               onChange={(event) => setRecipients(event.target.value)}
-              placeholder="owner@example.com, architect@example.com"
+              placeholder={`${customer}@example.com, architect@example.com`}
             />
           </div>
           <div className="space-y-1.5">
@@ -1255,7 +1266,7 @@ function SendDialog({
               value={message}
               onChange={(event) => setMessage(event.target.value)}
               rows={3}
-              placeholder="Anything the owner should know about this period."
+              placeholder={`Anything the ${customer} should know about this period.`}
             />
           </div>
         </div>
@@ -1285,6 +1296,7 @@ function SendDialog({
 }
 
 function CertifyDialog({
+  customer,
   open,
   onOpenChange,
   amountCents,
@@ -1292,6 +1304,7 @@ function CertifyDialog({
   busy,
   onCertify,
 }: {
+  customer: string
   open: boolean
   onOpenChange: (open: boolean) => void
   amountCents: number
@@ -1317,7 +1330,7 @@ function CertifyDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90svh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Record the owner&apos;s certificate</DialogTitle>
+          <DialogTitle>Record the {customer}&apos;s certificate</DialogTitle>
           <DialogDescription>
             Record the certificate received outside Arc. The application requests {moneyExact(amountCents)}. Identify any amounts withheld from this certificate; these remain distinct from retainage.
           </DialogDescription>
@@ -1331,7 +1344,7 @@ function CertifyDialog({
               id="certify-name"
               value={signerName}
               onChange={(event) => setSignerName(event.target.value)}
-              placeholder="Full name of the owner or architect"
+              placeholder={`Full name of the ${customer} or architect`}
             />
           </div>
           <div className="space-y-1.5">
@@ -1377,12 +1390,14 @@ function CertifyDialog({
 }
 
 function ReturnDialog({
+  customer,
   open,
   onOpenChange,
   applicationNumber,
   busy,
   onReturn,
 }: {
+  customer: string
   open: boolean
   onOpenChange: (open: boolean) => void
   applicationNumber: number
@@ -1413,7 +1428,7 @@ function ReturnDialog({
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             rows={3}
-            placeholder="What the owner wants changed before they will certify."
+            placeholder={`What the ${customer} wants changed before they will certify.`}
           />
         </div>
         <DialogFooter>
@@ -1465,8 +1480,8 @@ function StoredMaterialsDialog({ line, endingCents, workCents, onApply, onClose 
   </DialogContent></Dialog>
 }
 
-function ProgressEvidenceDialog({ evidence, projectId, onAccept, onClose }: {
-  evidence: PayApplicationProgressEvidence; projectId: string; onAccept: () => void; onClose: () => void
+function ProgressEvidenceDialog({ evidence, projectId, customer, onAccept, onClose }: {
+  evidence: PayApplicationProgressEvidence; projectId: string; customer: string; onAccept: () => void; onClose: () => void
 }) {
   const [confirmed, setConfirmed] = useState(false)
   return <Dialog open onOpenChange={(open) => !open && onClose()}><DialogContent><DialogHeader>
@@ -1480,8 +1495,8 @@ function ProgressEvidenceDialog({ evidence, projectId, onAccept, onClose }: {
     </dl>
     <div className="text-sm"><p className="text-muted-foreground">Approved bills: {evidence.sourceBillNumbers.join(", ")}</p><div className="mt-2 flex flex-wrap gap-3">{evidence.sourceBillIds.map((id, index) => <a key={id} className="underline underline-offset-2" href={`/projects/${projectId}/financials/payables?bill=${id}`} target="_blank" rel="noopener noreferrer">Source bill {index + 1} ↗</a>)}</div></div>
     {evidence.suggestedPercentComplete != null ? <>
-      <p className="border-t pt-3 text-sm">Use <strong className="font-mono">{evidence.suggestedPercentComplete}%</strong> as owner-side installed work complete. Arc calculates this period against previous billing. Stored materials remain unchanged.</p>
-      <label className="flex items-start gap-2 text-sm"><Checkbox checked={confirmed} onCheckedChange={(checked) => setConfirmed(checked === true)} /><span>I verified this covers the owner SOV scope and agrees with field progress.</span></label>
+      <p className="border-t pt-3 text-sm">Use <strong className="font-mono">{evidence.suggestedPercentComplete}%</strong> as {customer}-side installed work complete. Arc calculates this period against previous billing. Stored materials remain unchanged.</p>
+      <label className="flex items-start gap-2 text-sm"><Checkbox checked={confirmed} onCheckedChange={(checked) => setConfirmed(checked === true)} /><span>I verified this covers the {customer} SOV scope and agrees with field progress.</span></label>
     </> : null}
     <DialogFooter><Button variant="outline" onClick={onClose}>Close</Button>{evidence.suggestedPercentComplete != null ? <Button disabled={!confirmed} onClick={onAccept}>Use reviewed progress</Button> : null}</DialogFooter>
   </DialogContent></Dialog>

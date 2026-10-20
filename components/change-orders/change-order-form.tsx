@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react"
 import type { FormEvent } from "react"
 
 import type { BudgetLineOption, ChangeOrder, CostCode } from "@/lib/types"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { isTradeSurface } from "@/lib/workspace-surface"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -108,6 +110,9 @@ export function ChangeOrderForm({
   changeOrder,
   initialDraft,
 }: ChangeOrderFormProps) {
+  const trade = isTradeSurface(usePageTitle().workspaceSurface)
+  const customerNoun = trade ? "customer" : "client"
+  const showGmp = isGmpProject && !trade
   const [title, setTitle] = useState("")
   const [daysImpact, setDaysImpact] = useState("")
   const [notes, setNotes] = useState("")
@@ -291,7 +296,7 @@ export function ChangeOrderForm({
         allowance: line.allowance,
         taxable: line.taxable,
         gmp_classification: line.gmpClassification,
-        gmp_impact: isGmpProject
+        gmp_impact: showGmp
           ? line.gmpClassification === "outside_gmp"
             ? "outside_gmp"
             : line.gmpImpact
@@ -324,8 +329,8 @@ export function ChangeOrderForm({
           </SheetTitle>
           <SheetDescription className="text-sm text-muted-foreground">
             {changeOrder
-              ? "Update the client-facing change order."
-              : "Build a clear, client-ready change order. Send it through the portal when ready."}
+              ? `Update the ${customerNoun}-facing change order.`
+              : `Build a clear, ${customerNoun}-ready change order. Send it through the portal when ready.`}
           </SheetDescription>
         </SheetHeader>
 
@@ -485,7 +490,7 @@ export function ChangeOrderForm({
                             }}
                             inputMode="decimal"
                             className="pl-9"
-                            placeholder="Owner unit price"
+                            placeholder={trade ? "Customer unit price" : "Owner unit price"}
                           />
                         </div>
                         <div className="relative">
@@ -512,7 +517,7 @@ export function ChangeOrderForm({
                         />
                         Taxable
                       </label>
-                      {isGmpProject ? (
+                      {showGmp ? (
                         <div className="grid gap-2 sm:grid-cols-2">
                           <Select
                             value={line.gmpClassification}
@@ -703,7 +708,7 @@ export function ChangeOrderForm({
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Approval is recorded from the detail sheet once the client or offline signer has approved the change.
+                    {`Approval is recorded from the detail sheet once the ${customerNoun} or offline signer has approved the change.`}
                   </p>
                 </div>
               ) : null}
@@ -717,7 +722,7 @@ export function ChangeOrderForm({
                     if (notesError) setNotesError(null)
                   }}
                   rows={5}
-                  placeholder="Describe what changed, why it changed, and what the client is approving."
+                  placeholder={`Describe what changed, why it changed, and what the ${customerNoun} is approving.`}
                   className={notesError ? "border-destructive focus-visible:ring-destructive" : ""}
                 />
                 {notesError && (

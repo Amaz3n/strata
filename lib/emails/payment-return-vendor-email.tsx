@@ -23,6 +23,8 @@ export interface PaymentReturnVendorEmailProps {
   orgLogoUrl?: string | null
   billNumber: string | null
   projectName: string | null
+  /** The org's noun for a project: "Job" for a trade company. */
+  projectLabel?: string
   amountCents: number
   /**
    * `post_payout` — the deposit landed and was pulled back out.
@@ -40,6 +42,7 @@ export function PaymentReturnVendorEmail({
   orgLogoUrl,
   billNumber,
   projectName,
+  projectLabel = "Project",
   amountCents,
   stage,
 }: PaymentReturnVendorEmailProps) {
@@ -53,7 +56,7 @@ export function PaymentReturnVendorEmail({
 
   const rows: Array<{ label: string; value: string }> = [
     { label: "Invoice", value: billNumber ?? "—" },
-    { label: "Project", value: projectName ?? "—" },
+    { label: projectLabel, value: projectName ?? "—" },
     { label: "Amount", value: money(amountCents) },
   ]
 

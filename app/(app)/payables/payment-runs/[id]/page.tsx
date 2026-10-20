@@ -14,6 +14,7 @@ import { getProjectPosture, normalizeProductTier } from "@/lib/product-tier"
 import { requireOrgContext } from "@/lib/services/context"
 import { listPaymentRuns } from "@/lib/services/payment-runs"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { guardPayoutRailDesk } from "@/lib/services/workspace-surface"
 import { terminology } from "@/lib/terminology"
 
 function money(cents: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100) }
@@ -21,6 +22,7 @@ function Evidence({ value }: { value: unknown }) { return <pre className="max-h-
 
 async function PaymentRunDetailPageContent({ params }: { params: Promise<{ id: string }> }) {
   await connection()
+  await guardPayoutRailDesk("payment_runs")
   await requireAnyPermissionGuard(["payment.release", "payment.approve_run", "payment.reconcile", "payment.manage_rail"])
   const { id } = await params
   const run = (await listPaymentRuns(undefined, null, id))[0]

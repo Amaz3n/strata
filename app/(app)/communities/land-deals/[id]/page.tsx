@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { notFound } from "next/navigation"
 import { connection } from "next/server"
 import { Suspense } from "react"
@@ -18,6 +19,7 @@ const BREADCRUMBS = [
 
 async function LandDealData({ params }: { params: Promise<{ id: string }> }) {
   await connection()
+  await guardWorkspaceDesk("communities")
   const { id } = await params
   const [deal, permissionResult, pickers] = await Promise.all([
     getLandOpportunity(id).catch((error: unknown) => {

@@ -19,6 +19,8 @@ import { shareWaiverAction, matchWaiverPaymentAction } from "@/app/(app)/invoice
 import { formatDateOnly, formatMoneyFromCents } from "./invoice-presentation"
 import { PhysicalWaiverReturn } from "./physical-waiver-return"
 import { cn } from "@/lib/utils"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { isTradeSurface } from "@/lib/workspace-surface"
 
 const loadPreparation = () => import("./waiver-preparation")
 const WaiverPreparation = dynamic(loadPreparation, { ssr: false, loading: () => <Dialog open><DialogContent><DialogTitle>Prepare waiver</DialogTitle><DialogDescription>Opening your waiver workspace…</DialogDescription><Loader2 className="mx-auto my-8 size-5 animate-spin" /></DialogContent></Dialog> })
@@ -28,6 +30,7 @@ export function InvoiceWaiverCard({ invoice, waivers, payments = [], reversals =
   link?: string; failed?: boolean; onChanged: () => void | Promise<void>;
 }) {
   const router = useRouter()
+  const customerNoun = isTradeSurface(usePageTitle().workspaceSurface) ? "customer" : "client"
   const [items, setItems] = useState(waivers)
   const [preparing, setPreparing] = useState(false)
   const [draft, setDraft] = useState<InvoiceLienWaiver>()
@@ -77,7 +80,7 @@ export function InvoiceWaiverCard({ invoice, waivers, payments = [], reversals =
             {physical ? <PhysicalWaiverReturn invoice={invoice} waiver={waiver} onSaved={saved} onChanged={onChanged} /> : isDraft ? <button type="button" onClick={() => open(waiver)} className="text-[11px] font-medium underline-offset-4 hover:underline">{workflow?.signing_document_id ? "Continue signing" : "Review & finish"}</button> : href ? <a href={href} target="_blank" rel="noreferrer" className="text-[11px] font-medium underline-offset-4 hover:underline">View document</a> : null}
           </div>
           <DropdownMenu><DropdownMenuTrigger asChild><Button aria-label="Waiver actions" size="icon" variant="ghost" className="-mr-1 -mt-1 size-7 shrink-0" disabled={Boolean(busy) || invoice.status === "void"}>{busy === waiver.id ? <Loader2 className="size-3.5 animate-spin" /> : <MoreHorizontal className="size-4" />}</Button></DropdownMenuTrigger><DropdownMenuContent align="end">
-            {workflow && !isDraft && <><DropdownMenuItem onSelect={() => void mutate(waiver.id, async () => { saved(unwrapAction(await shareWaiverAction(invoice.id, waiver.id, !workflow.shared))); toast.success(workflow.shared ? "Removed from client invoice" : "Included with client invoice") })}>{workflow.shared ? "Keep internal only" : "Include with invoice"}</DropdownMenuItem><DropdownMenuItem onSelect={() => { setMatching(waiver); setPaymentId(""); setConfirmed(false) }}>Match payment…</DropdownMenuItem></>}
+            {workflow && !isDraft && <><DropdownMenuItem onSelect={() => void mutate(waiver.id, async () => { saved(unwrapAction(await shareWaiverAction(invoice.id, waiver.id, !workflow.shared))); toast.success(workflow.shared ? `Removed from ${customerNoun} invoice` : `Included with ${customerNoun} invoice`) })}>{workflow.shared ? "Keep internal only" : "Include with invoice"}</DropdownMenuItem><DropdownMenuItem onSelect={() => { setMatching(waiver); setPaymentId(""); setConfirmed(false) }}>Match payment…</DropdownMenuItem></>}
             {((isDraft && !workflow?.signing_document_id) || !workflow && waiver.status === "pending_payment") && <DropdownMenuItem onSelect={() => void mutate(waiver.id, async () => { unwrapAction(await voidInvoiceLienWaiverAction(waiver.id)); setItems((rows) => rows.filter((w) => w.id !== waiver.id)); toast.success("Draft removed") })}>Discard draft</DropdownMenuItem>}
             {workflow && !isDraft && <DropdownMenuItem disabled>Signed copy retained in history</DropdownMenuItem>}
           </DropdownMenuContent></DropdownMenu>

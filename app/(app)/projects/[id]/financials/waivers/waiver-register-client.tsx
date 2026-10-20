@@ -24,6 +24,8 @@ import {
   TableRow,
   TableCell,
 } from "@/components/ui/table"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { isTradeSurface } from "@/lib/workspace-surface"
 import { PayableWaivers } from "@/components/payables/payable-waivers"
 import { WaiverClaimantSheet } from "./waiver-claimant-sheet"
 import { createSubtierRequirementAction, chaseWaiversAction } from "./actions"
@@ -57,6 +59,7 @@ export function WaiverRegisterClient({
   const router = useRouter(),
     params = useSearchParams(),
     pathname = usePathname()
+  const trade = isTradeSurface(usePageTitle().workspaceSurface)
   const [billId, setBillId] = useState<string | null>(null),
     [combined, setCombined] = useState(false),
     [selected, setSelected] = useState<string[]>([]),
@@ -174,7 +177,7 @@ export function WaiverRegisterClient({
       </div>
       <div className="flex flex-wrap items-end gap-3 border-b p-4">
         <label className="text-xs">
-          Search vendors, projects, bills
+          {trade ? "Search suppliers, jobs, bills" : "Search vendors, projects, bills"}
           <Input
             key={params.get("q")}
             defaultValue={params.get("q") ?? ""}
@@ -309,8 +312,8 @@ export function WaiverRegisterClient({
                 }
               />
             </TableHead>
-            <TableHead>Vendor / payable</TableHead>
-            <TableHead>Project</TableHead>
+            <TableHead>{trade ? "Supplier / payable" : "Vendor / payable"}</TableHead>
+            <TableHead>{trade ? "Job" : "Project"}</TableHead>
             <TableHead>Work through</TableHead>
             <TableHead className="text-right">Bill / paid</TableHead>
             <TableHead className="text-right">Blocked</TableHead>
@@ -514,7 +517,9 @@ export function WaiverRegisterClient({
       )}
       {!register.entries.length && (
         <p className="px-6 py-20 text-center text-sm text-muted-foreground">
-          No payables match this view. Clear the date or view all records.
+          {trade
+            ? "No incoming waivers to track. Waivers owed to you by suppliers and subs appear here; the waivers you send go out with your invoices."
+            : "No payables match this view. Clear the date or view all records."}
         </p>
       )}
       <div className="flex items-center justify-between border-t p-4 text-sm">

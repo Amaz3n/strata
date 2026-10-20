@@ -36,6 +36,9 @@ function fixture(tier = 'production', propertyType = 'production') {
   const financial = load('lib/services/project-financial-setup.ts', common)
   const projects = load('lib/services/projects.ts', { ...common, '@/lib/services/project-financial-setup': financial })
   const invoices = load('lib/services/invoices.ts', { ...common,
+    '@/lib/services/receivables-policy': { loadProjectReceivablesPolicy: async ({ projectId }) => projectId
+      ? require('../lib/receivables/policy').resolveReceivablesPolicy({ posture: propertyType, profile: { kind: 'builder', specialty: 'Electrical' } })
+      : require('../lib/receivables/policy').getGeneralReceivablesPolicy() },
     'next/server': { after: fn => after.push(fn) },
     '@/lib/services/authorization': { requireAuthorization: async args => guards.push(args) },
     '@/lib/supabase/server': { createServiceSupabaseClient: () => ({ rpc: async (name, args) => {

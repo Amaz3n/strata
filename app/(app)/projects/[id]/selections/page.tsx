@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
@@ -22,6 +23,7 @@ interface PageProps {
 async function ProjectSelectionsPageContent({ params, searchParams }: PageProps) {
   await connection()
   const [{ id }, { approval }] = await Promise.all([params, searchParams])
+  await guardProjectTab(id, "selections")
   const project = await getProjectAction(id)
   if (!project) notFound()
   const context = await requireOrgContext()

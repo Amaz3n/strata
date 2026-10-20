@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 
@@ -11,7 +12,7 @@ const breadcrumbs = [{ label: "Settings", href: "/settings" }, { label: "Purchas
 
 async function PurchasingSettingsPageContent() {
   await connection()
-  const [settings, reasons, permissions] = await Promise.all([
+  const [, settings, reasons, permissions] = await Promise.all([guardWorkspaceDesk("settings_purchasing"),
     getPurchasingSettings(),
     listVarianceReasonCodes({ includeInactive: true }),
     getCurrentUserPermissions(),

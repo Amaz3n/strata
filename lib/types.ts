@@ -1016,6 +1016,8 @@ export interface ExternalPortalWorkspaceItem {
   project_status: ProjectStatus
   project_address?: string | null
   company_name?: string | null
+  /** The directory company the access was issued to in the builder's org. */
+  company_id?: string | null
   contact_name?: string | null
   due_at?: string | null
   last_accessed_at?: string | null

@@ -54,6 +54,7 @@ export type NotificationType =
   | "team_member_joined"
   | "compliance_document_submitted"
   | "compliance_document_expiring"
+  | "own_compliance_document_expiring"
   | "prequalification_submitted"
   | "prequalification_expiring"
   | "punch_item_created"
@@ -317,6 +318,12 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "compliance",
     label: "Compliance expiring",
     description: "Email me when a vendor's insurance or license is about to lapse.",
+  },
+  {
+    key: "own_compliance_document_expiring",
+    category: "compliance",
+    label: "Our compliance expiring",
+    description: "Email me when our own certificate, license, or bond is about to lapse.",
   },
   {
     key: "vendor_payment_relationship_claimed",

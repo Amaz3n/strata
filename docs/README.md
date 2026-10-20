@@ -20,7 +20,7 @@ then the reference docs below.
 
 | Doc | What it covers |
 |---|---|
-| [`reference/arc-trade.md`](reference/arc-trade.md) | Trade workspace behavior, pilot setup, access boundaries, and acceptance checklist. |
+| [`reference/arc-trade.md`](reference/arc-trade.md) | Arc Trade, the specialty-contractor business profile: the profile/plan choke points, roles, jobs and receivables, field time and payroll, quoting, small-shop expenses, the builder-to-trade network, the golden scenarios and known limits. Read before touching trade behavior. |
 | [`reference/document-transfers.md`](reference/document-transfers.md) | Documents transfer recovery, mutations, exports, verification and pending rollout requirements. |
 | [`design.md`](design.md) | The design standard. Read before building any new surface. |
 | [`testing.md`](testing.md) | The testing standard: tiers, rules, where tests live. Read before adding a test. |

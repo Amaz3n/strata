@@ -11,6 +11,9 @@ export function assertCostSourceCanEnterBillableLedger(params: {
   sourceType: BillableLedgerSourceType
   sourceStatus: string
   clientCostApprovalRequired?: boolean | null
+  // Time only: the client approved the cost (its status, or its stamp once the
+  // entry is locked into a closed pay period).
+  clientApproved?: boolean
 }) {
   if (!isCostDrivenBillingModel(params.billingModel)) {
     throw new Error("Only cost-driven projects can move source costs into the billable ledger.")
@@ -28,7 +31,10 @@ export function assertCostSourceCanEnterBillableLedger(params: {
   }
 
   if (params.sourceType === "time_entry") {
-    const allowedStatuses = params.clientCostApprovalRequired ? ["client_approved"] : ["pm_approved", "client_approved"]
-    if (!allowedStatuses.includes(params.sourceStatus)) throw new Error("Time entry is not approved for billing.")
+    const approved = ["pm_approved", "client_approved", "locked"].includes(params.sourceStatus)
+    const clientApproved = params.clientApproved ?? params.sourceStatus === "client_approved"
+    if (!approved || (params.clientCostApprovalRequired && !clientApproved)) {
+      throw new Error("Time entry is not approved for billing.")
+    }
   }
 }

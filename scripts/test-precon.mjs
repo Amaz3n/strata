@@ -19,7 +19,7 @@ const related = new Set([
   "deal-documents.test.js", "proposal-documents.test.js", "estimate-draft.test.js", "draft-save-queue.test.js",
   "estimate-commercial.test.js", "estimates.test.js", "estimate-portal.test.js", "estimate-issuance.test.js",
   "estimate-document-authorization.test.js", "bids.test.js", "bid-intelligence.test.js", "prospects.test.js",
-  "prospect-write-access.test.js", "conversions.test.js", "tasks-db.test.js", "prospects-db.test.js",
+  "prospect-write-access.test.js", "conversions.test.js", "tasks-db.test.js", "prospects-db.test.js", "trade-quotes.test.js",
 ]);
 const files = readdirSync(new URL("../tests/", import.meta.url))
   .filter(name => name.endsWith(".test.js") && (name.startsWith("precon-") || name.startsWith("bid-pricing-") || related.has(name)))

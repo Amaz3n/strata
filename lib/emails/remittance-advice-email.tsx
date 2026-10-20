@@ -11,6 +11,8 @@ export interface RemittanceAdviceEmailProps {
   orgLogoUrl?: string | null
   billNumber: string | null
   projectName: string | null
+  /** The org's noun for a project: "Job" for a trade company. */
+  projectLabel?: string
   invoiceTotalCents: number
   retainageHeldCents: number
   amountPaidCents: number
@@ -30,6 +32,7 @@ export function RemittanceAdviceEmail({
   orgLogoUrl,
   billNumber,
   projectName,
+  projectLabel = "Project",
   invoiceTotalCents,
   retainageHeldCents,
   amountPaidCents,
@@ -57,7 +60,7 @@ export function RemittanceAdviceEmail({
 
   const rows: Array<{ label: string; value: string }> = [
     { label: "Invoice", value: billNumber ?? "—" },
-    { label: "Project", value: projectName ?? "—" },
+    { label: projectLabel, value: projectName ?? "—" },
     { label: "Invoice total", value: money(invoiceTotalCents) },
   ]
   // Retainage held is named explicitly. A sub who was expecting the full invoice

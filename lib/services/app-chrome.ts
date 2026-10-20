@@ -2,8 +2,8 @@ import "server-only"
 
 import { cacheLife } from "next/cache"
 
-import { getBusinessProfile } from "@/lib/services/business-profile"
-import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
+import { getWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { BUILDER_SURFACE, type WorkspaceSurface } from "@/lib/workspace-surface"
 import type { ProductTier } from "@/lib/product-tier"
 import type { ProjectNavigationItem, User } from "@/lib/types"
 import { getOrgAccessState, type OrgAccessState } from "@/lib/services/access"
@@ -27,7 +27,8 @@ export interface AppChromeContext {
   platformAccess: PlatformAccessState
   platformSessionState: PlatformSessionState
   productTier: ProductTier
-  businessProfile: BusinessProfile
+  /** Plan features and business profile: the one source every chrome surface reads. */
+  workspaceSurface: WorkspaceSurface
   ambientContext: AmbientDeskContext
   projects: ProjectNavigationItem[]
   /** The switcher's list stopped at PROJECT_NAVIGATION_LIMIT. */
@@ -94,7 +95,7 @@ const SIGNED_OUT_CHROME: AppChromeContext = {
   platformAccess: { canAccessPlatform: false, roles: [], isEnvSuperadmin: false },
   platformSessionState: NO_PLATFORM_SESSION,
   productTier: "residential",
-  businessProfile: BUILDER_PROFILE,
+  workspaceSurface: BUILDER_SURFACE,
   ambientContext: EMPTY_AMBIENT,
   projects: [],
   projectsTruncated: false,
@@ -130,7 +131,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     hasActiveCommercialProjects,
     hasPriceAgreements,
     booksEnabled,
-    businessProfile,
+    workspaceSurface,
   ] = await Promise.all([
     getCurrentUserProfile().catch(() => null),
     getCurrentUserPermissions().catch(() => ({ permissions: [] as string[] })),
@@ -146,7 +147,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     orgHasActiveCommercialProjects().catch(() => false),
     orgHasPriceAgreements().catch(() => false),
     isBooksWorkspaceEnabled().catch(() => false),
-    contextPromise.then((resolved) => (resolved ? getBusinessProfile() : BUILDER_PROFILE)),
+    contextPromise.then((resolved) => (resolved ? getWorkspaceSurface() : BUILDER_SURFACE)),
   ])
 
   // The switcher's project list used to be a client fetch to /api/projects on
@@ -164,7 +165,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     platformAccess,
     platformSessionState,
     productTier: context?.productTier ?? "residential",
-    businessProfile,
+    workspaceSurface,
     ambientContext,
     projects,
     projectsTruncated,

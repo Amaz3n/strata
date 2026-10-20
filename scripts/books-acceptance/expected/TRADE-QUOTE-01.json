@@ -1,0 +1,357 @@
+{
+  "scenario": "TRADE-QUOTE-01",
+  "reviewedFrom": "TR04-01, TR04-02 and TR04-03 (docs/plans/arc-trade/completion-checklist.json); docs/plans/arc-trade/README.md section 5 (TRADE-QUOTE-01); docs/reference/arc-trade.md (Builder connections); migration 20261027100000_opportunity_due_dates_and_invitation_source.sql; lib/services/trade-quotes.ts (trackBuilderInvitation, saveTradeQuote, sendTradeQuote, startTradeJobFromQuote); lib/trade/quote.ts (quoteEstimateLines, quoteTotals, quoteMove, quoteJobDraft); lib/financials/estimate-totals.ts; lib/services/estimate-portal.ts (sendEstimate, submitEstimateDecision); lib/services/external-portal-auth.ts (getTradeBuilderWorkspace, authenticateExternalPortalAccountWithToken); lib/services/bids.ts (createBidPackage, createBidInvite, generateBidInviteLink); lib/services/trade-workspace.ts (createTradeJob, tradeJobBilling). The builder is a second organization on the stack; the trade owner claims its bid invitation with the invited email.",
+  "subcases": {
+    "invitation-becomes-an-itb-with-a-due-date": {
+      "derivation": "The builder creates a bid package on its project due three days out at 17:00Z and invites the trade company by the owner's email with no named contact; generating the link mints the bid token. Before the owner claims anything the trade workspace has no verified external identity, so no invitation lists. Claiming with the invited email creates the identity and its grant; the identity is verified, so the workspace lists one bid invitation: the builder's organization name, the project name and the package's due date. Tracking it creates a prospect named for the builder's project with source builder_invitation, the package's due_at and the grant's id as source_grant_id (the unique index is why tracking twice is refused with 'This invitation is already on your opportunities.'), notes naming the builder, the project's formatted address as the job site, and a primary contact named for the builder (the invite names no person, so the organization is both the name and the company, which the customer label collapses to one). With no quote yet and a due date three calendar days out, quoteMove says Invited: 'Price is due in 3 days', action build_quote, not late or soon (soon means two days or fewer), no value. Once tracked the invitation no longer lists.",
+      "expected": {
+        "invitationsBeforeTheOwnerClaimsAnything": 0,
+        "claim": {
+          "createdAnIdentity": true,
+          "forTheInvitedEmail": true
+        },
+        "untrackedInvitations": [
+          {
+            "builder": "TRADE-QUOTE-01 builder",
+            "project": "Marina Way residence",
+            "dueOnThePackagesDate": true
+          }
+        ],
+        "opportunity": {
+          "name": "Marina Way residence",
+          "customer": "TRADE-QUOTE-01 builder",
+          "source": "builder_invitation",
+          "fromInvitation": true,
+          "dueOnThePackagesDate": true,
+          "move": {
+            "stage": "invited",
+            "label": "Invited",
+            "sentence": "Price is due in 3 days",
+            "action": "build_quote",
+            "tone": "none",
+            "valueCents": 0
+          }
+        },
+        "stored": {
+          "status": "new",
+          "source": "builder_invitation",
+          "dueOnThePackagesDate": true,
+          "tiedToTheGrant": true,
+          "notes": "Bid invitation from TRADE-QUOTE-01 builder.",
+          "address": "500 Marina Way, Stuart, FL 34994",
+          "primaryContact": {
+            "full_name": "TRADE-QUOTE-01 builder",
+            "company_name": "TRADE-QUOTE-01 builder",
+            "email": null
+          }
+        },
+        "trackingAgain": "refused: This invitation is already on your opportunities.",
+        "invitationsLeftToTrack": 0
+      }
+    },
+    "an-invited-opportunity-can-be-sent-a-quote": {
+      "derivation": "The quote editor offers Send only when the opportunity's customer has an email ('Add the customer's email to send it'), and sendEstimate refuses a recipient with none. An opportunity tracked from a builder invitation takes its customer from the invitation, which carries the invited sub's own details and no email for the builder, so the office sets the customer's name, email and phone on the opportunity (updateOpportunityCustomer, which also updates the linked directory contact). Expected: after the office sets it, the customer carries an email the quote can go to.",
+      "expected": {
+        "customerHasAnEmail": true
+      }
+    },
+    "quote-from-labor-material-and-markup": {
+      "derivation": "The quote has five priced lines and one optional add-on. Each line is round(quantity x unit price x (1 + markup/100)): rough-in labor 40 x 9,500 = 380,000; the 200A panel 1 x 185,000 x 1.20 = 222,000; wire, conduit and boxes 1 x 96,000 x 1.15 = 110,400; trim-out labor 24 x 9,500 = 228,000; lift rental 2 x 22,500 x 1.10 = 49,500; the optional EV charger circuit 1 x 150,000 x 1.10 = 165,000, which stays out of the base. Base subtotal 380,000 + 222,000 + 110,400 + 228,000 + 49,500 = 989,900 (labor 608,000, material 332,400, equipment 49,500, other 0). Tax at 7% on the base is 69,293 (989,900 x 0.07 exactly), so the total is 1,059,193. Sections become group rows in the order first used, so the saved items are group 'Service and rough-in', its three lines, group 'Finish', its two lines, group 'Add-ons' and the add-on; each line keeps its quote kind and the add-on is flagged optional. A first save is draft version 1 valid until the date chosen; the editor reads the same lines, sections, kinds, optional flag and totals back. With a quote and no send the opportunity is Quoting: still 'Price is due in 3 days', action finish_quote, valued at the quote total.",
+      "expected": {
+        "estimate": {
+          "title": "Electrical rough-in and trim",
+          "status": "draft",
+          "version": 1,
+          "subtotalCents": 989900,
+          "taxCents": 69293,
+          "totalCents": 1059193,
+          "validUntilIsThirtyDaysOut": true,
+          "taxRate": 7
+        },
+        "items": [
+          {
+            "type": "group",
+            "description": "Service and rough-in",
+            "quantity": 0,
+            "unit": null,
+            "unitCostCents": 0,
+            "markupPercent": 0,
+            "kind": null,
+            "optional": false
+          },
+          {
+            "type": "line",
+            "description": "Rough-in labor",
+            "quantity": 40,
+            "unit": "hr",
+            "unitCostCents": 9500,
+            "markupPercent": 0,
+            "kind": "labor",
+            "optional": false
+          },
+          {
+            "type": "line",
+            "description": "200A main panel",
+            "quantity": 1,
+            "unit": "ea",
+            "unitCostCents": 185000,
+            "markupPercent": 20,
+            "kind": "material",
+            "optional": false
+          },
+          {
+            "type": "line",
+            "description": "Wire, conduit and boxes",
+            "quantity": 1,
+            "unit": "lot",
+            "unitCostCents": 96000,
+            "markupPercent": 15,
+            "kind": "material",
+            "optional": false
+          },
+          {
+            "type": "group",
+            "description": "Finish",
+            "quantity": 0,
+            "unit": null,
+            "unitCostCents": 0,
+            "markupPercent": 0,
+            "kind": null,
+            "optional": false
+          },
+          {
+            "type": "line",
+            "description": "Trim-out labor",
+            "quantity": 24,
+            "unit": "hr",
+            "unitCostCents": 9500,
+            "markupPercent": 0,
+            "kind": "labor",
+            "optional": false
+          },
+          {
+            "type": "line",
+            "description": "Lift rental",
+            "quantity": 2,
+            "unit": "day",
+            "unitCostCents": 22500,
+            "markupPercent": 10,
+            "kind": "equipment",
+            "optional": false
+          },
+          {
+            "type": "group",
+            "description": "Add-ons",
+            "quantity": 0,
+            "unit": null,
+            "unitCostCents": 0,
+            "markupPercent": 0,
+            "kind": null,
+            "optional": false
+          },
+          {
+            "type": "line",
+            "description": "EV charger circuit",
+            "quantity": 1,
+            "unit": "ea",
+            "unitCostCents": 150000,
+            "markupPercent": 10,
+            "kind": "material",
+            "optional": true
+          }
+        ],
+        "editorReadsItBack": {
+          "lines": [
+            "Service and rough-in | labor | Rough-in labor",
+            "Service and rough-in | material | 200A main panel",
+            "Service and rough-in | material | Wire, conduit and boxes",
+            "Finish | labor | Trim-out labor",
+            "Finish | equipment | Lift rental",
+            "Add-ons | material | EV charger circuit"
+          ],
+          "optionalLines": [
+            "EV charger circuit"
+          ],
+          "totals": {
+            "byKind": {
+              "labor": 608000,
+              "material": 332400,
+              "equipment": 49500,
+              "other": 0
+            },
+            "optional": 165000,
+            "subtotal": 989900,
+            "tax": 69293,
+            "total": 1059193
+          },
+          "editable": true
+        },
+        "opportunity": {
+          "stage": "quoting",
+          "label": "Quoting",
+          "sentence": "Price is due in 3 days",
+          "action": "finish_quote",
+          "tone": "none",
+          "valueCents": 1059193
+        }
+      }
+    },
+    "quote-sent-on-the-portal-and-follow-up-logged": {
+      "derivation": "The invitation gave the opportunity no customer email, so the first send is refused with the estimate service's own message. The office supplies the builder's estimating inbox (the prospect contact service, since the trade room has no field for it; see the open subcase) and sends: the estimate is issued on a /e review link (one review link row), the opportunity moves from new to estimate_sent, and the stack has no mail provider, so emailSent is false and the link is shared by hand. The portal reads the sent quote at its total, 7% tax rate, recipient and six priced lines (the group headers are not lines). Sending sets a follow-up three days out when none exists, so the opportunity is Sent: 'Follow up in 3 days', action follow_up, valued at the quote. Logging a call adds a prospect_contact_logged event of kind call, and rescheduling the follow-up five days out adds a second prospect_follow_up_set event whose note is the reason; the stage reads 'Follow up in 5 days'. The trail holds the estimate_sent event with its recipient, the call, and both follow-up events newest first.",
+      "expected": {
+        "sendWithoutACustomerEmail": "refused: Add a client contact with an email address before sending this estimate.",
+        "send": {
+          "emailSent": false,
+          "linkIsTheReviewPage": true
+        },
+        "estimate": {
+          "status": "sent",
+          "hasSentAt": true,
+          "current": true,
+          "version": 1
+        },
+        "prospectStatus": "estimate_sent",
+        "reviewLinks": 1,
+        "portalReads": {
+          "title": "Electrical rough-in and trim",
+          "status": "sent",
+          "totalCents": 1059193,
+          "taxRate": 7,
+          "recipient": "estimating@builder.example.test",
+          "lines": 6
+        },
+        "followUpSetBySend": {
+          "daysOut": 3
+        },
+        "stageAfterSend": {
+          "stage": "sent",
+          "label": "Sent",
+          "sentence": "Follow up in 3 days",
+          "action": "follow_up",
+          "tone": "none",
+          "valueCents": 1059193
+        },
+        "stageAfterFollowUp": {
+          "stage": "sent",
+          "label": "Sent",
+          "sentence": "Follow up in 5 days",
+          "action": "follow_up",
+          "tone": "none",
+          "valueCents": 1059193
+        },
+        "trail": [
+          {
+            "event": "estimate_sent",
+            "detail": "estimating@builder.example.test"
+          },
+          {
+            "event": "prospect_contact_logged",
+            "detail": "call"
+          },
+          {
+            "event": "prospect_follow_up_set",
+            "detail": "Ask for the award decision"
+          },
+          {
+            "event": "prospect_follow_up_set",
+            "detail": "Follow up on the quote"
+          }
+        ]
+      }
+    },
+    "customer-accepts-on-the-portal": {
+      "derivation": "The customer opens the /e link, declines the optional EV charger (no add-on ids) and signs. submitEstimateDecision attributes the decision to the recipient on file (the builder contact) and records the typed signature name as the client signature; with no add-ons the accepted total is the base total, 1,059,193, written to accepted_options with an empty id list. The estimate becomes client_signed with approved and client-signed timestamps and the note; the estimate's default purpose is a construction agreement, so a signed one moves its opportunity from estimate_sent to client_approved. The portal views and the signing are both recorded as estimate events. quoteMove treats client_signed as accepted: Won, 'Accepted. Start the job', action start_job, valued at the accepted total. A second signature on the same link is refused as already signed.",
+      "expected": {
+        "decision": {
+          "status": "client_signed",
+          "waitingOn": []
+        },
+        "estimate": {
+          "status": "client_signed",
+          "approved": true,
+          "clientSigned": true,
+          "note": "Approved. Please start the week of the 14th.",
+          "decidedBy": "TRADE-QUOTE-01 builder",
+          "signedBy": "Marina Builders Estimating",
+          "acceptedTotalCents": 1059193,
+          "addOnsAccepted": []
+        },
+        "prospectStatus": "client_approved",
+        "events": [
+          "estimate_client_signed",
+          "estimate_viewed"
+        ],
+        "stage": {
+          "stage": "won",
+          "label": "Won",
+          "sentence": "Accepted. Start the job",
+          "action": "start_job",
+          "tone": "none",
+          "valueCents": 1059193
+        },
+        "signingTwice": "refused: This estimate has already been signed."
+      }
+    },
+    "accepted-quote-starts-a-job-with-its-terms": {
+      "derivation": "Before starting, the job draft the opportunity offers is the accepted base price as the contract, the builder as a company customer, and the company-customer billing defaults (progress, 10% retainage, net 30). The office confirms progress billing, 10% retainage, net 30 and a certifying customer and starts the job on a fixed two-week-out start and two-month-out finish. createTradeJob makes an active delivery-phase job in the company's default posture (residential) tied to the prospect, at the opportunity's job-site address, with a fixed contract of 1,059,193 cents (the accepted base total, add-on excluded), fixed-price billing by progress with 10% retainage and receivables terms of company customer, certifies true, net 30, no review. The customer is the builder: the directory contact the opportunity's primary contact already points at (named for the builder). The quote is linked to the job; the opportunity is won with a won date and no follow-up, and reads 'Job started' with the open_job action at the accepted value. Starting again returns the same job and creates no second one.",
+      "expected": {
+        "draftBeforeStarting": {
+          "contractCents": 1059193,
+          "billingBasis": "progress",
+          "customerKind": "company",
+          "retainagePercent": 10,
+          "paymentTermsDays": 30
+        },
+        "job": {
+          "name": "Marina Way residence - electrical",
+          "status": "active",
+          "phase": "delivery",
+          "posture": "residential",
+          "fromTheOpportunity": true,
+          "startsInTwoWeeks": true,
+          "endsInTwoMonths": true,
+          "address": "500 Marina Way, Stuart, FL 34994"
+        },
+        "contract": {
+          "type": "fixed",
+          "contractCents": 1059193
+        },
+        "billing": {
+          "model": "fixed_price",
+          "basis": "progress",
+          "retainagePercent": 10,
+          "receivables": {
+            "customer_kind": "company",
+            "customer_certifies": true,
+            "payment_terms_days": 30,
+            "review_before_send": false
+          }
+        },
+        "customer": {
+          "name": "TRADE-QUOTE-01 builder",
+          "isTheOpportunitysDirectoryContact": true
+        },
+        "quoteIsOnTheJob": true,
+        "opportunity": {
+          "status": "won",
+          "wonAtSet": true,
+          "followUpCleared": true,
+          "stage": {
+            "stage": "won",
+            "label": "Won",
+            "sentence": "Job started",
+            "action": "open_job",
+            "tone": "none",
+            "valueCents": 1059193
+          },
+          "jobLinked": true
+        },
+        "startingTwice": {
+          "sameJob": true,
+          "alreadyStarted": true,
+          "jobsForTheOpportunity": 1
+        }
+      }
+    }
+  }
+}

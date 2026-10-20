@@ -183,3 +183,90 @@ test("an invoice issues with its waiver whatever its notes, and not once the not
     }
   }
 })
+
+// ---------------------------------------------------------------------------
+// Retainage on creation
+// ---------------------------------------------------------------------------
+
+const { createInvoice } = freshRequire("lib/services/invoices.ts")
+
+/** The lines createInvoice sends to create_invoice_atomic for a $500 manual invoice on a job holding 10% retainage. */
+async function retainageLinesFor(metadata) {
+  const lines = []
+  const service = createServiceHarness({
+    permissions: ["invoice.write", "invoice.read", "project.read"],
+    tables: {
+      orgs: [{ id: ORG, name: "Builder", slug: "builder", product_tier: "residential" }],
+      projects: [{ id: PROJECT, org_id: ORG, name: "Lot 12", property_type: "residential", retainage_percent: 10 }],
+      contracts: [{ id: id(20), org_id: ORG, project_id: PROJECT, status: "active", total_cents: 1_000_000, retainage_percent: 10, created_at: "2026-01-01T00:00:00Z" }],
+      invoices: [],
+    },
+    rpc: {
+      create_invoice_atomic: ({ p_invoice, p_lines }) => {
+        lines.push(...p_lines)
+        return { data: { invoice: { id: INVOICE, org_id: ORG, ...p_invoice }, lines: p_lines }, error: null }
+      },
+    },
+  })
+  await service.run(() =>
+    createInvoice({
+      orgId: ORG,
+      input: {
+        project_id: PROJECT,
+        invoice_number: "1042",
+        title: "Work",
+        issue: false,
+        tax_rate: 0,
+        source_type: "manual",
+        lines: [{ description: "Work", quantity: 1, unit: "ea", unit_cost: 500, taxable: false }],
+        ...(metadata ? { metadata } : {}),
+      },
+    }),
+  )
+  return lines
+}
+
+test("the builder's own invoice still withholds the job's retainage", async () => {
+  const lines = await retainageLinesFor(null)
+  assert.equal(lines.length, 2)
+  assert.deepEqual(lines.map((line) => line.unit_price_cents).sort((a, b) => a - b), [-5000, 50000])
+})
+
+test("a mirrored builder bill carries no retainage line, on a job that holds retainage", async () => {
+  const lines = await retainageLinesFor({ connected_receivable: { source_bill_id: id(30), source_org_name: "Acme Builders" } })
+  assert.deepEqual(lines.map((line) => line.unit_price_cents), [50000])
+})
+
+// ---------------------------------------------------------------------------
+// A mirrored invoice follows the builder; nothing here acts on it by hand
+// ---------------------------------------------------------------------------
+
+const { createReceivableAdjustment, voidReceivableAdjustment } = freshRequire("lib/services/receivable-adjustments.ts")
+const { ensureInvoiceToken } = freshRequire("lib/services/invoices.ts")
+
+const ADJUSTMENT = id(40)
+
+function mirrorSetup() {
+  return createServiceHarness({
+    permissions: ["invoice.write", "invoice.send", "invoice.read", "project.read"],
+    tables: {
+      orgs: [{ id: ORG, name: "Sub", slug: "sub" }],
+      projects: [{ id: PROJECT, org_id: ORG, name: "Oak Street", property_type: "residential" }],
+      invoices: [invoiceRow({ status: "sent", token: null, metadata: { connected_receivable: { source_bill_id: id(30), source_org_name: "Acme Builders" } } })],
+      receivable_adjustments: [{ id: ADJUSTMENT, org_id: ORG, project_id: PROJECT, invoice_id: INVOICE, adjustment_type: "credit_memo", status: "posted" }],
+    },
+  })
+}
+
+test("a share link, a credit memo and a void of one are refused on a mirrored invoice", async () => {
+  const service = mirrorSetup()
+  const refusal = /managed in Acme Builders's portal/
+
+  await assert.rejects(service.run(() => ensureInvoiceToken(INVOICE)), refusal)
+  await assert.rejects(
+    service.run(() => createReceivableAdjustment({ invoiceId: INVOICE, adjustmentType: "credit_memo", amountCents: 1000, effectiveDate: "2026-10-19", reason: "Goodwill" })),
+    refusal,
+  )
+  await assert.rejects(service.run(() => voidReceivableAdjustment(ADJUSTMENT)), refusal)
+  assert.deepEqual(service.writes(), [])
+})

@@ -34,6 +34,8 @@ import { PRICING_DISPLAY_MODES, type PricingDisplayMode } from "@/lib/validation
 import { formatLocalDate } from "@/lib/utils"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 import { isDeductionGeometry } from "@/lib/drawings/measure"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { profileTerminology } from "@/lib/terminology"
 
 export type EstimateDecision = "approved" | "rejected" | "changes_requested"
 
@@ -367,7 +369,8 @@ export async function sendEstimate({
     if (linkError) throw new Error(`The document was issued, but a signer's link was not: ${linkError.message}`)
   }
 
-  const branding = await getOrgBranding(resolvedOrgId, supabase)
+  const [branding, surface] = await Promise.all([getOrgBranding(resolvedOrgId, supabase), loadWorkspaceSurface(resolvedOrgId)])
+  const projectLabel = profileTerminology(surface.profile).project
   const range = estimatePriceRange(estimate.metadata)
   const documentName = proposal ? proposalDocumentLabel(normalizeEstimateCommercial(estimate.metadata)) : null
   const delivered = await Promise.all(
@@ -384,6 +387,7 @@ export async function sendEstimate({
           orgLogoUrl: branding.logoUrl,
           recipientName: person.name || null,
           projectName: (estimate as any).project?.name ?? (estimate as any).prospect?.name ?? null,
+          projectLabel,
           totalLabel: range ? `${formatMoney(range.lowCents)} – ${formatMoney(range.highCents)}` : formatMoney(estimate.total_cents),
           validUntil: estimate.valid_until
             ? formatLocalDate(estimate.valid_until, "MMMM d, yyyy")
@@ -2140,7 +2144,7 @@ async function notifyBuilderOfClientResponse(input: {
       return
     }
 
-    const branding = await getOrgBranding(orgId, supabase)
+    const [branding, surface] = await Promise.all([getOrgBranding(orgId, supabase), loadWorkspaceSurface(orgId)])
     const ctaLink = estimate.prospect_id ? `${appUrl()}/pipeline/${estimate.prospect_id}` : `${appUrl()}/estimates`
     const html = await renderEmailTemplate(
       SignatureEmail({
@@ -2150,6 +2154,7 @@ async function notifyBuilderOfClientResponse(input: {
         orgLogoUrl: branding.logoUrl ?? null,
         recipientName: builder?.full_name ?? null,
         projectName: estimate.prospect?.name ?? null,
+        projectLabel: profileTerminology(surface.profile).project,
         eventLabel: "Estimate Update",
         headline: isChanges ? "Client requested changes" : "Client declined estimate",
         bodyText: `${clientName} reviewed "${estimate.title}" and ${action} it.`,

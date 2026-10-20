@@ -51,6 +51,8 @@ interface PrimeSovTabProps {
   sov: PrimeSovState
   costCodes?: CostCode[]
   costCodesEnabled?: boolean
+  /** Who the schedule of values is billed to: "Owner" for a builder, "Customer" for a trade. */
+  ownerLabel: string
 }
 
 function formatMoney(cents: number) {
@@ -85,7 +87,8 @@ function rowFromLine(line: PrimeSovLine): SovRowDraft {
   }
 }
 
-export function PrimeSovTab({ projectId, sov, costCodes = [], costCodesEnabled = true }: PrimeSovTabProps) {
+export function PrimeSovTab({ projectId, sov, costCodes = [], costCodesEnabled = true, ownerLabel }: PrimeSovTabProps) {
+  const owner = ownerLabel.toLowerCase()
   const router = useRouter()
   const [rows, setRows] = useState<SovRowDraft[]>(() => sov.lines.map(rowFromLine))
   const [revision, setRevision] = useState(sov.summary?.revision ?? 0)
@@ -239,7 +242,7 @@ export function PrimeSovTab({ projectId, sov, costCodes = [], costCodesEnabled =
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Link budget scope</DialogTitle>
-            <DialogDescription>Connect this billing line to its cost evidence. These links do not change the owner’s scheduled value or certify progress.</DialogDescription>
+            <DialogDescription>Connect this billing line to its cost evidence. These links do not change the {owner}’s scheduled value or certify progress.</DialogDescription>
           </DialogHeader>
           {mappingLoading ? <p className="text-sm text-muted-foreground">Loading budget evidence…</p> : mappingError ? (
             <p role="alert" className="text-sm text-destructive">{mappingError}</p>
@@ -296,7 +299,7 @@ export function PrimeSovTab({ projectId, sov, costCodes = [], costCodesEnabled =
             )}
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            {rows.length} owner-facing line{rows.length === 1 ? "" : "s"}. Cost codes and budget links remain supporting evidence.
+            {rows.length} {owner}-facing line{rows.length === 1 ? "" : "s"}. Cost codes and budget links remain supporting evidence.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -335,7 +338,7 @@ export function PrimeSovTab({ projectId, sov, costCodes = [], costCodesEnabled =
         <div className="border border-dashed p-10 text-center">
           <p className="text-sm font-medium">No schedule of values yet</p>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            Break the owner contract into billable values. Estimate imports use selling prices; budget imports use cost proportions. Both allocate the full contract value for your review.
+            Break the {owner} contract into billable values. Estimate imports use selling prices; budget imports use cost proportions. Both allocate the full contract value for your review.
           </p>
           <div className="mt-4 flex justify-center gap-2">
             <Button type="button" variant="outline" size="sm" onClick={() => importFrom("budget")} disabled={isPending}>

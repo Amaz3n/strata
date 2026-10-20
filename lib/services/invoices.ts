@@ -16,7 +16,9 @@ import {
 import { dollarsToCents } from "@/lib/financials/money"
 import { getProjectPosture, normalizeProductTier, type ProductTier, type ProjectPosture } from "@/lib/product-tier"
 import { validateGeneralInvoice } from "@/lib/receivables/general-invoice"
-import { getReceivablesPosturePolicy, getGeneralReceivablesPolicy } from "@/lib/receivables/policy"
+import { loadProjectReceivablesPolicy } from "@/lib/services/receivables-policy"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { profileTerminology } from "@/lib/terminology"
 import { createApprovedCostInvoiceFromPreview } from "@/lib/services/approved-cost-invoicing"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -38,6 +40,7 @@ import {
 } from "@/lib/financials/invoice-lifecycle"
 import { completeOutboxJob, enqueueOutboxJob } from "@/lib/services/outbox"
 import { receivablesWriter } from "@/lib/services/receivables-writer"
+import { assertNotConnectedReceivable, connectedReceivableOf } from "@/lib/receivables/connected"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { releaseInvoiceFromBillingPeriod } from "@/lib/services/billing-periods"
 import { resolveLedgerAuthority } from "@/lib/services/books/authority"
@@ -93,21 +96,6 @@ type SourceBillingContext = {
 }
 
 type InvoicePermission = string
-
-async function resolveInvoicePosture(params: {
-  supabase: SupabaseClient
-  projectId?: string | null
-  productTier: ProductTier
-}): Promise<ProjectPosture> {
-  if (!params.projectId) return "residential"
-  const { data, error } = await params.supabase
-    .from("projects")
-    .select("property_type")
-    .eq("id", params.projectId)
-    .maybeSingle()
-  if (error) throw new Error(`Failed to resolve invoice workflow: ${error.message}`)
-  return getProjectPosture(data?.property_type, params.productTier)
-}
 
 async function requireInvoicePermission(params: {
   supabase: SupabaseClient
@@ -309,6 +297,13 @@ export function buildApprovedCostInvoicePreview({
 
 function stripSystemGeneratedBillingLines(lines: InvoiceLine[]) {
   return lines.filter((line) => !isSystemGeneratedRetainageLine(line))
+}
+
+// A deposit is not progress billing, and a builder's portal bill mirrored onto
+// the sub's book already is the amount due: neither withholds retainage again.
+function holdsRetainage(supportsRetainage: boolean, metadata: unknown) {
+  if (!supportsRetainage || connectedReceivableOf(metadata)) return false
+  return !(metadata && typeof metadata === "object" && (metadata as Record<string, unknown>).invoice_kind === "earnest_deposit")
 }
 
 async function resolveInvoiceSourceBillingContext(params: {
@@ -1242,7 +1237,7 @@ export function prepareInvoiceCreation({
 }) {
   const shouldIssue = input.issue === true
   if (shouldIssue && approvalStatus !== "approved" && approvalStatus !== "not_required") {
-    throw new Error(`${getReceivablesPosturePolicy(productPosture).customerLabel} billing must be approved before it can be issued.`)
+    throw new Error("This invoice must be approved before it can be issued.")
   }
   if (shouldIssue && !token) throw new Error("An issued invoice requires its original token.")
   const lifecycleStatus: InvoiceLifecycleStatus = shouldIssue ? "sent" : "draft"
@@ -1370,12 +1365,13 @@ export async function createInvoice({
   const sourceDrawId = input.source_draw_id ?? null
   const sourceChangeOrderId = input.source_change_order_id ?? null
   const sourcePayApplicationId = input.source_pay_application_id ?? null
-  const productPosture = await resolveInvoicePosture({
+  const receivablesPolicy = await loadProjectReceivablesPolicy({
     supabase,
+    orgId: resolvedOrgId,
     projectId: input.project_id,
     productTier,
   })
-  const receivablesPolicy = input.project_id ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
+  const productPosture = receivablesPolicy.posture
   await assertDirectChangeOrderInvoiceAllowed({
     supabase,
     orgId: resolvedOrgId,
@@ -1393,7 +1389,7 @@ export async function createInvoice({
     sourcePayApplicationId,
     baseLines: normalizeLines(input.lines),
   })
-  const sourceContext = receivablesPolicy.supportsRetainage && input.metadata?.invoice_kind !== "earnest_deposit"
+  const sourceContext = holdsRetainage(receivablesPolicy.supportsRetainage, input.metadata)
     ? resolvedSourceContext
     : resolvedSourceContext
       ? { ...resolvedSourceContext, retainagePercent: 0, retainageAmountCents: 0 }
@@ -1624,6 +1620,7 @@ export async function updateInvoice({
   if (existingError || !existing) {
     throw new Error(existingError?.message ?? "Invoice not found")
   }
+  assertNotConnectedReceivable(existing.metadata)
   if (expectedUpdatedAt && existing.updated_at !== expectedUpdatedAt) {
     throw new Error("This invoice changed since you opened it. Reload the draft before saving.")
   }
@@ -1669,12 +1666,13 @@ export async function updateInvoice({
   await assertInvoiceCustomer(supabase, resolvedOrgId, { ...input, project_id: projectId })
   await assertInvoiceBudgetLinks(supabase, resolvedOrgId, projectId, input.lines)
   await assertInvoiceAccountingAccounts(supabase, resolvedOrgId, input.lines)
-  const productPosture = await resolveInvoicePosture({
+  const receivablesPolicy = await loadProjectReceivablesPolicy({
     supabase,
+    orgId: resolvedOrgId,
     projectId,
     productTier,
   })
-  const receivablesPolicy = projectId ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
+  const productPosture = receivablesPolicy.posture
   if (sourceType === "from_costs" || (existing.metadata as any)?.source_type === "from_costs") {
     throw new Error("Approved-cost invoices are controlled by the cost ledger. Revise and reissue instead of editing.")
   }
@@ -1700,7 +1698,7 @@ export async function updateInvoice({
     sourceChangeOrderId,
     baseLines: normalizeLines(input.lines),
   })
-  const sourceContext = receivablesPolicy.supportsRetainage && input.metadata?.invoice_kind !== "earnest_deposit"
+  const sourceContext = holdsRetainage(receivablesPolicy.supportsRetainage, input.metadata)
     ? resolvedSourceContext
     : resolvedSourceContext
       ? { ...resolvedSourceContext, retainagePercent: 0, retainageAmountCents: 0 }
@@ -1912,6 +1910,7 @@ export async function scheduleInvoiceSend({
     .eq("id", invoiceId)
     .maybeSingle()
   if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
+  assertNotConnectedReceivable(existing.metadata)
   await requireInvoicePermission({
     supabase,
     orgId: resolvedOrgId,
@@ -2018,8 +2017,9 @@ export async function runScheduledInvoiceSend(orgId: string, payload: Record<str
  */
 export async function assertInvoiceCanIssue(
   { supabase, orgId, userId, productTier }: { supabase: SupabaseClient; orgId: string; userId: string; productTier: ProductTier },
-  existing: { id: string; project_id?: string | null; status: string; approval_status?: string | null },
+  existing: { id: string; project_id?: string | null; status: string; approval_status?: string | null; metadata?: unknown },
 ) {
+  assertNotConnectedReceivable(existing.metadata)
   await requireInvoicePermission({
     supabase,
     orgId,
@@ -2036,8 +2036,8 @@ export async function assertInvoiceCanIssue(
     throw new Error("A voided invoice cannot be issued. Revise it instead.")
   }
 
-  const posture = await resolveInvoicePosture({ supabase, projectId: existing.project_id, productTier })
-  const policy = existing.project_id ? getReceivablesPosturePolicy(posture) : getGeneralReceivablesPolicy()
+  const policy = await loadProjectReceivablesPolicy({ supabase, orgId, projectId: existing.project_id, productTier })
+  const posture = policy.posture
   if (
     policy.approvalMode === "required_review" &&
     existing.approval_status !== "approved" &&
@@ -2154,11 +2154,12 @@ export async function requestInvoiceApproval({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: invoice, error } = await supabase
     .from("invoices")
-    .select("id, project_id, invoice_number, approval_status")
+    .select("id, project_id, invoice_number, approval_status, metadata")
     .eq("org_id", resolvedOrgId)
     .eq("id", invoiceId)
     .maybeSingle()
   if (error || !invoice) throw new Error(error?.message ?? "Invoice not found")
+  assertNotConnectedReceivable(invoice.metadata)
   await requireInvoicePermission({
     supabase,
     orgId: resolvedOrgId,
@@ -2299,6 +2300,7 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
   if (error || !existing) {
     throw new Error(error?.message ?? "Invoice not found")
   }
+  assertNotConnectedReceivable(existing.metadata)
   const existingAccountingState = await getAccountingSyncState(supabase, {
     orgId: resolvedOrgId,
     entityType: "invoice",
@@ -2474,6 +2476,7 @@ export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; o
   if (error || !existing) {
     throw new Error(error?.message ?? "Invoice not found")
   }
+  assertNotConnectedReceivable(existing.metadata)
   const existingAccountingState = await getAccountingSyncState(supabase, {
     orgId: resolvedOrgId,
     entityType: "invoice",
@@ -2550,6 +2553,7 @@ export async function moveInvoiceToProject({
   if (error || !existing) {
     throw new Error(error?.message ?? "Invoice not found")
   }
+  assertNotConnectedReceivable(existing.metadata)
   const existingAccountingState = await getAccountingSyncState(supabase, {
     orgId: resolvedOrgId,
     entityType: "invoice",
@@ -2669,6 +2673,7 @@ export async function reviseInvoice({ invoiceId, orgId }: { invoiceId: string; o
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const original = await getInvoiceWithLines(invoiceId, resolvedOrgId)
   if (!original) throw new Error("Invoice not found")
+  assertNotConnectedReceivable(original.metadata)
   await requireInvoicePermission({
     supabase,
     orgId: resolvedOrgId,
@@ -2898,15 +2903,12 @@ export async function ensureInvoiceToken(invoiceId: string, orgId?: string) {
     projectId: data.project_id,
     invoiceId,
   })
+  assertNotConnectedReceivable(data.metadata)
   if (data.status === "void") {
     throw new Error("Void invoices cannot be shared.")
   }
-  const productPosture = data.product_posture ?? await resolveInvoicePosture({
-    supabase,
-    projectId: data.project_id,
-    productTier,
-  })
-  const policy = data.project_id ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
+  const policy = await loadProjectReceivablesPolicy({ supabase, orgId: resolvedOrgId, projectId: data.project_id, productTier })
+  const productPosture = data.product_posture ?? policy.posture
   if (policy.approvalMode === "required_review" && data.approval_status !== "approved") {
     throw new Error(`${policy.customerLabel} billing must be approved before its share link is published.`)
   }
@@ -3270,12 +3272,14 @@ async function sendInvoiceEmail({
     : undefined
   const invoiceLink = invoice.token ? `${APP_URL}/i/${invoice.token}` : `${APP_URL}/invoices`
 
+  const projectLabel = profileTerminology((await loadWorkspaceSurface(orgId)).profile).project
   const html = await renderEmailTemplate(
     InvoiceEmail({
       includesWaiver,
       invoiceNumber: invoice.invoice_number,
       invoiceTitle: invoice.title ?? "New invoice",
-      projectName: (Array.isArray(invoice.project) ? invoice.project[0] : invoice.project)?.name ?? "Project",
+      projectName: (Array.isArray(invoice.project) ? invoice.project[0] : invoice.project)?.name ?? projectLabel,
+      projectLabel,
       amount,
       dueDate: dueDisplay,
       invoiceLink,

@@ -6,7 +6,7 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import { resolveBillingProfile, resolveOrgBillingProfile } from "@/lib/financials/billing-profile"
 import { getProjectPosture } from "@/lib/product-tier"
-import { getOrgReceivablesPolicy, getReceivablesPosturePolicy } from "@/lib/receivables/policy"
+import { resolveOrgReceivablesPolicy, resolveReceivablesPolicy } from "@/lib/receivables/policy"
 import {
   getOrgBillingSummary,
   getReceivablesAccountingMode,
@@ -19,6 +19,7 @@ import { listInvoicePage } from "@/lib/services/invoices"
 import { loadOrgBillingDeskData } from "@/lib/services/org-billing-desk"
 import { listOrgOwnerBillingPackageSummaries } from "@/lib/services/owner-billing-packages"
 import { listBillingDeskProjects } from "@/lib/services/projects"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
 
 function messageForError(error: unknown) {
   unstable_rethrow(error)
@@ -34,6 +35,7 @@ const EMPTY_SUMMARY: ProjectBillingSummary = {
   collectedCents: 0,
   creditedCents: 0,
   retainageHeldCents: 0,
+  retainageRelease: { date: null, basis: null },
 }
 
 /** The one org-wide receivables experience used by current and legacy URLs. */
@@ -53,7 +55,7 @@ export async function OrgBillingWorkspace() {
       return {}
     }),
   )
-  const [projects, pageResult, summaryResult, opportunitiesResult, packagesResult, orgResult, accounting, booksAccess, accountingByProject] = await Promise.all([
+  const [projects, pageResult, summaryResult, opportunitiesResult, packagesResult, orgResult, accounting, booksAccess, accountingByProject, surface] = await Promise.all([
     projectsPromise,
     listInvoicePage({ orgId: context.orgId, queue: "active", limit: 300, sort: "activity", sortDirection: "desc" }).then(
       (page) => ({ page, error: null as string | null }),
@@ -75,13 +77,17 @@ export async function OrgBillingWorkspace() {
     }),
     getBooksUiAccess(),
     projectAccountingPromise,
+    loadWorkspaceSurface(context.orgId),
   ])
-  const policy = getOrgReceivablesPolicy(context.productTier)
+  const policy = resolveOrgReceivablesPolicy({ tier: context.productTier, profile: surface.profile })
   const profile = resolveOrgBillingProfile(policy)
 
-
   const projectProfiles = Object.fromEntries(projects.map((project) => {
-    const projectPolicy = getReceivablesPosturePolicy(getProjectPosture(project.property_type, context.productTier))
+    const projectPolicy = resolveReceivablesPolicy({
+      posture: getProjectPosture(project.property_type, context.productTier),
+      profile: surface.profile,
+      settingsMetadata: project.financial_settings?.metadata,
+    })
     return [project.id, resolveBillingProfile({ featureConfig: getProjectFinancialFeatureConfig(project, project.billing_contract), policy: projectPolicy })]
   }))
   const upNext: ProjectBillingUpNext = {

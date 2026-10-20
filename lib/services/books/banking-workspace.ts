@@ -5,6 +5,8 @@ import {
   codingForTransactionTotal,
   receiptCandidates,
 } from "./banking-model";
+import { POSTED_EXPENSE_STATUSES } from "@/lib/financials/ledger-status";
+import { assertNotCapturedExpense, loadCapturedExpenses, loadMatchCandidates } from "./captured-expenses";
 import { requireBooksWorkspaceEnabled } from "./module";
 import { requireBooksAuthorization } from "./access";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
@@ -293,6 +295,8 @@ export const bankingMutationSchema = z.object({
   version: z.number().int().nonnegative(),
   action: z.enum(["save", "post", "match", "exclude", "undo"]),
   coding: bankCodingSchema.optional(),
+  /** The person was told this charge is an approved expense and chose to post it anyway. */
+  confirmDoubleCost: z.boolean().default(false),
   matches: z
     .array(
       z.object({
@@ -308,6 +312,8 @@ export async function mutateBankingTransaction(
 ) {
   const input = bankingMutationSchema.parse(raw);
   const { service, orgId, userId } = await context(true);
+  if (input.action === "post" && !input.confirmDoubleCost)
+    await assertNotCapturedExpense(service, orgId, input.transactionId);
   const { data, error } = await service.rpc("mutate_books_banking_atomic", {
     p_org_id: orgId,
     p_transaction_id: input.transactionId,
@@ -336,7 +342,7 @@ export async function loadBankingDetail(transactionId: string) {
   const id = z.string().uuid().parse(transactionId);
   const { data: transaction, error } = await service
     .from("bank_transactions")
-    .select("id,bank_account_id,direction,amount_cents")
+    .select("id,bank_account_id,direction,amount_cents,transaction_date")
     .eq("org_id", orgId)
     .eq("id", id)
     .single();
@@ -366,42 +372,26 @@ export async function loadBankingDetail(transactionId: string) {
       .eq("org_id", orgId)
       .eq("bank_transaction_id", id),
     bank?.gl_account_id
-      ? service
-          .from("journal_lines")
-          .select(
-            "id,debit_cents,credit_cents,description,entry:journal_entries!journal_lines_entry_owner_fk!inner(entry_date,status,memo),matches:bank_transaction_matches(matched_amount_cents,status)",
-          )
-          .eq("org_id", orgId)
-          .eq("account_id", bank.gl_account_id)
-          .eq("entry.status", "posted")
-          .gt(
-            transaction.direction === "inflow" ? "debit_cents" : "credit_cents",
-            0,
-          )
-          .order("id")
-          .limit(500)
-      : Promise.resolve({ data: [], error: null }),
+      ? loadMatchCandidates(service, orgId, bank.gl_account_id, transaction)
+      : Promise.resolve({ available: [], truncated: false }),
   ]);
-  for (const result of [receipts, matches, candidates])
+  for (const result of [receipts, matches])
     if (result.error) throw new Error(result.error.message);
+  const { available, truncated } = candidates;
+  const expenses = await loadCapturedExpenses(
+    service,
+    orgId,
+    available.flatMap((c) => (c.expenseId ? [c.expenseId] : [])),
+  );
   return {
     receipts: receipts.data ?? [],
     history,
     matches: matches.data ?? [],
-    candidates: (candidates.data ?? [])
-      .map((c) => {
-        const used = (
-          c.matches as Array<{ status: string; matched_amount_cents: number }>
-        )
-          .filter((m) => m.status === "confirmed")
-          .reduce((sum, m) => sum + Number(m.matched_amount_cents), 0);
-        return {
-          ...c,
-          availableCents: Number(c.debit_cents) + Number(c.credit_cents) - used,
-        };
-      })
-      .filter((c) => c.availableCents > 0),
-    candidatesTruncated: (candidates.data?.length ?? 0) >= 500,
+    candidates: available.map(({ expenseId, ...c }) => ({
+      ...c,
+      expense: expenseId ? (expenses.get(expenseId) ?? null) : null,
+    })),
+    candidatesTruncated: truncated,
   };
 }
 export async function uploadBankingReceipt(formData: FormData) {
@@ -635,5 +625,136 @@ export async function refreshBankingFeeds() {
     ),
     aiSuggestions,
     lastSyncedAt,
+  };
+}
+
+const UNSTATEMENTED_WINDOW_DAYS = 90;
+const UNSTATEMENTED_ROW_CAP = 200;
+/** Paid on a statement: cash never reaches one, and a personal reimbursement is paid to a person. */
+const STATEMENT_PAYMENT_METHODS = ["credit_card", "company_card", "ach", "check", "other"];
+
+export type UnmatchedCapturedExpense = {
+  expenseId: string;
+  expenseDate: string;
+  amountCents: number;
+  vendorName: string | null;
+  description: string;
+  homeLabel: string;
+  projectId: string | null;
+  hasReceipt: boolean;
+  receiptFileId: string | null;
+};
+
+/**
+ * Approved expenses that should appear on a statement and have not: the posted
+ * journal's payment-account line has no confirmed bank match. Only payment
+ * accounts that are bank-feed accounts count, since only those can be matched.
+ */
+export async function loadUnmatchedCapturedExpenses() {
+  const { service, orgId } = await context();
+  const since = new Date(Date.now() - UNSTATEMENTED_WINDOW_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  const [expenseRows, bankAccounts] = await Promise.all([
+    collectBooksRows((from, to) =>
+      service
+        .from("project_expenses")
+        .select(
+          "id,expense_date,amount_cents,tax_cents,description,vendor_name_text,vendor_company_id,project_id,overhead_category,receipt_file_id",
+        )
+        .eq("org_id", orgId)
+        .in("status", [...POSTED_EXPENSE_STATUSES])
+        .in("payment_method", STATEMENT_PAYMENT_METHODS)
+        .gte("expense_date", since)
+        .order("expense_date", { ascending: false })
+        .order("id")
+        .range(from, to),
+    ),
+    collectBooksRows((from, to) =>
+      service
+        .from("bank_accounts")
+        .select("id,gl_account_id")
+        .eq("org_id", orgId)
+        .order("id")
+        .range(from, to),
+    ),
+  ]);
+  const feedGlIds = new Set(
+    bankAccounts.flatMap((a) => (a.gl_account_id ? [String(a.gl_account_id)] : [])),
+  );
+  if (expenseRows.length === 0 || feedGlIds.size === 0)
+    return { rows: [] as UnmatchedCapturedExpense[], truncated: false, rowCap: UNSTATEMENTED_ROW_CAP };
+  const expenseIds = expenseRows.map((row) => String(row.id));
+  const chunks: string[][] = [];
+  for (let i = 0; i < expenseIds.length; i += 200) chunks.push(expenseIds.slice(i, i + 200));
+  const entryResults = await Promise.all(
+    chunks.map((chunk) =>
+      service
+        .from("journal_entries")
+        .select(
+          "source_id,lines:journal_lines!journal_lines_entry_owner_fk(id,account_id,credit_cents,matches:bank_transaction_matches(status))",
+        )
+        .eq("org_id", orgId)
+        .eq("source_type", "expense")
+        .eq("status", "posted")
+        .in("source_id", chunk),
+    ),
+  );
+  const entrySchema = z.array(
+    z.object({
+      source_id: z.string(),
+      lines: z.array(
+        z.object({
+          id: z.string(),
+          account_id: z.string(),
+          credit_cents: z.coerce.number(),
+          matches: z.array(z.object({ status: z.string() })),
+        }),
+      ),
+    }),
+  );
+  /** expense id -> the payment-account lines posted for it, each with whether a bank line confirmed it */
+  const paymentLines = new Map<string, boolean[]>();
+  for (const result of entryResults) {
+    if (result.error) throw new Error(result.error.message);
+    for (const entry of entrySchema.parse(result.data ?? [])) {
+      const lines = entry.lines.filter(
+        (line) => line.credit_cents > 0 && feedGlIds.has(line.account_id),
+      );
+      if (lines.length === 0) continue;
+      const states = paymentLines.get(entry.source_id) ?? [];
+      for (const line of lines)
+        states.push(line.matches.some((m) => m.status === "confirmed"));
+      paymentLines.set(entry.source_id, states);
+    }
+  }
+  const unmatched = expenseRows.filter((row) => {
+    const states = paymentLines.get(String(row.id));
+    return states !== undefined && states.some((matched) => !matched);
+  });
+  const truncated = unmatched.length > UNSTATEMENTED_ROW_CAP;
+  const shown = unmatched.slice(0, UNSTATEMENTED_ROW_CAP);
+  const details = await loadCapturedExpenses(
+    service,
+    orgId,
+    shown.map((row) => String(row.id)),
+  );
+  return {
+    rows: shown.map((row): UnmatchedCapturedExpense => {
+      const detail = details.get(String(row.id));
+      return {
+        expenseId: String(row.id),
+        expenseDate: String(row.expense_date),
+        amountCents: Number(row.amount_cents ?? 0) + Number(row.tax_cents ?? 0),
+        vendorName: detail?.vendorName ?? null,
+        description: String(row.description ?? ""),
+        homeLabel: detail?.homeLabel ?? "Needs a job or category",
+        projectId: row.project_id ? String(row.project_id) : null,
+        hasReceipt: detail?.hasReceipt ?? false,
+        receiptFileId: detail?.receiptFileId ?? null,
+      };
+    }),
+    truncated,
+    rowCap: UNSTATEMENTED_ROW_CAP,
   };
 }

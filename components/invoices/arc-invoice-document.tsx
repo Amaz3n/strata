@@ -128,7 +128,7 @@ export function toArcInvoiceData(invoice: Invoice, branding?: ArcInvoiceBranding
     typeof metadata.customer_address === "string" ? [metadata.customer_address] : addressToLines(metadata.customer_address)
 
   const billToLines = [
-    invoice.customer_name ?? metadata.customer_name ?? "Client",
+    invoice.customer_name ?? metadata.customer_name ?? "Customer",
     typeof metadata.customer_email === "string" ? metadata.customer_email : (invoice.sent_to_emails?.[0] ?? ""),
     ...customerAddress,
   ]

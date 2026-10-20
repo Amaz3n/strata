@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
@@ -11,6 +12,7 @@ import { notFound } from "next/navigation"
 async function MeetingsPageContent({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ meeting?: string }> }) {
   await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
+  await guardProjectTab(id, "meetings")
   const selectedPromise = query.meeting ? getMeeting(query.meeting).then((meeting) => {
     if (meeting && meeting.project_id !== id) notFound()
     return meeting

@@ -11,6 +11,8 @@ import {
   renderEmailTemplate,
   sendEmail,
 } from "@/lib/services/mailer"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { profileTerminology } from "@/lib/terminology"
 export async function issueSigningLinkForRequest(
   supabase: SupabaseClient,
   params: { orgId: string; requestId: string; markSent: boolean; expectedEmail?: string },
@@ -56,11 +58,10 @@ export async function sendSignerRequestEmail(input: {
   expectedTokenHash?: string
 }) {
   const supabase = createServiceSupabaseClient()
-  const { data: org } = await supabase
-    .from("orgs")
-    .select("name, logo_url, slug")
-    .eq("id", input.orgId)
-    .maybeSingle()
+  const [{ data: org }, surface] = await Promise.all([
+    supabase.from("orgs").select("name, logo_url, slug").eq("id", input.orgId).maybeSingle(),
+    loadWorkspaceSurface(input.orgId),
+  ])
   let waiverContext: { projectName: string; invoiceNumber: string; amount: string; through: string; type: string; afterSignature: boolean } | null = null
   if (input.documentId) {
     const { data: document } = await supabase.from("documents").select("metadata").eq("org_id", input.orgId).eq("id", input.documentId).maybeSingle()
@@ -85,6 +86,7 @@ export async function sendSignerRequestEmail(input: {
       signingLink: input.signingUrl,
       recipientName: input.recipientName,
       projectName: waiverContext?.projectName,
+      projectLabel: profileTerminology(surface.profile).project,
       details: waiverContext ? [{ label: "Invoice", value: waiverContext.invoiceNumber }, { label: "Amount covered", value: waiverContext.amount }, { label: "Work through", value: waiverContext.through }].filter(row => row.value) : undefined,
       orgName: org?.name ?? null,
       orgLogoUrl: org?.logo_url ?? null,

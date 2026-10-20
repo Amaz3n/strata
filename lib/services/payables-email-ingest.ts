@@ -7,6 +7,9 @@ import { NotificationService } from "@/lib/services/notifications"
 import { extractPayableInvoiceFromFile } from "@/lib/services/document-extraction"
 import { suggestCodingForService } from "@/lib/services/books/coding-rules"
 import { computeCommitmentOverBudget } from "@/lib/services/vendor-bills"
+import { matchBillToJob } from "@/lib/financials/bill-job-match"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { isTradeSurface } from "@/lib/workspace-surface"
 import { emailIngestBillCoreSchema } from "@/lib/validation/vendor-bills"
 
 /**
@@ -117,6 +120,12 @@ function isInvoiceAttachment(attachment: ResendAttachment) {
 
 function bareAddress(value: string) {
   return (value.match(/<([^>]+)>/)?.[1] ?? value).trim().toLowerCase()
+}
+
+function jobAddress(location: unknown) {
+  if (typeof location !== "object" || location === null) return null
+  const address = "address" in location ? location.address : "formatted" in location ? location.formatted : null
+  return typeof address === "string" ? address : null
 }
 
 function normalizeName(value?: string | null) {
@@ -371,6 +380,34 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
     routingNote = "Sender did not match an Arc vendor."
   }
 
+  // A supply house has no commitment to route by; the job the bill names can.
+  let routedBy: "job_reference" | null = null
+  if (!projectId && isTradeSurface(await loadWorkspaceSurface(orgId))) {
+    const { data: jobRows } = await supabase
+      .from("projects")
+      .select("id, name, location")
+      .eq("org_id", orgId)
+      .eq("phase", "delivery")
+      .not("status", "in", "(completed,cancelled)")
+      .limit(500)
+    const match = matchBillToJob({
+      texts: [subject, extraction?.description, ...(extraction?.lines ?? []).map((line) => line.description)],
+      ignoring: [email.from, extraction?.vendorName, companyName, emailDomain(fromAddress).split(".")[0]],
+      jobs: (jobRows ?? []).map((row) => ({
+        id: row.id as string,
+        name: row.name as string,
+        address: jobAddress(row.location),
+      })),
+    })
+    if (match.jobId) {
+      projectId = match.jobId
+      routedBy = "job_reference"
+      routingNote = match.reason
+    } else if (jobRows?.length) {
+      routingNote = `${routingNote ?? ""} ${match.reason}`.trim()
+    }
+  }
+
   // ── Store the invoice document ─────────────────────────────────────────
   const timestamp = Date.now()
   const safeName = (attachment.filename || "invoice.pdf").replace(/[^a-zA-Z0-9.-]/g, "_")
@@ -469,6 +506,7 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
         description: extraction?.description ?? subject,
         extraction_confidence: extraction?.confidence ?? null,
         routing_note: routingNote,
+        ...(routedBy ? { routed_by: routedBy } : {}),
         over_budget: overBudget,
         creation_state: extractionIncomplete ? "draft" : "ready",
         ...(extractionIncomplete ? { needs_review_reason: "extraction_incomplete" } : {}),

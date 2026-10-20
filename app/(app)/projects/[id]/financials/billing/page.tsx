@@ -13,7 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model";
 import { resolveBillingProfile } from "@/lib/financials/billing-profile";
 import { getProjectPosture } from "@/lib/product-tier";
-import { getReceivablesPosturePolicy } from "@/lib/receivables/policy";
+import { resolveReceivablesPolicy } from "@/lib/receivables/policy";
 import {
   getProjectBillingFacts,
   getProjectBillingSummary,
@@ -25,6 +25,7 @@ import { listInvoicePage } from "@/lib/services/invoices";
 import { getOrgBilling } from "@/lib/services/orgs";
 import { listProjectOwnerBillingPackageSummaries } from "@/lib/services/owner-billing-packages";
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup";
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface";
 import type { Address } from "@/lib/types";
 
 interface PageProps {
@@ -81,6 +82,7 @@ async function BillingData({
     rowsResult,
     accountingResult,
     orgBillingResult,
+    surface,
   ] = await Promise.all([
     getProjectAction(id),
     getProjectContractAction(id),
@@ -107,13 +109,16 @@ async function BillingData({
       unstable_rethrow(error);
       return null;
     }),
+    loadWorkspaceSurface(context.orgId),
   ]);
   if (!project) notFound();
 
   const featureConfig = getProjectFinancialFeatureConfig(project, contract);
-  const policy = getReceivablesPosturePolicy(
-    getProjectPosture(project.property_type, context.productTier),
-  );
+  const policy = resolveReceivablesPolicy({
+    posture: getProjectPosture(project.property_type, context.productTier),
+    profile: surface.profile,
+    settingsMetadata: project.financial_settings?.metadata,
+  });
   const profile = resolveBillingProfile({ featureConfig, policy, facts });
 
   const [summaryResult, upNextResult, packagesResult] =
@@ -164,6 +169,7 @@ async function BillingData({
           collectedCents: 0,
           creditedCents: 0,
           retainageHeldCents: 0,
+          retainageRelease: { date: null, basis: null },
         };
   const upNext =
     upNextResult.status === "fulfilled" ? upNextResult.value : null;

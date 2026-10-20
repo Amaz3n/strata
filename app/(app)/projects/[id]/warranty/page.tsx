@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { ProjectWarrantyAccounting } from "@/components/books/project-accounting-tools"
 import { Suspense } from "react"
@@ -37,6 +38,7 @@ export default function ProjectWarrantyPage({ params }: ProjectWarrantyPageProps
 async function ProjectWarrantyPageRoute({ params }: ProjectWarrantyPageProps) {
   await connection()
   const { id } = await params
+  await guardProjectTab(id, "warranty")
 
   return <ProjectWarrantyData id={id} />
 }

@@ -23,6 +23,8 @@ export type BillingPrimaryActionKind = "new_invoice" | "new_pay_application"
 
 export interface BillingProfile {
   posture: ProjectPosture
+  /** The resolved receivables policy; the composer and editor read it, never the posture. */
+  policy: ReceivablesPosturePolicy
   billingModel: ProjectBillingModel
   basis: OwnerBillingBasis
   customerLabel: string
@@ -99,6 +101,7 @@ export function resolveBillingProfile(input: {
 
   return {
     posture: policy.posture,
+    policy,
     billingModel: featureConfig.billingModel,
     basis,
     customerLabel: policy.customerLabel,
@@ -124,6 +127,7 @@ export function resolveBillingProfile(input: {
 export function resolveOrgBillingProfile(policy: ReceivablesPosturePolicy): BillingProfile {
   return {
     posture: policy.posture,
+    policy,
     billingModel: "fixed_price",
     basis: "draws",
     customerLabel: policy.customerLabel,

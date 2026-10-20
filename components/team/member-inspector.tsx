@@ -20,11 +20,13 @@ import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { unwrapAction } from "@/lib/action-result"
 import {
-  updateMemberLaborSettingsAction,
+  listLaborRatesAction,
+  saveLaborRateAction,
   updateMemberProfileAction,
   updateMemberRoleAction,
 } from "@/app/(app)/team/actions"
 import type { DivisionDTO } from "@/lib/services/divisions"
+import type { LaborRate } from "@/lib/services/labor-rates"
 import type { OrgRole, OrgRoleOption, PermissionOption, TeamMember } from "@/lib/types"
 import {
   activityDescriptor,
@@ -66,6 +68,17 @@ interface MemberInspectorProps {
 function dollars(cents?: number | null) {
   if (!cents) return ""
   return (cents / 100).toFixed(2)
+}
+
+function localToday() {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, "0")
+  const day = String(now.getDate()).padStart(2, "0")
+  return `${now.getFullYear()}-${month}-${day}`
+}
+
+function formatRateDate(isoDate: string) {
+  return new Date(`${isoDate}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
 }
 
 function toCents(value: string): number {
@@ -112,6 +125,20 @@ export function MemberInspector({
   const [bill, setBill] = useState(dollars(member.labor_bill_rate_cents))
   const [burden, setBurden] = useState(String(member.labor_burden_multiplier ?? 1))
   const [billable, setBillable] = useState(member.labor_is_billable_default ?? true)
+  const [effectiveOn, setEffectiveOn] = useState(localToday)
+  const [history, setHistory] = useState<{ rates: LaborRate[]; total: number; cap: number } | null>(null)
+  const [historyVersion, setHistoryVersion] = useState(0)
+
+  useEffect(() => {
+    if (tab !== "rates" || !canManageMembers) return
+    let cancelled = false
+    void listLaborRatesAction(member.id).then((result) => {
+      if (!cancelled) setHistory(result.success ? result.data : null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [tab, canManageMembers, member.id, historyVersion])
 
   const roleIsAdmin = isAdminRole(role, rolePermissions)
   const scopeApplies = !roleIsAdmin
@@ -231,24 +258,34 @@ export function MemberInspector({
             permission_overrides: saveOverrides,
           }
         }
+        let rateNote: string | null = null
         if (canManageMembers && laborDirty) {
-          unwrapAction(
-            await updateMemberLaborSettingsAction(member.id, {
+          const saved = unwrapAction(
+            await saveLaborRateAction(member.id, {
+              effective_on: effectiveOn,
               labor_cost_rate_cents: toCents(cost),
               labor_bill_rate_cents: toCents(bill),
               labor_burden_multiplier: Math.max(1, Number(burden) || 1),
               labor_is_billable_default: billable,
             }),
           )
+          // The membership holds the rate in force today; a future-dated raise leaves it unchanged.
           next = {
             ...next,
-            labor_cost_rate_cents: toCents(cost),
-            labor_bill_rate_cents: toCents(bill),
-            labor_burden_multiplier: Math.max(1, Number(burden) || 1),
-            labor_is_billable_default: billable,
+            labor_cost_rate_cents: saved.membership.labor_cost_rate_cents,
+            labor_bill_rate_cents: saved.membership.labor_bill_rate_cents,
+            labor_burden_multiplier: saved.membership.labor_burden_multiplier,
+            labor_is_billable_default: saved.membership.labor_is_billable_default,
           }
+          setCost(dollars(next.labor_cost_rate_cents))
+          setBill(dollars(next.labor_bill_rate_cents))
+          setBurden(String(next.labor_burden_multiplier ?? 1))
+          setBillable(next.labor_is_billable_default ?? true)
+          if (effectiveOn > localToday()) rateNote = `New rate starts ${formatRateDate(effectiveOn)}`
+          setEffectiveOn(localToday())
+          setHistoryVersion((version) => version + 1)
         }
-        toast.success(`${displayName(next).label} updated`)
+        toast.success(`${displayName(next).label} updated`, rateNote ? { description: rateNote } : undefined)
         onSaved(next)
       } catch (error) {
         toast.error("Couldn't save changes", { description: (error as Error).message })
@@ -502,6 +539,23 @@ export function MemberInspector({
                   </label>
                 </section>
               </div>
+              {canManageMembers && laborDirty ? (
+                <section className="space-y-2">
+                  <Label htmlFor="labor-starts-on" className="microlabel">
+                    Starts on
+                  </Label>
+                  <Input
+                    id="labor-starts-on"
+                    type="date"
+                    value={effectiveOn}
+                    onChange={(event) => setEffectiveOn(event.target.value)}
+                    className="w-44 tabular-nums"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Time worked on or after this date is priced at the new rate.
+                  </p>
+                </section>
+              ) : null}
               {toCents(cost) > 0 ? (
                 (() => {
                   const burdenMult = Math.max(1, Number(burden) || 1)
@@ -515,6 +569,36 @@ export function MemberInspector({
                     </p>
                   )
                 })()
+              ) : null}
+              {canManageMembers && history && history.rates.length > 0 ? (
+                <section className="space-y-2">
+                  <p className="microlabel">Rate history</p>
+                  <table className="w-full text-xs tabular-nums">
+                    <thead>
+                      <tr className="border-b border-border text-muted-foreground">
+                        <th className="py-1.5 text-left font-normal">Effective</th>
+                        <th className="py-1.5 text-right font-normal">Pay</th>
+                        <th className="py-1.5 text-right font-normal">Burden</th>
+                        <th className="py-1.5 text-right font-normal">Bill</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {history.rates.map((rate) => (
+                        <tr key={rate.id} className="border-b border-border/60">
+                          <td className="py-1.5 text-left">{formatRateDate(rate.effective_on)}</td>
+                          <td className="py-1.5 text-right">${(rate.cost_rate_cents / 100).toFixed(2)}</td>
+                          <td className="py-1.5 text-right">{rate.burden_multiplier.toFixed(2)}</td>
+                          <td className="py-1.5 text-right">${(rate.bill_rate_cents / 100).toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {history.total > history.cap ? (
+                    <p className="text-xs text-muted-foreground">
+                      Showing the latest {history.cap} of {history.total} rates.
+                    </p>
+                  ) : null}
+                </section>
               ) : null}
               {!canManageMembers ? <p className="microlabel">Rates are managed by an administrator.</p> : null}
             </div>

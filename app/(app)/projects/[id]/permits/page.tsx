@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 
@@ -21,5 +22,6 @@ export default function ProjectPermitsPage(props: PermitsPageProps) {
 async function ProjectPermitsData({ params }: PermitsPageProps) {
   await connection()
   const { id } = await params
+  await guardProjectTab(id, "permits")
   return <PermitsWorkbench data={await getProjectPermits(id)} />
 }

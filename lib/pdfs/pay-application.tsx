@@ -1,4 +1,5 @@
 import { Document, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer"
+import { payApplicationLabels } from "@/lib/financials/pay-application-labels"
 
 /**
  * AIA G702/G703-style payment application rendered from the project's draw
@@ -22,6 +23,9 @@ export type PayApplicationPdfData = {
   projectName: string
   propertyDescription?: string | null
   ownerName: string
+  /** Who the application is addressed to ("Owner" for a builder) and what the work is called ("Project"); absent keeps the builder wording. */
+  customerLabel?: string
+  projectLabel?: string
   contractorName: string
   contractDateIso?: string | null
   originalContractCents: number
@@ -70,6 +74,7 @@ const styles = StyleSheet.create({
 })
 
 function G702Page({ data, totals }: { data: PayApplicationPdfData; totals: Totals }) {
+  const labels = payApplicationLabels(data)
   return (
     <Page size="LETTER" style={styles.page}>
       <Text style={styles.title}>Application and Certificate for Payment</Text>
@@ -77,11 +82,11 @@ function G702Page({ data, totals }: { data: PayApplicationPdfData; totals: Total
 
       <View style={styles.headerGrid}>
         <View style={styles.headerCol}>
-          <Text style={styles.headerLabel}>To (Owner)</Text>
+          <Text style={styles.headerLabel}>{labels.to}</Text>
           <Text style={styles.headerValue}>{data.ownerName}</Text>
           <Text style={styles.headerLabel}>From (Contractor)</Text>
           <Text style={styles.headerValue}>{data.contractorName}</Text>
-          <Text style={styles.headerLabel}>Project</Text>
+          <Text style={styles.headerLabel}>{labels.project}</Text>
           <Text style={styles.headerValue}>{data.projectName}</Text>
           {data.propertyDescription ? <Text style={{ color: "#555" }}>{data.propertyDescription}</Text> : null}
         </View>
@@ -151,7 +156,7 @@ function G702Page({ data, totals }: { data: PayApplicationPdfData; totals: Total
         The undersigned Contractor certifies that to the best of the Contractor&apos;s knowledge, information and belief the
         Work covered by this Application for Payment has been completed in accordance with the Contract Documents, that all
         amounts have been paid by the Contractor for Work for which previous Certificates for Payment were issued and
-        payments received from the Owner, and that current payment shown herein is now due.
+        payments received from the {labels.customer}, and that current payment shown herein is now due.
       </Text>
 
       <View style={styles.signatureRow}>
@@ -161,13 +166,13 @@ function G702Page({ data, totals }: { data: PayApplicationPdfData; totals: Total
         </View>
         <View style={styles.signatureLine}>
           <Text> </Text>
-          <Text style={{ color: "#555" }}>Owner / lender approval — signature / date</Text>
+          <Text style={{ color: "#555" }}>{labels.customer} / lender approval — signature / date</Text>
         </View>
       </View>
 
       <Text style={styles.small}>
         Continuation sheet (schedule of values) attached. This document is an AIA G702/G703-equivalent summary generated
-        from the project draw schedule; it is not a licensed AIA form.
+        from the {labels.project.toLowerCase()} draw schedule; it is not a licensed AIA form.
       </Text>
     </Page>
   )

@@ -11,16 +11,15 @@ import {
   removeMember,
   resendInvite,
   suspendMember,
-  updateMemberLaborSettings,
   updateMemberProfile,
   updateMemberRole,
 } from "@/lib/services/team"
 import {
   inviteMemberSchema,
-  updateMemberLaborSettingsSchema,
   updateMemberProfileSchema,
   updateMemberRoleSchema,
 } from "@/lib/validation/team"
+import { listLaborRates, saveLaborRate } from "@/lib/services/labor-rates"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -78,14 +77,17 @@ export async function updateMemberProfileAction(userId: string, input: unknown) 
   })
 }
 
-export async function updateMemberLaborSettingsAction(membershipId: string, input: unknown) {
+export async function saveLaborRateAction(membershipId: string, input: unknown) {
   return run(async () => {
-    const parsed = updateMemberLaborSettingsSchema.parse(input)
-    const member = await updateMemberLaborSettings({ membershipId, input: parsed })
+    const result = await saveLaborRate(membershipId, input)
     revalidatePath("/team")
     revalidatePath("/settings")
-    return member
+    return result
   })
+}
+
+export async function listLaborRatesAction(membershipId: string) {
+  return run(() => listLaborRates(membershipId))
 }
 
 export async function suspendMemberAction(membershipId: string) {

@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { PayrollCorrectionWorkflowLink } from "@/components/time/payroll-correction-workflow-link"
 import { connection } from "next/server"
 import { notFound, redirect } from "next/navigation"
@@ -30,6 +31,7 @@ export default function FinancialsCostInboxPage({ params }: PageProps) {
 async function FinancialsCostInboxPageRoute({ params }: PageProps) {
   await connection()
   const { id } = await params
+  await guardProjectTab(id, "cost_inbox")
 
   return <CostInboxContent id={id} />
 }

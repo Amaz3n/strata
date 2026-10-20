@@ -58,6 +58,14 @@ const IMPLEMENTED = {
   "CANCEL-01": "./scenarios/cancel-01.cjs",
   "DELAY-01": "./scenarios/delay-01.cjs",
   "WARR-02": "./scenarios/warr-02.cjs",
+  "TRADE-SETUP-01": "./scenarios/trade-setup-01.cjs",
+  "TRADE-IOS-01": "./scenarios/trade-ios-01.cjs",
+  "TRADE-BILL-01": "./scenarios/trade-bill-01.cjs",
+  "TRADE-TM-01": "./scenarios/trade-tm-01.cjs",
+  "TRADE-TIME-01": "./scenarios/trade-time-01.cjs",
+  "TRADE-QUOTE-01": "./scenarios/trade-quote-01.cjs",
+  "TRADE-EXP-01": "./scenarios/trade-exp-01.cjs",
+  "TRADE-NET-01": "./scenarios/trade-net-01.cjs",
 }
 
 /** Built, but run only against real storage (`--storage-env`); otherwise reported blocked. */
@@ -83,6 +91,23 @@ const NOT_IMPLEMENTED = {
 const PRODUCTION = { "LOT-01": { checklist: "EP14-01" }, "RACE-02": { checklist: "EP14-01" }, "SEC-01": { checklist: "EP02-04" }, "PROD-01": { checklist: "EP03-04" }, "LAND-01": { checklist: "EP04-01" }, "LEAD-01": { checklist: "EP05-01" }, "SALE-01": { checklist: "EP05-03" }, "SEL-01": { checklist: "EP06-01" }, "PERMIT-01": { checklist: "EP06-06" }, "FLOW-01": { checklist: "EP07-01" }, "CUT-01": { checklist: "EP07-18" }, "RELEASE-01": { checklist: "EP07-04" }, "TRADE-01": { checklist: "EP07-06" }, "BID-01": { checklist: "EP08-03" }, "PO-01": { checklist: "EP08-07" }, "VPO-01": { checklist: "EP08-09" }, "SUPPLY-01": { checklist: "EP08-08" }, "FIELD-01": { checklist: "EP09-04" }, "MONEY-01": { checklist: "EP10-02" }, "WARR-01": { checklist: "EP11-01" }, "CUTOVER-01": { checklist: "EP12-03" }, "OPS-01": { checklist: "EP13-03" }, "SCALE-01": { checklist: "EP13-02" }, "RACE-03": { checklist: "EP13-07" }, "RESTORE-02": { checklist: "EP13-08" }, "ROLE-01": { checklist: "EP14-06" }, "SPEC-01": { checklist: "EP14-02" }, "CANCEL-01": { checklist: "EP14-03" }, "DELAY-01": { checklist: "EP14-04" }, "WARR-02": { checklist: "EP14-05" } }
 
 /**
+ * Arc Trade scenarios (TR07-01), each owned by a docs/plans/arc-trade/completion-checklist.json
+ * item. They run on the same stack and runner as the production scenarios and are treated the same
+ * way by an all-scenarios Books run: one that is unbuilt or has an open step is reported, never a failure
+ * of the Books release; a failed one fails the run.
+ */
+const ARC_TRADE = {
+  "TRADE-SETUP-01": { checklist: "TR07-01" },
+  "TRADE-BILL-01": { checklist: "TR02-03" },
+  "TRADE-TM-01": { checklist: "TR02-05" },
+  "TRADE-TIME-01": { checklist: "TR03-02" },
+  "TRADE-QUOTE-01": { checklist: "TR04-01" },
+  "TRADE-EXP-01": { checklist: "TR05-01" },
+  "TRADE-NET-01": { checklist: "TR06-01" },
+  "TRADE-IOS-01": { checklist: "TR01-04" },
+}
+
+/**
  * Built, but too long for the all-scenarios run: they seed a full-size builder, hold a
  * load for minutes, or dump and restore the whole database. `--scenario ID` runs one and
  * `--include-long-running` runs them inside `--all`. Otherwise `--all` reads each one's
@@ -106,4 +131,4 @@ const OPEN_SUBCASES = {
   },
 }
 
-module.exports = { IMPLEMENTED, NOT_IMPLEMENTED, NEEDS_STORAGE, LONG_RUNNING, OPEN_SUBCASES, PRODUCTION }
+module.exports = { IMPLEMENTED, NOT_IMPLEMENTED, NEEDS_STORAGE, LONG_RUNNING, OPEN_SUBCASES, PRODUCTION, ARC_TRADE }

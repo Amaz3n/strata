@@ -1,4 +1,5 @@
 import { Document, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer"
+import { payApplicationLabels } from "@/lib/financials/pay-application-labels"
 
 /**
  * AIA-style payment application for SOV progress billing: page 1 is the
@@ -27,6 +28,10 @@ export type SovPayAppPdfData = {
   projectName: string
   propertyDescription?: string | null
   ownerName: string
+  /** Who the application is addressed to: "Owner" for a builder, the customer for a trade. Absent on older snapshots. */
+  customerLabel?: string
+  /** What the work is called: "Project" for a builder, "Job" for a trade. Absent on older snapshots. */
+  projectLabel?: string
   contractorName: string
   contractDateIso?: string | null
   invoiceNumber?: string | null
@@ -106,6 +111,8 @@ const styles = StyleSheet.create({
 })
 
 function ApplicationPage({ data }: { data: SovPayAppPdfData }) {
+  const labels = payApplicationLabels(data)
+  const customer = labels.customer
   return (
     <Page size="LETTER" style={styles.page}>
       <Text style={styles.title}>Application for Payment</Text>
@@ -116,11 +123,11 @@ function ApplicationPage({ data }: { data: SovPayAppPdfData }) {
 
       <View style={styles.headerGrid}>
         <View style={styles.headerCol}>
-          <Text style={styles.headerLabel}>To (Owner)</Text>
+          <Text style={styles.headerLabel}>{labels.to}</Text>
           <Text style={styles.headerValue}>{data.ownerName}</Text>
           <Text style={styles.headerLabel}>From (Contractor)</Text>
           <Text style={styles.headerValue}>{data.contractorName}</Text>
-          <Text style={styles.headerLabel}>Project</Text>
+          <Text style={styles.headerLabel}>{labels.project}</Text>
           <Text style={styles.headerValue}>{data.projectName}</Text>
           {data.propertyDescription ? <Text style={{ color: "#555" }}>{data.propertyDescription}</Text> : null}
         </View>
@@ -221,7 +228,7 @@ function ApplicationPage({ data }: { data: SovPayAppPdfData }) {
         The undersigned Contractor certifies that to the best of the Contractor&apos;s knowledge, information and belief the
         Work covered by this Application for Payment has been completed in accordance with the Contract Documents, that all
         amounts have been paid by the Contractor for Work for which previous Certificates for Payment were issued and
-        payments received from the Owner, and that current payment shown herein is now due.
+        payments received from the {customer}, and that current payment shown herein is now due.
       </Text>
       <View style={styles.signatureRow}>
         <View style={styles.signatureLine}>
@@ -240,11 +247,11 @@ function ApplicationPage({ data }: { data: SovPayAppPdfData }) {
       </View>
 
       <Text style={[styles.cert, { marginTop: 18, fontFamily: "Helvetica-Bold", fontSize: 9.5, color: "#111" }]}>
-        Owner&apos;s / Architect&apos;s Certificate for Payment
+        {labels.certificateTitle}
       </Text>
       <Text style={styles.cert}>
         In accordance with the Contract Documents, based on on-site observations and the data comprising this application,
-        the undersigned certifies to the Owner that to the best of their knowledge, information and belief the Work has
+        the undersigned certifies to the {customer} that to the best of their knowledge, information and belief the Work has
         progressed as indicated, the quality of the Work is in accordance with the Contract Documents, and the Contractor
         is entitled to payment of the AMOUNT CERTIFIED.
       </Text>
@@ -278,7 +285,7 @@ function ApplicationPage({ data }: { data: SovPayAppPdfData }) {
           ) : (
             <Text> </Text>
           )}
-          <Text style={{ color: "#555" }}>Owner / Architect — signature / date</Text>
+          <Text style={{ color: "#555" }}>{labels.signatureLine}</Text>
         </View>
       </View>
 

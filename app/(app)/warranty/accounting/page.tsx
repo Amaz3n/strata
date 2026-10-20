@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
@@ -8,6 +9,7 @@ import { getBooksUiAccess } from "@/lib/services/books/ui-access";
 
 async function WarrantyAccountingContent() {
   await connection();
+  await guardWorkspaceDesk("warranty");
   if (!(await getBooksUiAccess()).adjust) notFound();
   return (
     <PageLayout

@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
@@ -24,6 +25,7 @@ interface BidPackageDetailPageProps {
 async function BidPackageDetailPageContent({ params }: BidPackageDetailPageProps) {
   await connection()
   const { id, packageId } = await params
+  await guardProjectTab(id, "bids")
 
   const [project, bidPackage] = await Promise.all([getProjectAction(id), getBidPackageAction(packageId)])
   if (!project || !bidPackage) notFound()

@@ -1,6 +1,8 @@
 import sharp from "sharp"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { resolveBusinessProfile } from "@/lib/business-profile"
+import { profileTerminology } from "@/lib/terminology"
 import type { InvoicePdfData, InvoicePdfLine } from "@/lib/pdfs/invoice"
 import { invoicePaymentMethods, paymentMethodLabels } from "@/components/invoices/arc-invoice-document"
 
@@ -207,7 +209,7 @@ export async function buildInvoicePdfData({
           .join("\n"))
 
   const billToLines = [
-    invoice.customer_name ?? metadata.customer_name ?? "Client",
+    invoice.customer_name ?? metadata.customer_name ?? profileTerminology(resolveBusinessProfile(settings)).owner,
     typeof metadata.customer_email === "string" ? metadata.customer_email : (invoice.sent_to_emails?.[0] ?? ""),
     customerAddress ?? "",
   ]

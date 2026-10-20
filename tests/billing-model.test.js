@@ -28,3 +28,17 @@ test("open-book cost detail is hidden only when open_book is explicitly false", 
     [false, true, true, true],
   )
 })
+
+test("retainage is expected back at substantial completion, or the job end when the contract waits for final completion", () => {
+  const { expectedRetainageRelease, earliestRetainageRelease } = require("@/lib/financials/retainage-release")
+  const dates = { substantialCompletionDate: "2026-11-15", projectEndDate: "2026-12-31" }
+  assert.deepEqual(expectedRetainageRelease(dates), { date: "2026-11-15", basis: "substantial_completion" })
+  assert.deepEqual(expectedRetainageRelease({ ...dates, releaseTrigger: "final_completion" }), { date: "2026-12-31", basis: "project_end" })
+  assert.deepEqual(expectedRetainageRelease({ projectEndDate: "2026-12-31T00:00:00Z" }), { date: "2026-12-31", basis: "project_end" })
+  assert.deepEqual(expectedRetainageRelease({}), { date: null, basis: null })
+
+  const soon = expectedRetainageRelease({ projectEndDate: "2026-11-01" })
+  const later = expectedRetainageRelease({ projectEndDate: "2027-02-01" })
+  assert.deepEqual(earliestRetainageRelease([later, expectedRetainageRelease({}), soon]), soon)
+  assert.deepEqual(earliestRetainageRelease([expectedRetainageRelease({})]), { date: null, basis: null })
+})

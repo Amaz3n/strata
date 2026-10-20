@@ -1,7 +1,7 @@
 require('../scripts/register-ts-node-test')
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { bankStatus, codingForTransactionTotal, codingProblem, receiptCandidates, similarBankTransactions, bankCodingSchema } = require('../lib/services/books/banking-model')
+const { bankStatus, capturedExpenseMatch, matchWindowBounds, codingForTransactionTotal, codingProblem, receiptCandidates, similarBankTransactions, bankCodingSchema } = require('../lib/services/books/banking-model')
 const { completeBankAiBatch, validatedBankAiIds, bankAiRetryState } = require('../lib/services/books/bank-ai-model')
 const { bankingQuerySchema } = require('../lib/services/books/banking-workspace')
 const { BankFeedProviderError } = require('../lib/integrations/banking/provider')
@@ -150,4 +150,49 @@ test('bank feed health separates healthy, expired, disconnected, and repaired st
  assert.deepEqual(bankFeedFailureState(new BankFeedProviderError('Institution unavailable','INSTITUTION_ERROR','INSTITUTION_DOWN')),{status:'error',lastError:'Institution unavailable'})
  assert.deepEqual(bankFeedWebhookFailureState({error:{error_type:'ITEM_ERROR',error_code:'ITEM_LOGIN_REQUIRED',error_message:'Credentials expired'}}),{status:'reauth_required',lastError:'Credentials expired'})
  assert.deepEqual(bankFeedSuccessState(),{status:'active',lastError:null})
+})
+
+test('a card charge is the approved expense that already recorded its cost', () => {
+  const charge = { date: '2026-10-10', amountCents: 8450, direction: 'outflow', counterparty: 'THE HOME DEPOT #4127' }
+  const expense = (vendorName) => ({ expenseId: uuid(50), vendorName, homeLabel: 'Smith job', hasReceipt: true, receiptFileId: uuid(51) })
+  const candidate = (n, overrides = {}) => ({ id: uuid(n), availableCents: 8450, entryDate: '2026-10-09', expense: expense('Home Depot'), ...overrides })
+
+  assert.equal(capturedExpenseMatch(charge, [candidate(1)]).id, uuid(1))
+  assert.equal(capturedExpenseMatch(charge, [candidate(1, { availableCents: 8400 })]), null, 'amount must equal')
+  assert.equal(capturedExpenseMatch(charge, [candidate(1, { entryDate: '2026-09-20' })]), null, 'outside the window')
+  assert.equal(capturedExpenseMatch(charge, [candidate(1, { expense: null })]), null, 'a bare ledger line is not an expense')
+  assert.equal(capturedExpenseMatch({ ...charge, direction: 'inflow' }, [candidate(1)]), null, 'money arriving is never an expense')
+
+  assert.equal(capturedExpenseMatch(charge, [candidate(1), candidate(2)]), null, 'two equally good receipts are ambiguous')
+  assert.equal(
+    capturedExpenseMatch(charge, [candidate(1, { expense: expense('Lowes') }), candidate(2)]).id,
+    uuid(2),
+    'vendor agreement breaks the tie',
+  )
+  assert.equal(
+    capturedExpenseMatch(charge, [candidate(1, { expense: expense('Lowes') }), candidate(2, { expense: expense('Menards') })]),
+    null,
+    'no vendor agrees and two remain',
+  )
+})
+
+test('a charge cannot be posted or categorized again when it is an approved captured expense', async () => {
+  const { createServiceHarness, ORG } = require('./support/service')
+  const { freshRequire } = require('./support/modules')
+  const { createServiceSupabaseClient } = require('@/lib/supabase/server')
+  const { assertNotCapturedExpense } = freshRequire('lib/services/books/captured-expenses.ts')
+  assert.deepEqual(matchWindowBounds('2026-10-10'), { from: '2026-09-30', to: '2026-10-20' })
+
+  const tables = (entryDate, vendor = 'Home Depot') => ({
+    bank_transactions: [{ id: uuid(1), org_id: ORG, direction: 'outflow', amount_cents: 8450, transaction_date: '2026-10-10', merchant_name: 'THE HOME DEPOT #4127', description: 'HOME DEPOT', bank_account: { gl_account_id: uuid(5) } }],
+    journal_lines: [{ id: uuid(2), org_id: ORG, account_id: uuid(5), debit_cents: 0, credit_cents: 8450, description: 'Expense', entry: { entry_date: entryDate, status: 'posted', memo: null, source_type: 'expense', source_id: uuid(3) }, matches: [] }],
+    project_expenses: [{ id: uuid(3), org_id: ORG, vendor_name_text: vendor, vendor_company_id: null, project_id: null, overhead_category: 'fuel_vehicles', receipt_file_id: null }],
+    projects: [], companies: [],
+  })
+  const check = (tablesFor) => {
+    const service = createServiceHarness({ tables: tablesFor, permissions: ['books.write'] })
+    return service.run(() => assertNotCapturedExpense(createServiceSupabaseClient(), ORG, uuid(1)))
+  }
+  await assert.rejects(check(tables('2026-10-09')), /already recorded as the approved expense from Home Depot/)
+  await assert.doesNotReject(check(tables('2026-08-01')), 'a ledger line outside the window is not the charge')
 })

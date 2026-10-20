@@ -148,13 +148,17 @@ export async function loadCostInboxData(projectId: string) {
 
   return {
     timeEntries: (costPlusData.timeEntries ?? [])
-      .filter((entry: any) => ["submitted", "pm_approved"].includes(entry.status))
+      .filter(
+        (entry: any) =>
+          ["submitted", "pm_approved"].includes(entry.status) ||
+          (entry.status === "locked" && !entry.approved_by_client_at && !entry.billable_cost_id),
+      )
       .map((entry: any) => {
         const blockingReasons = getTimeEntryApprovalBlockingReasons(entry, gateSettings)
         return annotateReviewRow({
           row: entry,
           date: entry.work_date,
-          baseState: entry.status === "pm_approved" ? "awaiting-client-approval" : blockingReasons.length > 0 ? "blocked" : "needs-review",
+          baseState: entry.status === "pm_approved" || entry.status === "locked" ? "awaiting-client-approval" : blockingReasons.length > 0 ? "blocked" : "needs-review",
           periods: billingPeriods,
           blockingReasons,
           proofComplete: Array.isArray(entry.attached_file_ids) && entry.attached_file_ids.length > 0,

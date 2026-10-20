@@ -1,6 +1,6 @@
 "use client"
 
-import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
+import { BUILDER_SURFACE, isTradeSurface, surfaceAllowsPath, type WorkspaceSurface } from "@/lib/workspace-surface"
 import { buildTradeNavGroups } from "./trade-nav-items"
 import { buildBooksNavItems } from "./books-nav-items"
 
@@ -77,7 +77,7 @@ interface AppSidebarProps {
   canAccessPlatform?: boolean
   permissions?: string[]
   productTier?: ProductTier
-  businessProfile?: BusinessProfile
+  workspaceSurface?: WorkspaceSurface
   showProductionNavigation?: boolean
   showPurchasingNavigation?: boolean
   showPipelineNavigation?: boolean
@@ -96,17 +96,21 @@ function canAccess(requiredAny: string[] | undefined, permissions: Set<string>) 
   return requiredAny.some((permission) => permissions.has(permission))
 }
 
-function filterGroups(groups: SidebarNavGroup[], permissions: Set<string>): SidebarNavGroup[] {
+function filterGroups(
+  groups: SidebarNavGroup[],
+  permissions: Set<string>,
+  allowsPath: (url: string) => boolean = () => true,
+): SidebarNavGroup[] {
   return groups
     .map((group) => ({
       ...group,
       items: group.items
         .map((item) => {
-          const subs = item.items?.filter((sub) => canAccess(sub.requiredAny, permissions))
+          const subs = item.items?.filter((sub) => canAccess(sub.requiredAny, permissions) && allowsPath(sub.url))
           return { ...item, items: subs }
         })
         .filter((item) => {
-          if (!canAccess(item.requiredAny, permissions)) return false
+          if (!canAccess(item.requiredAny, permissions) || !allowsPath(item.url)) return false
           // Drop a parent if it had sub-items but none survive permission filtering
           if (Array.isArray(item.items) && item.items.length === 0) return false
           return true
@@ -340,7 +344,7 @@ export function AppSidebar({
   canAccessPlatform,
   permissions = [],
   productTier = "residential",
-  businessProfile = BUILDER_PROFILE,
+  workspaceSurface = BUILDER_SURFACE,
   showProductionNavigation = false,
   showPurchasingNavigation = false,
   showPipelineNavigation = true,
@@ -384,24 +388,25 @@ export function AppSidebar({
           reviewBadgeCount: projectReviewBadgeCounts[projectId],
           correspondenceBadgeCount: projectCorrespondenceBadgeCounts[projectId],
           orgTier: productTier,
-          businessProfile,
+          workspaceSurface,
         }),
         permissionSet,
       )
     }
     const groups = filterGroups(
-      businessProfile.kind === "trade" ? [
+      isTradeSurface(workspaceSurface) ? [
         ...buildTradeNavGroups(pathname),
         ...(booksEnabled ? [{ label: "Accounting", items: [{ title: "Books", url: "/books", icon: FileSpreadsheet, items: buildBooksNavItems(pathname), requiredAny: ["books.read"] }] }] : []),
         ...(canAccessPlatform ? [{ label: "Platform", items: [{ title: "Platform", url: "/platform", icon: Shield }] }] : []),
       ] : buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, showSafetyNavigation),
       permissionSet,
+      (url) => surfaceAllowsPath(workspaceSurface, url),
     )
     return groups.map((group) => ({
       ...group,
       items: group.items.filter((item) => item.title !== "Books" || booksEnabled),
     })).filter((group) => group.items.length > 0)
-  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, businessProfile, permissionSet, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, showSafetyNavigation, booksEnabled])
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, workspaceSurface, permissionSet, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, showSafetyNavigation, booksEnabled])
 
   const navMain = navGroups.map((group) => ({
     ...group,
@@ -410,12 +415,13 @@ export function AppSidebar({
       isActive: !item.disabled && (item.isActive || pathname === item.url),
     })),
   }))
-  const visibleSettingsSections = getVisibleSettingsSections(permissions)
+  const visibleSettingsSections = getVisibleSettingsSections(permissions, workspaceSurface)
+  const allProjectsLabel = `All ${terminology(productTier, workspaceSurface.profile).projects.toLowerCase()}`
 
   const orgData = {
     name: "Arc Construction",
     logo: HardHat,
-    plan: businessProfile.kind === "trade" ? "Arc Trade" : "Pro",
+    plan: workspaceSurface.planName,
   }
 
   const headerKey = isSettings ? "settings" : isProject ? "project" : "workspace"
@@ -451,8 +457,8 @@ export function AppSidebar({
               <div className="flex w-full items-stretch border border-sidebar-border/70 group-data-[collapsible=icon]:border-transparent">
                 <OptimisticLink
                   href="/projects"
-                  aria-label={businessProfile.kind === "trade" ? "All jobs" : "All projects"}
-                  title={businessProfile.kind === "trade" ? "All jobs" : "All projects"}
+                  aria-label={allProjectsLabel}
+                  title={allProjectsLabel}
                   className="flex h-10 w-9 shrink-0 items-center justify-center border-r border-sidebar-border/70 text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground group-data-[collapsible=icon]:hidden"
                 >
                   <ArrowLeft className="size-4" />

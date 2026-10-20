@@ -1237,7 +1237,7 @@ export function PayablesDesk({
       ) : null}
 
 
-      <div className="flex gap-4 border-b px-4 py-2 text-sm"><span className="font-medium">Payables</span><a className="text-muted-foreground hover:text-foreground" href={`${basePath}/waivers`}>Waivers</a></div>
+      <div className="flex gap-4 border-b px-4 py-2 text-sm"><span className="font-medium">Payables</span><a className="text-muted-foreground hover:text-foreground" href={`${basePath}/waivers`}>Waivers</a>{basePath === "/payables" ? <a className="text-muted-foreground hover:text-foreground" href="/payables/expenses">Expenses</a> : null}</div>
       {/* Toolbar: what you're looking at, and how to find one row in it. */}
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b px-4 py-3 sm:px-6 lg:px-8">
         <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm">

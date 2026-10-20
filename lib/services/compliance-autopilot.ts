@@ -8,6 +8,7 @@ import {
   sendComplianceAutopilotEmail,
 } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { sweepOwnComplianceExpiry } from "@/lib/services/own-compliance"
 import { expireProjectOwnComplianceDocuments } from "@/lib/services/project-own-compliance"
 import { expirePrequalificationsWithClient } from "@/lib/services/prequalification"
 
@@ -93,6 +94,8 @@ export interface ComplianceAutopilotMetrics {
   failed: number
   digests: number
   prequalificationsExpired: number
+  /** The company's own vault documents inside their 30-day window or past it. */
+  ownDocumentsInWindow: number
 }
 
 function weekKey(date: Date) {
@@ -321,6 +324,16 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
     failed: 0,
     digests: 0,
     prequalificationsExpired: 0,
+    ownDocumentsInWindow: 0,
+  }
+
+  // Before the per-org loop on purpose: a trade company has no vendors to chase,
+  // so its run would otherwise end at "no requirements" before reaching this.
+  try {
+    metrics.ownDocumentsInWindow = await sweepOwnComplianceExpiry(supabase, today)
+  } catch (error) {
+    console.error("Own compliance expiry sweep failed", error)
+    metrics.failed += 1
   }
 
   const { data: orgs, error: orgError } = await supabase

@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { QueuePagination } from "@/components/layout/queue-pagination"
 import Link from "next/link"
@@ -21,6 +22,7 @@ function SafetyDeskLoading() {
 
 async function SafetyDeskData({ searchParams }: { searchParams: Promise<{ incidentsPage?: string; observationsPage?: string; inspectionsPage?: string }> }) {
   await connection()
+  await guardWorkspaceDesk("safety")
   const query = await searchParams
   const data = await getSafetyDesk(undefined, { incidents: Number(query.incidentsPage ?? 1), observations: Number(query.observationsPage ?? 1), inspections: Number(query.inspectionsPage ?? 1) })
   const params = new URLSearchParams()

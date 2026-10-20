@@ -59,7 +59,8 @@ import { getComplianceRulesWithClient } from "@/lib/services/compliance"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import { readCertification, readSentToOwner } from "@/lib/financials/pay-app-lifecycle"
 import { getProjectPosture, isProductionProjectPosture, normalizeProductTier } from "@/lib/product-tier"
-import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
+import { resolveReceivablesPolicy } from "@/lib/receivables/policy"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
 
 /** Posted: the owner never sees a draft, a return in progress, or a void. */
 const POSTED_PAY_APPLICATION_STATUSES = ["submitted", "invoiced", "approved", "paid"]
@@ -2362,10 +2363,10 @@ export async function loadClientPortalShellContext({
 }): Promise<ClientPortalShellContext> {
   const supabase = createServiceSupabaseClient()
 
-  const [orgResult, projectResult, changeOrderCount, selectionCount, decisionCount, invoiceCount, payApplicationRows] =
+  const [orgResult, projectResult, changeOrderCount, selectionCount, decisionCount, invoiceCount, payApplicationRows, surface] =
     await Promise.all([
       supabase.from("orgs").select("id, name, logo_url, product_tier").eq("id", orgId).single(),
-      supabase.from("projects").select("id, name, address, property_type").eq("id", projectId).single(),
+      supabase.from("projects").select("id, name, address, property_type, project_financial_settings(metadata)").eq("id", projectId).single(),
       supabase
         .from("change_orders")
         .select("id", { count: "exact", head: true })
@@ -2402,14 +2403,16 @@ export async function loadClientPortalShellContext({
         .eq("project_id", projectId)
         .in("status", POSTED_PAY_APPLICATION_STATUSES)
         .limit(200),
+      loadWorkspaceSurface(orgId),
     ])
 
-  const posture = getProjectPosture(
-    projectResult.data?.property_type,
-    normalizeProductTier(orgResult.data?.product_tier),
-  )
-  const certificationRequired =
-    getReceivablesPosturePolicy(posture).approvalMode === "required_review"
+  const posture = getProjectPosture(projectResult.data?.property_type, normalizeProductTier(orgResult.data?.product_tier))
+  const settings = projectResult.data?.project_financial_settings
+  const certificationRequired = resolveReceivablesPolicy({
+    posture,
+    profile: surface.profile,
+    settingsMetadata: (Array.isArray(settings) ? settings[0] : settings)?.metadata,
+  }).certifiesPayApplications
   const payApplications = (payApplicationRows.data ?? []) as Array<{
     status: string
     metadata: Record<string, unknown> | null

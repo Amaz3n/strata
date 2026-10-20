@@ -113,6 +113,11 @@ describe("organization scope", () => {
       listMobileOrganizations({ token: "valid-token", user, serviceSupabase: service.client, isPlatformAdmin: false }),
     )
 
-    assert.deepEqual(orgs, [{ id: ORG, name: "Builder", slug: "builder", logo_url: null, role: "pm" }])
+    assert.deepEqual(orgs, [{
+      id: ORG, name: "Builder", slug: "builder", logo_url: null, role: "pm",
+      business_profile: { kind: "builder", specialty: "Electrical" },
+      brand: "Arc Residential",
+      terms: { project: "Project", projects: "Projects" },
+    }])
   })
 })

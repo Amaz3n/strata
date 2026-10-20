@@ -1,3 +1,4 @@
+import { payApplicationLabels } from "@/lib/financials/pay-application-labels"
 /**
  * HTML rendition of the Application for Payment (`lib/pdfs/pay-application-g702.tsx`).
  *
@@ -15,6 +16,10 @@ export interface PayApplicationDocumentData {
   projectName: string
   propertyDescription?: string | null
   ownerName: string
+  /** Who the application is addressed to: "Owner" for a builder, the customer for a trade. Absent on older snapshots. */
+  customerLabel?: string
+  /** What the work is called: "Project" for a builder, "Job" for a trade. Absent on older snapshots. */
+  projectLabel?: string
   contractorName: string
   contractDateIso?: string | null
   invoiceNumber?: string | null
@@ -89,6 +94,7 @@ export function PayApplicationDocument({
   height: number
 }) {
   const showRetainageSplit = data.retainageOnCompletedWorkCents !== 0 || data.retainageOnStoredMaterialsCents !== 0
+  const labels = payApplicationLabels(data)
 
   return (
     <div
@@ -114,7 +120,7 @@ export function PayApplicationDocument({
       <div className="mt-5 flex gap-8">
         <div className="flex-1">
           <p className="text-[10.5px]" style={{ color: "var(--paper-ink-soft)" }}>
-            To (Owner)
+            {labels.to}
           </p>
           <p className="font-semibold">{data.ownerName}</p>
           <p className="mt-2 text-[10.5px]" style={{ color: "var(--paper-ink-soft)" }}>
@@ -122,7 +128,7 @@ export function PayApplicationDocument({
           </p>
           <p className="font-semibold">{data.contractorName}</p>
           <p className="mt-2 text-[10.5px]" style={{ color: "var(--paper-ink-soft)" }}>
-            Project
+            {labels.project}
           </p>
           <p className="font-semibold">{data.projectName}</p>
           {data.propertyDescription ? <p style={{ color: "var(--paper-ink-soft)" }}>{data.propertyDescription}</p> : null}
@@ -248,7 +254,7 @@ export function PayApplicationDocument({
               <p style={{ color: "var(--paper-ink-faint)" }}>Amount certified: $______________</p>
             )}
             <p className="text-[9.5px]" style={{ color: "var(--paper-ink-soft)" }}>
-              Owner / Architect — signature / date
+              {labels.signatureLine}
             </p>
           </div>
         </div>

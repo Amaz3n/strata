@@ -364,7 +364,7 @@ export async function listBillingDeskProjects(
     .from("projects")
     .select(`
       id, org_id, name, status, phase, property_type, division_id, created_at, updated_at,
-      project_financial_settings(billing_model, fixed_price_billing_basis),
+      project_financial_settings(billing_model, fixed_price_billing_basis, metadata),
       contracts(id, org_id, project_id, status, contract_type, total_cents, currency, fixed_fee_cents, gmp_cents, open_book, requires_client_cost_approval, snapshot, created_at, updated_at)
     `)
     .eq("org_id", resolvedOrgId)
@@ -1087,6 +1087,7 @@ const BILLING_INPUT_KEYS: ReadonlyArray<keyof ProjectInput> = [
   "retainage_schedule",
   "stored_materials_retainage_percent",
   "total_contract_value_cents",
+  "receivables_terms",
 ]
 
 function hasBillingInput(input: Partial<ProjectInput>) {

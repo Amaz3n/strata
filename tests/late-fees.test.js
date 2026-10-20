@@ -82,6 +82,16 @@ test("a fee the database refuses is reported per invoice as a partial failure", 
   assert.deepEqual(applied, [[OTHER_OVERDUE, 750]])
 })
 
+test("an invoice mirrored from a builder's bill is never charged a fee", async () => {
+  const { service, applied } = lateFees()
+  service.db.invoices.find((row) => row.id === OVERDUE).metadata = { connected_receivable: { source_bill_id: id(900), source_org_name: "Acme Builders" } }
+
+  const response = await service.run(() => GET(request()))
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(applied, [[OTHER_OVERDUE, 750]])
+})
+
 test("a request without the cron secret charges nothing", async () => {
   const { service, applied } = lateFees()
   const response = await service.run(() => GET(request("wrong")))

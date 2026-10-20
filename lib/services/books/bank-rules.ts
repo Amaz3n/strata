@@ -11,6 +11,7 @@ import {
   normalizeBankRuleValue,
   type BankRuleCandidate,
 } from "@/lib/services/books/bank-rule-matching"
+import { assertNotCapturedExpense } from "@/lib/services/books/captured-expenses"
 import { ruleRowSchema } from "@/lib/services/books/bank-rules-data"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
@@ -160,6 +161,8 @@ export async function categorizeBankTransaction(input: {
   const cashCode = codeById.get(bankAccount.gl_account_id)
   if (!categoryCode) throw new Error("The chosen account does not exist in this organization's chart")
   if (!cashCode) throw new Error("The bank account's GL account does not exist in this organization's chart")
+
+  await assertNotCapturedExpense(service, context.orgId, transaction.id)
 
   const memo = (input.memo?.trim() || transaction.merchant_name || transaction.description || "Bank transaction").slice(0, 200)
   const { data: entryId, error: postingError } = await service.rpc("categorize_books_bank_transaction_atomic", {

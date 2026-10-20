@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import type { Contract, CostCode, DrawSchedule, Invoice, Retainage, ScheduleItem } from "@/lib/types"
 import type { PrimeSovState } from "@/lib/services/prime-sov"
 import type { BillingManageSurface } from "@/lib/financials/billing-profile"
+import type { ExpectedRetainageRelease } from "@/lib/financials/retainage-release"
 import {
   getProjectScheduleAction,
   listProjectDrawsAction,
@@ -41,6 +42,9 @@ export function BillingManageSheets({
   costCodesEnabled,
   surface,
   progressBilling,
+  customerLabel,
+  ownerLabel,
+  retainageRelease,
   onClose,
   onInvoiceCreated,
   onChanged,
@@ -49,6 +53,9 @@ export function BillingManageSheets({
   contract: Contract | null
   costCodesEnabled: boolean
   progressBilling: boolean
+  customerLabel: string
+  ownerLabel: string
+  retainageRelease: ExpectedRetainageRelease
   surface: BillingManageSurface | null
   onClose: () => void
   onInvoiceCreated: (invoice: Invoice | null) => void
@@ -66,9 +73,9 @@ export function BillingManageSheets({
           {surface === "draws" ? (
             <DrawsSurface projectId={projectId} contract={contract} costCodesEnabled={costCodesEnabled} onInvoiceCreated={onInvoiceCreated} onChanged={onChanged} />
           ) : null}
-          {surface === "sov" ? <SovSurface projectId={projectId} costCodesEnabled={costCodesEnabled} /> : null}
+          {surface === "sov" ? <SovSurface projectId={projectId} costCodesEnabled={costCodesEnabled} ownerLabel={ownerLabel} /> : null}
           {surface === "retainage" ? (
-            <RetainageSurface projectId={projectId} progressBilling={progressBilling} onChanged={onChanged} />
+            <RetainageSurface projectId={projectId} progressBilling={progressBilling} customerLabel={customerLabel} retainageRelease={retainageRelease} onChanged={onChanged} />
           ) : null}
           {surface === "recurring" ? <RecurringInvoices projectId={projectId} onChanged={onChanged} /> : null}
         </div>
@@ -139,7 +146,7 @@ function DrawsSurface({
   )
 }
 
-function SovSurface({ projectId, costCodesEnabled }: { projectId: string; costCodesEnabled: boolean }) {
+function SovSurface({ projectId, costCodesEnabled, ownerLabel }: { projectId: string; costCodesEnabled: boolean; ownerLabel: string }) {
   const [data, setData] = useState<{ sov: PrimeSovState; costCodes: CostCode[] } | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [retry, setRetry] = useState(0)
@@ -160,10 +167,22 @@ function SovSurface({ projectId, costCodesEnabled }: { projectId: string; costCo
   }, [costCodesEnabled, projectId, retry])
   if (loadError) return <SurfaceError message={loadError} onRetry={() => setRetry((value) => value + 1)} />
   if (!data) return <SurfaceSkeleton />
-  return <PrimeSovTab projectId={projectId} sov={data.sov} costCodes={data.costCodes} costCodesEnabled={costCodesEnabled} />
+  return <PrimeSovTab projectId={projectId} sov={data.sov} costCodes={data.costCodes} costCodesEnabled={costCodesEnabled} ownerLabel={ownerLabel} />
 }
 
-function RetainageSurface({ projectId, progressBilling, onChanged }: { projectId: string; progressBilling: boolean; onChanged: () => void }) {
+function RetainageSurface({
+  projectId,
+  progressBilling,
+  customerLabel,
+  retainageRelease,
+  onChanged,
+}: {
+  projectId: string
+  progressBilling: boolean
+  customerLabel: string
+  retainageRelease: ExpectedRetainageRelease
+  onChanged: () => void
+}) {
   const [data, setData] = useState<{ retainage: Retainage[]; sov: PrimeSovState | null } | null>(null)
   const [version, setVersion] = useState(0)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -190,6 +209,8 @@ function RetainageSurface({ projectId, progressBilling, onChanged }: { projectId
       projectId={projectId}
       retainage={data.retainage}
       sov={data.sov}
+      customerLabel={customerLabel}
+      expectedRelease={retainageRelease}
       onChanged={() => {
         setVersion((current) => current + 1)
         onChanged()

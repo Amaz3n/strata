@@ -15,7 +15,7 @@ import {
 } from "@/lib/services/permissions";
 import { createScheduleItem } from "@/lib/services/schedule";
 import { scheduleItemInputSchema } from "@/lib/validation/schedule";
-import { tradeJobSchema, tradeWorkSchema } from "@/lib/trade/workspace";
+import { tradeJobBilling, tradeJobSchema, tradeWorkSchema } from "@/lib/trade/workspace";
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status";
 
 const projectRow = z.object({
@@ -132,8 +132,13 @@ export async function getTradeWorkspace() {
   if (jobsResult.error) throw new Error("Unable to load your jobs.");
   const jobs = z.array(projectRow).parse(jobsResult.data ?? []);
   const jobIds = jobs.map((job) => job.id);
-  const [workResult, invoiceResult, contactsResult, membersResult] =
-    await Promise.all([
+  const [
+    workResult,
+    invoiceResult,
+    contactsResult,
+    membersResult,
+    quoteAttention,
+  ] = await Promise.all([
       canSchedule && jobIds.length
         ? supabase
             .from("schedule_items")
@@ -179,6 +184,12 @@ export async function getTradeWorkspace() {
             .order("user_id")
             .limit(200)
         : { data: [], error: null, count: 0 },
+      // trade-quotes imports createTradeJob from this module.
+      canPipeline
+        ? import("@/lib/services/trade-quotes").then((mod) =>
+            mod.listQuoteAttention(context),
+          )
+        : Promise.resolve({ items: [], truncated: false }),
     ]);
   if ([workResult, invoiceResult, membersResult].some((result) => result.error))
     throw new Error("Unable to load your work. Please try again.");
@@ -203,11 +214,13 @@ export async function getTradeWorkspace() {
     canChanges,
     canSetup,
     canPipeline,
+    quoteAttention,
   };
 }
 export type TradeWorkspace = Awaited<ReturnType<typeof getTradeWorkspace>>;
 
-export async function createTradeJob(input: unknown) {
+/** `origin` links the job to the opportunity whose accepted quote started it. */
+export async function createTradeJob(input: unknown, origin?: { prospectId: string }) {
   const data = tradeJobSchema.parse(input);
   const context = await requireTradeContext();
   await requirePermission("project.manage", context);
@@ -224,17 +237,21 @@ export async function createTradeJob(input: unknown) {
   const project = await createProject({
     context,
     input: {
-      ...data,
+      name: data.name,
+      client_id: data.client_id,
+      prospect_id: origin?.prospectId,
+      address: data.address,
+      description: data.description,
+      property_type: data.property_type,
+      total_contract_value_cents: data.total_contract_value_cents,
+      start_date: data.start_date,
+      end_date: data.end_date,
+      ...tradeJobBilling(data),
       status: "active",
       phase: "delivery",
-      retainage_percent: 0,
       project_type: "new_construction",
       open_book: false,
       requires_client_cost_approval: false,
-      contract_type:
-        data.billing_model === "time_and_materials"
-          ? "time_materials"
-          : "fixed",
     },
   });
   return { id: project.id };

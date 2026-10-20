@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
@@ -19,6 +20,7 @@ const TARGET_WEEKS = 12
 
 async function StartSettingsPageContent() {
   await connection()
+  await guardWorkspaceDesk("settings_starts")
   const context = await requireOrgContext()
   const [definitions, permissions, divisions, access, throughput, superintendents, defaultLimits] = await Promise.all([
     listGateDefinitions(), getCurrentUserPermissions(), listDivisions(), getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId }),

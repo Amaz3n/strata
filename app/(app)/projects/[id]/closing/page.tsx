@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { ProjectInventoryLink } from "@/components/books/project-accounting-tools"
@@ -44,6 +45,7 @@ export default function ProjectClosingPage(props: ClosingPageProps) {
 async function ProjectClosingData({ params }: ClosingPageProps) {
   await connection()
   const { id } = await params
+  await guardProjectTab(id, "closing")
   const context = await requireOrgContext()
   // The milestones section reports its own failure; the closing still opens.
   const [detail, waivers, milestones, canManageSale] = await Promise.all([

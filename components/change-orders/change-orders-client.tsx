@@ -5,6 +5,8 @@ import { useMemo, useState, useTransition } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { isTradeSurface } from "@/lib/workspace-surface"
 
 import { cn } from "@/lib/utils"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -313,6 +315,7 @@ export function ChangeOrdersClient({
   hideProjectFilter,
   initialDraft,
 }: ChangeOrdersClientProps) {
+  const trade = isTradeSurface(usePageTitle().workspaceSurface)
   const router = useRouter()
   const searchParams = useSearchParams()
   const changeOrderId = searchParams.get("changeOrder")
@@ -406,7 +409,7 @@ export function ChangeOrdersClient({
 
   const formProjectId = filterProjectId !== "all" ? filterProjectId : projects[0]?.id ?? ""
   const formProject = formProjectId ? projectLookup[formProjectId] : null
-  const isGmpProject = formProject ? resolveProjectBillingModel(formProject) === "cost_plus_gmp" : false
+  const isGmpProject = !trade && formProject ? resolveProjectBillingModel(formProject) === "cost_plus_gmp" : false
 
   const filtered = useMemo(() => {
     const safeItems = items ?? []
@@ -526,7 +529,7 @@ export function ChangeOrdersClient({
 
   async function handleVoid(changeOrder: ChangeOrder) {
     const confirmed = window.confirm(
-      `Void "${changeOrder.title}"? This reverses its impact on the contract value, GMP, budget, and pending draws. The change order is kept on record as cancelled.`
+      `Void "${changeOrder.title}"? This reverses its impact on the contract value, ${trade ? "" : "GMP, "}budget, and pending draws. The change order is kept on record as cancelled.`
     )
     if (!confirmed) return
 
@@ -632,7 +635,7 @@ export function ChangeOrdersClient({
               tone={summaryStats.pendingCostCents !== 0 ? "warning" : "default"}
             />
             <SummaryMetric
-              label="Proposed to owner"
+              label={trade ? "Proposed to customer" : "Proposed to owner"}
               value={formatSignedMoneyFromCents(summaryStats.proposedCents)}
             />
             <SummaryMetric
@@ -678,7 +681,7 @@ export function ChangeOrdersClient({
                           <Badge variant="secondary" className={`capitalize border text-[11px] ${statusStyles[statusKey]}`}>
                             {statusLabels[statusKey]}
                           </Badge>
-                          {resolveProjectBillingModel(projectLookup[changeOrder.project_id]) === "cost_plus_gmp" ? (
+                          {!trade && resolveProjectBillingModel(projectLookup[changeOrder.project_id]) === "cost_plus_gmp" ? (
                             <Badge variant="outline" className={`text-[10px] px-1 py-0 h-4 font-normal ${gmp.className}`}>
                               {gmp.label}
                             </Badge>
@@ -781,7 +784,7 @@ export function ChangeOrdersClient({
                   const total = formatMoneyFromCents(changeOrder.total_cents ?? changeOrder.totals?.total_cents)
                   const coNumber = formatCoNumber(changeOrder)
                   const schedule = formatScheduleImpact(changeOrder.days_impact)
-                  const isGmp = resolveProjectBillingModel(projectLookup[changeOrder.project_id]) === "cost_plus_gmp"
+                  const isGmp = !trade && resolveProjectBillingModel(projectLookup[changeOrder.project_id]) === "cost_plus_gmp"
                   const gmp = resolveGmpBadge(changeOrder)
                   const approvedNotBilled = changeOrder.status === "approved" && !changeOrder.linked_invoice
                   const costCents = changeOrder.cost_total_cents ?? 0

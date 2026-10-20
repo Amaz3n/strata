@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface";
 import { cacheLife } from "next/cache";
 import { DealPricing } from "@/components/pipeline/deal-pricing";
 import { DealTabSkeleton } from "@/components/pipeline/pipeline-skeletons";
@@ -21,6 +22,7 @@ async function loadPricing(dealId: string) {
 
 async function Pricing({ params, searchParams }: Props) {
   const [{ dealId }, query] = await Promise.all([params, searchParams]);
+  await guardWorkspaceDesk("deal_room");
   const data = await loadPricing(dealId);
   return <DealPricing {...data} focusRow={query.row ?? null} />;
 }

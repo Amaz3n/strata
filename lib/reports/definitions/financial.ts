@@ -705,6 +705,9 @@ const arAging: ReportDefinition = {
           value: formatMoneyCents(report.totals[bucket]),
           tone: bucket === "90_plus" && report.totals[bucket] > 0 ? ("negative" as const) : undefined,
         })),
+        ...((report.retainage_held_cents ?? 0) > 0
+          ? [{ key: "retainage_held", label: "Retainage held (not due, not aged)", value: formatMoneyCents(report.retainage_held_cents ?? 0) }]
+          : []),
       ],
       tables: [
         {

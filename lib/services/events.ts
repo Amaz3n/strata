@@ -821,6 +821,24 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
   }
 
+  // The company's own certificate or license lapsing is the office's problem:
+  // whoever manages compliance, not whoever reviews a vendor's documents.
+  if (event.event_type === "own_compliance_document_expiring") {
+    const { data: roleRows } = await supabase
+      .from("role_permissions")
+      .select("role_id")
+      .eq("permission_key", "compliance.manage")
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase
+      .from("memberships")
+      .select("user_id")
+      .eq("org_id", orgId)
+      .eq("status", "active")
+      .in("role_id", roleIds)
+    return uniqUserIds((memberships ?? []).map((row) => row.user_id))
+  }
+
   // Every failure mode of a payment run was emailed and success was not, so the
   // only way an AP clerk learned a run finished was to go looking.
   if (event.event_type === "vendor_payment_paid") {
@@ -1942,6 +1960,27 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         entityId: entity_id,
         eventId: event.id,
         metadata: { href: copy.href },
+      }
+    }
+
+    case "own_compliance_document_expiring": {
+      const documentName = typeof safePayload.document_name === "string" && safePayload.document_name
+        ? safePayload.document_name
+        : "A compliance document"
+      const expired = safePayload.expired === true
+      const expiryDate = typeof safePayload.expiry_date === "string" ? safePayload.expiry_date : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: event_type as NotificationType,
+        title: expired ? `Your ${documentName} has expired` : `Your ${documentName} expires soon`,
+        message: expired
+          ? `${documentName} expired${expiryDate ? ` on ${expiryDate}` : ""}. Upload the renewal and share it with your builders.`
+          : `${documentName} expires${expiryDate ? ` on ${expiryDate}` : " soon"}. Upload the renewal and share it with your builders.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: { href: "/trade/setup" },
       }
     }
 

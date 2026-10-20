@@ -24,6 +24,8 @@ export interface EstimateEmailProps {
   orgLogoUrl?: string | null
   recipientName?: string | null
   projectName?: string | null
+  /** The org's noun for a project: "Job" for a trade company. */
+  projectLabel?: string
   totalLabel?: string | null
   validUntil?: string | null
   message?: string | null
@@ -44,6 +46,7 @@ export function EstimateEmail({
   orgLogoUrl,
   recipientName,
   projectName,
+  projectLabel = "Project",
   totalLabel,
   validUntil,
   message,
@@ -86,7 +89,7 @@ export function EstimateEmail({
         </Text>
         {projectName ? (
           <Text style={metaRow}>
-            <span style={metaLabel}>Project:</span> <span style={metaValue}>{projectName}</span>
+            <span style={metaLabel}>{projectLabel}:</span> <span style={metaValue}>{projectName}</span>
           </Text>
         ) : null}
         {totalLabel ? (

@@ -25,6 +25,10 @@ export function resolveBusinessProfile(
   return result.success ? result.data : BUILDER_PROFILE;
 }
 
+export function isTradeProfile(profile: BusinessProfile) {
+  return profile.kind === "trade"
+}
+
 export function defaultTradeJobType(
   tier: ProductTier,
 ): "residential" | "commercial" {
@@ -32,7 +36,7 @@ export function defaultTradeJobType(
 }
 
 export function businessBrand(profile: BusinessProfile, tier: ProductTier) {
-  return profile.kind === "trade"
+  return isTradeProfile(profile)
     ? "Arc Trade"
     : PRODUCT_TIER_BRAND_NAMES[tier];
 }

@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -18,6 +19,7 @@ interface EstimatesPageProps {
 
 async function EstimatesData({ searchParams }: EstimatesPageProps) {
   await connection()
+  await guardWorkspaceDesk("estimates")
   const { orgId } = await requireOrgContext()
   const [estimates, contacts, costCodes, branding, resolvedSearchParams] = await Promise.all([
     listEstimatesAction(),

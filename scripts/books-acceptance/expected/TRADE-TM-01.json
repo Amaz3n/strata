@@ -1,0 +1,182 @@
+{
+  "scenario": "TRADE-TM-01",
+  "reviewedFrom": "TR02-05 and TR03-01 (docs/plans/arc-trade/completion-checklist.json); docs/plans/arc-trade/README.md section 5 (TRADE-TM-01); docs/reference/arc-trade.md; lib/services/tm-tickets.ts (createTmTicket, createTmTicketSignatureLink, getTmTicketBySignatureToken, signTmTicketByToken, generateInvoiceFromTmTicket, which bills through generateInvoiceFromCosts) and app/t/[token] (the page loads the ticket with getTmTicketBySignatureToken and its form action calls signTmTicketByToken; the action itself reads request headers, so the scenario calls the same service with the same arguments); lib/services/cost-plus.ts (upsertBillableCostFromTimeEntry and the expense equivalent: T&M labor bills at the worker's bill rate, material at cost plus any markup rule, propagateApprovalToLedger for the job cost ledger); lib/services/payments.ts recordPayment and app/api/webhooks/stripe/route.ts (the arguments a card settlement passes it); lib/services/time-clock.ts; the labor rates trade-seed.cjs sets (Casey 3,400 cost and 7,500 bill, Chris 3,200 and 7,500, burden 1.25). Stripe is never called: the settlement is delivered to the service the webhook calls.",
+  "subcases": {
+    "crew-hours-and-supply-receipt-become-billable-costs": {
+      "derivation": "Casey Crew (cost rate 3,400 cents an hour) and Chris Crew (3,200), both at burden multiplier 1.25, each clock six hours on Monday 2026-10-12 on the Palm Court job against cost code 3270 Rough electrical labor (the job budgets 3270 and 3280, so the clock asks for a code). The foreman approves both with time.approve; nothing is refused. An hour costs rate x burden, so Casey's six hours cost 6 x 3,400 x 1.25 = 25,500 and Chris's 6 x 3,200 x 1.25 = 24,000. The office admin (bill.write) enters the $340.00 receipt from Treasure Coast Electric Supply against 3280 Rough electrical material, billable, and the owner approves it (bill.approve). The job is time and materials with no rate schedule, so each labor hour bills at the worker's own bill rate (membership fallback, 7,500 cents an hour for both crew members): 6 x 7,500 = 45,000 each, a markup over cost of 45,000 - 25,500 = 19,500 and 45,000 - 24,000 = 21,000. The company has no markup rule, so the receipt bills at its cost, 34,000, with no markup. All three are open billable costs: cost 25,500 + 24,000 + 34,000 = 83,500 and billable 45,000 + 45,000 + 34,000 = 124,000.",
+      "expected": {
+        "approvalRefused": [],
+        "entries": [
+          {
+            "worker": "Casey Crew",
+            "hours": 6,
+            "costCode": "3270",
+            "status": "pm_approved",
+            "costCents": 25500
+          },
+          {
+            "worker": "Chris Crew",
+            "hours": 6,
+            "costCode": "3270",
+            "status": "pm_approved",
+            "costCents": 24000
+          }
+        ],
+        "expense": {
+          "amountCents": 34000,
+          "status": "approved",
+          "costCode": "3280",
+          "billable": true
+        },
+        "billableCosts": [
+          {
+            "description": "Supply house receipt - wire, boxes and breakers",
+            "costCode": "3280",
+            "status": "open",
+            "costCents": 34000,
+            "markupCents": 0,
+            "billableCents": 34000
+          },
+          {
+            "description": "Casey Crew - 6 hours",
+            "costCode": "3270",
+            "status": "open",
+            "costCents": 25500,
+            "markupCents": 19500,
+            "billableCents": 45000
+          },
+          {
+            "description": "Chris Crew - 6 hours",
+            "costCode": "3270",
+            "status": "open",
+            "costCents": 24000,
+            "markupCents": 21000,
+            "billableCents": 45000
+          }
+        ],
+        "totals": {
+          "costCents": 83500,
+          "billableCents": 124000
+        }
+      }
+    },
+    "labor-and-material-post-to-the-job": {
+      "derivation": "Approval posts each cost to the job's cost ledger at cost: Casey's six hours (25,500) and Chris's (24,000) to 3270, the receipt (34,000) to 3280, each posted and on the Palm Court job (ordered by code, then cost). The job's budget (4,000,000 for 3270 and 2,000,000 for 3280, 6,000,000 in all) reads the posted costs as its actuals: 25,500 + 24,000 + 34,000 = 83,500.",
+      "expected": {
+        "jobCost": [
+          {
+            "costCode": "3270",
+            "source": "time_entry",
+            "status": "posted",
+            "costCents": 24000
+          },
+          {
+            "costCode": "3270",
+            "source": "time_entry",
+            "status": "posted",
+            "costCents": 25500
+          },
+          {
+            "costCode": "3280",
+            "source": "project_expense",
+            "status": "posted",
+            "costCents": 34000
+          }
+        ],
+        "actuals": {
+          "totalActualCents": 83500,
+          "totalBudgetCents": 6000000
+        }
+      }
+    },
+    "tm-ticket-is-signed-on-its-link": {
+      "derivation": "The office admin (invoice.write) makes a T&M ticket from the day's three open billable costs, numbered TM-<date>-01 (TM-20261012-01): a draft with three items, cost 83,500 and billable 124,000 (the sums of the billable costs). A draft ticket cannot be invoiced (only client-signed tickets can). Sending it for signature makes it submitted and returns a /t link; the page's loader returns the ticket by its token with its three items (listed by description) at 124,000. The homeowner signs with a typed name and email: the ticket is client_signed with Henry Homeowner, henry@example.test and a signing time, and the token is cleared, so the link now loads nothing and signing again with it is refused (Signature link is invalid.). T&M tickets exist only on time-and-materials jobs: the fixed-price Harbor Tower job is refused.",
+      "expected": {
+        "ticket": {
+          "number": "TM-20261012-01",
+          "status": "draft",
+          "itemCount": 3,
+          "costCents": 83500,
+          "billableCents": 124000
+        },
+        "invoicingBeforeSigning": "refused: Only client-signed T&M tickets can be invoiced.",
+        "tokenPage": {
+          "status": "submitted",
+          "items": [
+            "Casey Crew - 6 hours",
+            "Chris Crew - 6 hours",
+            "Supply house receipt - wire, boxes and breakers"
+          ],
+          "billableCents": 124000
+        },
+        "signed": {
+          "status": "client_signed",
+          "signerName": "Henry Homeowner",
+          "signerEmail": "henry@example.test",
+          "hasSignedAt": true
+        },
+        "linkAfterSigning": {
+          "tokenPage": null,
+          "spent": true,
+          "signingAgain": "refused: Signature link is invalid."
+        },
+        "fixedPriceJob": "refused: T&M tickets are only available for time-and-materials projects."
+      }
+    },
+    "invoice-is-generated-from-the-signed-ticket": {
+      "derivation": "Generating the invoice from the signed ticket bills its three billable costs once, in detail: one line each at its billable amount, 45,000 (Casey), 45,000 (Chris) and 34,000 (the receipt), with no tax, so subtotal and total are 124,000. The invoice carries the ticket's number in its metadata, the ticket becomes billed and linked to it, and its costs become billed. A billed ticket cannot be invoiced again (only client-signed tickets can). The office admin (invoice.send) issues the invoice to the homeowner, whose status becomes sent.",
+      "expected": {
+        "invoice": {
+          "status": "sent",
+          "subtotalCents": 124000,
+          "taxCents": 0,
+          "totalCents": 124000,
+          "ticketNumber": "TM-20261012-01"
+        },
+        "lines": [
+          {
+            "description": "Casey Crew - 6 hours",
+            "amountCents": 45000
+          },
+          {
+            "description": "Chris Crew - 6 hours",
+            "amountCents": 45000
+          },
+          {
+            "description": "Supply house receipt - wire, boxes and breakers",
+            "amountCents": 34000
+          }
+        ],
+        "ticket": {
+          "status": "billed",
+          "linkedToTheInvoice": true
+        },
+        "costStatuses": [
+          "billed"
+        ],
+        "secondInvoice": "refused: Only client-signed T&M tickets can be invoiced."
+      }
+    },
+    "card-settlement-pays-the-invoice": {
+      "derivation": "The homeowner pays the issued $1,240.00 invoice by card. The provider's settlement (what the Stripe webhook hands recordPayment: invoice, amount, card, provider payment id, status succeeded, the provider's fee, no received-at date) is recorded: card processing is 2.9% + 30 cents, 124,000 x 0.029 = 3,596 + 30 = 3,626 cents, so the payment nets 124,000 - 3,626 = 120,374. The payment covers the whole balance, so the invoice is paid with nothing due, and one card payment is recorded. The same settlement arriving again (providers retry) is idempotent on its provider payment id: it records nothing more.",
+      "expected": {
+        "settlement": "allowed",
+        "replay": "allowed",
+        "invoice": {
+          "status": "paid",
+          "balanceDueCents": 0
+        },
+        "payments": [
+          {
+            "method": "card",
+            "provider": "stripe",
+            "status": "succeeded",
+            "amountCents": 124000,
+            "feeCents": 3626,
+            "netCents": 120374
+          }
+        ]
+      }
+    }
+  }
+}

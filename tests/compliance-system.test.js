@@ -941,3 +941,261 @@ test("the trade-partner role list has one home", () => {
   assert.match(pageData, /TRADE_PARTNER_ROLE_KEYS\.some/)
   assert.doesNotMatch(pageData, /\["subcontractor", "supplier"\]/)
 })
+
+/* ================================================================
+ * The company's own compliance vault (lib/services/own-compliance.ts)
+ * ============================================================== */
+
+const { createServiceHarness, replies, id, ORG, ACTOR } = require("./support/service")
+const { freshRequire, stubModule } = require("./support/modules")
+const {
+  ownDocumentReminderEventId,
+  ownDocumentReminderRung,
+} = require("../lib/compliance/own-document-reminders")
+
+stubModule("@/lib/storage/files-storage", {
+  uploadFilesObject: async ({ path }) => ({ storagePath: path }),
+  downloadFilesObject: async () => Buffer.from("%PDF-1.4"),
+  deleteFilesObjects: async () => undefined,
+})
+stubModule("@/lib/directory/cache", { revalidateDirectoryParty: () => undefined })
+
+const { shareOwnComplianceDocument, sweepOwnComplianceExpiry, uploadOwnComplianceDocument } = freshRequire(
+  "lib/services/own-compliance.ts",
+)
+
+const BUILDER_A = id(1001)
+const BUILDER_B = id(1002)
+const BUILDER_PAUSED = id(1003)
+const COMPANY_A = id(2001)
+const VAULT_DOC = id(3001)
+const VAULT_FILE = id(3002)
+
+const connection = (builderOrgId, companyId, overrides = {}) => ({
+  id: id(4000 + Math.floor(Math.random() * 1e6)),
+  org_id: ORG,
+  source_org_id: builderOrgId,
+  source_org_name: `Builder ${builderOrgId.slice(-4)}`,
+  source_company_id: companyId,
+  portal_access_token_id: id(5001),
+  status: "active",
+  created_at: "2026-09-01T00:00:00Z",
+  ...overrides,
+})
+
+const vaultDocument = (overrides = {}) => ({
+  id: VAULT_DOC,
+  org_id: ORG,
+  document_type_code: "coi",
+  file_id: VAULT_FILE,
+  status: "current",
+  effective_date: "2026-01-01",
+  expiry_date: "2099-12-31",
+  carrier_name: "Acme Mutual",
+  policy_number: "P-1",
+  coverage_amount_cents: 100000000,
+  license_number: null,
+  license_jurisdiction: null,
+  license_classification: null,
+  additional_insured: true,
+  primary_noncontributory: false,
+  waiver_of_subrogation: false,
+  created_at: "2026-01-02T00:00:00Z",
+  ...overrides,
+})
+
+const vaultFile = {
+  id: VAULT_FILE,
+  org_id: ORG,
+  file_name: "coi.pdf",
+  storage_path: `${ORG}/own-compliance/coi/1_coi.pdf`,
+  mime_type: "application/pdf",
+}
+
+const requests = (orgId, code) => ({
+  id: id(6000 + Number(orgId.slice(-4))),
+  org_id: orgId,
+  code,
+  name: code.toUpperCase(),
+  is_active: true,
+})
+
+const pdf = () => new File(["%PDF-1.4"], "renewed.pdf", { type: "application/pdf" })
+
+test("a renewed certificate replaces the current one and keeps it as history", async () => {
+  const service = createServiceHarness({
+    permissions: ["compliance.manage"],
+    tables: { own_compliance_documents: [vaultDocument()], files: [vaultFile] },
+  })
+
+  const { document } = await service.run(() =>
+    uploadOwnComplianceDocument({ document_type_code: "coi", expiry_date: "2100-06-30", carrier_name: "New Mutual" }, pdf()),
+  )
+
+  const rows = service.db.own_compliance_documents
+  const current = rows.filter((row) => row.status === "current")
+  assert.deepEqual(current.map((row) => row.id), [document.id])
+  assert.equal(current[0].carrier_name, "New Mutual")
+  const old = rows.find((row) => row.id === VAULT_DOC)
+  assert.equal(old.status, "superseded")
+  assert.equal(old.superseded_by_id, document.id)
+})
+
+test("sharing files a pending copy with each builder that asks, once", async () => {
+  const service = createServiceHarness({
+    permissions: ["compliance.manage"],
+    tables: {
+      own_compliance_documents: [vaultDocument()],
+      files: [vaultFile],
+      project_connections: [
+        connection(BUILDER_A, COMPANY_A),
+        // A second job with the same builder is the same builder.
+        connection(BUILDER_A, COMPANY_A),
+        connection(BUILDER_B, id(2002)),
+        connection(BUILDER_PAUSED, id(2003), { status: "paused" }),
+      ],
+      compliance_document_types: [
+        requests(BUILDER_A, "coi"),
+        requests(BUILDER_B, "w9"),
+        requests(BUILDER_PAUSED, "coi"),
+      ],
+    },
+  })
+
+  const first = await service.run(() => shareOwnComplianceDocument({ document_id: VAULT_DOC }))
+  const byBuilder = Object.fromEntries(first.outcomes.map((o) => [o.builderOrgId, o.status]))
+  assert.deepEqual(byBuilder, { [BUILDER_A]: "shared", [BUILDER_B]: "not_requested" })
+
+  const filed = service.db.compliance_documents
+  assert.equal(filed.length, 1)
+  assert.equal(filed[0].org_id, BUILDER_A)
+  assert.equal(filed[0].company_id, COMPANY_A)
+  assert.equal(filed[0].status, "pending_review")
+  assert.equal(filed[0].carrier_name, "Acme Mutual")
+  assert.equal(service.db.vendor_document_shares[0].source_own_document_id, VAULT_DOC)
+
+  const second = await service.run(() => shareOwnComplianceDocument({ document_id: VAULT_DOC }))
+  assert.equal(second.outcomes.find((o) => o.builderOrgId === BUILDER_A).status, "already_shared")
+  assert.equal(service.db.compliance_documents.length, 1)
+})
+
+test("a share that loses the race for the same builder is already shared, and files nothing", async () => {
+  const service = createServiceHarness({
+    permissions: ["compliance.manage"],
+    tables: {
+      own_compliance_documents: [vaultDocument()],
+      files: [vaultFile],
+      project_connections: [connection(BUILDER_A, COMPANY_A)],
+      compliance_document_types: [requests(BUILDER_A, "coi")],
+    },
+  })
+  const duplicate = (result) => ({ ...result, data: null, error: { code: "23505", message: "duplicate key value" } })
+  service.tamper("vendor_document_shares", duplicate, { on: "insert", times: 1 })
+
+  const raced = await service.run(() => shareOwnComplianceDocument({ document_id: VAULT_DOC }))
+
+  assert.equal(raced.outcomes[0].status, "already_shared")
+  assert.equal((service.db.compliance_documents ?? []).length, 0)
+})
+
+test("a share the database refuses for any other reason is reported, not recorded as shared", async () => {
+  const service = createServiceHarness({
+    permissions: ["compliance.manage"],
+    tables: {
+      own_compliance_documents: [vaultDocument()],
+      files: [vaultFile],
+      project_connections: [connection(BUILDER_A, COMPANY_A)],
+      compliance_document_types: [requests(BUILDER_A, "coi")],
+    },
+  })
+  service.tamper("vendor_document_shares", replies.error("connection reset"), { on: "insert" })
+
+  const result = await service.run(() => shareOwnComplianceDocument({ document_id: VAULT_DOC }))
+
+  assert.equal(result.outcomes[0].status, "failed")
+  assert.match(result.outcomes[0].error, /connection reset/)
+  assert.equal((service.db.compliance_documents ?? []).length, 0)
+})
+
+test("only someone who manages compliance can upload or share the vault", async () => {
+  const service = createServiceHarness({
+    permissions: ["compliance.read"],
+    tables: { own_compliance_documents: [vaultDocument()], files: [vaultFile] },
+  })
+
+  await assert.rejects(
+    service.run(() => uploadOwnComplianceDocument({ document_type_code: "w9" }, pdf())),
+  )
+  await assert.rejects(service.run(() => shareOwnComplianceDocument({ document_id: VAULT_DOC })))
+  assert.deepEqual(service.writes(), [])
+})
+
+test("the expiry sweep reminds the office once per rung of each current document", async () => {
+  const OTHER_ORG = id(900777)
+  const now = new Date("2026-10-19T12:00:00Z")
+  const service = createServiceHarness({
+    tables: {
+      own_compliance_documents: [
+        vaultDocument({ id: id(1), expiry_date: "2026-10-29" }),
+        vaultDocument({ id: id(2), document_type_code: "license", expiry_date: "2026-11-28" }),
+        vaultDocument({ id: id(3), document_type_code: "bond", expiry_date: "2026-10-18" }),
+        vaultDocument({ id: id(4), document_type_code: "w9", expiry_date: null }),
+        vaultDocument({ id: id(5), status: "superseded", expiry_date: "2026-10-20" }),
+        vaultDocument({ id: id(6), org_id: OTHER_ORG, expiry_date: "2026-10-22" }),
+      ],
+    },
+  })
+  const sweep = (at) => service.run(() => sweepOwnComplianceExpiry(service.client, at))
+
+  await sweep(now)
+  const reminders = service.events.filter((event) => event.eventType === "own_compliance_document_expiring")
+  assert.deepEqual(
+    reminders.map((event) => [event.orgId, event.entityId, event.payload.reminder_rung]).sort(),
+    [
+      [ORG, id(1), 14],
+      [ORG, id(3), 0],
+      [OTHER_ORG, id(6), 3],
+    ].sort(),
+  )
+
+  // Tomorrow's run lands on the same rung, so it carries the same event ids.
+  service.events.length = 0
+  await sweep(new Date("2026-10-20T12:00:00Z"))
+  const nextDay = service.events.map((event) => event.idempotencyId)
+  assert.ok(nextDay.includes(ownDocumentReminderEventId(ORG, id(1), "2026-10-29", 14)))
+  assert.notEqual(
+    ownDocumentReminderEventId(ORG, id(1), "2026-10-29", 14),
+    ownDocumentReminderEventId(ORG, id(1), "2026-10-29", 3),
+  )
+  const rungs = Object.entries({
+    "2026-11-19": null,
+    "2026-11-18": 30,
+    "2026-11-02": 14,
+    "2026-10-22": 3,
+    "2026-10-19": 3,
+    "2026-10-18": 0,
+  }).map(([expiry]) => ownDocumentReminderRung(expiry, now))
+  assert.deepEqual(rungs, [null, 30, 14, 3, 3, 0])
+})
+
+test("a lapsed document whose last reminder is on record is not revisited, and a large backlog is read in pages", async () => {
+  const now = new Date("2026-10-19T12:00:00Z")
+  const lapsedDocument = (n) => vaultDocument({ id: id(100000 + n), document_type_code: "coi", expiry_date: "2026-10-01" })
+  const documents = Array.from({ length: 1203 }, (_, n) => lapsedDocument(n))
+  const done = documents.slice(0, 1200)
+  const service = createServiceHarness({
+    tables: {
+      own_compliance_documents: documents,
+      events: done.map((row) => ({ id: ownDocumentReminderEventId(ORG, row.id, row.expiry_date, 0) })),
+    },
+  })
+
+  const reminded = await service.run(() => sweepOwnComplianceExpiry(service.client, now))
+
+  assert.equal(reminded, 3)
+  assert.deepEqual(
+    service.events.filter((event) => event.eventType === "own_compliance_document_expiring").map((event) => event.entityId).sort(),
+    documents.slice(1200).map((row) => row.id).sort(),
+  )
+  assert.ok(service.reads("own_compliance_documents").length >= 3)
+})

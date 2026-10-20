@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface";
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
@@ -14,6 +15,7 @@ async function ProjectInventoryPageContent({
 }) {
   await connection()
   const [{ id }, access] = await Promise.all([params, getBooksUiAccess()]);
+  await guardProjectTab(id, "inventory");
   if (!access.adjust) notFound();
   const project = (await getInventoryWorkspace()).find(
     (project) => project.id === id,

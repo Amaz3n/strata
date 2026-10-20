@@ -1,6 +1,8 @@
 "use client";
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
+import { usePageTitle } from "@/components/layout/page-title-context";
+import { isTradeSurface } from "@/lib/workspace-surface";
 import { loadWaiverPacketAction } from "@/app/(app)/invoices/waiver-actions";
 import { unwrapAction } from "@/lib/action-result";
 import { readWaiverWorkflow } from "@/lib/lien-waivers/invoice-waiver";
@@ -22,6 +24,7 @@ export function InvoicePacketWaiver({
   onClose: () => void;
   onSaved?: (waiver: InvoiceLienWaiver) => void;
 }) {
+  const customerNoun = isTradeSurface(usePageTitle().workspaceSurface) ? "customer" : "client";
   const [data, setData] = useState<{
     invoice: Invoice;
     waivers: InvoiceLienWaiver[];
@@ -70,7 +73,7 @@ export function InvoicePacketWaiver({
         <div className="w-[360px] space-y-4 border-r p-6">
           <h2 className="text-lg font-medium">Signed waiver</h2>
           <p className="text-sm text-muted-foreground">
-            {data.readinessError ? "This signed document is kept on file, but the packet is not ready. Prepare a new waiver with the current invoice details before sending." : "Your company has signed. The client receives this waiver with the invoice in one email."}
+            {data.readinessError ? "This signed document is kept on file, but the packet is not ready. Prepare a new waiver with the current invoice details before sending." : `Your company has signed. The ${customerNoun} receives this waiver with the invoice in one email.`}
           </p>
           <Button onClick={onClose}>Back to invoice</Button>
           <Button variant="ghost" onClick={() => setNewDraft(true)}>
