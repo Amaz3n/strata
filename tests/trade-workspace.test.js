@@ -88,6 +88,41 @@ test("a trade job needs project.manage and a customer from the company's own dir
   assert.equal(created[0].open_book, false, "trade costing stays private")
   assert.equal(created[0].total_contract_value_cents, 1250050)
   assert.equal(created[0].property_type, "commercial")
+  assert.equal(created[0].fixed_price_billing_basis, "draws", "a homeowner job bills fixed invoices by default")
+  assert.equal(created[0].retainage_percent, 0)
+})
+
+test("a trade job's answers set how its customer is billed", async () => {
+  const manager = tradeCompany({ permissions: ["project.manage"] })
+  await manager.run(() => createTradeJob({
+    name: "Oak Street rough-in",
+    property_type: "residential",
+    customer_kind: "company",
+    billing_basis: "progress",
+    retainage_percent: 10,
+    payment_terms_days: 45,
+    review_before_send: true,
+    customer_certifies: true,
+  }))
+  assert.equal(created[0].billing_model, "fixed_price")
+  assert.equal(created[0].contract_type, "fixed")
+  assert.equal(created[0].fixed_price_billing_basis, "progress")
+  assert.equal(created[0].retainage_percent, 10)
+  assert.deepEqual(created[0].receivables_terms, {
+    customerKind: "company", paymentTermsDays: 45, reviewBeforeSend: true, customerCertifies: true,
+  })
+
+  await manager.run(() => createTradeJob({
+    name: "Service call",
+    billing_basis: "time_and_materials",
+    customer_certifies: true,
+  }))
+  assert.equal(created[1].billing_model, "time_and_materials")
+  assert.equal(created[1].contract_type, "time_materials")
+  assert.equal(created[1].receivables_terms.customerCertifies, false, "only a pay application is certified")
+
+  await assert.rejects(manager.run(() => createTradeJob({ name: "Bad terms", payment_terms_days: -1 })))
+  await assert.rejects(manager.run(() => createTradeJob({ name: "Bad retainage", retainage_percent: 80 })))
 })
 
 test("work is scheduled only on the company's own job, for an active crew member, with schedule.edit", async () => {

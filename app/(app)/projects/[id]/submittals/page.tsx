@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -31,6 +32,7 @@ export default function ProjectSubmittalsPage(props: ProjectSubmittalsPageProps)
 async function ProjectSubmittalsRoute({ params, searchParams }: ProjectSubmittalsPageProps) {
   await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
+  await guardProjectTab(id, "submittals")
   const project = await getProjectAction(id)
 
   if (!project) {

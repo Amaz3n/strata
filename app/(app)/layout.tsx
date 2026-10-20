@@ -100,7 +100,7 @@ async function AuthenticatedAppChrome({
     platformAccess,
     platformSessionState,
     productTier,
-    businessProfile,
+    workspaceSurface,
     ambientContext,
     projects,
     projectsTruncated,
@@ -147,7 +147,7 @@ async function AuthenticatedAppChrome({
             <Suspense fallback={null}>
               <ReleaseNotesAnnouncementSlot />
             </Suspense>
-            <PageTitleProvider productTier={productTier} businessProfile={businessProfile}>
+            <PageTitleProvider productTier={productTier} workspaceSurface={workspaceSurface}>
             <AppSidebar
               user={currentUser}
               projects={projects}
@@ -155,7 +155,7 @@ async function AuthenticatedAppChrome({
               canAccessPlatform={platformAccess.canAccessPlatform}
               permissions={permissions}
               productTier={productTier}
-              businessProfile={businessProfile}
+              workspaceSurface={workspaceSurface}
               showProductionNavigation={showProductionNavigation}
               showPurchasingNavigation={showPurchasingNavigation}
               showPipelineNavigation={showCustomBuildNavigation}
@@ -182,7 +182,7 @@ async function AuthenticatedAppChrome({
                 canAccessPlatform={platformAccess.canAccessPlatform}
                 permissions={permissions}
                 productTier={productTier}
-              businessProfile={businessProfile}
+                workspaceSurface={workspaceSurface}
                 showProductionNavigation={showProductionNavigation}
                 showPipelineNavigation={showCustomBuildNavigation}
                 showPurchasingNavigation={showPurchasingNavigation}

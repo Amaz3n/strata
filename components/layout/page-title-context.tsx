@@ -3,7 +3,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
 import { usePathname } from "next/navigation"
 import type { AppBreadcrumbItem } from "./app-header"
-import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
+import type { BusinessProfile } from "@/lib/business-profile"
+import { BUILDER_SURFACE, type WorkspaceSurface } from "@/lib/workspace-surface"
 import type { ProductTier, ProjectPosture } from "@/lib/product-tier"
 import type { ProjectNavigationItem } from "@/lib/types"
 
@@ -24,6 +25,8 @@ interface PageTitleContextType {
   fullBleed: boolean
   projectContext: ProjectShellContext | null
   productTier: ProductTier
+  /** What this workspace includes: plan features and business profile. */
+  workspaceSurface: WorkspaceSurface
   businessProfile: BusinessProfile
   setTitle: (title: string) => void
   setBreadcrumbs: (breadcrumbs: AppBreadcrumbItem[]) => void
@@ -38,7 +41,7 @@ interface PageTitleProviderProps {
   title?: string
   breadcrumbs?: AppBreadcrumbItem[]
   productTier?: ProductTier
-  businessProfile?: BusinessProfile
+  workspaceSurface?: WorkspaceSurface
 }
 
 type Scoped<T> = { path: string; value: T } | undefined
@@ -48,7 +51,7 @@ export function PageTitleProvider({
   title: initialTitle,
   breadcrumbs: initialBreadcrumbs,
   productTier = "residential",
-  businessProfile = BUILDER_PROFILE,
+  workspaceSurface = BUILDER_SURFACE,
 }: PageTitleProviderProps) {
   const pathname = usePathname()
 
@@ -89,13 +92,14 @@ export function PageTitleProvider({
       fullBleed,
       projectContext,
       productTier,
-      businessProfile,
+      workspaceSurface,
+      businessProfile: workspaceSurface.profile,
       setTitle,
       setBreadcrumbs,
       setFullBleed,
       setProjectContext,
     }),
-    [title, breadcrumbs, fullBleed, projectContext, productTier, businessProfile, setTitle, setBreadcrumbs],
+    [title, breadcrumbs, fullBleed, projectContext, productTier, workspaceSurface, setTitle, setBreadcrumbs],
   )
 
   return <PageTitleContext.Provider value={value}>{children}</PageTitleContext.Provider>

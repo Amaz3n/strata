@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 
@@ -9,7 +10,7 @@ import { hasPermission } from "@/lib/services/permissions"
 
 async function StudiosPageContent({ searchParams }: { searchParams: Promise<{ location?: string | string[] }> }) {
   await connection()
-  const [context, { location }] = await Promise.all([requireOrgContext(), searchParams])
+  const [, context, { location }] = await Promise.all([guardWorkspaceDesk("design_studio"), requireOrgContext(), searchParams])
   const [directory, canManage] = await Promise.all([listStudios({ includeArchived: true }), hasPermission("design_studio.manage", context)])
   return <StudiosWorkbench directory={directory} canManage={canManage} focusLocationId={typeof location === "string" ? location : undefined} />
 }

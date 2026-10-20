@@ -1,3 +1,4 @@
+import type React from "react";
 import Link from "next/link";
 import { PageLayout } from "@/components/layout/page-layout";
 import { Button } from "@/components/ui/button";
@@ -5,7 +6,7 @@ import { NewTradeJob } from "@/components/trade/new-job";
 import { getTradeWorkspace } from "@/lib/services/trade-workspace";
 import { formatLocalDate } from "@/lib/utils";
 
-export async function TradeHome() {
+export async function TradeHome({ notice }: { notice?: React.ReactNode }) {
   const data = await getTradeWorkspace();
   const names = new Map(data.jobs.map((job) => [job.id, job.name]));
   const people = new Map(
@@ -17,6 +18,7 @@ export async function TradeHome() {
   return (
     <PageLayout title="Today">
       <div className="space-y-9 desk-rise">
+        {notice}
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-xs font-medium text-muted-foreground">
@@ -129,6 +131,64 @@ export async function TradeHome() {
                 Showing {Math.min(12, data.jobs.length)} of {data.jobsTotal}{" "}
                 jobs.{" "}
                 <Link href="/projects" className="underline">
+                  View all
+                </Link>
+                .
+              </p>
+            )}
+          </section>
+        )}
+        {data.quoteAttention.items.length > 0 && (
+          <section>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Quotes that need you</h2>
+              <Link
+                href="/pipeline"
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                View all →
+              </Link>
+            </div>
+            <div className="divide-y border-y">
+              {data.quoteAttention.items.map((item) => (
+                <Link
+                  key={item.id}
+                  href={`/pipeline/${item.id}`}
+                  className="flex justify-between gap-4 py-3 hover:bg-muted/30"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">
+                      {item.name}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {item.customer || "No customer yet"}
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 flex-col items-end text-xs">
+                    <span
+                      className={
+                        item.move.tone === "late"
+                          ? "text-destructive"
+                          : item.move.tone === "soon"
+                            ? "text-warning"
+                            : "text-muted-foreground"
+                      }
+                    >
+                      {item.move.sentence}
+                    </span>
+                    <span className="tabular-nums text-muted-foreground">
+                      {item.dueAt
+                        ? `Due ${formatLocalDate(item.dueAt, "MMM d")}`
+                        : "No due date"}
+                    </span>
+                  </span>
+                </Link>
+              ))}
+            </div>
+            {data.quoteAttention.truncated && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                There are more quotes that need you.{" "}
+                <Link href="/pipeline" className="underline">
                   View all
                 </Link>
                 .

@@ -1042,6 +1042,7 @@ async function loadExternalWorkspace(identity: ExternalIdentity, orgId?: string)
       project_status: normalizeWorkspaceProjectStatus(project.status),
       project_address: formatProjectLocation(project.location),
       company_name: company?.name ?? null,
+      company_id: company?.id ?? null,
       contact_name: contactName,
       last_accessed_at: token.last_accessed_at ?? null,
     })

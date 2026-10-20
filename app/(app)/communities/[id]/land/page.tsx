@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import Link from "next/link"
 import { notFound } from "next/navigation"
@@ -30,6 +31,7 @@ const RUNWAY_HORIZON_MONTHS = 24
  */
 export default async function CommunityLandPage({ params }: { params: Promise<{ id: string }> }) {
   await connection()
+  await guardWorkspaceDesk("communities")
   const { id } = await params
 
   /** Optional panel, logged failure. A blank runway with no trace is not a state. */

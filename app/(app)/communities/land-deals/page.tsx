@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { Suspense } from "react"
 import { connection } from "next/server"
 
@@ -18,7 +19,7 @@ const PAGE_SIZE = 50
 
 async function LandDealsData({ searchParams }: LandDealsPageProps) {
   await connection()
-  const [params, ambient, permissionResult] = await Promise.all([searchParams, getAmbientDeskContext(), getCurrentUserPermissions()])
+  const [, params, ambient, permissionResult] = await Promise.all([guardWorkspaceDesk("communities"), searchParams, getAmbientDeskContext(), getCurrentUserPermissions()])
   const stage = landDealStageFilterSchema.safeParse(params.stage)
   const query = params.q?.trim() || undefined
   const pageNumber = Math.max(1, Math.min(10_000, Number.parseInt(params.page ?? "1", 10) || 1))

@@ -1,5 +1,7 @@
 "use server"
 
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { profileTerminology } from "@/lib/terminology"
 import { cache } from "react"
 import { readDailyLogPages } from "@/lib/services/daily-log-pages"
 import { invoiceIsFromAccountingProvider } from "@/lib/services/accounting-sync-state"
@@ -86,7 +88,7 @@ import { createDrawScheduleFromContract } from "@/lib/services/proposals"
 import { invoiceDrawSchedule, linkInvoiceToDraw, unlinkInvoiceFromDraw } from "@/lib/services/draws"
 import { listInvoices } from "@/lib/services/invoices"
 import { getNextInvoiceNumber, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
-import { releaseProjectRetainage } from "@/lib/services/retainage"
+import { createRetainageReleaseWaiver, releaseProjectRetainage } from "@/lib/services/retainage"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
@@ -622,7 +624,8 @@ export async function sendClientPortalInviteAction(input: {
 
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
       const portalUrl = appUrl ? `${appUrl}/p/${tokenRow.token}` : `/p/${tokenRow.token}`
-      const projectName = projectRow?.name ?? "your project"
+      const projectLabel = profileTerminology((await loadWorkspaceSurface(orgId)).profile).project
+      const projectName = projectRow?.name ?? `your ${projectLabel.toLowerCase()}`
       await sendProjectPortalInviteEmail({
         to: contactRow.email,
         recipientName: contactRow.full_name?.trim() || null,
@@ -631,6 +634,7 @@ export async function sendClientPortalInviteAction(input: {
         orgName: orgRow?.name ?? "Arc",
         orgLogoUrl: (orgRow as any)?.logo_url ?? null,
         portalLink: portalUrl,
+        projectLabel,
       })
 
       return {
@@ -1214,6 +1218,14 @@ export async function releaseProjectRetainageAction(
     revalidatePath(`/projects/${projectId}/financials`)
     revalidatePath(`/projects/${projectId}/financials/billing`)
     return { success: true, invoice_id: result.invoice_id }
+  })
+}
+
+export async function createRetainageReleaseWaiverAction(projectId: string, invoiceId: string) {
+  return run(async () => {
+    const waiver = await createRetainageReleaseWaiver(projectId, invoiceId)
+    revalidatePath(`/projects/${projectId}/financials/billing`)
+    return { waiver_id: waiver.id }
   })
 }
 

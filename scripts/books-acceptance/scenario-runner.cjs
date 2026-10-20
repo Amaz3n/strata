@@ -5,7 +5,7 @@ const fs = require("node:fs"),
   path = require("node:path")
 const { createKit, recorder, loadExpected } = require("./scenario-kit.cjs")
 
-const { IMPLEMENTED: SCENARIO_MODULES, NOT_IMPLEMENTED, NEEDS_STORAGE, LONG_RUNNING, PRODUCTION } = require("./catalog.cjs")
+const { IMPLEMENTED: SCENARIO_MODULES, NOT_IMPLEMENTED, NEEDS_STORAGE, LONG_RUNNING, PRODUCTION, ARC_TRADE } = require("./catalog.cjs")
 
 // `only` runs the named subcases for iteration; the rest report SKIPPED, so such a
 // run can never read PASSED. `includePending` also runs an open subcase whose check is
@@ -87,8 +87,8 @@ function longRunEvidence(id, dir) {
  * that it is NOT_RUN, which fails the verdict like any scenario that did not pass.
  */
 /**
- * The verdict over a run's summary rows. A production scenario with open steps is
- * reported, not failed; a failed one, one with an open defect, and a long-running one
+ * The verdict over a run's summary rows. A production scenario with open steps, and an Arc
+ * Trade scenario that is unbuilt or has open steps, is reported, not failed; a failed one, one with an open defect, and a long-running one
  * with no fresh evidence fail the run. The core gate (`core`, what pull requests run)
  * also reports, without failing, what waits only on the outside: a long-running
  * scenario, real storage, or a sandbox subcase the run was not given.
@@ -97,6 +97,7 @@ function allScenariosVerdict(summary, { core = false } = {}) {
   const inScope = summary.filter((row) => row.disposition !== "deferred")
   const open = inScope.filter((row) => row.status !== "PASSED" && (
     (PRODUCTION[row.scenario] && row.status === "INCOMPLETE") ||
+    (ARC_TRADE[row.scenario] && ["INCOMPLETE", "NOT_IMPLEMENTED", "DEFECT_OPEN"].includes(row.status)) ||
     (core && (row.status === "NOT_RUN" || row.disposition === "blocked" || (row.status === "INCOMPLETE" && row.outsideOnly)))))
   return { verdict: inScope.every((row) => row.status === "PASSED" || open.includes(row)) ? "PASSED" : "INCOMPLETE", inScope, open }
 }
@@ -107,7 +108,7 @@ async function runAll(kit, container, evidenceDir, { includeLongRunning = false,
   const summary = []
   for (const id of GOLDEN_SCENARIOS) {
     const startedAt = Date.now()
-    const packages = [PRODUCTION[id]?.checklist ?? id]
+    const packages = [PRODUCTION[id]?.checklist ?? ARC_TRADE[id]?.checklist ?? id]
     const prior = LONG_RUNNING[id] && !includeLongRunning ? longRunEvidence(id, longRunEvidenceDir) : null
     const skipped = !prior ? null
       : prior.evidence ? { ...prior.evidence, disposition: { status: "long_run_evidence", packages, reason: `${LONG_RUNNING[id]} Evidence: ${prior.file}` } }

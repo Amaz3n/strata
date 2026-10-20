@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
@@ -39,6 +40,7 @@ export default function ProjectDecisionsPage({ params }: ProjectDecisionsPagePro
 async function ProjectDecisionsPageRoute({ params }: ProjectDecisionsPageProps) {
   await connection()
   const { id } = await params
+  await guardProjectTab(id, "decisions")
 
   return <ProjectDecisionsData id={id} />
 }

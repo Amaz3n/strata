@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 
@@ -11,6 +12,7 @@ const BREADCRUMBS = [{ label: "Settings", href: "/settings" }, { label: "Lender 
 
 async function MilestoneFeedsContent() {
   await connection()
+  await guardWorkspaceDesk("settings_milestone_feeds")
   const feeds = await listMilestoneSources()
   return (
     <PageLayout fullBleed title="Lender and title feeds" breadcrumbs={BREADCRUMBS}>

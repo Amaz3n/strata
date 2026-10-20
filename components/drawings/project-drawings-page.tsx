@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface";
 import { connection } from "next/server";
 import { resolveMeasurementContext } from "@/lib/services/measurement-context";
 import { ImportPlanFile } from "@/components/precon/import-plan-file";
@@ -72,6 +73,7 @@ async function ProjectDrawingsRoute({
 }: ProjectDrawingsPageProps) {
   await connection();
   const { id } = await params;
+  await guardProjectTab(id, "drawings");
   const project = await getProjectAction(id);
 
   if (!project) {

@@ -23,7 +23,18 @@ stubModule("@/lib/services/document-extraction", {
   extractPayableInvoiceFromFile: (_file, options) => extract(options),
 })
 stubModule("@/lib/services/file-links", { attachFileWithServiceRole: async () => {} })
-stubModule("@/lib/storage/files-storage", { downloadFilesObject: async () => Buffer.from("%PDF") })
+stubModule("@/lib/storage/files-storage", { downloadFilesObject: async () => Buffer.from("%PDF"), uploadFilesObject: async () => {} })
+stubModule("@/lib/services/payable-duplicate-check", { findDuplicatePayable: async () => null })
+stubModule("@/lib/services/books/coding-rules", { suggestCodingForService: async () => null })
+const notified = []
+stubModule("@/lib/services/notifications", {
+  NotificationService: class {
+    async createAndQueue(input) {
+      notified.push(input.title)
+      return id(1)
+    }
+  },
+})
 
 const { intakeRow, processPayableIntake } = freshRequire("lib/services/payable-intake.ts")
 
@@ -178,4 +189,91 @@ test("a stalled scan fails at its deadline and ignores anything it streams after
   const writes = service.writes().length
   await stream({ vendor_name: "Late vendor", total: 55 })
   assert.equal(service.writes().length, writes)
+})
+
+test("a supplier bill files to the one job its text names, by name or street address", () => {
+  const { matchBillToJob } = require("@/lib/financials/bill-job-match")
+  const jobs = [
+    { id: "smith", name: "Smith Residence", address: "412 Oak Street, Austin, TX" },
+    { id: "lake", name: "Lakeview Remodel", address: "9 Harbor Lane, Austin, TX" },
+    { id: "short", name: "Job 12", address: null },
+  ]
+  assert.equal(matchBillToJob({ texts: ["Lumber for the Smith job"], jobs }).jobId, "smith")
+  assert.equal(matchBillToJob({ texts: [null, "Delivered to 412 Oak St"], jobs }).jobId, "smith")
+  assert.equal(matchBillToJob({ texts: ["Ship to 9 Harbor Ln"], jobs }).jobId, "lake")
+  const ambiguous = matchBillToJob({ texts: ["Smith job and Lakeview remodel framing"], jobs })
+  assert.equal(ambiguous.jobId, null)
+  assert.match(ambiguous.reason, /more than one/)
+  assert.equal(matchBillToJob({ texts: ["Remodel project residence house job 12"], jobs }).jobId, null)
+  assert.equal(matchBillToJob({ texts: ["Order 4120 Oak"], jobs }).jobId, null)
+  assert.equal(matchBillToJob({ texts: [], jobs }).jobId, null)
+})
+
+test("a supplier's own name is never a job reference, and a lone shared word is not a distinctive match", () => {
+  const { matchBillToJob } = require("@/lib/financials/bill-job-match")
+  const jobs = [{ id: "smith", name: "Smith Residence", address: null }, { id: "harbor", name: "Harbor View Remodel", address: null }]
+  const supplier = (name) => ({ texts: [`Invoice from ${name}`, "Assorted materials"], jobs, ignoring: [name] })
+  assert.equal(matchBillToJob(supplier("Smith Lumber & Supply")).jobId, null)
+  assert.equal(matchBillToJob(supplier("Harbor View Hardware")).jobId, null)
+  // Without the supplier excluded, a bare "Smith" is still not enough; it needs the word of a job beside it.
+  assert.equal(matchBillToJob({ texts: ["Smith Lumber & Supply invoice 44"], jobs }).jobId, null)
+  assert.equal(matchBillToJob({ texts: ["Smith job, 2x4 studs"], jobs }).jobId, "smith")
+  assert.equal(matchBillToJob({ texts: ["Deck lumber for Harbor View"], jobs }).jobId, "harbor")
+})
+
+// A supply house has no commitment to route by, so a trade company's emailed bill is filed to the job it names.
+// Builders keep the old behaviour: no commitment, no project.
+const emailedBill = async ({ kind, vendorName, subject, description, jobs }) => {
+  const { processInboundBillEmail } = freshRequire("lib/services/payables-email-ingest.ts")
+  const service = createServiceHarness({
+    tables: {
+      org_settings: [{ org_id: ORG, settings: kind === "trade" ? { business_profile: { kind: "trade", specialty: "Electrical" } } : {} }],
+      memberships: [{ org_id: ORG, user_id: ACTOR, status: "active" }],
+      projects: jobs.map((job, index) => ({ id: id(700 + index), org_id: ORG, phase: "delivery", status: "active", location: null, ...job })),
+      contacts: [],
+      companies: [],
+      commitments: [],
+      files: [],
+      vendor_bills: [],
+    },
+  })
+  extract = async () => ({ ...INVOICE, vendorName, description, lines: [{ description, amountCents: 12500 }] })
+  process.env.RESEND_API_KEY = "test"
+  const realFetch = global.fetch
+  global.fetch = async (url) => {
+    const path = String(url)
+    const body = path.endsWith("/attachments")
+      ? { data: [{ filename: "bill.pdf", content_type: "application/pdf", download_url: "https://files.test/bill.pdf" }] }
+      : { from: `${vendorName} <ar@${vendorName.split(" ")[0].toLowerCase()}lumber.example>`, subject }
+    return path.startsWith("https://files.test")
+      ? new Response(Buffer.from("%PDF"))
+      : new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })
+  }
+  notified.length = 0
+  try {
+    const result = await service.run(() => processInboundBillEmail({ orgId: ORG, emailId: "em_1" }))
+    return { result, service }
+  } finally {
+    global.fetch = realFetch
+  }
+}
+
+test("a trade company's supply-house bill files to the job it names, never to a job named like the supplier", async () => {
+  const jobs = [{ name: "Smith Residence" }, { name: "Harbor View Remodel" }]
+  const named = await emailedBill({ kind: "trade", vendorName: "Acme Supply", subject: "Invoice 88", description: "Conduit for the Smith Residence panel", jobs })
+  assert.equal(named.result.status, "created")
+  assert.equal(named.result.projectId, id(700))
+  assert.equal(named.service.db.vendor_bills[0].metadata.routed_by, "job_reference")
+
+  for (const [vendorName, job] of [["Smith Lumber & Supply", jobs[0]], ["Harbor View Hardware", jobs[1]]]) {
+    const supplier = await emailedBill({ kind: "trade", vendorName, subject: `Invoice from ${vendorName}`, description: "Assorted materials", jobs })
+    assert.equal(supplier.result.status, "unrouted", job.name)
+  }
+})
+
+test("a builder's emailed bill with no commitment still needs a project, whatever the bill's text says", async () => {
+  const builder = await emailedBill({ kind: "builder", vendorName: "Acme Supply", subject: "Invoice 88", description: "Conduit for the Smith Residence panel", jobs: [{ name: "Smith Residence" }] })
+  assert.equal(builder.result.status, "unrouted")
+  assert.deepEqual(builder.service.db.vendor_bills, [])
+  assert.ok(notified.includes("Emailed bill needs a project"))
 })

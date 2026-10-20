@@ -1,5 +1,6 @@
 import { accountingCutoff, isInvoiceReceivableAsOf, isUndatedVoid, loadLedgerRemovalDates, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
 import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots"
+import { receivableRetainageAsOf } from "@/lib/services/books/retainage-history"
 import { companyOwnership } from "@/lib/services/books/legal-entities"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
@@ -34,6 +35,12 @@ export type ARAgingReport = {
   as_closed?: string | null
   rows: ARAgingRow[]
   totals: ARAgingTotals
+  /**
+   * Retainage customers are holding back, as of `as_of`. Invoice totals are already net of
+   * it, so it sits in no aging bucket and is never past due: it is collectible only on release.
+   * Absent on a saved close that predates this line.
+   */
+  retainage_held_cents?: number
   /** Voided invoices with no record of when (`isUndatedVoid`): left out of the totals until a void date is recorded. */
   undated_voids?: Array<{ invoice_id: string; project_id: string | null; invoice_number: string | null; issue_date: string | null; total_cents: number }>
 }
@@ -59,6 +66,31 @@ async function undatedVoids(orgId: string, rows: VoidRow[], removedOn?: Readonly
   return voids.filter((row) => isUndatedVoid(row, removed)).map((row) => ({
     invoice_id: String(row.id), project_id: row.project_id ?? null, invoice_number: row.invoice_number ?? null, issue_date: row.issue_date ?? null, total_cents: Number(row.total_cents ?? 0),
   }))
+}
+
+/** Retainage held on the invoices in scope at `asOf`, by the same dating the ledger verifier uses. */
+async function loadRetainageHeldCents(input: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string
+  asOf: string
+  projectId?: string
+  includeExcludedProjects: boolean
+  owner: ((projectEntityId: string | null | undefined) => string | null) | null
+  legalEntityId: string | null
+}) {
+  let query = input.supabase
+    .from("retainage")
+    // Both invoice FKs are named: the withholding invoice and the release invoice.
+    .select("id, project_id, amount_cents, project:projects(legal_entity_id), invoice:invoices!invoice_id!inner(status, issue_date, metadata), release:invoices!release_invoice_id(status, issue_date, metadata)")
+    .eq("org_id", input.orgId)
+    .lte("invoice.issue_date", input.asOf)
+    .order("id")
+  if (input.projectId) query = query.eq("project_id", input.projectId)
+  else if (!input.includeExcludedProjects) query = applyReportingExclusion(query, await getReportingExcludedProjectIds(input.supabase, input.orgId))
+  const loaded = await loadAll<any>((from, to) => query.range(from, to), "retainage for AR aging")
+  const owner = input.owner
+  const scoped = owner ? loaded.filter((row: any) => owner(row.project?.legal_entity_id) === input.legalEntityId) : loaded
+  return receivableRetainageAsOf(scoped, input.asOf)
 }
 
 export async function getArAgingReport({
@@ -120,6 +152,10 @@ export async function getArAgingReport({
   const invoiceIds = invoiceRows.map((row: any) => String(row.id))
   const paidByInvoice = await loadSubledgerSettlements(supabase, resolvedOrgId, "receivable", invoiceIds, asOfDate)
 
+  const retainageHeldCents = await loadRetainageHeldCents({
+    supabase, orgId: resolvedOrgId, asOf: asOfDate, projectId, includeExcludedProjects, owner, legalEntityId,
+  })
+
   const totals: ARAgingTotals = {
     current: 0,
     "1_30": 0,
@@ -172,6 +208,7 @@ export async function getArAgingReport({
     project_id: projectId,
     rows,
     totals,
+    retainage_held_cents: retainageHeldCents,
     undated_voids: await undatedVoids(resolvedOrgId, data, removedOn),
   }
 }

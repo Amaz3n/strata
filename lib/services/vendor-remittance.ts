@@ -5,6 +5,8 @@ import { RemittanceAdviceEmail } from "@/lib/emails/remittance-advice-email"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { profileTerminology } from "@/lib/terminology"
 
 /**
  * Remittance advice.
@@ -104,7 +106,7 @@ async function deliverRemittance(input: {
   entityId: string
 }) {
   const supabase = createServiceSupabaseClient()
-  const [{ data: bill }, { data: org }] = await Promise.all([
+  const [{ data: bill }, { data: org }, surface] = await Promise.all([
     supabase
       .from("vendor_bills")
       .select("id,bill_number,total_cents,retainage_cents,company_id,project_id,company:companies(name,email),project:projects(name)")
@@ -112,6 +114,7 @@ async function deliverRemittance(input: {
       .eq("id", input.billId)
       .maybeSingle(),
     supabase.from("orgs").select("name,slug,logo_url").eq("id", input.orgId).maybeSingle(),
+    loadWorkspaceSurface(input.orgId),
   ])
   if (!bill) return { sent: false as const, reason: "no_bill" as const }
 
@@ -127,6 +130,7 @@ async function deliverRemittance(input: {
 
   const html = await renderEmailTemplate(
     RemittanceAdviceEmail({
+      projectLabel: profileTerminology(surface.profile).project,
       orgName: org?.name,
       orgLogoUrl: org?.logo_url,
       billNumber: bill.bill_number ?? null,
@@ -280,7 +284,7 @@ export async function sendVendorPaymentReturnNotice(input: {
     .maybeSingle()
   if (!disbursement?.bill_id) return { sent: false as const, reason: "no_bill" as const }
 
-  const [{ data: bill }, { data: org }] = await Promise.all([
+  const [{ data: bill }, { data: org }, surface] = await Promise.all([
     supabase
       .from("vendor_bills")
       .select("id,bill_number,company_id,company:companies(name,email),project:projects(name)")
@@ -288,6 +292,7 @@ export async function sendVendorPaymentReturnNotice(input: {
       .eq("id", disbursement.bill_id)
       .maybeSingle(),
     supabase.from("orgs").select("name,slug,logo_url").eq("id", input.orgId).maybeSingle(),
+    loadWorkspaceSurface(input.orgId),
   ])
   if (!bill) return { sent: false as const, reason: "no_bill" as const }
 
@@ -304,6 +309,7 @@ export async function sendVendorPaymentReturnNotice(input: {
   const amountCents = Number(disbursement.amount_cents)
   const html = await renderEmailTemplate(
     PaymentReturnVendorEmail({
+      projectLabel: profileTerminology(surface.profile).project,
       orgName: org?.name,
       orgLogoUrl: org?.logo_url,
       billNumber: bill.bill_number ?? null,

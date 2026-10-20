@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { BidsSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
@@ -10,6 +11,7 @@ import { BidsDeskClient } from "./bids-desk-client"
 
 async function BidsDeskPageContent() {
   await connection()
+  await guardWorkspaceDesk("bids")
   const rows = await listOrgBidPackages()
   // Stage is derived (past-due packages are "leveling" even if never closed) —
   // compute it once on the server so the client can band + filter on it.

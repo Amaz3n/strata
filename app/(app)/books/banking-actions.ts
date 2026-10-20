@@ -7,6 +7,7 @@ import {
   loadBankingDetail,
   uploadBankingReceipt,
   loadBankingReceiptInbox,
+  loadUnmatchedCapturedExpenses,
   linkBankingReceipt,
   createBankingVendor,
   refreshBankingFeeds,
@@ -39,6 +40,9 @@ export async function uploadBankingReceiptAction(data: FormData) {
 }
 export async function loadBankingReceiptInboxAction() {
   return run(loadBankingReceiptInbox);
+}
+export async function loadUnmatchedCapturedExpensesAction() {
+  return run(loadUnmatchedCapturedExpenses);
 }
 export async function linkBankingReceiptAction(
   input: Parameters<typeof linkBankingReceipt>[0],

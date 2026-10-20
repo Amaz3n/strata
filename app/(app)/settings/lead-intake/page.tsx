@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 
@@ -12,7 +13,7 @@ const BREADCRUMBS = [{ label: "Settings", href: "/settings" }, { label: "Lead in
 
 async function LeadIntakeSettingsContent() {
   await connection()
-  const [settings, members] = await Promise.all([
+  const [, settings, members] = await Promise.all([guardWorkspaceDesk("settings_lead_intake"),
     getLeadIntakeSettings(),
     listTeamMembers(undefined, { includeProjectCounts: false }),
   ])

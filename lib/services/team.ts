@@ -1,4 +1,6 @@
 import { z } from "zod"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { surfaceOffersRole } from "@/lib/workspace-surface"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { createHash, randomBytes } from "node:crypto"
@@ -7,10 +9,8 @@ import type { MemberPermissionOverride, TeamMember, OrgRole, OrgRoleOption } fro
 import {
   inviteMemberSchema,
   memberStatusSchema,
-  updateMemberLaborSettingsSchema,
   updateMemberRoleSchema,
   type InviteMemberInput,
-  type UpdateMemberLaborSettingsInput,
 } from "@/lib/validation/team"
 import { TEAM_PERMISSION_OPTIONS } from "@/lib/permission-catalog"
 import { requireOrgContext } from "@/lib/services/context"
@@ -115,6 +115,8 @@ export const ASSIGNABLE_ORG_ROLE_KEYS = [
   "org_sales_agent",
   "org_starts_coordinator",
   "org_superintendent",
+  "org_foreman",
+  "org_crew_member",
   "org_warranty_manager",
   "org_user",
   "org_viewer",
@@ -135,6 +137,8 @@ function defaultRoleDescription(roleKey: string) {
     org_sales_agent: "Community inventory, pricing, reservations, purchase agreements, and buyer handoff.",
     org_starts_coordinator: "Gate completeness, even-flow release planning, and start orchestration across communities.",
     org_superintendent: "Field lead for assigned production houses, schedules, logs, punch, inspections, and VPO requests.",
+    org_foreman: "Runs crews on assigned jobs: schedules work, keeps logs and punch, and approves crew time.",
+    org_crew_member: "Works assigned jobs: logs own time, reads the schedule and drawings, keeps daily logs and punch.",
     org_warranty_manager: "Coverage, service dispatch, SLA performance, warranty cost, and trade backcharge recovery.",
     org_user: "Internal team member. Access is scoped by project assignments and optional permission overrides.",
     org_viewer: "Read-only visibility for stakeholders and observers.",
@@ -231,9 +235,10 @@ export async function listAssignableOrgRoles(orgId?: string): Promise<OrgRoleOpt
   // Ordered most- to least-privileged. org_owner is intentionally excluded:
   // ownership transfers through a dedicated flow, not the member role picker.
   const options: OrgRoleOption[] = []
+  const surface = await loadWorkspaceSurface(resolvedOrgId)
   for (const key of ASSIGNABLE_ORG_ROLE_KEYS) {
     const row = rowsByKey.get(key)
-    if (!row) continue
+    if (!row || !surfaceOffersRole(surface, key)) continue
     options.push({
       key,
       label: normalizeRoleLabel((row.label as string | null) ?? null, key),
@@ -714,64 +719,6 @@ export async function listTeamMembers(
   return (data ?? []).map((row) => mapTeamMember(row, projectCounts, mfaEnabledByUser, permissionOverridesByMembership, divisionIdsByMembership))
 }
 
-export async function updateMemberLaborSettings({
-  membershipId,
-  input,
-  orgId,
-}: {
-  membershipId: string
-  input: UpdateMemberLaborSettingsInput
-  orgId?: string
-}) {
-  const parsed = updateMemberLaborSettingsSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAuthorization({
-    permission: "members.manage",
-    userId,
-    orgId: resolvedOrgId,
-    supabase,
-    logDecision: true,
-    resourceType: "membership",
-    resourceId: membershipId,
-  })
-
-  const serviceClient = createServiceSupabaseClient()
-  const { data: before, error: beforeError } = await serviceClient
-    .from("memberships")
-    .select("id, org_id, user_id, labor_cost_rate_cents, labor_bill_rate_cents, labor_burden_multiplier, labor_is_billable_default")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", membershipId)
-    .maybeSingle()
-
-  if (beforeError || !before) {
-    throw new Error("Membership not found")
-  }
-
-  const { data, error } = await serviceClient
-    .from("memberships")
-    .update(parsed)
-    .eq("org_id", resolvedOrgId)
-    .eq("id", membershipId)
-    .select("id, org_id, user_id, labor_cost_rate_cents, labor_bill_rate_cents, labor_burden_multiplier, labor_is_billable_default")
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to update labor settings: ${error?.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "update",
-    entityType: "membership",
-    entityId: membershipId,
-    before,
-    after: data,
-  })
-
-  return data
-}
-
 export async function updateMemberProfile({
   userId: targetUserId,
   fullName,
@@ -1048,6 +995,11 @@ export async function inviteTeamMember({
     resourceId: resolvedOrgId,
   })
   const serviceClient = createServiceSupabaseClient()
+
+  // The picker never offers a role this workspace does not run; the service refuses it too.
+  if (!surfaceOffersRole(await loadWorkspaceSurface(resolvedOrgId), parsed.role)) {
+    throw new Error("That role isn't available in this workspace.")
+  }
 
   // Escalation is refused before the invite creates a user, a membership or an email.
   const roleId = await resolveRoleId(serviceClient, parsed.role)

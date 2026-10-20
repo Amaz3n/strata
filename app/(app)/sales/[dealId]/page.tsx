@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
@@ -46,6 +47,7 @@ const ACTIVITY_CAP = 60
  */
 async function DealDetailPageContent({ params }: { params: Promise<{ dealId: string }> }) {
   await connection()
+  await guardWorkspaceDesk("sales")
   const { dealId } = await params
   const [detail, ambient, teamMembers] = await Promise.all([
     getSalesDealDetail(decodeURIComponent(dealId)),

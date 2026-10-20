@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { StartsSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
@@ -14,6 +15,7 @@ async function StartsPageContent({
   searchParams: Promise<{ community?: string; package?: string }>
 }) {
   await connection()
+  await guardWorkspaceDesk("starts")
   const params = await searchParams
   const scope = await resolveProductionDeskScope({ communityId: params.community })
   const [desk, permits] = await Promise.all([

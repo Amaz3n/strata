@@ -59,6 +59,7 @@ import { sendVendorBillWaiverChase } from "@/lib/services/payment-holds"
 import { FLOORPLAN_INTERPRET_JOB, runFloorplanInterpretation } from "@/lib/services/floorplan-models"
 import { runVendorBillApprovalProjection } from "@/lib/services/vendor-bills"
 import { BOOKS_EXPORT_JOB_TYPE, runBooksExportJob } from "@/lib/services/books/exports"
+import { CONNECTED_RECEIVABLE_JOB_TYPE, syncConnectedReceivable } from "@/lib/services/connected-receivables"
 import { INVOICE_ISSUANCE_JOB_TYPE, SCHEDULED_INVOICE_SEND_JOB_TYPE, runInvoiceIssuance, runScheduledInvoiceSend } from "@/lib/services/invoices"
 import { floorplanTargetSchema } from "@/lib/validation/floorplan"
 import { AUDIT_RETRY_JOB_TYPE, writeDeferredAudit } from "@/lib/services/audit"
@@ -75,6 +76,8 @@ import {
   DOMPoint as CanvasDOMPoint,
   DOMRect as CanvasDOMRect,
 } from "@napi-rs/canvas"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { profileTerminology } from "@/lib/terminology"
 
 // Polyfill DOM APIs for PDF.js in Node.js environment using @napi-rs/canvas
 if (typeof globalThis.DOMMatrix === "undefined") {
@@ -176,6 +179,7 @@ const OUTBOX_JOB_TYPES = [
   BOOKS_EXPORT_JOB_TYPE,
   INVOICE_ISSUANCE_JOB_TYPE,
   SCHEDULED_INVOICE_SEND_JOB_TYPE,
+  CONNECTED_RECEIVABLE_JOB_TYPE,
   FLOORPLAN_INTERPRET_JOB,
   AUDIT_RETRY_JOB_TYPE,
   LEAD_INTAKE_JOB_TYPE,
@@ -666,6 +670,8 @@ async function processOutboxQueue(request: NextRequest) {
           await runInvoiceIssuance(job.org_id, job.payload ?? {})
         } else if (job.job_type === SCHEDULED_INVOICE_SEND_JOB_TYPE) {
           await runScheduledInvoiceSend(job.org_id, job.payload ?? {})
+        } else if (job.job_type === CONNECTED_RECEIVABLE_JOB_TYPE) {
+          await syncConnectedReceivable(job.org_id, job.payload ?? {})
         } else if (job.job_type === "project_vendor_bill_approval") {
           const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
           if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
@@ -885,11 +891,10 @@ async function sendESignExecutedEmailJob(supabase: ReturnType<typeof createServi
     throw new Error(`Executed file not found (${fileError?.message ?? "missing"})`)
   }
 
-  const { data: org } = await supabase
-    .from("orgs")
-    .select("name, logo_url, slug")
-    .eq("id", file.org_id)
-    .maybeSingle()
+  const [{ data: org }, surface] = await Promise.all([
+    supabase.from("orgs").select("name, logo_url, slug").eq("id", file.org_id).maybeSingle(),
+    loadWorkspaceSurface(file.org_id),
+  ])
 
   const documentTitle = payloadDocumentTitle ?? file.file_name ?? "Document"
   const executedUrl = buildExecutedDocumentUrl(createExecutedFileAccessToken(file.id))
@@ -904,6 +909,7 @@ async function sendESignExecutedEmailJob(supabase: ReturnType<typeof createServi
       documentTitle,
       signingLink: executedUrl,
       recipientName,
+      projectLabel: profileTerminology(surface.profile).project,
       orgName: org?.name ?? null,
       orgLogoUrl: org?.logo_url ?? null,
       eventLabel: "Document Executed",

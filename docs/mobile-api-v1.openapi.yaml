@@ -639,6 +639,55 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: Punch item not found }
         "422": { description: Invalid status }
+  /expenses:
+    get:
+      summary: The caller's own recent expenses across jobs, overhead and unsorted (newest first, capped at 100)
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { description: Expenses, each with `project_id` (null for overhead or unsorted), `overhead_category` and `home_label` }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Submit an expense with no job required (multipart); unsorted expenses go to the office review queue
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                payload:
+                  type: string
+                  description: JSON with client_id, expense_date, amount_dollars, tax_dollars, vendor_name, payment_method, description, and optionally project_id or overhead_category (never both)
+                receipt: { type: string, format: binary }
+      responses:
+        "201": { description: Created expense (a retry with the same client_id returns the saved one) }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+        "422": { description: Invalid expense, or both a job and an overhead category }
+  /expenses/scan:
+    post:
+      summary: Extract receipt fields with AI and suggest the job the caller was clocked into that day (multipart)
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [receipt]
+              properties:
+                receipt: { type: string, format: binary }
+      responses:
+        "200": { description: Extracted receipt fields plus `suggested_project_id` and `suggested_project_name` (null when none) }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { description: Receipt could not be scanned }
   /projects/{projectId}/expenses:
     get:
       summary: List a project's submitted expenses with signed receipt URLs

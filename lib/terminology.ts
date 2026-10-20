@@ -1,4 +1,4 @@
-import type { BusinessProfile } from "@/lib/business-profile"
+import { isTradeProfile, type BusinessProfile } from "@/lib/business-profile"
 import type { ProductTier, ProjectPosture } from "@/lib/product-tier"
 
 /**
@@ -23,6 +23,7 @@ const TERMS = {
     vendors: "Subs",
     trade: "Trade",
     directory: "Directory",
+    pipeline: "Pipeline",
   },
   commercial: {
     owner: "Owner",
@@ -37,6 +38,7 @@ const TERMS = {
     // Commercial estimating and prequalification both organize by CSI division.
     trade: "Division",
     directory: "Directory",
+    pipeline: "Pipeline",
   },
   production: {
     owner: "Buyer",
@@ -50,6 +52,7 @@ const TERMS = {
     vendors: "Suppliers",
     trade: "Trade",
     directory: "Directory",
+    pipeline: "Pipeline",
   },
 } as const
 
@@ -58,7 +61,16 @@ export type TerminologyPosture = ProjectPosture | ProductTier
 
 export function terminology(posture: TerminologyPosture, profile?: BusinessProfile) {
   const base = TERMS[posture]
-  return profile?.kind === "trade"
-    ? { ...base, project: "Job", projects: "Jobs", owner: "Customer", owners: "Customers", ownerPortal: "Customer portal", fee: "Markup", vendors: "Suppliers", vendor: "Supplier" }
+  return profile && isTradeProfile(profile)
+    ? { ...base, project: "Job", projects: "Jobs", owner: "Customer", owners: "Customers", ownerPortal: "Customer portal", fee: "Markup", vendors: "Suppliers", vendor: "Supplier", pipeline: "Opportunities" }
     : base
+}
+
+/**
+ * Nouns for output that has no project posture in hand (an email, a PDF
+ * fallback) and has always read in the builder's default words. A builder keeps
+ * those words whatever its projects are; a trade company gets its own.
+ */
+export function profileTerminology(profile: BusinessProfile) {
+  return terminology("residential", profile)
 }

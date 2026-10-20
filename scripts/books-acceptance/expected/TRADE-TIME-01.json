@@ -1,0 +1,300 @@
+{
+  "scenario": "TRADE-TIME-01",
+  "reviewedFrom": "TR03-01, TR03-02 and TR03-03 (docs/plans/arc-trade/completion-checklist.json); docs/plans/arc-trade/README.md section 5 (TRADE-TIME-01); docs/reference/arc-trade.md; lib/services/time-clock.ts (clockIn, clockOut, sessionHours); lib/services/timesheets.ts (approveTimeEntries, closePayPeriod, exportPayPeriod, getPayPeriodSummary); lib/services/time-overtime.ts and lib/time/overtime.ts (the weekly rule); lib/time/policy.ts and pay-periods.ts (biweekly periods from the anchor); lib/time/timesheet.ts (payrollExportCsv); lib/financials/approval-gates.ts (cost code gate); lib/services/books/payroll-imports.ts, payroll-register-csv.ts, payroll-import-rules.ts (reconcilePayrollImport) and labor-evidence.ts (wage and burden decomposition of a posted labor cost); the role_permissions catalog on the acceptance stack; the labor rates trade-seed.cjs sets (Casey 3,400, Chris 3,200 cents an hour, burden 1.25). The acceptance stack has no object store, so the one stand-in is the read of the provider's register file at its own path (retainRegister in trade-time-01.cjs); the file's bytes, checksum, document version and Books' verification of them are real. The company's three jobs each get a budget with cost code 3270 because the clock only asks for a cost code on a job that budgets by one.",
+  "subcases": {
+    "crew-clock-across-three-jobs": {
+      "derivation": "Casey Crew (cost rate 3,400 cents an hour) and Chris Crew (3,200), both with burden multiplier 1.25, clock in and out through the clock service on the company's three jobs (each is on all three; the foreman too) against the labor cost code each job budgets (3270 Rough electrical labor; the budget makes the clock ask for one). Each day's session is back-dated to its day and length: Casey Mon 9/21 9h Harbor Tower, Tue 9/22 9h Palm Court, Wed 9/23 9h Sunrise Plaza, Thu 9/24 9h Harbor Tower, Fri 9/25 8h Palm Court, Mon 9/28 8h Sunrise Plaza, Tue 9/29 8h Palm Court (60 hours); Chris Mon 9/21 8h Palm Court, Tue 9/22 8h Harbor Tower, Wed 9/23 8h Sunrise Plaza, Mon 9/28 8h Harbor Tower (32 hours). Clocking out writes one submitted time entry per session at the rate in force on its date (the labor rates the owner set effective 2026-01-01) and the burden multiplier, with no clock left open: 11 sessions, 11 entries, each entry listed by date then worker.",
+      "expected": {
+        "sessions": {
+          "closed": 11,
+          "open": 0,
+          "linked": 11
+        },
+        "entries": [
+          {
+            "worker": "Casey Crew",
+            "date": "2026-09-21",
+            "job": "Harbor Tower - tenant electrical",
+            "hours": 9,
+            "status": "submitted",
+            "baseRateCents": 3400,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Chris Crew",
+            "date": "2026-09-21",
+            "job": "Palm Court - service calls",
+            "hours": 8,
+            "status": "submitted",
+            "baseRateCents": 3200,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Casey Crew",
+            "date": "2026-09-22",
+            "job": "Palm Court - service calls",
+            "hours": 9,
+            "status": "submitted",
+            "baseRateCents": 3400,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Chris Crew",
+            "date": "2026-09-22",
+            "job": "Harbor Tower - tenant electrical",
+            "hours": 8,
+            "status": "submitted",
+            "baseRateCents": 3200,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Casey Crew",
+            "date": "2026-09-23",
+            "job": "Sunrise Plaza - lighting retrofit",
+            "hours": 9,
+            "status": "submitted",
+            "baseRateCents": 3400,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Chris Crew",
+            "date": "2026-09-23",
+            "job": "Sunrise Plaza - lighting retrofit",
+            "hours": 8,
+            "status": "submitted",
+            "baseRateCents": 3200,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Casey Crew",
+            "date": "2026-09-24",
+            "job": "Harbor Tower - tenant electrical",
+            "hours": 9,
+            "status": "submitted",
+            "baseRateCents": 3400,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Casey Crew",
+            "date": "2026-09-25",
+            "job": "Palm Court - service calls",
+            "hours": 8,
+            "status": "submitted",
+            "baseRateCents": 3400,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Casey Crew",
+            "date": "2026-09-28",
+            "job": "Sunrise Plaza - lighting retrofit",
+            "hours": 8,
+            "status": "submitted",
+            "baseRateCents": 3400,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Chris Crew",
+            "date": "2026-09-28",
+            "job": "Harbor Tower - tenant electrical",
+            "hours": 8,
+            "status": "submitted",
+            "baseRateCents": 3200,
+            "burden": 1.25,
+            "overtime": false
+          },
+          {
+            "worker": "Casey Crew",
+            "date": "2026-09-29",
+            "job": "Palm Court - service calls",
+            "hours": 8,
+            "status": "submitted",
+            "baseRateCents": 3400,
+            "burden": 1.25,
+            "overtime": false
+          }
+        ]
+      }
+    },
+    "foreman-bulk-approves-with-time-approve-only": {
+      "derivation": "The foreman's role grants time.approve and time.manage but neither bill.approve nor time.close (the role catalog migration 20261025100000). One bulk approval of all 11 submitted entries, in work order, approves every one (an approver of time needs time.approve on the entry's job; the foreman is on all three). The hours are unchanged by approval: Casey 9+9+9+9+8+8+8 = 60, Chris 8+8+8+8 = 32. Approval posts the entry's labor cost to its job: one posted job-cost row for each approved entry at the entry's own generated cost (hours x rate x burden x premium), so no row differs from its entry. Without bill.approve the foreman cannot send time for the client's approval (Missing permission: bill.approve), and without time.close cannot close the period (Missing permission: time.close).",
+      "expected": {
+        "foremanHolds": {
+          "time.approve": true,
+          "bill.approve": false,
+          "time.close": false
+        },
+        "bulk": {
+          "failed": [],
+          "approvedEveryEntryTheForemanSent": true
+        },
+        "entriesStillWaiting": 0,
+        "hoursByWorker": {
+          "Casey Crew": 60,
+          "Chris Crew": 32
+        },
+        "jobCostPostedForEveryApprovedEntry": true,
+        "foremanRefused": {
+          "clientApproval": "refused: Missing permission: bill.approve",
+          "closingThePeriod": "refused: Missing permission: time.close"
+        }
+      }
+    },
+    "time-on-a-job-without-a-budget-can-be-approved": {
+      "derivation": "A fourth job, Cedar Lane, is a time-and-materials service call with no budget. Casey clocks two hours on it on Monday 9/14 (outside the 9/21 period). The company keeps cost codes on (the org setting is absent, which means on), so approval blocks time without a cost code (APPROVAL_GATE_REASONS.missingCostCode, 'Choose a cost code.'), while the clock offers the company's active cost codes when the job's budget names none. The foreman, holding time.approve, approves the two hours: nothing should be refused and the entry should be approved. The job budgets no codes and its approval needs one, so the clock offers the company's active cost codes and Casey picks one when she clocks in.",
+      "expected": {
+        "refused": [],
+        "status": "pm_approved"
+      }
+    },
+    "weekly-overtime-entry-is-auto-flagged": {
+      "derivation": "The company's rule is 40 regular hours a week, counted from the anchor's weekday (Monday 9/21 to Sunday 9/27 for week one). Casey's week-one entries in work order are 9, 9, 9, 9 and 8 hours: after Thursday she has 36, so Friday's 8-hour entry crosses the line with 4 hours left before it: 4 regular hours and 8 - 4 = 4 overtime hours. Approving the entry splits it into a 4-hour regular entry and a 4-hour entry flagged overtime by the rule (overtime_source 'rule'), both approved. Today the rule never runs, because applyOvertimeRule returns early for any entry whose cost_cents is not null and time_entries.cost_cents is a generated column that is never null.",
+      "expected": [
+        {
+          "hours": 4,
+          "overtime": false,
+          "doubleTime": false,
+          "status": "pm_approved",
+          "overtimeSource": null
+        },
+        {
+          "hours": 4,
+          "overtime": true,
+          "doubleTime": false,
+          "status": "pm_approved",
+          "overtimeSource": "rule"
+        }
+      ]
+    },
+    "admin-locks-the-period": {
+      "derivation": "The office admin (org_office_admin holds time.close) closes the biweekly period Monday 2026-09-21 to Sunday 2026-10-04 (anchor 2026-09-07, 14 days: 9/21 is the third period start). It has ended and nothing waits for approval, so closing succeeds: every entry in the period becomes locked and the hours do not change, 60 + 32 = 92. The summary by worker is Casey 60 and Chris 32; by job it is Harbor Tower 9+9 (Casey) + 8+8 (Chris) = 34, Palm Court 9+8+8 (Casey) + 8 (Chris) = 33, Sunrise Plaza 9+8 (Casey) + 8 (Chris) = 25. A period that is already closed cannot close again.",
+      "expected": {
+        "period": {
+          "startsOn": "2026-09-21",
+          "endsOn": "2026-10-04",
+          "closedByTheOfficeAdmin": true
+        },
+        "everyEntryLocked": true,
+        "lockedHours": 92,
+        "summaryHours": {
+          "total": 92,
+          "byWorker": {
+            "Casey Crew": 60,
+            "Chris Crew": 32
+          },
+          "byJob": {
+            "Harbor Tower - tenant electrical": 34,
+            "Palm Court - service calls": 33,
+            "Sunrise Plaza - lighting retrofit": 25
+          }
+        },
+        "closingAgain": "refused: This pay period is already closed."
+      }
+    },
+    "payroll-csv-export": {
+      "derivation": "The generic export lists, per worker and job and cost code, regular, overtime and double-time hours and the labor cost, workers and jobs in name order. A regular hour costs rate x burden: Casey 3,400 x 1.25 = 4,250 cents, Chris 3,200 x 1.25 = 4,000; an overtime hour costs rate x 1.5 x burden: Casey 6,375. Casey: Harbor Tower 18 regular = 76,500; Palm Court 9 + 4 (Friday's regular part) + 8 = 21 regular and 4 overtime = 21 x 4,250 + 4 x 6,375 = 89,250 + 25,500 = 114,750; Sunrise Plaza 17 regular = 72,250. Chris: Harbor Tower 16 = 64,000; Palm Court 8 = 32,000; Sunrise Plaza 8 = 32,000. The file's name is payroll-hours-<start>-to-<end>-generic.csv. Only time.close can export (the foreman is refused) and the export leaves one critical audit record. It depends on the overtime split of the weekly-overtime-entry-is-auto-flagged subcase: today Casey's Palm Court row reads 25.00 regular and 0.00 overtime, 1,062.50.",
+      "expected": {
+        "filename": "payroll-hours-2026-09-21-to-2026-10-04-generic.csv",
+        "lines": [
+          "Period start,Period end,Worker,Email,Job,Cost code,Regular hours,Overtime hours,Double time hours,Labor cost",
+          "2026-09-21,2026-10-04,Casey Crew,<crew>,Harbor Tower - tenant electrical,3270 · Rough electrical labor,18.00,0.00,0.00,765.00",
+          "2026-09-21,2026-10-04,Casey Crew,<crew>,Palm Court - service calls,3270 · Rough electrical labor,21.00,4.00,0.00,1147.50",
+          "2026-09-21,2026-10-04,Casey Crew,<crew>,Sunrise Plaza - lighting retrofit,3270 · Rough electrical labor,17.00,0.00,0.00,722.50",
+          "2026-09-21,2026-10-04,Chris Crew,<crewTwo>,Harbor Tower - tenant electrical,3270 · Rough electrical labor,16.00,0.00,0.00,640.00",
+          "2026-09-21,2026-10-04,Chris Crew,<crewTwo>,Palm Court - service calls,3270 · Rough electrical labor,8.00,0.00,0.00,320.00",
+          "2026-09-21,2026-10-04,Chris Crew,<crewTwo>,Sunrise Plaza - lighting retrofit,3270 · Rough electrical labor,8.00,0.00,0.00,320.00"
+        ],
+        "foremanExport": "refused: Missing permission: time.close",
+        "auditedExports": 1
+      }
+    },
+    "register-reconciles-in-books-payroll": {
+      "derivation": "Books is on for the company from 2026-09-01; approving time posted each entry's labor to the ledger (cost to the job, clearing 2200). The provider's register for the period (Gusto run RUN-2026-10-09, accrual 10/04, pay 10/09) has one row per employee and an independent control row. Wages are hours x cost rate, overtime at 1.5. Casey: Harbor Tower 18 x 3,400 = 61,200; Palm Court 21 x 3,400 + 4 x 3,400 x 1.5 = 71,400 + 20,400 = 91,800; Sunrise Plaza 17 x 3,400 = 57,800; gross 210,800. Chris: 16 x 3,200 = 51,200; 8 x 3,200 = 25,600; 25,600; gross 102,400. Provider gross 313,200. Employer cost is the 25% burden the company costs labor at: 52,700 (Casey) + 25,600 (Chris) = 78,300. Employee taxes 20,000 + 8,000 = 28,000 and deductions 5,000 + 2,000 = 7,000 give net 185,800 + 92,400 = 278,200. Funding = net + employee taxes + deductions + employer taxes = 278,200 + 28,000 + 7,000 + 78,300 = 391,500, equal to the period's labor cost. The register is prepared by the office admin (books.adjust) and reviewed by the owner; the preparer cannot review it (Payroll requires a separate reviewer). Recognized labor is the same 313,200 wages and 78,300 burden, so every variance is zero and no variance review is needed. It depends on the overtime split: today Casey's Palm Court wages recognize as 25 x 3,400 = 85,000, 6,800 short of the provider's, and the total cost variance is 8,500.",
+      "expected": {
+        "status": "reviewed",
+        "preparedByTheOfficeAdmin": true,
+        "reviewedByTheOwner": true,
+        "preparerReviewingOwnImport": "refused: Payroll requires a separate reviewer",
+        "providerTotals": {
+          "grossCents": 313200,
+          "netCents": 278200,
+          "employeeTaxesCents": 28000,
+          "employeeDeductionsCents": 7000,
+          "employerTaxesCents": 78300,
+          "fundingCents": 391500
+        },
+        "recognizedLabor": {
+          "grossCents": 313200,
+          "estimatedBurdenCents": 78300
+        },
+        "variance": {
+          "wageCents": 0,
+          "employerCostCents": 0,
+          "totalCents": 0,
+          "needsReview": false
+        },
+        "allocations": [
+          {
+            "worker": "crew",
+            "job": "commercial",
+            "recognizedCents": 57800,
+            "providerGrossCents": 57800,
+            "varianceCents": 0
+          },
+          {
+            "worker": "crew",
+            "job": "gc",
+            "recognizedCents": 61200,
+            "providerGrossCents": 61200,
+            "varianceCents": 0
+          },
+          {
+            "worker": "crew",
+            "job": "homeowner",
+            "recognizedCents": 91800,
+            "providerGrossCents": 91800,
+            "varianceCents": 0
+          },
+          {
+            "worker": "crewTwo",
+            "job": "commercial",
+            "recognizedCents": 25600,
+            "providerGrossCents": 25600,
+            "varianceCents": 0
+          },
+          {
+            "worker": "crewTwo",
+            "job": "gc",
+            "recognizedCents": 51200,
+            "providerGrossCents": 51200,
+            "varianceCents": 0
+          },
+          {
+            "worker": "crewTwo",
+            "job": "homeowner",
+            "recognizedCents": 25600,
+            "providerGrossCents": 25600,
+            "varianceCents": 0
+          }
+        ]
+      }
+    },
+    "pay-period-summary-shows-the-books-import": {
+      "derivation": "After the import is reviewed, the office admin opens the closed period's summary (getPayPeriodSummary, which needs time.close, held by the office admin). The summary looks up the period's Books payroll import and reports its status ('reviewed') and that it carries a reconciliation (true). Today the lookup reads books_payroll_imports as the signed-in member, and the table is granted to the service role only, so the summary throws 'Failed to load the payroll import: permission denied for table books_payroll_imports' for every member and every period.",
+      "expected": {
+        "payrollImport": {
+          "status": "reviewed",
+          "reconciled": true
+        }
+      }
+    }
+  }
+}

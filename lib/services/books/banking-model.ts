@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MATCH_WINDOW_DAYS, dateDistanceDays } from "./bank-match-rules";
 
 export const bankCodingLineSchema = z.object({
   id: z.string().uuid(),
@@ -132,4 +133,71 @@ export function receiptCandidates(
         !!vendor &&
         (t.merchant_name ?? t.description).toLowerCase().includes(vendor),
     }));
+}
+
+/** The inclusive entry-date range a ledger line may fall in to be this transaction. */
+export function matchWindowBounds(date: string) {
+  const shift = (days: number) => {
+    const moved = new Date(`${date.slice(0, 10)}T00:00:00Z`);
+    moved.setUTCDate(moved.getUTCDate() + days);
+    return moved.toISOString().slice(0, 10);
+  };
+  return { from: shift(-MATCH_WINDOW_DAYS), to: shift(MATCH_WINDOW_DAYS) };
+}
+
+/** The expense behind a ledger line that was posted from a captured receipt. */
+export type CapturedExpense = {
+  expenseId: string;
+  vendorName: string | null;
+  /** Job name, overhead category label, or "Needs a job or category". */
+  homeLabel: string;
+  hasReceipt: boolean;
+  receiptFileId: string | null;
+};
+
+const normalizedName = (value: string | null | undefined) =>
+  (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+function vendorAgrees(counterparty: string | null | undefined, vendor: string | null) {
+  const left = normalizedName(counterparty);
+  const right = normalizedName(vendor);
+  return left.length > 0 && right.length > 0 && (left.includes(right) || right.includes(left));
+}
+
+/**
+ * The approved expense a card charge already is. An expense posts its cost when
+ * it is approved, so the charge must be MATCHED to that ledger line, never
+ * categorized again. Returns the single expense-backed line whose remaining
+ * amount equals the charge and is within the match window; a vendor-name
+ * agreement outranks one without. When two lines are equally good the answer is
+ * null: guessing wrong would tie a charge to the wrong receipt.
+ */
+export function capturedExpenseMatch<
+  T extends {
+    id: string;
+    availableCents: number;
+    entryDate: string;
+    expense: CapturedExpense | null;
+  },
+>(
+  transaction: {
+    date: string;
+    amountCents: number;
+    direction: "inflow" | "outflow";
+    counterparty?: string | null;
+  },
+  candidates: readonly T[],
+): T | null {
+  if (transaction.direction !== "outflow") return null;
+  const eligible = candidates.filter(
+    (candidate) =>
+      candidate.expense !== null &&
+      candidate.availableCents === transaction.amountCents &&
+      dateDistanceDays(transaction.date, candidate.entryDate) <= MATCH_WINDOW_DAYS,
+  );
+  const agreeing = eligible.filter((candidate) =>
+    vendorAgrees(transaction.counterparty, candidate.expense?.vendorName ?? null),
+  );
+  const pool = agreeing.length > 0 ? agreeing : eligible;
+  return pool.length === 1 ? pool[0] : null;
 }

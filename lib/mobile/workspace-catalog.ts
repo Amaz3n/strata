@@ -1,4 +1,5 @@
 import { budgetDraftFields } from "@/lib/mobile/workspace-estimate-fields"
+import { isTradeSurface, surfaceAllowsPath, type WorkspaceSurface } from "@/lib/workspace-surface"
 /** Native workspace contract. Only explicitly projected product fields leave the API. */
 export type WorkspaceField = { key: string; label: string; kind: "text" | "multiline" | "date" | "money" | "number" | "choice" | "rows"; fields?: WorkspaceField[]; options?: string[]; option_labels?: Record<string, string>; required?: boolean }
 export type WorkspaceModule = {
@@ -154,6 +155,39 @@ for (const workspaceModule of workspaceModules) {
 export function projectModuleVisible(module: WorkspaceModule, posture: string, phase?: string | null, overrides: Record<string, boolean> = {}) {
   if (phase === "precon" && module.group !== "Plan") return false
   return overrides[module.moduleKey ?? module.id.replaceAll("-", "_")] ?? (!module.postures || module.postures.includes(posture))
+}
+
+/** The web desk each organization module mirrors, so the workspace surface decides both the same way. */
+const MODULE_DESK_PATHS: Record<string, string> = {
+  estimates: "/estimates", bids: "/bids", warranty: "/warranty", sales: "/sales", communities: "/communities",
+  plans: "/plans", "design-studio": "/design-studio", starts: "/starts", purchasing: "/purchasing",
+}
+/** The project workbench tab each project module mirrors. */
+const MODULE_PROJECT_TABS: Record<string, string> = {
+  bids: "/bids", selections: "/selections", decisions: "/decisions", meetings: "/meetings", transmittals: "/transmittals",
+  specs: "/specs", budget: "/financials/budget", closeout: "/closeout", warranty: "/warranty",
+  commitments: "/commitments", rfis: "/rfis", submittals: "/submittals", inspections: "/inspections", safety: "/safety",
+}
+
+/** Whether the org's plan and business profile include a module; project overrides can switch a tab back on. */
+export function surfaceAllowsModule(module: WorkspaceModule, surface: WorkspaceSurface, projectOverrides?: Record<string, boolean>) {
+  const tab = projectOverrides ? MODULE_PROJECT_TABS[module.id] : undefined
+  if (tab) return surfaceAllowsPath(surface, `/projects/project${tab}`, projectOverrides)
+  const desk = MODULE_DESK_PATHS[module.id]
+  return !desk || surfaceAllowsPath(surface, desk)
+}
+
+const TRADE_MODULE_TITLES: Record<string, string> = { time: "Crew time", pipeline: "Opportunities" }
+const TRADE_FIELD_LABELS: Record<string, string> = { "Project type": "Job type" }
+
+export function workspaceModuleTitle(module: WorkspaceModule, surface: WorkspaceSurface) {
+  return (isTradeSurface(surface) && TRADE_MODULE_TITLES[module.id]) || module.title
+}
+
+/** A module's form fields in the workspace's words: a trade company is never asked for a "Project type". */
+export function workspaceModuleFields(fields: WorkspaceField[], surface: WorkspaceSurface): WorkspaceField[] {
+  if (!isTradeSurface(surface)) return fields
+  return fields.map((field) => ({ ...field, label: TRADE_FIELD_LABELS[field.label] ?? field.label }))
 }
 
 export function workspaceRecord(module: WorkspaceModule, value: unknown, index: number) {

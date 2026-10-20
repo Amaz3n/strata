@@ -1,4 +1,5 @@
 import { Suspense } from "react"
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -33,7 +34,7 @@ interface SalesPageProps {
  * scope is ambient across every desk at once.
  */
 async function SalesPageContent({ searchParams }: SalesPageProps) {
-  const params = await searchParams
+  const [, params] = await Promise.all([guardWorkspaceDesk("sales"), searchParams])
   const view: DealView = isDealView(params.view) ? params.view : "open"
   const filter: DealFilter = isDealFilter(params.due) ? params.due : "all"
 

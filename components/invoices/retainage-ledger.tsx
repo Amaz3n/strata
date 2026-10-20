@@ -7,10 +7,13 @@ import { ArrowUpRight, Loader2 } from "lucide-react"
 
 import type { Retainage } from "@/lib/types"
 import type { PrimeSovState } from "@/lib/services/prime-sov"
-import { releaseProjectRetainageAction } from "@/app/(app)/projects/[id]/actions"
+import { createRetainageReleaseWaiverAction, releaseProjectRetainageAction } from "@/app/(app)/projects/[id]/actions"
 import { releasePrimeRetainageAction } from "@/app/(app)/projects/[id]/financials/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { invoiceHref } from "@/lib/financials/invoice-destinations"
+import { RETAINAGE_RELEASE_BASIS_LABELS, RETAINAGE_RELEASE_NOT_SET, type ExpectedRetainageRelease } from "@/lib/financials/retainage-release"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { isTradeSurface } from "@/lib/workspace-surface"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -42,13 +45,19 @@ export function RetainageLedger({
   projectId,
   retainage,
   sov,
+  customerLabel,
+  expectedRelease,
   onChanged,
 }: {
   projectId: string
   retainage: Retainage[]
   sov: PrimeSovState | null
+  /** Who is holding it: the job's customer, from the resolved billing profile. */
+  customerLabel: string
+  expectedRelease: ExpectedRetainageRelease
   onChanged: () => void | Promise<void>
 }) {
+  const trade = isTradeSurface(usePageTitle().workspaceSurface)
   const totals = useMemo(() => {
     const held = retainage.filter((row) => row.status === "held").reduce((sum, row) => sum + row.amount_cents, 0)
     const released = retainage
@@ -74,7 +83,7 @@ export function RetainageLedger({
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-6 py-3">
         <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm">
           <div className="flex items-baseline gap-1.5">
-            <dt className="microlabel">Held</dt>
+            <dt className="microlabel">{trade ? `Held by ${customerLabel}` : "Held"}</dt>
             <dd className={cn("font-mono font-semibold tabular-nums", releasable > 0 ? "text-warning" : "text-muted-foreground")}>
               {formatMoneyCompact(mode === "sov" ? sovAvailable : totals.held)}
             </dd>
@@ -82,6 +91,19 @@ export function RetainageLedger({
           <div className="flex items-baseline gap-1.5">
             <dt className="microlabel">Released</dt>
             <dd className="font-mono tabular-nums">{formatMoneyCompact(mode === "sov" ? sov?.summary?.retainage_released_cents ?? 0 : totals.released)}</dd>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <dt className="microlabel">Expected release</dt>
+            <dd className={cn("tabular-nums", expectedRelease.date ? "font-medium" : "text-muted-foreground")}>
+              {expectedRelease.date && expectedRelease.basis ? (
+                <>
+                  {formatDateOnly(expectedRelease.date, { withYear: true })}
+                  <span className="ml-1.5 text-xs font-normal text-muted-foreground">{RETAINAGE_RELEASE_BASIS_LABELS[expectedRelease.basis]}</span>
+                </>
+              ) : (
+                RETAINAGE_RELEASE_NOT_SET
+              )}
+            </dd>
           </div>
           {totals.paid > 0 ? (
             <div className="flex items-baseline gap-1.5">
@@ -98,7 +120,7 @@ export function RetainageLedger({
             </div>
           ) : null}
         </dl>
-        <ReleaseRetainage projectId={projectId} mode={mode} availableCents={releasable} onReleased={onChanged} />
+        <ReleaseRetainage projectId={projectId} mode={mode} availableCents={releasable} withWaiver={trade} onReleased={onChanged} />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -143,7 +165,11 @@ export function RetainageLedger({
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={5} className="px-6 py-10 text-center">
                   <p className="text-sm font-medium">Nothing withheld yet</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">Retainage held on each invoice lands here; releasing it creates the release invoice.</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {trade
+                      ? `Retainage ${customerLabel} holds back on each invoice lands here; releasing it creates the release invoice and its waiver.`
+                      : "Retainage held on each invoice lands here; releasing it creates the release invoice."}
+                  </p>
                 </TableCell>
               </TableRow>
             ) : (
@@ -193,11 +219,14 @@ function ReleaseRetainage({
   projectId,
   mode,
   availableCents,
+  withWaiver,
   onReleased,
 }: {
   projectId: string
   mode: "sov" | "ledger"
   availableCents: number
+  /** A trade's release also prepares its waiver: final when it clears the retainage, conditional progress when it does not. */
+  withWaiver: boolean
   onReleased: () => void | Promise<void>
 }) {
   const [open, setOpen] = useState(false)
@@ -212,6 +241,21 @@ function ReleaseRetainage({
 
   const setPercent = (percent: number) => setAmount((Math.round(availableCents * percent) / 100).toFixed(2))
 
+  const waiverName = full ? "unconditional final waiver" : "conditional progress waiver"
+
+  /** The release is already filed; a waiver that fails to prepare is reported, not retried silently. */
+  async function prepareWaiver(invoiceId: string) {
+    if (!withWaiver) return
+    try {
+      unwrapAction(await createRetainageReleaseWaiverAction(projectId, invoiceId))
+      toast.success(`${waiverName[0].toUpperCase()}${waiverName.slice(1)} prepared`, { description: "It releases once the release invoice is paid." })
+    } catch (error) {
+      toast.error("The release was filed but its waiver could not be prepared", {
+        description: error instanceof Error ? error.message : "Add it from the release invoice.",
+      })
+    }
+  }
+
   async function release() {
     if (!valid) return
     setBusy(true)
@@ -221,9 +265,12 @@ function ReleaseRetainage({
           await releasePrimeRetainageAction(projectId, { full, amount_cents: full ? undefined : amountCents }),
         )
         toast.success(`Release invoiced as pay application #${detail.application.application_number}`)
+        if (detail.application.invoice_id) await prepareWaiver(detail.application.invoice_id)
+        else if (withWaiver) toast.warning(`Add the ${waiverName} once the release application is invoiced`)
       } else {
-        unwrapAction(await releaseProjectRetainageAction(projectId, { amount_cents: amountCents, title: title.trim(), notes: notes.trim() || undefined }))
+        const released = unwrapAction(await releaseProjectRetainageAction(projectId, { amount_cents: amountCents, title: title.trim(), notes: notes.trim() || undefined }))
         toast.success("Release invoice created", { description: "It is in Up next as a draft." })
+        await prepareWaiver(released.invoice_id)
       }
       setOpen(false)
       setAmount("")
@@ -295,6 +342,7 @@ function ReleaseRetainage({
         ) : (
           <p className="text-[11px] text-muted-foreground">Creates a retainage-release pay application and its invoice against the schedule of values.</p>
         )}
+        {withWaiver ? <p className="text-[11px] text-muted-foreground">Also prepares your {waiverName} on the release invoice.</p> : null}
         <Button className="w-full" disabled={!valid || busy} onClick={() => void release()}>
           {busy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
           {full ? "Release all" : `Release ${formatMoneyFromCents(amountCents)}`}

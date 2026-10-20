@@ -80,6 +80,10 @@ function dataQueries(service) {
     "project_members",
     "platform_memberships",
     "authorization_audit_log",
+    // The workspace surface (plan entitlements + business profile) bounds every decision.
+    "org_settings",
+    "entitlements",
+    "subscriptions",
   ])
   return service.queries.filter((query) => !access.has(query.table))
 }

@@ -7,6 +7,8 @@ import { Ruler } from "lucide-react"
 import { useState, useCallback, useEffect, useRef } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { isTradeSurface } from "@/lib/workspace-surface"
 
 import type { ChangeOrder, Project } from "@/lib/types"
 import type { CommitmentSummary } from "@/lib/services/commitments"
@@ -145,7 +147,9 @@ export function ChangeOrderDetailSheet({
   onEdit,
   onPrepareInvoice,
 }: ChangeOrderDetailSheetProps) {
-  const ownerTerm = terminology(getProjectPosture(project?.property_type, "residential")).owner
+  const { workspaceSurface } = usePageTitle()
+  const trade = isTradeSurface(workspaceSurface)
+  const ownerTerm = terminology(getProjectPosture(project?.property_type, "residential"), workspaceSurface.profile).owner
   const ownerTermLower = ownerTerm.toLowerCase()
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
@@ -369,7 +373,8 @@ export function ChangeOrderDetailSheet({
   const marginCents = totalCents - internalCostCents
   const lifecycle = changeOrder.lifecycle ?? (changeOrder.status === "approved" ? "approved" : "draft")
   const isVoided = changeOrder.status === "cancelled"
-  const isGmpProject = project ? resolveProjectBillingModel(project) === "cost_plus_gmp" : false
+  // A GMP is a builder's guarantee to an owner; a trade company's change orders carry none.
+  const isGmpProject = !trade && project ? resolveProjectBillingModel(project) === "cost_plus_gmp" : false
   const canApprove = changeOrder.status !== "approved" && !isVoided
   const canVoid = changeOrder.status === "approved"
   const metadata = changeOrder.metadata ?? {}
@@ -576,9 +581,9 @@ export function ChangeOrderDetailSheet({
     try {
       const updated = unwrapAction(await deriveChangeOrderPriceAction(changeOrder.id, percent))
       onUpdate?.(updated)
-      toast.success(`Owner price derived at ${percent}% markup`)
+      toast.success(`${ownerTerm} price derived at ${percent}% markup`)
     } catch (error: any) {
-      toast.error("Could not derive owner price", { description: error?.message ?? "Please try again." })
+      toast.error(`Could not derive ${ownerTermLower} price`, { description: error?.message ?? "Please try again." })
     } finally {
       setTransitioningLifecycle(false)
     }

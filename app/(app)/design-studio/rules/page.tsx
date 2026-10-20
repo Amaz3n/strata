@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import Link from "next/link"
 import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
@@ -17,7 +18,7 @@ interface PageProps {
 
 async function CutoffRulesPageContent({ searchParams }: PageProps) {
   await connection()
-  const [{ community, groupsAfter }, ambient, context] = await Promise.all([
+  const [, { community, groupsAfter }, ambient, context] = await Promise.all([guardWorkspaceDesk("design_studio"),
     searchParams,
     getAmbientDeskContext(),
     requireOrgContext(),

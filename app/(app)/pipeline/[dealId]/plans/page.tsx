@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface";
 import { cacheLife } from "next/cache";
 import { DealPlans } from "@/components/pipeline/deal-plans";
 import { DealWithoutProject } from "@/components/pipeline/deal-without-project";
@@ -22,6 +23,7 @@ async function loadPlans(dealId: string, sourceFile: string | undefined) {
 
 async function Plans({ params, searchParams }: Props) {
   const [{ dealId }, query] = await Promise.all([params, searchParams]);
+  await guardWorkspaceDesk("deal_room");
   const plans = await loadPlans(dealId, query.sourceFile);
   if (!plans) return <DealWithoutProject tab="plans" />;
   return <DealPlans data={plans.data} projectId={plans.projectId} />;

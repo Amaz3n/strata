@@ -52,6 +52,8 @@ import {
 } from "@/lib/storage/files-storage"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { profileTerminology } from "@/lib/terminology"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -2771,11 +2773,15 @@ export async function voidEnvelopeAction(input: { envelopeId: string; reason?: s
         )
 
         if (emails.length > 0) {
-          const { data: org } = await supabase.from("orgs").select("name, logo_url, slug").eq("id", orgId).maybeSingle()
+          const [{ data: org }, surface] = await Promise.all([
+            supabase.from("orgs").select("name, logo_url, slug").eq("id", orgId).maybeSingle(),
+            loadWorkspaceSurface(orgId),
+          ])
           const html = await renderEmailTemplate(
             SignatureEmail({
               documentTitle: documentForVoid?.title ?? "Document",
               signingLink: "#",
+              projectLabel: profileTerminology(surface.profile).project,
               orgName: org?.name ?? null,
               orgLogoUrl: org?.logo_url ?? null,
               eventLabel: "Signature Withdrawn",

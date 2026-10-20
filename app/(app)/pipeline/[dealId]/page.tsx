@@ -3,6 +3,8 @@ import { cacheLife } from "next/cache";
 import { DealOverview } from "@/components/pipeline/deal-overview";
 import { DealTabSkeleton } from "@/components/pipeline/pipeline-skeletons";
 import { listDealActivity } from "@/lib/services/precon-deals";
+import { getWorkspaceSurface } from "@/lib/services/workspace-surface";
+import { isTradeSurface } from "@/lib/workspace-surface";
 
 type Props = { params: Promise<{ dealId: string }> };
 
@@ -20,6 +22,8 @@ async function loadOverview(dealId: string) {
 
 async function Overview({ params }: Props) {
   const { dealId } = await params;
+  // A trade's opportunity renders whole from the layout; there is no builder overview under it.
+  if (isTradeSurface(await getWorkspaceSurface())) return null;
   const { activity, truncated } = await loadOverview(dealId);
   return <DealOverview activity={activity} truncated={truncated} />;
 }

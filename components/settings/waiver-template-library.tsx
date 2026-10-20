@@ -1,6 +1,8 @@
 "use client";
 import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
+import { usePageTitle } from "@/components/layout/page-title-context";
+import { isTradeSurface } from "@/lib/workspace-surface";
 import {
   ArrowLeft,
   ArrowRight,
@@ -78,6 +80,7 @@ export function WaiverTemplateLibrary({
   projects?: { id: string; name: string }[];
   orgId: string;
 }) {
+  const trade = isTradeSurface(usePageTitle().workspaceSurface);
   const [library, setLibrary] = useState({
     source: initialTemplates,
     templates: initialTemplates,
@@ -361,8 +364,9 @@ export function WaiverTemplateLibrary({
           <div>
             <h2 className="text-xl font-medium tracking-tight">Waivers</h2>
             <p className="mt-2 max-w-lg text-sm leading-6 text-muted-foreground">
-              Your forms, ready for the way you build. Set up the wording and
-              details once; Arc fills them for each project.
+              {trade
+                ? "Your forms, ready for the way you work. Set up the wording and details once; Arc fills them for each job."
+                : "Your forms, ready for the way you build. Set up the wording and details once; Arc fills them for each project."}
             </p>
           </div>
           <Button disabled={!canManage || !!busy} onClick={() => start()}>
@@ -685,10 +689,10 @@ export function WaiverTemplateLibrary({
                     }
                   >
                     <option value="outgoing">
-                      Our company → customer / owner
+                      {trade ? "Our company → customer" : "Our company → customer / owner"}
                     </option>
                     <option value="incoming">
-                      Trade / supplier → our company
+                      {trade ? "Supplier / sub → our company" : "Trade / supplier → our company"}
                     </option>
                     <option value="both">Both directions</option>
                   </select>
@@ -764,7 +768,7 @@ export function WaiverTemplateLibrary({
                       />
                     </label>
                     <p className="text-xs text-muted-foreground">
-                      Projects (none selected means all projects)
+                      {trade ? "Jobs (none selected means all jobs)" : "Projects (none selected means all projects)"}
                     </p>
                     {projects.map((p) => (
                       <label className="flex gap-2 text-xs" key={p.id}>

@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
@@ -29,6 +30,7 @@ const PLAN_NOT_FOUND = "House plan not found"
 
 async function PlanDetailPageContent({ params }: { params: Promise<{ id: string }> }) {
   await connection()
+  await guardWorkspaceDesk("plans")
   const { id } = await params
 
   /**

@@ -1,5 +1,7 @@
 "use server"
 
+import { businessProfileSchema } from "@/lib/business-profile"
+import { defaultPlanCode } from "@/lib/workspace-surface"
 import { revalidatePath } from "next/cache"
 import { redirect, unstable_rethrow } from "next/navigation"
 import { z } from "zod"
@@ -248,19 +250,22 @@ export async function provisionPlatformOrgAction(
   const { user } = await requireAuth()
   await requireAnyPlatformPermission(["platform.billing.manage"])
 
+  const profileResult = businessProfileSchema.safeParse({ kind: parsed.data.businessKind, specialty: parsed.data.specialty })
+  if (!profileResult.success) return { error: profileResult.error.errors[0]?.message ?? "Enter the trade specialty." }
+  const businessProfile = profileResult.data
   try {
     const org = await provisionOrganization({
       name: parsed.data.orgName,
       slug: parsed.data.slug,
       billingModel: parsed.data.billingModel,
-      planCode: null,
+      planCode: defaultPlanCode(businessProfile),
       primaryEmail: parsed.data.primaryEmail,
       primaryName: parsed.data.fullName,
       trialDays: parsed.data.trialDays,
       createdBy: user.id,
       sendInviteEmail: parsed.data.sendInvites,
       productTier: parsed.data.productTier,
-      businessProfile: { kind: parsed.data.businessKind, specialty: parsed.data.specialty },
+      businessProfile,
     })
 
     const serviceSupabase = createServiceSupabaseClient()

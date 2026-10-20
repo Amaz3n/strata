@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -36,6 +37,7 @@ export default function ProjectRfisPage({ params, searchParams }: ProjectRfisPag
 async function ProjectRfisPageRoute({ params, searchParams }: ProjectRfisPageProps) {
   await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
+  await guardProjectTab(id, "rfis")
 
   return <ProjectRfisData id={id} initialRfiId={query.rfi} />
 }

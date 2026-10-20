@@ -17,7 +17,7 @@ export type BankMatchCandidate = {
   providerIdentityMatch?: boolean
 }
 
-function dateDistanceDays(left: string, right: string) {
+export function dateDistanceDays(left: string, right: string) {
   return Math.abs(new Date(`${left}T00:00:00Z`).getTime() - new Date(`${right}T00:00:00Z`).getTime()) / 86_400_000
 }
 

@@ -3,7 +3,8 @@ require("../scripts/register-ts-node-test")
 const assert = require("node:assert/strict")
 const { test } = require("node:test")
 
-const { projectModuleVisible, workspaceModules, workspaceRecord } = require("../lib/mobile/workspace-catalog")
+const { projectModuleVisible, surfaceAllowsModule, workspaceModuleTitle, workspaceModules, workspaceRecord } = require("../lib/mobile/workspace-catalog")
+const { BUILDER_SURFACE, resolveWorkspaceSurface } = require("../lib/workspace-surface")
 
 const moduleNamed = (id) => workspaceModules.find((module) => module.id === id)
 
@@ -51,4 +52,23 @@ test("a module's visibility follows the project's posture, phase and explicit ov
   for (const [args, visible] of cases) {
     assert.equal(projectModuleVisible(meetings, ...args), visible, JSON.stringify(args))
   }
+})
+
+test("a trade company's catalog drops builder modules and names crew time, on the org and the job", () => {
+  const trade = resolveWorkspaceSurface({ profile: { kind: "trade", specialty: "Electrical" }, planName: "Arc Trade", entitlements: [], now: new Date("2026-10-19T00:00:00Z") })
+  const hidden = ["estimates", "bids", "selections", "sales", "communities", "plans", "design-studio", "starts", "purchasing", "warranty", "closeout"]
+  for (const id of hidden) {
+    const catalogModule = moduleNamed(id)
+    if (catalogModule.scope !== "project") assert.equal(surfaceAllowsModule(catalogModule, trade), false, `${id} on the org`)
+    if (catalogModule.scope !== "organization") assert.equal(surfaceAllowsModule(catalogModule, trade, {}), false, `${id} on a job`)
+    assert.equal(surfaceAllowsModule(catalogModule, BUILDER_SURFACE, catalogModule.scope === "organization" ? undefined : {}), true, `${id} for a builder`)
+  }
+  for (const id of ["time", "billing", "payables", "change-orders", "tm-tickets", "schedule", "punch"]) {
+    assert.equal(surfaceAllowsModule(moduleNamed(id), trade, {}), true, id)
+  }
+  assert.equal(surfaceAllowsModule(moduleNamed("rfis"), trade, {}), false, "RFIs join a trade job only by override")
+  assert.equal(surfaceAllowsModule(moduleNamed("rfis"), trade, { rfis: true }), true)
+  assert.equal(surfaceAllowsModule(moduleNamed("bids"), trade, { bids: true }), true, "a job's module override reopens bids")
+  assert.equal(workspaceModuleTitle(moduleNamed("time"), trade), "Crew time")
+  assert.equal(workspaceModuleTitle(moduleNamed("time"), BUILDER_SURFACE), "Time")
 })

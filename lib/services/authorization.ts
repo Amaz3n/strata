@@ -7,6 +7,8 @@ import { correlationId } from "@/lib/observability/correlation"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { decideAuthorization, hasAllProjectAccess, type AuthorizationReasonCode } from "@/lib/services/authorization-policy"
 import { permissionDeniedDigest } from "@/lib/permission-denied"
+import { filterSurfacePermissions, permissionRefusal } from "@/lib/workspace-surface"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
 
 export type { AuthorizationReasonCode }
 
@@ -21,6 +23,8 @@ export interface AuthorizationDecision {
   scopesEvaluated: string[]
   divisionScope?: "all" | "assigned"
   divisionIds?: string[]
+  /** The plan or business profile's reason, when the workspace itself refuses the permission. */
+  surfaceRefusal?: string
 }
 
 export interface AuthorizeInput {
@@ -44,7 +48,7 @@ export class AuthorizationError extends Error {
   digest: string
 
   constructor(decision: AuthorizationDecision) {
-    super(`Missing permission: ${decision.permission}`)
+    super(decision.surfaceRefusal ?? `Missing permission: ${decision.permission}`)
     this.name = "AuthorizationError"
     this.reasonCode = decision.reasonCode
     this.permission = decision.permission
@@ -298,10 +302,10 @@ async function readAuthorizationHomes(supabase: SupabaseClient, projectIds: stri
  * permission is — the divergence risk on a security path is the point.
  */
 export async function getEffectiveOrgPermissions(orgId: string, userId: string) {
-  const result = await fetchOrgPermissionsCached(orgId, userId)
+  const [result, surface] = await Promise.all([fetchOrgPermissionsCached(orgId, userId), loadWorkspaceSurface(orgId)])
   if (!result.hasMembership) return []
   const denied = new Set(result.denies)
-  return unique([...result.permissions, ...result.grants]).filter((permission) => !denied.has(permission))
+  return filterSurfacePermissions(surface, unique([...result.permissions, ...result.grants]).filter((permission) => !denied.has(permission)))
 }
 
 export async function getDivisionAccessForUser({
@@ -571,12 +575,13 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   // Read membership grants concurrently inside the verified home organization.
   // Platform standing is decided per organization (hasPlatformOrgContext);
   // a platform role's own keys never count toward a tenant permission.
-  const [projectScope, callerOrgResult, platformOrgContext] = await Promise.all([
+  const [projectScope, callerOrgResult, platformOrgContext, surface] = await Promise.all([
     input.projectId
       ? resolveProjectScope({ projectId: input.projectId, userId: input.userId, orgIdHint: home!.org_id })
       : null,
     resolvedOrgId ? fetchOrgPermissionsCached(resolvedOrgId, input.userId) : null,
     resolvedOrgId ? hasPlatformOrgContext(resolvedOrgId, input.userId) : false,
+    resolvedOrgId ? loadWorkspaceSurface(resolvedOrgId) : null,
   ])
 
   if (projectScope) {
@@ -634,6 +639,14 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     reasonCode = "deny_division_scope"
     scopesEvaluated.push("project_division")
   }
+  // The plan and business profile bound every role, support grants included:
+  // a trade company holding `purchasing` through a custom role still cannot buy.
+  const surfaceRefusal = surface ? permissionRefusal(surface, input.permission) ?? undefined : undefined
+  if (allowed && surfaceRefusal) {
+    allowed = false
+    reasonCode = "deny_workspace_surface"
+    scopesEvaluated.push("workspace_surface")
+  }
 
   const decision: AuthorizationDecision = {
     allowed,
@@ -646,6 +659,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     scopesEvaluated,
     divisionScope: divisionAssignedOnly ? "assigned" : "all",
     divisionIds,
+    surfaceRefusal: reasonCode === "deny_workspace_surface" ? surfaceRefusal : undefined,
   }
 
   if (input.logDecision) {
@@ -692,7 +706,8 @@ export async function authorizeMany({
   if (!userId || !permission || !orgId) return settle(false)
 
   const supabase = createServiceSupabaseClient()
-  if (!(await permissionExists(supabase, permission))) return settle(false)
+  const [knownPermission, surface] = await Promise.all([permissionExists(supabase, permission), loadWorkspaceSurface(orgId)])
+  if (!knownPermission || permissionRefusal(surface, permission)) return settle(false)
   const homes = await readAuthorizationHomes(supabase, uniqueProjectIds)
   const identityMatches = (projectId: string) => homes.get(projectId)?.org_id === orgId
   const settleScoped = () => { for (const projectId of uniqueProjectIds) verdicts.set(projectId, identityMatches(projectId)); return verdicts }

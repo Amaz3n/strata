@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
@@ -15,7 +16,7 @@ import {
 
 async function TakeoffSettingsPageContent() {
   await connection()
-  const [templatesResult, costCodes, permissionResult] = await Promise.all([
+  const [, templatesResult, costCodes, permissionResult] = await Promise.all([guardWorkspaceDesk("settings_takeoff"),
     listConditionTemplatesAction(),
     listTakeoffCostCodesAction(),
     getCurrentUserPermissions(),

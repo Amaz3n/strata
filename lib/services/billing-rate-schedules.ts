@@ -6,6 +6,7 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { resolveLaborRate } from "@/lib/services/labor-rates"
 import {
   getProjectFinancialSettings,
   saveBillingContractWithAmendment,
@@ -590,6 +591,7 @@ async function loadWorkerBillingContext(args: {
   orgId: string
   projectId: string
   userId?: string | null
+  occurredOn: string
   metadata?: Record<string, any> | null
 }) {
   const roleCandidates = new Set<string>()
@@ -605,10 +607,10 @@ async function loadWorkerBillingContext(args: {
     return { roleCandidates, fallbackBillRateCents: 0 }
   }
 
-  const [membershipResult, projectMemberResult] = await Promise.all([
+  const [membershipResult, projectMemberResult, laborRate] = await Promise.all([
     args.supabase
       .from("memberships")
-      .select("labor_bill_rate_cents, role:roles!memberships_role_id_fkey(key, label)")
+      .select("role:roles!memberships_role_id_fkey(key, label)")
       .eq("org_id", args.orgId)
       .eq("user_id", args.userId)
       .eq("status", "active")
@@ -621,6 +623,7 @@ async function loadWorkerBillingContext(args: {
       .eq("user_id", args.userId)
       .eq("status", "active")
       .maybeSingle(),
+    resolveLaborRate({ supabase: args.supabase, orgId: args.orgId, userId: args.userId, onDate: args.occurredOn }),
   ])
 
   if (membershipResult.error) throw new Error(`Failed to load team bill-rate fallback: ${membershipResult.error.message}`)
@@ -635,7 +638,7 @@ async function loadWorkerBillingContext(args: {
 
   return {
     roleCandidates,
-    fallbackBillRateCents: Number((membershipResult.data as any)?.labor_bill_rate_cents ?? 0),
+    fallbackBillRateCents: laborRate.billRateCents,
   }
 }
 
@@ -678,9 +681,10 @@ export function calculateTimeAndMaterialsBillableCents(
   },
   rate: Pick<TimeAndMaterialsRateResolution, "rateCents" | "unit" | "otMultiplier" | "dtMultiplier">,
 ) {
-  const hours = Math.max(0, Number(timeEntry.hours ?? 0))
+  // A correction reverses an entry with negative hours, so it credits what the entry billed.
+  const hours = Number(timeEntry.hours ?? 0)
   const multiplier = timeEntry.is_double_time ? rate.dtMultiplier : timeEntry.is_overtime ? rate.otMultiplier : 1
-  const quantity = billingQuantity(hours, rate.unit)
+  const quantity = Math.sign(hours) * billingQuantity(Math.abs(hours), rate.unit)
   return {
     billQuantity: quantity,
     multiplier,
@@ -702,6 +706,7 @@ export async function resolveTimeAndMaterialsRateForTimeEntry(args: {
     orgId: args.orgId,
     projectId: args.projectId,
     userId: args.timeEntry.worker_user_id ?? null,
+    occurredOn,
     metadata: args.timeEntry.metadata ?? {},
   })
 

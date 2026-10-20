@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { Suspense } from "react"
 import { connection } from "next/server"
 
@@ -16,6 +17,7 @@ interface CommunitiesPageProps {
 
 async function CommunitiesData({ searchParams }: CommunitiesPageProps) {
   await connection()
+  await guardWorkspaceDesk("communities")
   const contextPromise = Promise.all([searchParams, getAmbientDeskContext()])
   const portfolioPromise = contextPromise.then(([params, ambient]) =>
     getCommunityPortfolio({ divisionId: ambient.divisionId, status: params.status }),

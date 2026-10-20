@@ -1,0 +1,193 @@
+{
+  "scenario": "TRADE-IOS-01",
+  "reviewedFrom": "TR01-04, TR03-01 and TR05-02 (docs/plans/arc-trade/completion-checklist.json); docs/plans/arc-trade/README.md section 5 (TRADE-IOS-01); docs/reference/arc-trade.md (Mobile); lib/mobile/auth.ts withWorkspaceShape; lib/mobile/workspace.ts visibleModules; lib/mobile/workspace-catalog.ts (module scopes, postures, permissions, MODULE_DESK_PATHS, MODULE_PROJECT_TABS); lib/mobile/time.ts and lib/services/time-clock.ts; migration 20261026100000_time_clock_pay_periods_and_labor_rates.sql (time.manage); the role_permissions catalog on the acceptance stack. Requests go through the real route handlers with bearer tokens from real GoTrue sign-ins.",
+  "subcases": {
+    "organizations-expose-profile-brand-and-terms": {
+      "derivation": "GET /api/mobile/v1/organizations lists the caller's active memberships with withWorkspaceShape(): business_profile resolved from org_settings (the trade profile the provisioning wrote), brand = businessBrand(profile, tier) = 'Arc Trade' for a trade profile whatever the tier, and terms = terminology(tier, profile).project/projects = Job/Jobs for a trade profile. Each role sees the same organization shape with its own role key (org_owner, org_foreman, org_crew_member). A builder organization has no profile, which resolves to the builder default (kind builder, specialty Electrical), the residential tier brand 'Arc Residential' and Project/Projects.",
+      "expected": {
+        "owner": {
+          "status": 200,
+          "organization": {
+            "role": "org_owner",
+            "business_profile": {
+              "kind": "trade",
+              "specialty": "Electrical"
+            },
+            "brand": "Arc Trade",
+            "terms": {
+              "project": "Job",
+              "projects": "Jobs"
+            }
+          }
+        },
+        "foreman": {
+          "status": 200,
+          "organization": {
+            "role": "org_foreman",
+            "business_profile": {
+              "kind": "trade",
+              "specialty": "Electrical"
+            },
+            "brand": "Arc Trade",
+            "terms": {
+              "project": "Job",
+              "projects": "Jobs"
+            }
+          }
+        },
+        "crew": {
+          "status": 200,
+          "organization": {
+            "role": "org_crew_member",
+            "business_profile": {
+              "kind": "trade",
+              "specialty": "Electrical"
+            },
+            "brand": "Arc Trade",
+            "terms": {
+              "project": "Job",
+              "projects": "Jobs"
+            }
+          }
+        },
+        "controlBuilderOwner": {
+          "status": 200,
+          "organization": {
+            "role": "org_owner",
+            "business_profile": {
+              "kind": "builder",
+              "specialty": "Electrical"
+            },
+            "brand": "Arc Residential",
+            "terms": {
+              "project": "Project",
+              "projects": "Projects"
+            }
+          }
+        }
+      }
+    },
+    "workspace-catalog-drops-builder-modules": {
+      "derivation": "visibleModules() takes the catalog's modules whose scope fits the level (organization level: not project-only; job level: not organization-only), whose postures include the posture (the residential tier at org level, the job's residential posture for the homeowner job), minus the Books group (no Books workspace on a trade company) and minus whatever surfaceAllowsModule refuses (the desks and project tabs the Arc Trade surface refuses: estimates, bids, warranty, purchasing at org level; estimates, bids, rfis, submittals, decisions, budget, commitments, closeout, warranty at job level; sales, communities, plans, design-studio and starts are production-posture modules and never appear). The member keeps a module only when authorize() grants its permission. Organization level: schedule (schedule.read), tasks (org.member), billing (invoice.read), pipeline (pipeline.read), directory and contacts (directory.read), reports (report.read): the owner holds all of them, the foreman schedule, tasks and directory/contacts, the crew member schedule and tasks. Job level (the T&M homeowner job, where the foreman and crew are assigned with the project 'foreman' and 'crew' roles, which hold project.read but neither correspondence.read nor report.read, so the foreman and crew never see correspondence or reports: schedule, punch (project.read), signatures (org.member; the unified e-sign flag defaults on), time (time.read), tasks, billing, payables (bill.read), change-orders (change_order.read), tm-tickets (invoice.read) and, for the owner, correspondence and reports; the foreman lacks the invoice and bill keys so drops billing, payables and tm-tickets but holds change_order.read from the Foreman org role; the crew member also drops change-orders. Time is named Crew time for a trade surface. A builder organization's owner still gets bids, purchasing and warranty.",
+      "expected": {
+        "organization": {
+          "owner": [
+            "schedule",
+            "tasks",
+            "billing",
+            "pipeline",
+            "directory",
+            "contacts",
+            "reports"
+          ],
+          "foreman": [
+            "schedule",
+            "tasks",
+            "directory",
+            "contacts"
+          ],
+          "crew": [
+            "schedule",
+            "tasks"
+          ]
+        },
+        "homeownerJob": {
+          "owner": [
+            "schedule",
+            "punch",
+            "correspondence",
+            "signatures",
+            "time",
+            "tasks",
+            "billing",
+            "payables",
+            "change-orders",
+            "tm-tickets",
+            "reports"
+          ],
+          "foreman": [
+            "schedule",
+            "punch",
+            "signatures",
+            "time",
+            "tasks",
+            "change-orders"
+          ],
+          "crew": [
+            "schedule",
+            "punch",
+            "signatures",
+            "time",
+            "tasks"
+          ]
+        },
+        "timeTitle": {
+          "owner": "Crew time",
+          "foreman": "Crew time",
+          "crew": "Crew time"
+        },
+        "controlBuilderOrganization": {
+          "status": 200,
+          "hasTheBuilderModules": true
+        },
+        "builderModulesAbsentFromEveryTradeCatalog": []
+      }
+    },
+    "catalog-titles-use-trade-vocabulary": {
+      "derivation": "A trade company calls its customers Customers, its jobs Jobs and its pipeline Opportunities (terminology(posture, profile); the trade navigation says Opportunities), so no module title, group or create/edit field label in the catalog the iOS app receives may contain Owner, Client, Project, Vendor, Trade partner or Pipeline. Expected: none.",
+      "expected": {
+        "leaks": []
+      }
+    },
+    "clock-in-and-out-round-trip": {
+      "derivation": "A crew member assigned only to the homeowner job calls GET /time/clock (his jobs: the one he is on; canClockOthers false since time.manage is not his), POST /time/clock/in on that job (200, a mobile-sourced open session for himself), GET again (still open on it), a second clock-in (the one-open-clock rule: 409), then the session's start is moved back two and a half hours (the fixture for a morning's work) and POST /time/clock/out (200 clocked_out true): closeSession writes sessionHours = 150 minutes = 2.5 hours (to the tenth, as the seconds that pass during the call round it) as ONE submitted time entry on the job, not overtime, and My hours (GET /time/mine) lists it. No clock is open afterwards.",
+      "expected": {
+        "jobsOffered": [
+          "Palm Court - service calls"
+        ],
+        "canClockOthers": false,
+        "openBeforeClockIn": null,
+        "clockInStatus": 200,
+        "clockedInOn": {
+          "onTheAssignedJob": true,
+          "project_name": "Palm Court - service calls",
+          "source": "mobile",
+          "workerIsTheCrewMember": true
+        },
+        "openWhileClockedIn": "Palm Court - service calls",
+        "secondClockInStatus": 409,
+        "clockOut": {
+          "status": 200,
+          "clocked_out": true
+        },
+        "openAfterClockOut": null,
+        "timeEntry": {
+          "hoursToTheTenth": 2.5,
+          "status": "submitted",
+          "onTheJob": true,
+          "overtime": false
+        },
+        "myHoursListsIt": true
+      }
+    },
+    "clock-refuses-an-unassigned-job": {
+      "derivation": "The crew member is on the homeowner job only. requireClockAccess asks authorize(time.write) on the GC job, where he has no project membership (a Crew member holds no project.read), so the route answers 403 with the 'forbidden' code (timeFailure maps AUTH_FORBIDDEN) and no session is opened on that job.",
+      "expected": {
+        "status": 403,
+        "code": "forbidden",
+        "sessionsOpened": 0
+      }
+    },
+    "clock-refuses-clocking-in-another-worker": {
+      "derivation": "Clocking in someone else needs time.manage, which migration 20261026100000 grants to every role that holds time.write EXCEPT Crew member (time.write alone means your own time), and the foreman holds it. A crew member asking to clock in another crew member on their shared job is therefore refused (403 forbidden) and opens nothing, while the foreman's identical request succeeds (200).",
+      "expected": {
+        "crewClocksAnother": {
+          "status": 403,
+          "code": "forbidden"
+        },
+        "sessionsTheCrewMemberOpenedForSomeoneElse": 0,
+        "foremanClocksACrewMember": 200
+      }
+    }
+  }
+}

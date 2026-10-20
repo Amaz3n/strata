@@ -57,7 +57,7 @@ import { UnbilledCostsPicker, type CostSelection } from "@/components/invoices/u
 import { unwrapAction } from "@/lib/action-result"
 import { usePageTitle } from "@/components/layout/page-title-context"
 import { getProjectPosture } from "@/lib/product-tier"
-import { getReceivablesPosturePolicy, getGeneralReceivablesPolicy } from "@/lib/receivables/policy"
+import type { ReceivablesPosturePolicy } from "@/lib/receivables/policy"
 import { groupCostCodesByStandard } from "@/lib/cost-code-groups"
 import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { cn } from "@/lib/utils"
@@ -471,6 +471,8 @@ interface InvoiceDocumentEditorProps {
   initialInvoice: Invoice | null
   projectId?: string
   projects: Project[]
+  /** The job's resolved receivables policy (the general policy with no project). */
+  receivablesPolicy: ReceivablesPosturePolicy
   builderInfo?: { name?: string | null; email?: string | null; address?: string | null; logoUrl?: string | null }
   contacts?: Contact[]
   initialCustomerId?: string
@@ -506,6 +508,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
   initialInvoice,
   projectId,
   projects,
+  receivablesPolicy,
   builderInfo,
   contacts = [],
   initialCustomerId,
@@ -533,14 +536,14 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
   const initialCustomer = resolveInvoiceInitialCustomer(contacts, { hasSeed: Boolean(seed), explicitId: initialCustomerId, projectCustomerId: project?.client_id })
   const projectName = project?.name ?? "Invoice"
   const productPosture = getProjectPosture(project?.property_type, productTier)
-  const receivablesPolicy = projectId ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
 
   // ── Form state (seeded once on mount) ──────────────────────────────────────
   const [invoiceNumber, setInvoiceNumber] = useState(initialInvoice?.invoice_number ?? reservation?.number ?? "")
   const [title, setTitle] = useState(seed?.title ?? projectName)
   const [issueDate, setIssueDate] = useState(seed?.issue_date ?? format(new Date(), "yyyy-MM-dd"))
-  const [dueDate, setDueDate] = useState(seed?.due_date ?? format(addDays(new Date(), 15), "yyyy-MM-dd"))
-  const [paymentTermsDays, setPaymentTermsDays] = useState<number>((seed?.metadata?.payment_terms_days as number) ?? 15)
+  const initialTermsDays = (seed?.metadata?.payment_terms_days as number) ?? receivablesPolicy.paymentTermsDays ?? 15
+  const [dueDate, setDueDate] = useState(seed?.due_date ?? format(addDays(new Date(), initialTermsDays), "yyyy-MM-dd"))
+  const [paymentTermsDays, setPaymentTermsDays] = useState<number>(initialTermsDays)
   const [invoiceKind, setInvoiceKind] = useState<InvoiceKind>(
     seed?.metadata?.invoice_kind === "earnest_deposit" || seed?.metadata?.invoice_kind === "closing"
       ? seed.metadata.invoice_kind
@@ -1303,7 +1306,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
       const invoice = unwrapAction(await requestInvoiceApprovalAction(invoiceId))
       setApprovalStatus(invoice?.approval_status ?? "pending")
       dirtyRef.current = false
-      toast.success("Owner billing sent for approval")
+      toast.success(`${receivablesPolicy.documentCustomerLabel} billing sent for approval`)
     } catch (error) {
       toast.error("Could not request approval", {
         description: error instanceof Error ? error.message : "Please try again.",
@@ -1319,7 +1322,7 @@ export const InvoiceDocumentEditor = forwardRef<InvoiceEditorHandle, InvoiceDocu
       const invoiceId = await ensurePersistedDraft()
       const invoice = unwrapAction(await decideInvoiceApprovalAction(invoiceId, "approved"))
       setApprovalStatus(invoice?.approval_status ?? "approved")
-      toast.success("Owner billing approved", { description: "It is ready to issue." })
+      toast.success(`${receivablesPolicy.documentCustomerLabel} billing approved`, { description: "It is ready to issue." })
     } catch (error) {
       toast.error("Could not approve invoice", {
         description: error instanceof Error ? error.message : "A different approver may be required.",

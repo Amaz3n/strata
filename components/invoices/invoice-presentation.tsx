@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import type { Invoice } from "@/lib/types"
+import { connectedReceivableOf, connectedStatusLabel } from "@/lib/receivables/connected"
 import {
   daysPastDueOn,
   dateOnlyToUtcMs,
@@ -87,7 +88,23 @@ export function overdueDaysOf(invoice: Invoice): number {
 
 export function isOpenInvoice(invoice: Invoice): boolean {
   const status = displayStatusOf(invoice)
-  return (status === "sent" || status === "partial" || status === "overdue") && balanceCentsOf(invoice) > 0
+  return (
+    (status === "sent" || status === "partial" || status === "overdue") &&
+    balanceCentsOf(invoice) > 0 &&
+    !connectedReceivableOf(invoice.metadata)
+  )
+}
+
+/** "From Acme's portal · Approved by builder" for an invoice that mirrors a builder's bill, else null. */
+export function ConnectedSourceLine({ invoice, className }: { invoice: Invoice; className?: string }) {
+  const source = connectedReceivableOf(invoice.metadata)
+  if (!source) return null
+  return (
+    <span className={cn("block text-[11px] text-muted-foreground", className)}>
+      From {source.sourceOrgName} portal · {connectedStatusLabel(source.sourceStatus)}
+      {source.needsReview ? <span className="text-warning"> · Needs review</span> : null}
+    </span>
+  )
 }
 
 /**
@@ -157,6 +174,10 @@ export function nextActionFor(invoice: Invoice): InvoiceNextAction {
   const status = displayStatusOf(invoice)
   if (status === "void") return { key: "none", label: "Voided", tone: "muted" }
   if (status === "paid") return { key: "none", label: "Settled", tone: "muted" }
+
+  // The builder drives a mirrored invoice: nothing to send, remind or collect on this side.
+  const connected = connectedReceivableOf(invoice.metadata)
+  if (connected) return { key: "none", label: connectedStatusLabel(connected.sourceStatus), tone: "muted" }
 
   if (invoice.delivery_status === "failed" || invoice.delivery_status === "bounced") {
     return { key: "resend", label: "Delivery failed", tone: "destructive" }

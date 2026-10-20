@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
@@ -24,6 +25,7 @@ interface BidPackageDetailPageProps {
 
 async function BidPackageDetailContent({ params }: BidPackageDetailPageProps) {
   await connection()
+  await guardWorkspaceDesk("purchasing")
   const { packageId } = await params
   const context = await requireOrgContext()
   await requirePermission("bid.read", context)

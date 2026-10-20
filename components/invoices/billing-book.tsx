@@ -83,11 +83,13 @@ import { InvoiceComposer, prefetchInvoiceComposer, type InvoiceComposerTarget } 
 import { InvoiceInspector } from "./invoice-inspector"
 import { MakeRecurringDialog } from "./recurring-invoices"
 import {
+  ConnectedSourceLine,
   InvoiceStatusBadge,
   NEXT_ACTION_TONES,
   balanceCentsOf,
   customerNameOf,
   displayStatusOf,
+  formatDateOnly,
   formatMoneyCompact,
   formatMoneyFromCents,
   invoiceNeedsAttention,
@@ -97,6 +99,10 @@ import {
   nextActionFor,
   totalCentsOf,
 } from "./invoice-presentation"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { connectedReceivableOf } from "@/lib/receivables/connected"
+import { RETAINAGE_RELEASE_NOT_SET } from "@/lib/financials/retainage-release"
+import { isTradeSurface } from "@/lib/workspace-surface"
 import { invalidateInvoiceDetail, useHoverPrefetch, useInvoiceDetail } from "./use-invoice-detail-cache"
 
 /**
@@ -876,7 +882,7 @@ export function BillingBook({
       {/* Toolbar: the numbers that matter, then search and the one way to bill. */}
       <div className="shrink-0 border-b bg-background">
         <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
-          <SummaryLine summary={summary} />
+          <SummaryLine summary={summary} customerLabel={profile.customerLabel} />
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative w-full sm:w-64">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -1280,6 +1286,9 @@ export function BillingBook({
           costCodesEnabled={costCodesEnabled}
           surface={manageSurface}
           progressBilling={profile.progressBilling}
+          customerLabel={profile.customerLabel}
+          ownerLabel={profile.policy.documentCustomerLabel}
+          retainageRelease={summary.retainageRelease}
           onClose={() => setManageParam(null)}
           onInvoiceCreated={(invoice) => {
             if (invoice) placeInvoice(invoice)
@@ -1469,6 +1478,7 @@ export function BillingBook({
               <AccountingSyncBadge status={invoice.qbo_sync_status} externalId={invoice.qbo_id ?? undefined} compact />
             ) : null}
           </div>
+          <ConnectedSourceLine invoice={invoice} className="mt-0.5" />
           {payApplicationId ? <button type="button" className="mt-1 block text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={() => selectInvoice(invoice.id)}>{invoice.invoice_number || "Linked invoice"}{payApplication ? ` · through ${payApplication.period_end}` : ""}</button> : null}
           {!projectId && compact && invoice.project_id ? (
             <span className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">
@@ -1596,8 +1606,10 @@ function isManageSurface(value: string | null): value is BillingManageSurface {
 }
 
 /** The three numbers a billing page opens with. No tiles: one line, read left to right. */
-function SummaryLine({ summary }: { summary: ProjectBillingSummary }) {
+function SummaryLine({ summary, customerLabel }: { summary: ProjectBillingSummary; customerLabel: string }) {
+  const trade = isTradeSurface(usePageTitle().workspaceSurface)
   const overdueCount = summary.bands.overdue
+  const release = summary.retainageRelease
   return (
     <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm">
       <div className="flex items-baseline gap-1.5">
@@ -1612,9 +1624,14 @@ function SummaryLine({ summary }: { summary: ProjectBillingSummary }) {
         </dd>
       </div>
       {summary.retainageHeldCents > 0 ? (
-        <div className="flex items-baseline gap-1.5">
-          <dt className="microlabel">Retainage held</dt>
-          <dd className="font-mono tabular-nums text-muted-foreground">{formatMoneyCompact(summary.retainageHeldCents)}</dd>
+        <div className="flex items-baseline gap-1.5" title="Held back, not due: it is collectible on release and never counted as overdue">
+          <dt className="microlabel">{trade ? `Retainage held by ${customerLabel}` : "Retainage held"}</dt>
+          <dd className="font-mono tabular-nums text-muted-foreground">
+            {formatMoneyCompact(summary.retainageHeldCents)}
+            <span className="ml-1.5 font-sans text-xs font-normal">
+              {release.date ? `release ${formatDateOnly(release.date, { withYear: true })}` : `release ${RETAINAGE_RELEASE_NOT_SET}`}
+            </span>
+          </dd>
         </div>
       ) : null}
     </dl>
@@ -1935,8 +1952,9 @@ function RowOverflowMenu({
   const editable = isEditableInvoice(invoice)
   const published = Boolean(invoice.client_visible && invoice.sent_at)
   const issued = Boolean(invoice.sent_at) || ["sent", "partial", "overdue", "paid"].includes(status)
-  const canRevise = ["sent", "overdue"].includes(status)
-  const canVoid = issued && !["paid", "partial", "void"].includes(status)
+  const mirrored = connectedReceivableOf(invoice.metadata) !== null
+  const canRevise = !mirrored && ["sent", "overdue"].includes(status)
+  const canVoid = !mirrored && issued && !["paid", "partial", "void"].includes(status)
   const canShareBackup = Boolean(backup && !["shared", "downloaded", "accepted"].includes(backup.status))
   return (
     <DropdownMenu>

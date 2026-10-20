@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { DesignStudioSkeleton } from "@/components/layout/desk-skeletons"
 import { Suspense } from "react"
@@ -16,7 +17,7 @@ interface PageProps {
 
 async function DesignStudioPageContent({ searchParams }: PageProps) {
   await connection()
-  const [{ community }, context] = await Promise.all([searchParams, requireOrgContext()])
+  const [, { community }, context] = await Promise.all([guardWorkspaceDesk("design_studio"), searchParams, requireOrgContext()])
   const scope = await resolveProductionDeskScope({ communityId: community })
 
   const [runway, canManage, studios] = await Promise.all([

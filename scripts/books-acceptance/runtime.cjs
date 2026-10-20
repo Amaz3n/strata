@@ -58,6 +58,14 @@ const GOLDEN_SCENARIOS = [
   "CANCEL-01",
   "DELAY-01",
   "WARR-02",
+  "TRADE-SETUP-01",
+  "TRADE-BILL-01",
+  "TRADE-TM-01",
+  "TRADE-TIME-01",
+  "TRADE-QUOTE-01",
+  "TRADE-EXP-01",
+  "TRADE-NET-01",
+  "TRADE-IOS-01",
 ];
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 function parseArgs(args) {

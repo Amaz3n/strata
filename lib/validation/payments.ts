@@ -2,6 +2,9 @@ import { z } from "zod"
 
 export const paymentMethodInputSchema = z.enum(["ach", "card", "wire", "check"])
 
+/** What a payment recorded from outside Arc's rails can say about how it arrived when the payer never told us. */
+export const recordedPaymentMethodSchema = z.enum([...paymentMethodInputSchema.options, "other"])
+
 export const createPublicInvoicePaymentIntentInputSchema = z.object({
   token: z.string().min(1, "Invoice link is required"),
   method: z.enum(["ach", "card"]),
@@ -15,7 +18,7 @@ export const recordPaymentInputSchema = z.object({
   amount_cents: z.number().int().positive("Amount must be positive"),
   fee_cents: z.number().int().min(0).default(0),
   currency: z.string().default("usd"),
-  method: paymentMethodInputSchema.optional(),
+  method: recordedPaymentMethodSchema.optional(),
   status: z.enum(["pending", "processing", "succeeded", "failed", "canceled", "refunded"]).default("succeeded"),
   reference: z.string().optional(),
   provider: z.string().optional(),

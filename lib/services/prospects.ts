@@ -485,6 +485,7 @@ export async function createProspect({
   input,
   orgId,
   traffic,
+  sourceGrantId,
 }: {
   input: CreateProspectInput;
   orgId?: string;
@@ -496,6 +497,8 @@ export async function createProspect({
    * This is the ONE place a new lead moves the count.
    */
   traffic?: { source: string | null; occurredOn?: string } | null;
+  /** The builder invitation this opportunity was tracked from, already resolved against the member's identity. */
+  sourceGrantId?: string;
 }): Promise<Prospect> {
   const parsed = createProspectInputSchema.parse(input);
   const {
@@ -521,6 +524,8 @@ export async function createProspect({
     tags: parsed.tags ?? [],
     notes: parsed.notes ?? null,
     created_by: userId,
+    ...(parsed.due_at ? { due_at: parsed.due_at } : {}),
+    ...(sourceGrantId ? { source_grant_id: sourceGrantId } : {}),
   };
   applyTerminalStatusDates(insert, parsed.status);
 
@@ -530,6 +535,9 @@ export async function createProspect({
     .select(prospectSelect)
     .single();
 
+  if (error?.code === "23505" && sourceGrantId) {
+    throw new Error("This invitation is already on your opportunities.");
+  }
   if (error || !data) {
     throw new Error(`Failed to create prospect: ${error?.message}`);
   }
@@ -949,6 +957,7 @@ export async function updateProspect({
     updates.lost_reason = parsed.lost_reason;
   if (parsed.next_follow_up_at !== undefined)
     updates.next_follow_up_at = parsed.next_follow_up_at;
+  if (parsed.due_at !== undefined) updates.due_at = parsed.due_at;
   applyTerminalStatusDates(
     updates,
     parsed.status,

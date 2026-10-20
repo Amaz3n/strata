@@ -1,10 +1,10 @@
 "use client"
 
-import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
+import { BUILDER_SURFACE, isTradeSurface, surfaceAllowsPath, type WorkspaceSurface } from "@/lib/workspace-surface"
 import { buildTradeNavGroups } from "./trade-nav-items"
 import { buildBooksNavItems } from "./books-nav-items"
 
-import { useEffect, useMemo, useState, useTransition } from "react"
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { AnimatePresence, motion } from "framer-motion"
 import { OptimisticLink, useOptimisticHref, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
 import { signOutAction } from "@/app/(auth)/auth/actions"
@@ -56,7 +56,7 @@ interface MobileBottomNavProps {
   canAccessPlatform?: boolean
   permissions?: string[]
   productTier?: ProductTier
-  businessProfile?: BusinessProfile
+  workspaceSurface?: WorkspaceSurface
   showProductionNavigation?: boolean
   showPipelineNavigation?: boolean
   showPurchasingNavigation?: boolean
@@ -110,7 +110,7 @@ export function MobileBottomNav({
   canAccessPlatform,
   permissions = [],
   productTier = "residential",
-  businessProfile = BUILDER_PROFILE,
+  workspaceSurface = BUILDER_SURFACE,
   showProductionNavigation = false,
   showPipelineNavigation = true,
   showPurchasingNavigation = false,
@@ -200,7 +200,7 @@ export function MobileBottomNav({
           reviewBadgeCount: projectReviewBadgeCounts[projectId],
           correspondenceBadgeCount: projectCorrespondenceBadgeCounts[projectId],
           orgTier: productTier,
-          businessProfile,
+          workspaceSurface,
         })[0]?.items ?? []
       const closeItem = projectItems.find((item) => item.title === "Close")
       const projectPrimary = projectItems
@@ -253,13 +253,13 @@ export function MobileBottomNav({
         },
       ]
 
-      return { primary: projectPrimary, menuSections: businessProfile.kind === "trade" ? [
+      return { primary: projectPrimary, menuSections: isTradeSurface(workspaceSurface) ? [
         ...(projectMenuItems.length ? [{ label: "Job", items: projectMenuItems }] : []),
         ...tradeMenu,
       ] : projectMenu }
     }
 
-    if (businessProfile.kind === "trade") {
+    if (isTradeSurface(workspaceSurface)) {
       const sections = tradeMenu
       return { primary: sections[0].items.filter((item) => ["Today", "Jobs", "Schedule & crew"].includes(item.title)), menuSections: sections }
     }
@@ -366,18 +366,20 @@ export function MobileBottomNav({
       },
     ]
     return { primary: workspacePrimary, menuSections: workspaceMenu }
-  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, businessProfile, showProductionNavigation, showPipelineNavigation, showPurchasingNavigation, booksEnabled])
+  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, workspaceSurface, showProductionNavigation, showPipelineNavigation, showPurchasingNavigation, booksEnabled])
 
+  // Project tabs arrive already filtered with the project's module overrides.
+  const allowsPath = useCallback((url: string) => isProject || surfaceAllowsPath(workspaceSurface, url), [isProject, workspaceSurface])
   const visiblePrimary = useMemo(
     () =>
       primary
-        .filter((item) => canAccess(item.requiredAny, permissionSet))
+        .filter((item) => canAccess(item.requiredAny, permissionSet) && allowsPath(item.url))
         .map((item) => ({
           ...item,
           subItems: item.subItems?.filter((sub) => canAccess(sub.requiredAny, permissionSet)),
         }))
         .filter((item) => !item.subItems || item.subItems.length > 0),
-    [primary, permissionSet],
+    [primary, permissionSet, allowsPath],
   )
 
   const visibleMenuSections = useMemo(
@@ -386,7 +388,7 @@ export function MobileBottomNav({
         .map((section) => ({
           ...section,
           items: section.items
-            .filter((item) => canAccess(item.requiredAny, permissionSet))
+            .filter((item) => canAccess(item.requiredAny, permissionSet) && allowsPath(item.url))
             .map((item) => ({
               ...item,
               subItems: item.subItems?.filter((sub) => canAccess(sub.requiredAny, permissionSet)),
@@ -394,7 +396,7 @@ export function MobileBottomNav({
             .filter((item) => !item.subItems || item.subItems.length > 0),
         }))
         .filter((section) => section.items.length > 0),
-    [menuSections, permissionSet],
+    [menuSections, permissionSet, allowsPath],
   )
 
   const initials =

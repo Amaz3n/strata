@@ -1,5 +1,5 @@
 import { connection } from "next/server";
-import { defaultTradeJobType } from "@/lib/business-profile";
+import { defaultTradeJobType, isTradeProfile } from "@/lib/business-profile";
 import { NewTradeJob } from "@/components/trade/new-job";
 import { getTradeJobCustomers } from "@/lib/services/trade-workspace";
 import { WorkspaceLoading } from "@/components/layout/workspace-loading"
@@ -28,7 +28,7 @@ async function ProjectsData({
   const query = projectDirectoryQuerySchema.parse(raw);
   const [data, tradeCustomers] = await Promise.all([
     loadProjectDirectory(query, context),
-    profile.kind === "trade" ? getTradeJobCustomers() : null,
+    isTradeProfile(profile) ? getTradeJobCustomers() : null,
   ]);
   return (
     <ProjectsClient

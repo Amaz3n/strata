@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { notFound } from "next/navigation"
 import { connection } from "next/server"
 import { Suspense } from "react"
@@ -20,6 +21,7 @@ async function SafetyPageContent({
 }) {
   await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
+  await guardProjectTab(id, "safety")
   const context = await requireOrgContext()
   const filters = { q: query.q, type: query.type ?? (query.tab === "talks" ? "talk" : query.tab === "observations" ? "observation" : "all"), status: query.status, after: query.after }
   const [workspace, vendors, orgCompanies, locations, canManageLocations, orgWrite, writeDecision, selectedIncident, selectedObservation, selectedTalk] = await Promise.all([

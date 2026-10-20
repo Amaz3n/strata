@@ -1,5 +1,6 @@
 import { renderPayApplicationPdf, type PayApplicationPdfData } from "@/lib/pdfs/pay-application"
 import { requireOrgContext } from "@/lib/services/context"
+import { loadProjectReceivablesPolicy } from "@/lib/services/receivables-policy"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 
@@ -72,13 +73,14 @@ export async function getDrawPayApplicationReport({
   drawId: string
   orgId?: string
 }): Promise<DrawPayApplicationReport> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
   await requireProjectPermission(userId, projectId, "report.read")
 
   const [
     { data: drawRows, error: drawsError },
     { data: project, error: projectError },
     { data: org, error: orgError },
+    policy,
   ] = await Promise.all([
     supabase
       .from("draw_schedules")
@@ -93,6 +95,7 @@ export async function getDrawPayApplicationReport({
       .eq("id", projectId)
       .maybeSingle(),
     supabase.from("orgs").select("name").eq("id", resolvedOrgId).maybeSingle(),
+    loadProjectReceivablesPolicy({ supabase, orgId: resolvedOrgId, projectId, productTier }),
   ])
 
   if (drawsError) throw new Error(`Failed to load draw schedule: ${drawsError.message}`)
@@ -179,7 +182,9 @@ export async function getDrawPayApplicationReport({
     periodToIso: target.due_date ?? null,
     projectName: project.name ?? "Project",
     propertyDescription: projectLocationText(project.location),
-    ownerName: clientResult.data?.full_name ?? accountingCustomerName ?? "Owner",
+    ownerName: clientResult.data?.full_name ?? accountingCustomerName ?? policy.documentCustomerLabel,
+    customerLabel: policy.documentCustomerLabel,
+    projectLabel: policy.documentProjectLabel,
     contractorName: org?.name ?? "Contractor",
     contractDateIso: contract?.signed_at ?? contract?.effective_date ?? null,
     originalContractCents,

@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -12,7 +13,7 @@ interface PageProps { searchParams: Promise<{ community?: string }> }
 const breadcrumbs = [{ label: "Design Studio", href: "/design-studio" }, { label: "Catalog", href: "/design-studio/catalog" }, { label: "Publication history" }]
 async function PublicationHistoryContent({ searchParams }: PageProps) {
   await connection()
-  const [params, ambient, context] = await Promise.all([searchParams, getAmbientDeskContext(), requireOrgContext()])
+  const [, params, ambient, context] = await Promise.all([guardWorkspaceDesk("design_studio"), searchParams, getAmbientDeskContext(), requireOrgContext()])
   const canManage = await hasPermission("selections.catalog.manage", context)
   const scope = { expectedOrgId: context.orgId, expectedActorId: context.userId, communityId: params.community || ambient.communityId || null }
   const [page, pendingPage] = canManage ? await Promise.all([listCatalogPublicationHistory(scope).catch(() => null), listPendingCatalogPublications({ expectedOrgId: context.orgId, expectedActorId: context.userId })]) : [null, null]

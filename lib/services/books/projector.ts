@@ -1,4 +1,5 @@
 import "server-only";
+import { isOverheadCategory, overheadAccountCode } from "@/lib/financials/overhead";
 import { laborBasisFromJobCost } from "./labor-evidence";
 import { loadInvoiceRevenueLines } from "@/lib/services/books/invoice-revenue";
 import { timestampMicros } from "@/lib/services/books/posting-state";
@@ -704,7 +705,7 @@ async function projectionCandidates(
       let query = service
         .from("project_expenses")
         .select(
-          "id, project_id, vendor_company_id, expense_date, amount_cents, tax_cents, description, payment_method, accounting_coding, metadata, updated_at, status",
+          "id, project_id, overhead_category, vendor_company_id, expense_date, amount_cents, tax_cents, description, payment_method, accounting_coding, metadata, updated_at, status",
         )
         .eq("org_id", orgId);
       if (watermarks.expenses) query = query.or(readFromFilter(watermarks.expenses));
@@ -1151,6 +1152,11 @@ async function projectionCandidates(
             {
               amount_cents: amountCents,
               project_id: row.project_id ? String(row.project_id) : null,
+              // Overhead belongs to no job: it is an operating expense of the
+              // period under its category's account, never job cost.
+              ...(!row.project_id && isOverheadCategory(row.overhead_category)
+                ? { account_code: overheadAccountCode(row.overhead_category) }
+                : {}),
             },
           ];
     const paymentCode = row.payment_method === "reimbursable_personal" ? SYSTEM_ACCOUNT_CODES.employeeReimbursements : fundingCode("expense", String(row.id), () => funding.resolve({ metadata: row.metadata, method: row.payment_method }));

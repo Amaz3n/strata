@@ -1,4 +1,5 @@
 import { connection } from "next/server"
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { ArrowLeft } from "@/components/icons";
@@ -34,6 +35,7 @@ async function BidPackageDetailContent({
 }: BidPackageDetailPageProps) {
   await connection()
   const { dealId: prospectId, packageId } = await params;
+  await guardWorkspaceDesk("deal_room");
   const prospect = await getProspect(prospectId);
   if (!prospect?.project_id) notFound();
   const id = prospect.project_id;

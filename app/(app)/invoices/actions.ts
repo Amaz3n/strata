@@ -39,6 +39,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { invoiceInputSchema, invoiceVoidDateSchema } from "@/lib/validation/invoices"
 import { sendReminderEmail } from "@/lib/services/mailer"
+import { assertNotConnectedReceivable } from "@/lib/receivables/connected"
 import { listChangeOrders } from "@/lib/services/change-orders"
 import { getProjectFinancialFeatureConfig, isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { listCostPlusTabData, getProjectCostContract, resolveMarkupPercent, calculateMarkupCents, decideBillingCorrection } from "@/lib/services/cost-plus"
@@ -667,6 +668,7 @@ async function sendInvoiceReminder(invoiceId: string) {
   const invoice = await getInvoiceWithLines(invoiceId, orgId)
 
   if (!invoice) throw new Error("Invoice not found")
+  assertNotConnectedReceivable(invoice.metadata)
   await requireAuthorization({
     permission: "invoice.send",
     userId,

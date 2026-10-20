@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 
+import { connectedReceivableOf } from "@/lib/receivables/connected"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
@@ -24,7 +25,7 @@ async function handler(request: NextRequest) {
   for (const rule of rules) {
     let query = supabase
       .from("invoices")
-      .select("id, org_id, project_id, due_date, balance_due_cents, total_cents")
+      .select("id, org_id, project_id, due_date, balance_due_cents, total_cents, metadata")
       .eq("org_id", rule.org_id)
       .in("status", ["sent", "overdue", "partial"])
       .gt("balance_due_cents", 0)
@@ -38,6 +39,8 @@ async function handler(request: NextRequest) {
 
     for (const invoice of invoices ?? []) {
       if (!invoice.due_date) continue
+      // A mirror follows the builder's bill to the cent; a fee here would make it differ forever.
+      if (connectedReceivableOf(invoice.metadata)) continue
       const dueDate = new Date(invoice.due_date)
       const daysOverdue = Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
 

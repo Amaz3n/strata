@@ -51,6 +51,12 @@ import { BankingAccountCard } from "./banking-account-card";
 import { BankingSyncControl, latestBankSync } from "./banking-sync-control";
 import { BankingRules } from "./banking-rules";
 import {
+  CapturedExpenseBand,
+  RecordCostTwiceConfirm,
+  UnstatementedExpenses,
+  capturedExpenseLabel,
+} from "./banking-captured-expenses";
+import {
   Attachment,
   AttachmentAction,
   AttachmentActions,
@@ -61,6 +67,7 @@ import {
 } from "@/components/ui/attachment";
 import { bankingOptimisticCounts, bankingPaginationItems, formatBankDate } from "./banking-ui";
 import {
+  capturedExpenseMatch,
   codingForTransactionTotal,
   codingProblem,
   type BankCoding,
@@ -271,6 +278,7 @@ export function BankingWorkspace({
     Record<string, "save" | "post">
   >({});
   const [refreshKey, setRefreshKey] = useState(0);
+  const [confirmDoubleCost, setConfirmDoubleCost] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [bulkCategory, setBulkCategory] = useState<string | null>(null);
   const [bulkProject, setBulkProject] = useState<string | null>(null);
@@ -287,6 +295,28 @@ export function BankingWorkspace({
     name: `${a.code} · ${a.name}`,
   }));
   const coding = active ? drafts[active.id] : null;
+  const capturedMatch =
+    active && detail && active.review_status === "review" && active.matched_cents === 0
+      ? capturedExpenseMatch(
+          {
+            date: active.transaction_date,
+            amountCents: active.amount_cents,
+            direction: active.direction,
+            counterparty: active.merchant_name ?? active.description,
+          },
+          detail.candidates.map((candidate) => ({
+            id: candidate.id,
+            availableCents: candidate.availableCents,
+            entryDate: candidate.entryDate,
+            expense: candidate.expense,
+          })),
+        )
+      : null;
+  const capturedExpense = capturedMatch?.expense ?? null;
+  const requestPost = (row: BankingTransaction) => {
+    if (capturedMatch) setConfirmDoubleCost(true);
+    else void post(row, true).catch(() => {});
+  };
   const refresh = useCallback(() => setRefreshKey((key) => key + 1), []);
   const suggestionFor = (transactionId: string) =>
     rows.find((row) => row.id === transactionId)?.reviewSuggestion ??
@@ -480,6 +510,7 @@ export function BankingWorkspace({
     draft?: BankCoding,
     matches?: Mutation["matches"],
     quiet = false,
+    confirmDoubleCost = false,
   ) => {
     const matchedAmount = (matches ?? []).reduce((sum, match) => sum + match.amountCents, 0);
     const optimisticPost = row.review_status === "review" && (
@@ -524,6 +555,7 @@ export function BankingWorkspace({
           action,
           coding,
           matches,
+          confirmDoubleCost,
         });
         if (!result.success)
           throw new Error(result.error ?? "Could not save transaction");
@@ -684,6 +716,7 @@ export function BankingWorkspace({
     row: BankingTransaction,
     advanceAfter = false,
     quiet = false,
+    confirmDoubleCost = false,
   ) => {
     const postViewKey = viewKeyRef.current;
     const currentDraft = draftsRef.current[row.id];
@@ -741,7 +774,7 @@ export function BankingWorkspace({
         setInspectorOpen(true);
         throw new Error(problem);
       }
-      await mutate(row, "post", draft, undefined, quiet);
+      await mutate(row, "post", draft, undefined, quiet, confirmDoubleCost);
     }
     if (advanceAfter && viewKeyRef.current === postViewKey) advance();
   };
@@ -924,7 +957,7 @@ export function BankingWorkspace({
             active.review_status === "review"
           ) {
             event.preventDefault();
-            void post(active, true).catch(() => {});
+            requestPost(active);
           }
         }}
       >
@@ -984,6 +1017,25 @@ export function BankingWorkspace({
                   </Button>
                 )}
               </div>
+            )}
+            {capturedMatch && capturedExpense && canEdit && (
+              <CapturedExpenseBand
+                vendorName={capturedExpense.vendorName}
+                entryDate={capturedMatch.entryDate}
+                homeLabel={capturedExpense.homeLabel}
+                receiptFileId={capturedExpense.receiptFileId}
+                busy={busy.has(active.id)}
+                onMatch={() => {
+                  void mutate(active, "match", undefined, [
+                    {
+                      journalLineId: capturedMatch.id,
+                      amountCents: active.amount_cents,
+                    },
+                  ])
+                    .then(() => advance())
+                    .catch(() => {});
+                }}
+              />
             )}
             {(
               <>
@@ -1373,6 +1425,12 @@ export function BankingWorkspace({
                               entry?.memo ||
                               "Ledger entry"}
                           </p>
+                          {candidate.expense && (
+                            <p className="mt-1 text-xs font-medium text-primary">
+                              {capturedExpenseLabel(candidate.expense)}
+                              {candidate.expense.hasReceipt ? "" : " · no receipt"}
+                            </p>
+                          )}
                           <p className="mt-1 text-xs text-muted-foreground">
                             {entry?.entry_date}
                           </p>
@@ -1640,7 +1698,7 @@ export function BankingWorkspace({
                   <Button
                     disabled={busy.has(active.id)}
                     onClick={() => {
-                      void post(active, true).catch(() => {});
+                      requestPost(active);
                     }}
                   >
                     {busy.has(active.id) ? (
@@ -1769,6 +1827,7 @@ export function BankingWorkspace({
           </Button>
         </div>
       </div>
+      <UnstatementedExpenses refreshKey={refreshKey} />
       <div className="flex flex-wrap items-center justify-between gap-3 border-y px-6">
         <div
           className="flex"
@@ -2439,6 +2498,13 @@ export function BankingWorkspace({
           </Sheet>
         </div>
       )}
+      <RecordCostTwiceConfirm
+        open={confirmDoubleCost}
+        onOpenChange={setConfirmDoubleCost}
+        onConfirm={() => {
+          if (active) void post(active, true, false, true).catch(() => {});
+        }}
+      />
       <FileViewer
         file={viewerFile}
         files={viewerFile ? [viewerFile] : []}

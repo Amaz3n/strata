@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
@@ -43,6 +44,7 @@ export default function ProjectCloseoutPage({ params }: ProjectCloseoutPageProps
 async function ProjectCloseoutPageRoute({ params }: ProjectCloseoutPageProps) {
   await connection()
   const { id } = await params
+  await guardProjectTab(id, "closeout")
 
   return <ProjectCloseoutData id={id} />
 }

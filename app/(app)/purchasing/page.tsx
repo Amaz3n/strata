@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { z } from "zod"
 import { Button } from "@/components/ui/button"
@@ -46,6 +47,7 @@ function validRange(from?: string, to?: string) {
 
 async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{ tab?: string; project?: string; page?: string; q?: string; status?: string; state?: string; from?: string; to?: string; vendor?: string; code?: string; pbstatus?: string; expiring?: string }> }) {
   await connection()
+  await guardWorkspaceDesk("purchasing")
   const params = await searchParams
   const tab = ["price-book", "bids", "exceptions", "vpos", "variance", "completions", "deliveries", "acknowledgments"].includes(params.tab ?? "") ? params.tab! : "price-book"
   const requestedPage = Number(params.page ?? 1)

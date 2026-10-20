@@ -89,7 +89,6 @@ const GRANDFATHERED = [
   "components/platform/platform-bug-ui.tsx",
   "components/projects/draw-schedule-manager.tsx",
   "components/projects/draw-schedule-table.tsx",
-  "components/projects/project-financial-setup-fields.tsx",
   "components/projects/project-settings-sheet.tsx",
   "components/projects/retainage-tracker.tsx",
   "components/prospects/prospect-detail-sheet.tsx",
@@ -121,6 +120,15 @@ const GRANDFATHERED = [
   "components/ui/project-avatar.tsx",
 ]
 
+// Business profile is a choke point (lib/business-profile.ts, lib/workspace-surface.ts):
+// branching on `profile.kind` anywhere else forks the trade experience inline.
+const PROFILE_BRANCH_RULE = {
+  selector:
+    "BinaryExpression[operator=/^[!=]==?$/]:has(Literal[value=/^(trade|builder)$/]) > MemberExpression[property.name='kind']",
+  message: "Branch on the business profile through isTradeProfile()/isTradeSurface() or the workspace surface, never .kind === \"trade\" or \"builder\" inline.",
+}
+const PROFILE_CHOKE_POINTS = ["lib/business-profile.ts", "lib/workspace-surface.ts"]
+
 module.exports = {
   extends: ["next/core-web-vitals", "next/typescript"],
   rules: {
@@ -133,11 +141,18 @@ module.exports = {
   overrides: [
     {
       files: ["app/**/*.tsx", "components/**/*.tsx"],
-      rules: { "no-restricted-syntax": ["error", ...TOKEN_RULES] },
+      rules: { "no-restricted-syntax": ["error", ...TOKEN_RULES, PROFILE_BRANCH_RULE] },
     },
     {
       files: GRANDFATHERED,
-      rules: { "no-restricted-syntax": ["warn", ...TOKEN_RULES] },
+      // One rule, one severity: grandfathering downgrades the token debt to warnings, so the
+      // profile rule rides along here and is reported (lint:tokens) rather than dropped.
+      rules: { "no-restricted-syntax": ["warn", ...TOKEN_RULES, PROFILE_BRANCH_RULE] },
+    },
+    {
+      files: ["app/**/*.ts", "components/**/*.ts", "lib/**/*.{ts,tsx}"],
+      excludedFiles: PROFILE_CHOKE_POINTS,
+      rules: { "no-restricted-syntax": ["error", PROFILE_BRANCH_RULE] },
     },
   ],
 }

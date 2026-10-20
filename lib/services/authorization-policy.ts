@@ -13,6 +13,7 @@ export type AuthorizationReasonCode =
   | "deny_invalid_context"
   | "deny_project_org_mismatch"
   | "deny_division_scope"
+  | "deny_workspace_surface"
 
 export function uniquePermissions(values: string[]): string[] {
   return Array.from(new Set(values))

@@ -18,6 +18,7 @@ import type { ProductTier } from "@/lib/product-tier"
 import type { SettingsPanelData } from "@/lib/services/settings-page"
 import type { getOrganizationSettingsAction } from "@/app/(app)/settings/actions"
 import { cn } from "@/lib/utils"
+import { usePageTitle } from "@/components/layout/page-title-context"
 
 const ProfilePanel = dynamic(() => import("./profile-panel").then((m) => m.ProfilePanel), { loading: SettingsPanelSkeleton })
 const OrganizationPanel = dynamic(
@@ -85,7 +86,8 @@ export function SettingsWindow({
   const pending = useRef(new Map<SettingsTab, AbortController>())
   const mounted = useRef(false)
   const [visited, setVisited] = useState<SettingsTab[]>([initialTab])
-  const sections = useMemo(() => visibleSettingsSections(permissions), [permissions])
+  const { workspaceSurface } = usePageTitle()
+  const sections = useMemo(() => visibleSettingsSections(permissions, workspaceSurface), [permissions, workspaceSurface])
   const allowedTabs = useMemo(() => new Set(sections.flatMap(section => section.items)
     .map(item => new URLSearchParams(item.url.split("?")[1]).get("tab"))), [sections])
   const scope = `${orgId}:${productTier}:${[...permissions].sort().join(",")}`

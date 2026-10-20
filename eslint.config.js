@@ -29,7 +29,7 @@ module.exports = [
       "react-hooks/use-memo": "off",
     },
   },
-  ...legacyConfig.overrides.map(({ files, rules }) => ({ files, rules })),
+  ...legacyConfig.overrides.map(({ files, excludedFiles, rules }) => ({ files, ...(excludedFiles ? { ignores: excludedFiles } : {}), rules })),
   {
     files: ["app/**/*.{ts,tsx}", "components/**/*.{ts,tsx}", "hooks/**/*.{ts,tsx}"],
     // Audited application hooks must compute memoized values without side effects.

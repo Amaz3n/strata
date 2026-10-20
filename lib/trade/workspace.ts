@@ -8,9 +8,14 @@ export const tradeJobSchema = z
     address: z.string().trim().max(500).default(""),
     description: z.string().trim().max(4000).default(""),
     property_type: z.enum(["residential", "commercial"]).default("residential"),
-    billing_model: z
-      .enum(["fixed_price", "time_and_materials"])
-      .default("fixed_price"),
+    customer_kind: z.enum(["company", "homeowner"]).default("homeowner"),
+    billing_basis: z
+      .enum(["progress", "invoices", "time_and_materials"])
+      .default("invoices"),
+    retainage_percent: z.number().min(0).max(50).default(0),
+    payment_terms_days: z.number().int().min(0).max(180).default(30),
+    review_before_send: z.boolean().default(false),
+    customer_certifies: z.boolean().default(false),
     total_contract_value_cents: z
       .number()
       .int()
@@ -30,6 +35,53 @@ export const tradeJobSchema = z
       path: ["end_date"],
     },
   );
+
+export type TradeJobInput = z.infer<typeof tradeJobSchema>;
+export type TradeBillingBasis = TradeJobInput["billing_basis"];
+
+/**
+ * What the new-job form suggests once the customer is known: a builder or GC
+ * usually wants a pay application against a schedule of values, holds
+ * retainage and certifies; a homeowner gets plain invoices.
+ */
+export type TradeJobBillingChoices = Pick<
+  TradeJobInput,
+  "billing_basis" | "retainage_percent" | "payment_terms_days" | "customer_certifies"
+>;
+export function tradeJobBillingDefaults(
+  customerKind: TradeJobInput["customer_kind"],
+): TradeJobBillingChoices {
+  return customerKind === "company"
+    ? { billing_basis: "progress", retainage_percent: 10, payment_terms_days: 30, customer_certifies: true }
+    : { billing_basis: "invoices", retainage_percent: 0, payment_terms_days: 15, customer_certifies: false };
+}
+
+const TRADE_BILLING_BASES: readonly TradeBillingBasis[] = ["progress", "invoices", "time_and_materials"];
+export function isTradeBillingBasis(value: string): value is TradeBillingBasis {
+  return TRADE_BILLING_BASES.some((basis) => basis === value);
+}
+
+/**
+ * The project billing fields a trade job's answers set. Progress and invoices
+ * are both a fixed contract; progress bills it by pay application against a
+ * schedule of values, invoices by draws. Certification only means something
+ * for a pay application.
+ */
+export function tradeJobBilling(data: TradeJobInput) {
+  const timeAndMaterials = data.billing_basis === "time_and_materials";
+  return {
+    billing_model: timeAndMaterials ? ("time_and_materials" as const) : ("fixed_price" as const),
+    contract_type: timeAndMaterials ? ("time_materials" as const) : ("fixed" as const),
+    fixed_price_billing_basis: data.billing_basis === "progress" ? ("progress" as const) : ("draws" as const),
+    retainage_percent: data.retainage_percent,
+    receivables_terms: {
+      customerKind: data.customer_kind,
+      paymentTermsDays: data.payment_terms_days,
+      reviewBeforeSend: data.review_before_send,
+      customerCertifies: data.billing_basis === "progress" && data.customer_certifies,
+    },
+  };
+}
 
 export const tradeWorkSchema = z
   .object({

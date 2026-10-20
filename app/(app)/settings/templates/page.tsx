@@ -1,3 +1,6 @@
+import { redirect } from "next/navigation";
+import { getWorkspaceSurface } from "@/lib/services/workspace-surface";
+import { isTradeSurface } from "@/lib/workspace-surface";
 import { TemplateLibraryLoading } from "./templates-navigation"
 import { resolveTemplateSection } from "./sections"
 import { connection } from "next/server";
@@ -24,6 +27,8 @@ import { listEstimateTemplatesAction } from "./actions";
 async function TemplatesPageContent({ searchParams }: { searchParams: Promise<{ section?: string }> }) {
   await connection();
   const section = resolveTemplateSection((await searchParams).section);
+  // Waivers are the one library every company keeps, a trade included; the rest are builder starting points.
+  if (section !== "waivers" && isTradeSurface(await getWorkspaceSurface())) redirect("/settings/templates?section=waivers");
   if (section === "estimates") return <EstimatesSection />;
   if (section === "budgets") return <BudgetsSection />;
   if (section === "schedules") return <SchedulesSection />;

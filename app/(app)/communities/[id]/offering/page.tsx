@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { CommunitySpecInventory, type SpecRow } from "@/components/communities/community-spec-inventory"
 import { CommunityTrafficPanel, weekOf, type TrafficWeek } from "@/components/communities/community-traffic-panel"
@@ -36,6 +37,7 @@ const canManagePlans = (granted: readonly string[]) =>
  */
 export default async function CommunityOfferingPage({ params }: { params: Promise<{ id: string }> }) {
   await connection()
+  await guardWorkspaceDesk("communities")
   const { id } = await params
   // The offer is the sales team's document (price sheet, incentives, traffic,
   // spec inventory). The land manager shares this community's tabs but not its

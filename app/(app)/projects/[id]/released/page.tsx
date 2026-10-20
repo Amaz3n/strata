@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 
@@ -14,6 +15,7 @@ import { getReleasedForHome } from "@/lib/services/released-field-documents"
 async function ReleasedPageContent({ params }: { params: Promise<{ id: string }> }) {
   await connection()
   const { id } = await params
+  await guardProjectTab(id, "released")
   const released = await getReleasedForHome(id)
 
   return (

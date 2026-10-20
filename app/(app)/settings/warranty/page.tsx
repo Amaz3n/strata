@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
@@ -11,7 +12,7 @@ import { WarrantySettingsClient } from "./warranty-settings-client"
 
 async function WarrantySettingsPageContent() {
   await connection()
-  const [programs, targets, productTier] = await Promise.all([
+  const [, programs, targets, productTier] = await Promise.all([guardWorkspaceDesk("settings_warranty"),
     listWarrantyPrograms(),
     listWarrantySlaTargets(),
     getOrgProductTier(),

@@ -78,6 +78,7 @@ test('Books access rejects assigned-division users even when the role grants boo
     '@/lib/services/context': {},
     '@/lib/services/projects': {},
     '@/lib/product-tier': {},
+    '@/lib/services/workspace-surface': {},
   })
   const context = { user: { id: 'user-a' }, orgId: 'org-a' }
   assert.equal(await workspace.allowed(context, 'books.read'), false)

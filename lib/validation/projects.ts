@@ -9,6 +9,14 @@ export const projectRetainageScheduleSchema = z
   )
   .max(10)
 
+/** How a trade job bills its customer (lib/receivables/policy.ts JobReceivablesTerms). */
+export const jobReceivablesTermsSchema = z.object({
+  customerKind: z.enum(["company", "homeowner"]),
+  paymentTermsDays: z.number().int().min(0).max(180).nullable(),
+  reviewBeforeSend: z.boolean(),
+  customerCertifies: z.boolean(),
+})
+
 export const projectInputSchema = z.object({
   name: z.string().min(1, "Project name is required"),
   status: z.enum(["planning", "bidding", "active", "on_hold", "completed", "cancelled"]).optional(),
@@ -41,6 +49,7 @@ export const projectInputSchema = z.object({
   fixed_price_billing_basis: z.enum(["draws", "progress"]).optional().nullable(),
   retainage_schedule: projectRetainageScheduleSchema.optional().nullable(),
   stored_materials_retainage_percent: z.number().min(0).max(100).optional().nullable(),
+  receivables_terms: jobReceivablesTermsSchema.optional(),
   requires_client_cost_approval: z.boolean().optional(),
   open_book: z.boolean().optional(),
   paid_costs_required: z.boolean().optional(),

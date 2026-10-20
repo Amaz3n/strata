@@ -18,12 +18,15 @@ import {
   Wallet,
 } from "@/components/icons"
 import type { LucideIcon } from "@/components/icons"
+import { isTradeSurface, surfaceAllowsPath, type WorkspaceSurface } from "@/lib/workspace-surface"
 
 export interface SettingsItem {
   title: string
   url: string
   icon: LucideIcon
   requiredAny?: string[]
+  /** What a trade company calls it, where the builder title names a builder noun. */
+  tradeTitle?: string
 }
 export interface SettingsSection {
   label: string
@@ -59,9 +62,10 @@ export const settingsSections: SettingsSection[] = [
       { title: "Invoicing", url: "/settings?tab=invoicing", icon: Receipt },
       { title: "Accounting", url: "/settings?tab=accounting", icon: FileSpreadsheet },
       { title: "Cost coding", url: "/settings/cost-coding", icon: Tag },
-      { title: "Vendor compliance", url: "/settings?tab=compliance", icon: ShieldCheck },
+      { title: "Vendor compliance", tradeTitle: "Supplier compliance", url: "/settings?tab=compliance", icon: ShieldCheck },
       {
         title: "Vendor payments",
+        tradeTitle: "Supplier payments",
         url: "/settings?tab=payments",
         icon: Wallet,
         requiredAny: ["payment.release", "payment.approve_run", "payment.manage_rail"],
@@ -144,13 +148,15 @@ export function canViewSettingsItem(item: SettingsItem, permissions: readonly st
     item.requiredAny.some((key) => permissions.includes(key))
   )
 }
-export function visibleSettingsSections(permissions: readonly string[]) {
+/** Settings the member may open in this workspace: their permissions, bounded by the plan and business profile. */
+export function visibleSettingsSections(permissions: readonly string[], surface: WorkspaceSurface) {
+  const trade = isTradeSurface(surface)
   return settingsSections
     .map((section) => ({
       ...section,
-      items: section.items.filter((item) =>
-        canViewSettingsItem(item, permissions),
-      ),
+      items: section.items
+        .filter((item) => canViewSettingsItem(item, permissions) && surfaceAllowsPath(surface, item.url))
+        .map((item) => (trade && item.tradeTitle ? { ...item, title: item.tradeTitle } : item)),
     }))
     .filter((section) => section.items.length > 0)
 }

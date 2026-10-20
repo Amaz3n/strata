@@ -28,6 +28,7 @@ import {
 import { releaseInvoiceLienWaiversIfPaid } from "@/lib/services/invoice-lien-waivers";
 import { enqueuePaymentSync } from "@/lib/services/accounting-sync";
 import { requireAuthorization } from "@/lib/services/authorization";
+import { assertNotConnectedReceivable } from "@/lib/receivables/connected";
 import {
   escapeHtml,
   getOrgSenderEmail,
@@ -564,6 +565,9 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
 
   let resolvedOrgId = orgId;
   let invoiceId = parsed.invoice_id;
+  // Webhooks and the connected-receivable worker pass both ids; a person's
+  // request resolves them from their session, and may not touch a mirror.
+  const fromUserSession = !resolvedOrgId || !invoiceId;
 
   if (!resolvedOrgId || !invoiceId) {
     const ctx = await requireOrgContext(orgId);
@@ -585,6 +589,7 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
   }
 
   const invoice = await getInvoiceTotals(supabase, invoiceId, resolvedOrgId);
+  if (fromUserSession) assertNotConnectedReceivable(invoice.metadata);
 
   // Money can only be received against something that was actually billed. The
   // database guard only excluded `void`, so a draft — which carries a full
@@ -696,7 +701,9 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
       p_net_cents: payload.net_cents,
       p_idempotency_key: payload.idempotency_key,
       p_metadata: payload.metadata,
-      p_received_at: parsed.received_at,
+      // The RPC has no default: an omitted key is dropped by PostgREST and no function
+      // matches, so a webhook payment with no receipt time must send null (now()).
+      p_received_at: parsed.received_at ?? null,
       p_provider_charge_id: payload.provider_charge_id,
       p_connected_account_id: payload.connected_account_id,
       p_processor_fee_cents: payload.processor_fee_cents,
@@ -934,6 +941,7 @@ export async function recordMultiInvoicePayment(input: ReceivePaymentInput, orgI
     party = await getFinancialPartyReceivables({ partyType: parsed.party_type, partyId: parsed.party_id, orgId: context.orgId });
   }
   for (const invoice of invoices) {
+    assertNotConnectedReceivable(invoice.metadata);
     const permission = await requireAuthorization({ permission: "payment.release", userId: context.userId, orgId: context.orgId, projectId: invoice.project_id ?? undefined, supabase: context.supabase, resourceType: "invoice", resourceId: invoice.id, logDecision: true });
     if (!invoice.project_id && permission.divisionScope === "assigned") throw new Error("Organization-wide payment access is required for general billing");
     const project = Array.isArray(invoice.project) ? invoice.project[0] : invoice.project;

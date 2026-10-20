@@ -14,7 +14,14 @@ import {
   normalizeFeePresentation,
   resolveProjectBillingModel,
 } from "@/lib/financials/billing-model"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import {
+  DEFAULT_JOB_RECEIVABLES_TERMS,
+  readJobReceivablesTerms,
+  type JobReceivablesTerms,
+} from "@/lib/receivables/policy"
 import type { Contract, Project } from "@/lib/types"
+import { isTradeSurface } from "@/lib/workspace-surface"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { cn } from "@/lib/utils"
 import type { ProjectPosture } from "@/lib/product-tier"
@@ -51,6 +58,8 @@ export type FinancialSetupValue = {
   openBookRequired: boolean
   // null = inherit the organization's cost-coding default; true/false = per-project override.
   costCodesEnabled: boolean | null
+  // A trade job's customer terms; null until set, so a builder's save never writes them.
+  receivablesTerms: JobReceivablesTerms | null
 }
 
 export const billingModelOptions: Array<{ id: ProjectBillingModel; title: string; note: string }> = [
@@ -160,6 +169,7 @@ export function emptyFinancialSetup(
     clientCostApprovalRequired: false,
     openBookRequired: costDriven,
     costCodesEnabled: null,
+    receivablesTerms: null,
   }
 }
 
@@ -209,6 +219,9 @@ export function financialSetupFromProject(project: Project, contract?: Contract 
     clientCostApprovalRequired: Boolean(billingContract?.requires_client_cost_approval ?? false),
     openBookRequired: billingContract?.open_book ?? costDriven,
     costCodesEnabled: project.financial_settings?.cost_codes_enabled ?? null,
+    receivablesTerms: project.financial_settings?.metadata?.receivables
+      ? readJobReceivablesTerms(project.financial_settings.metadata)
+      : null,
   }
 }
 
@@ -336,6 +349,7 @@ export function financialSetupToProjectInput(value: FinancialSetupValue): Partia
     paid_costs_required: value.paidCostsRequired,
     proof_required: value.proofRequired,
     cost_codes_enabled: value.costCodesEnabled,
+    ...(value.receivablesTerms ? { receivables_terms: value.receivablesTerms } : {}),
   }
 }
 
@@ -363,8 +377,15 @@ export function ProjectFinancialSetupFields({
     onChange({ ...value, [key]: next })
   }
 
-  const terms = terminology(posture)
+  const { workspaceSurface } = usePageTitle()
+  const trade = isTradeSurface(workspaceSurface)
+  const terms = terminology(posture, workspaceSurface.profile)
   const options = billingModelOptionsForPosture(posture)
+  const customerTerms = value.receivablesTerms ?? DEFAULT_JOB_RECEIVABLES_TERMS
+  const customerNoun = customerTerms.customerKind === "company" ? "builder" : "customer"
+  function updateCustomerTerms(next: Partial<JobReceivablesTerms>) {
+    onChange({ ...value, receivablesTerms: { ...customerTerms, ...next } })
+  }
   const rules = [
     { id: "openBookRequired" as const, title: "Open book", detail: "Expose approved cost detail for cost-driven billing.", icon: FileText },
     { id: "clientCostApprovalRequired" as const, title: `${terms.owner} time approval`, detail: `Require ${terms.owner.toLowerCase()} approval before approved labor time can be billed.`, icon: ClipboardCheck },
@@ -389,7 +410,7 @@ export function ProjectFinancialSetupFields({
                 aria-pressed={active}
                 onClick={() => onChange(applyBillingModel(value, option.id))}
                 className={cn(
-                  "flex items-start justify-between gap-3 rounded-md border p-3 text-left transition-colors",
+                  "flex items-start justify-between gap-3 border p-3 text-left transition-colors",
                   active ? "border-primary bg-primary/5" : "border-border/70 hover:bg-muted/40",
                 )}
               >
@@ -397,12 +418,85 @@ export function ProjectFinancialSetupFields({
                   <span className="block text-sm font-medium">{option.title}</span>
                   <span className="mt-0.5 block text-xs text-muted-foreground">{option.note}</span>
                 </span>
-                {active ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" /> : null}
+                {active ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" /> : null}
               </button>
             )
           })}
         </div>
       </section>
+
+      {trade ? (
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold">Customer terms</h3>
+            <p className="text-xs text-muted-foreground">Who pays for this job and how invoices go out.</p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(
+              [
+                { id: "company" as const, title: "A builder or GC" },
+                { id: "homeowner" as const, title: "The homeowner" },
+              ]
+            ).map((option) => {
+              const active = customerTerms.customerKind === option.id
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => updateCustomerTerms({ customerKind: option.id })}
+                  className={cn(
+                    "border p-3 text-left text-sm font-medium transition-colors",
+                    active ? "border-primary bg-primary/5" : "border-border/70 hover:bg-muted/40",
+                  )}
+                >
+                  {option.title}
+                </button>
+              )
+            })}
+          </div>
+          <Field label="Payment terms" htmlFor="fin-payment-terms">
+            <Select
+              value={customerTerms.paymentTermsDays == null ? "default" : String(customerTerms.paymentTermsDays)}
+              onValueChange={(next) => updateCustomerTerms({ paymentTermsDays: next === "default" ? null : Number(next) })}
+            >
+              <SelectTrigger id="fin-payment-terms">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">Company default</SelectItem>
+                <SelectItem value="0">Due on receipt</SelectItem>
+                <SelectItem value="15">Net 15</SelectItem>
+                <SelectItem value="30">Net 30</SelectItem>
+                <SelectItem value="45">Net 45</SelectItem>
+                <SelectItem value="60">Net 60</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <div className="flex items-center justify-between gap-4 border p-3">
+            <Label htmlFor="fin-review-before-send" className="text-sm font-medium">
+              Approve each invoice in the office before it goes out
+            </Label>
+            <Switch
+              id="fin-review-before-send"
+              checked={customerTerms.reviewBeforeSend}
+              onCheckedChange={(checked) => updateCustomerTerms({ reviewBeforeSend: checked })}
+            />
+          </div>
+          {value.billingModel === "fixed_price" && value.fixedPriceBillingBasis === "progress" ? (
+            <div className="flex items-center justify-between gap-4 border p-3">
+              <Label htmlFor="fin-customer-certifies" className="text-sm font-medium">
+                The {customerNoun} certifies each pay application before it is invoiced
+              </Label>
+              <Switch
+                id="fin-customer-certifies"
+                checked={customerTerms.customerCertifies}
+                onCheckedChange={(checked) => updateCustomerTerms({ customerCertifies: checked })}
+              />
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="space-y-4">
         <div>
@@ -418,7 +512,7 @@ export function ProjectFinancialSetupFields({
           </div>
         ) : value.billingModel === "fixed_price" ? (
           <div className="space-y-2">
-            <Label>Owner billing</Label>
+            <Label>{terms.owner} billing</Label>
             <div className="grid gap-2 sm:grid-cols-2">
               {(
                 [
@@ -438,7 +532,7 @@ export function ProjectFinancialSetupFields({
                     aria-pressed={active}
                     onClick={() => update("fixedPriceBillingBasis", option.id)}
                     className={cn(
-                      "rounded-md border p-3 text-left transition-colors",
+                      "border p-3 text-left transition-colors",
                       active ? "border-primary bg-primary/5" : "border-border/70 hover:bg-muted/40",
                     )}
                   >
@@ -458,7 +552,7 @@ export function ProjectFinancialSetupFields({
             <PercentInput id="fin-retainage" value={value.retainagePercent} onChange={(next) => update("retainagePercent", next)} />
           </Field>
           {value.billingModel === "fixed_price" && value.fixedPriceBillingBasis === "progress" ? (
-            <div className="space-y-3 rounded-md border p-3 sm:col-span-2">
+            <div className="space-y-3 border p-3 sm:col-span-2">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <Label className="text-sm font-medium">Stepped retainage</Label>
@@ -535,7 +629,7 @@ export function ProjectFinancialSetupFields({
             </div>
           ) : null}
           {costDriven ? (
-            <div className="flex items-center justify-between gap-4 rounded-md border p-3 sm:col-span-2">
+            <div className="flex items-center justify-between gap-4 border p-3 sm:col-span-2">
               <div className="min-w-0">
                 <Label htmlFor="retainageAppliesToFee" className="text-sm font-medium">
                   Apply retainage to fee
@@ -609,7 +703,7 @@ export function ProjectFinancialSetupFields({
                       aria-pressed={active}
                       onClick={() => update("feePresentation", option.id)}
                       className={cn(
-                        "rounded-md border p-3 text-left transition-colors",
+                        "border p-3 text-left transition-colors",
                         active ? "border-primary bg-primary/5" : "border-border/70 hover:bg-muted/40",
                       )}
                     >
@@ -632,7 +726,7 @@ export function ProjectFinancialSetupFields({
               Whether this project uses cost codes. By default it follows your organization&apos;s cost-coding setting.
             </p>
           </div>
-          <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+          <div className="flex items-center justify-between gap-4 border p-3">
             <div className="flex min-w-0 items-start gap-3">
               <ListTree className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
               <div className="min-w-0">
@@ -669,7 +763,7 @@ export function ProjectFinancialSetupFields({
             <h3 className="text-sm font-semibold">Billing rules</h3>
             <p className="text-xs text-muted-foreground">These controls gate approved-cost invoicing and contract behavior.</p>
           </div>
-          <div className="divide-y rounded-md border">
+          <div className="divide-y border">
             {rules.map((rule) => {
               const Icon = rule.icon
               return (

@@ -1,0 +1,241 @@
+{
+  "scenario": "TRADE-EXP-01",
+  "reviewedFrom": "TR05-01, TR05-02 and TR05-03 (docs/plans/arc-trade/completion-checklist.json); docs/plans/arc-trade/README.md section 5 (TRADE-EXP-01); lib/financials/overhead.ts (categories, accounts, approval refusal); lib/mobile/expenses.ts createMobileExpense; lib/services/org-expenses.ts (desk, approve, assignExpenseHome); lib/services/books/projector.ts (expense posting, overhead category account); lib/services/books/funding.ts (card account resolution); lib/services/books/banking-workspace.ts (loadUnmatchedCapturedExpenses, mutateBankingTransaction undo); lib/services/books/bank-reconciliation.ts (reviewUnmatchedBankTransactions, confirmBankMatch); lib/services/books/bank-match-rules.ts (scoreBankMatch); lib/services/books/chart-of-accounts.ts (accounts 2100, 5000, 6200, 6220); lib/services/cost-plus.ts propagateApprovalToLedger; lib/services/job-cost-actuals.ts. Receipt images need object storage the stack does not have, so no capture carries one. Requests to the mobile route are real handler calls with bearer tokens from real sign-ins.",
+  "subcases": {
+    "fuel-receipt-captured-on-mobile-lands-in-overhead": {
+      "derivation": "The crew member posts a capture to /api/mobile/v1/expenses with the overhead category fuel_vehicles and no job: createMobileExpense inserts it as a submitted, unbillable (is_billable follows project_id) expense under that category with the vendor, 8,425 cents (84.25 dollars), no tax, paid by company card, submitted by the member. The response names its home with the category's label, Fuel and vehicles. The client id is the row's id, so retrying the same capture returns the saved row and there is still one row. The member's own expense list shows it. The foreman captures the supply-house receipt the same way under shop_supplies. The office (owner) desk then holds both in Review (status submitted) and Overhead, none Unsorted (an unsorted receipt is one with no category either), with the fuel row showing its home label, the submitter's name, the 8,425 total and submitted status. Overhead queue labels, sorted: Fuel and vehicles, Shop and office supplies.",
+      "expected": {
+        "capture": {
+          "status": 201,
+          "home": "Fuel and vehicles",
+          "project": null,
+          "category": "fuel_vehicles",
+          "amountCents": 8425,
+          "state": "submitted"
+        },
+        "retriedCapture": {
+          "status": 201,
+          "sameExpense": true,
+          "rows": 1
+        },
+        "stored": {
+          "overheadCategory": "fuel_vehicles",
+          "onAJob": false,
+          "billable": false,
+          "status": "submitted",
+          "capturedByTheCrewMember": true,
+          "vendor": "Shell",
+          "amountCents": 8425,
+          "taxCents": 0,
+          "paidBy": "company_card",
+          "hasReceiptImage": false
+        },
+        "crewSeesItInMyExpenses": true,
+        "officeDesk": {
+          "reviewQueueHoldsBoth": true,
+          "unsorted": 0,
+          "overheadQueue": [
+            "Fuel and vehicles",
+            "Shop and office supplies"
+          ],
+          "fuelRow": {
+            "home": "Fuel and vehicles",
+            "submittedBy": "Casey Crew",
+            "totalCents": 8425,
+            "status": "submitted"
+          },
+          "counts": {
+            "review": 2,
+            "unsorted": 0,
+            "overhead": 2
+          }
+        }
+      }
+    },
+    "approved-overhead-posts-to-its-category-account": {
+      "derivation": "The owner approves both overhead expenses (approveOrgExpense: bill.approve, the expense has a home). Books projects each approved expense once: the cost line of an expense with no job posts to its overhead category's operating-expense account (fuel and vehicles 6200, shop and office supplies 6220), never to job costs 5000, and the payment side is the company card: a card-method expense resolves to the one active credit-card liability account, 2100 Credit cards payable. So fuel is debit 6200 8,425 against credit 2100 8,425, and the supply receipt debit 6220 21,260 against credit 2100 21,260 (212.60 dollars). Each has one posted entry, the projection reports no failures, and no job cost entry exists for either.",
+      "expected": {
+        "status": [
+          "approved",
+          "approved"
+        ],
+        "projectionFailures": 0,
+        "fuelPosting": {
+          "entries": 1,
+          "netDebitCentsByAccount": {
+            "2100": -8425,
+            "6200": 8425
+          }
+        },
+        "supplyPosting": {
+          "entries": 1,
+          "netDebitCentsByAccount": {
+            "2100": -21260,
+            "6220": 21260
+          }
+        },
+        "jobCostEntries": 0
+      }
+    },
+    "fuel-charge-matches-its-receipt-on-the-card-feed": {
+      "derivation": "The card statement is imported as two charges dated today (the amount column positive means money out for a card): SHELL OIL 5731 for 84.25 and CORNER COFFEE 0042 for 12.40. Before matching, the unmatched-receipts list holds the posted card expenses whose card-account posting has no confirmed bank match: the fuel (8,425) and the supply receipt (21,260), sorted by amount; neither has an image. The review tray ranks ledger lines for each outflow by amount and the 10-day window: the fuel charge matches the fuel posting's 2100 credit line exactly (8,425, same day), scored 0.70 + 0.15 for the same date = 0.85, the statement text sharing nothing with the memo 'Diesel, truck 4'; the coffee charge has no ledger line of that amount, so no suggestion. Confirming the match records one confirmed match of 8,425 and posts nothing new: the two expense entries remain the only posted entries (a match is not a posting). The matched fuel receipt leaves the unmatched list, the supply receipt stays. Undoing the match marks it reversed, leaves the two entries as they were and lists the fuel receipt again; matching it again drops it from the list once more.",
+      "expected": {
+        "receiptsNotYetOnTheFeed": [
+          {
+            "vendor": "Shell",
+            "home": "Fuel and vehicles",
+            "cents": 8425,
+            "hasReceipt": false
+          },
+          {
+            "vendor": "Graybar Electric",
+            "home": "Shop and office supplies",
+            "cents": 21260,
+            "hasReceipt": false
+          }
+        ],
+        "fuelCharge": {
+          "suggestedFromTheReceiptsPosting": true,
+          "confidence": 0.85,
+          "amountCents": 8425,
+          "direction": "outflow",
+          "sameDay": true
+        },
+        "chargeWithoutAReceipt": {
+          "amountCents": 1240,
+          "suggestion": null
+        },
+        "afterMatching": {
+          "receiptsNotYetOnTheFeed": [
+            {
+              "vendor": "Graybar Electric",
+              "home": "Shop and office supplies",
+              "cents": 21260,
+              "hasReceipt": false
+            }
+          ],
+          "matches": [
+            {
+              "status": "confirmed",
+              "cents": 8425,
+              "match_type": "suggested"
+            }
+          ],
+          "postedExpenseAndBankEntries": 2
+        },
+        "afterUnmatching": {
+          "receiptsNotYetOnTheFeed": [
+            {
+              "vendor": "Shell",
+              "home": "Fuel and vehicles",
+              "cents": 8425,
+              "hasReceipt": false
+            },
+            {
+              "vendor": "Graybar Electric",
+              "home": "Shop and office supplies",
+              "cents": 21260,
+              "hasReceipt": false
+            }
+          ],
+          "matchStatuses": [
+            "reversed"
+          ],
+          "postedExpenseAndBankEntries": 2
+        },
+        "matchedAgain": {
+          "receiptsNotYetOnTheFeed": [
+            {
+              "vendor": "Graybar Electric",
+              "home": "Shop and office supplies",
+              "cents": 21260,
+              "hasReceipt": false
+            }
+          ]
+        }
+      }
+    },
+    "supply-receipt-moves-from-overhead-to-a-job": {
+      "derivation": "The owner opens the overhead desk and moves the approved supply-house receipt (21,260 cents) to the Palm Court service-call job. A screen opened long ago (an old updated_at) is refused with the staleness message. The real move changes project_id, clears the category, and, because the expense moved, makes it billable and clears job-only coding; as it was already approved, propagateApprovalToLedger posts one posted job cost entry of 21,260 on that job. The expense row advances, so Books retires the old entry (status reversed) and posts the expense again from its new home: after the outbox drains and the projector runs the receipt has two entries in order, the old one reversed (debit 6220) and a new posted one (debit 5000), so the posted books carry the receipt once: job costs 5000 debit 21,260 against credit card 2100 credit 21,260, and nothing in shop supplies. The fuel receipt is untouched: still fuel_vehicles with no job cost entry. The audit entry for the move holds before shop_supplies with no job and after no category with the job; the event expense_reassigned records the same from-category, the job and the amount. The overhead queue now holds only Fuel and vehicles; this month's desk shows overhead 8,425 (the fuel) beside job cost 21,260 and by category only Fuel and vehicles for 8,425.",
+      "expected": {
+        "staleScreen": "refused: This expense changed since you opened it. Reload and try again.",
+        "expense": {
+          "onTheJob": true,
+          "overheadCategory": null,
+          "billable": true,
+          "status": "approved"
+        },
+        "jobCost": [
+          {
+            "on_the_job": true,
+            "cents": 21260,
+            "status": "posted"
+          }
+        ],
+        "ledger": {
+          "projectionFailures": 0,
+          "entries": [
+            {
+              "status": "reversed",
+              "debitAccount": "6220"
+            },
+            {
+              "status": "posted",
+              "debitAccount": "5000"
+            }
+          ],
+          "postedNetDebitCentsByAccount": {
+            "2100": -21260,
+            "5000": 21260
+          }
+        },
+        "fuelReceiptUntouched": {
+          "overheadCategory": "fuel_vehicles",
+          "jobCostEntries": 0
+        },
+        "audit": [
+          {
+            "from_category": "shop_supplies",
+            "from_project": null,
+            "to_category": null,
+            "to_job": true
+          }
+        ],
+        "event": [
+          {
+            "from_category": "shop_supplies",
+            "to_job": true,
+            "cents": 21260
+          }
+        ],
+        "overheadQueueNow": [
+          "Fuel and vehicles"
+        ],
+        "thisMonth": {
+          "overheadCents": 8425,
+          "jobCostCents": 21260,
+          "byCategory": [
+            {
+              "label": "Fuel and vehicles",
+              "cents": 8425
+            }
+          ]
+        }
+      }
+    },
+    "unauthorized-members-cannot-approve-or-move": {
+      "derivation": "A crew member's role carries neither bill.approve, bill.write nor bill.read, so approving an expense, reassigning one and reading the office desk each refuse with the missing permission's key, and the foreman's fresh fuel capture stays submitted under its category. A capture with neither a job nor a category is unsorted: the owner has bill.approve but approval refuses until it has a home, with the sentence that names both choices.",
+      "expected": {
+        "freshCapture": 201,
+        "crewApproves": "refused: Missing permission: bill.approve",
+        "crewMoves": "refused: Missing permission: bill.write",
+        "crewReadsTheDesk": "refused: Missing permission: bill.read",
+        "stillSubmittedInFuel": {
+          "status": "submitted",
+          "category": "fuel_vehicles"
+        },
+        "officeApprovesWithNoHome": "refused: Pick a job or an overhead category before approving this expense."
+      }
+    }
+  }
+}

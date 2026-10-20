@@ -1,4 +1,5 @@
 import type { ARAgingReport } from "@/lib/services/reports/ar-aging";
+import { formatMoneyCents } from "./format";
 import type { ReportColumn, ReportResult, ReportRow } from "./types";
 const buckets = [
   ["current", "Current"],
@@ -79,6 +80,9 @@ export function arAgingSummary(
     );
   return {
     subtitle: `As of ${report.as_of}${report.as_closed ? ` · as closed ${report.as_closed.slice(0, 10)}` : ""}`,
+    ...((report.retainage_held_cents ?? 0) > 0
+      ? { stats: [{ key: "retainage_held", label: "Retainage held (not due, not aged)", value: formatMoneyCents(report.retainage_held_cents ?? 0) }] }
+      : {}),
     tables: [
       {
         key: `aging-${by}`,

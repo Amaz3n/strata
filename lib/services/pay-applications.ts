@@ -24,7 +24,8 @@ import {
   type PayApplicationStage,
 } from "@/lib/financials/pay-app-lifecycle"
 import { getProjectPosture, normalizeProductTier, type ProductTier } from "@/lib/product-tier"
-import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
+import { loadProjectReceivablesPolicy } from "@/lib/services/receivables-policy"
+import { payApplicationCertificationCopy } from "@/lib/emails/pay-application-email"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit, settleAuditPending, type AuditRecordPendingError } from "@/lib/services/audit"
@@ -198,9 +199,9 @@ function mapApplication(row: PayAppRow, facts: ApplicationFacts): PayApplication
 }
 
 /**
- * Whether this project's owner has to certify a pay application before its
- * invoice issues. Commercial owners do (the posture policy's required review);
- * a custom-home client billed by progress does not.
+ * Whether this project's customer has to certify a pay application before its
+ * invoice issues. Commercial owners do; a custom-home client billed by progress
+ * does not; a trade job says so in its own terms.
  */
 async function certificationRequiredForProject(
   supabase: SupabaseClient,
@@ -208,9 +209,8 @@ async function certificationRequiredForProject(
   projectId: string,
   productTier: ProductTier,
 ): Promise<boolean> {
-  const { data } = await supabase.from("projects").select("property_type").eq("org_id", orgId).eq("id", projectId).maybeSingle()
-  const posture = getProjectPosture(data?.property_type, productTier)
-  return getReceivablesPosturePolicy(posture).approvalMode === "required_review"
+  const policy = await loadProjectReceivablesPolicy({ supabase, orgId, projectId, productTier })
+  return policy.certifiesPayApplications
 }
 
 async function loadInvoiceFacts(
@@ -1164,26 +1164,17 @@ export async function releasePrimeRetainage(
     orgId: resolvedOrgId,
   })
 
-  const { error: releaseError } = await supabase.rpc("release_prime_sov_retainage", {
-    p_org_id: resolvedOrgId,
-    p_contract_id: contractId,
-    p_amount_cents: amountCents,
-  })
-  if (releaseError) {
-    await voidInvoice({ invoiceId: invoice.id, orgId: resolvedOrgId }).catch(() => undefined)
-    await supabase.from("pay_applications").delete().eq("org_id", resolvedOrgId).eq("id", appRow.id)
-    throw new Error(`Failed to release retainage: ${releaseError.message}`)
-  }
-
   const completedStored = sovState.lines.reduce(
     (sum, line) => sum + line.previous_billed_cents + line.stored_materials_cents,
     0,
   )
   const retainageAfter = availableCents - amountCents
-  const { error: postError } = await createServiceSupabaseClient().rpc("post_pay_application", {
+  // Releasing the SOV and posting the release application are one transaction.
+  const { error: postError } = await createServiceSupabaseClient().rpc("post_retainage_release", {
     p_org_id: resolvedOrgId,
     p_pay_application_id: appRow.id,
     p_invoice_id: invoice.id,
+    p_amount_cents: amountCents,
     p_summary: {
       original_contract_sum_cents: resolveOriginalContractSum(
         await getProgressBillingContract(supabase, resolvedOrgId, projectId),
@@ -1200,9 +1191,9 @@ export async function releasePrimeRetainage(
     },
   })
   if (postError) {
-    throw new Error(
-      `Retainage was released on the SOV but the release application failed to post: ${postError.message}. Contact support before retrying.`,
-    )
+    await voidInvoice({ invoiceId: invoice.id, orgId: resolvedOrgId }).catch(() => undefined)
+    await supabase.from("pay_applications").delete().eq("org_id", resolvedOrgId).eq("id", appRow.id)
+    throw new Error(`Failed to release retainage: ${postError.message}`)
   }
 
   // Move the retainage mirror rows (held on each source invoice) to invoiced,
@@ -1403,20 +1394,21 @@ export async function sendPayApplication(
       appRow.status === "draft"
         ? "Submit the pay application before sending it."
         : appRow.status === "approved"
-          ? "This pay application is already certified. Remind the owner from its invoice."
+          ? "This pay application is already certified. Send a reminder from its invoice."
           : "This pay application cannot be sent.",
     )
   }
   if (!appRow.invoice_id) throw new Error("This pay application has no invoice to send")
 
-  const [{ project, contact }, certificationRequired, { data: org }] = await Promise.all([
+  const [{ project, contact }, policy, { data: org }] = await Promise.all([
     loadOwnerRecipient(supabase, resolvedOrgId, projectId),
-    certificationRequiredForProject(supabase, resolvedOrgId, projectId, productTier),
+    loadProjectReceivablesPolicy({ supabase, orgId: resolvedOrgId, projectId, productTier }),
     supabase.from("orgs").select("name, slug").eq("id", resolvedOrgId).maybeSingle(),
   ])
+  const certificationRequired = policy.certifiesPayApplications
   const recipients = normalizeRecipients(input.recipients?.length ? input.recipients : [contact?.email])
   if (recipients.length === 0) {
-    throw new Error(`Add an email for the ${certificationRequired ? "owner" : "customer"} before sending.`)
+    throw new Error(`Add an email for the ${policy.documentCustomerLabel.toLowerCase()} before sending.`)
   }
 
   const {data:packetInvoice,error:packetError}=await supabase.from("invoices").select("id,metadata,total_cents,project_id,invoice_number,title,subtotal_cents,tax_cents,notes").eq("org_id",resolvedOrgId).eq("id",appRow.invoice_id).single()
@@ -1443,21 +1435,27 @@ export async function sendPayApplication(
       fallbackPath: projectBillingHref(projectId),
     })
     const amount = (Number(appRow.current_payment_due_cents ?? 0) / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
-    const revision = readRevision(metadata)
-    const title = `Pay Application #${appRow.application_number}${revision > 0 ? ` (revision ${revision})` : ""}`
+    const copy = payApplicationCertificationCopy({
+      orgName: org?.name,
+      projectName: project.name,
+      projectNoun: policy.documentProjectLabel,
+      applicationNumber: Number(appRow.application_number),
+      revision: readRevision(metadata),
+      includesWaiver,
+    })
     const messageHtml = [
-      `<p>${escapeHtml(org?.name ?? "Your contractor")} has submitted ${escapeHtml(title)} for ${escapeHtml(project.name ?? "the project")}.</p>`,
+      `<p>${escapeHtml(copy.intro)}</p>`,
       `<p><strong>Amount applied for:</strong> ${escapeHtml(amount)}<br/><strong>Period ending:</strong> ${escapeHtml(String(appRow.period_end))}</p>`,
-      includesWaiver ? "<p>Your contractor’s signed waiver is included in this packet.</p>" : "",
+      copy.waiverNote ? `<p>${escapeHtml(copy.waiverNote)}</p>` : "",
       input.message?.trim() ? `<p>${escapeHtml(input.message.trim()).replace(/\n/g, "<br/>")}</p>` : "",
-      `<p>Review the application and continuation sheet, then certify it for payment or return it with your comments.</p>`,
+      `<p>${escapeHtml(copy.review)}</p>`,
     ].join("")
     const sent = await sendEmail({
       from: getOrgSenderEmail(org?.slug, org?.name),
       to: recipients,
-      subject: `${title}${includesWaiver ? " & signed waiver" : ""} — ${project.name ?? "Project"}`,
+      subject: copy.subject,
       html: renderStandardEmailLayout({
-        title: `${title} is ready for your certificate`,
+        title: copy.heading,
         messageHtml,
         buttonText: "Review and certify",
         buttonUrl: `${base}/pay-applications/${payApplicationId}`,
@@ -1824,6 +1822,9 @@ export async function getPayApplicationForPortal(args: {
 export interface PayApplicationWorkspaceContext {
   progressEvidence: PayApplicationProgressEvidence[]
   ownerName: string
+  /** Who the application is addressed to: "Owner" for a builder, the customer for a trade. */
+  customerLabel: string
+  projectLabel: string
   contractorName: string
   projectName: string
   propertyDescription: string | null
@@ -1847,10 +1848,10 @@ export async function getPayApplicationWorkspaceContext(
   orgId?: string,
   periodEnd?: string,
 ): Promise<PayApplicationWorkspaceContext> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
   await requirePayAppPermission({ supabase, orgId: resolvedOrgId, userId, projectId, permission: "invoice.read" })
 
-  const [{ data: project }, { data: org }, contract, { data: contractDates }, sovState, changeOrderRows] = await Promise.all([
+  const [{ data: project }, { data: org }, contract, { data: contractDates }, sovState, changeOrderRows, policy] = await Promise.all([
     supabase.from("projects").select("name, location, client_id").eq("org_id", resolvedOrgId).eq("id", projectId).maybeSingle(),
     supabase.from("orgs").select("name").eq("id", resolvedOrgId).maybeSingle(),
     getProgressBillingContract(supabase, resolvedOrgId, projectId),
@@ -1871,6 +1872,7 @@ export async function getPayApplicationWorkspaceContext(
       .eq("project_id", projectId)
       .eq("lifecycle", "approved")
       .order("created_at", { ascending: true }),
+    loadProjectReceivablesPolicy({ supabase, orgId: resolvedOrgId, projectId, productTier }),
   ])
 
   const { data: client } = project?.client_id
@@ -1900,7 +1902,9 @@ export async function getPayApplicationWorkspaceContext(
 
   return {
     progressEvidence: buildPayApplicationProgressEvidence(sovState.lines, evidence),
-    ownerName: client?.full_name ?? "Owner",
+    ownerName: client?.full_name ?? policy.documentCustomerLabel,
+    customerLabel: policy.documentCustomerLabel,
+    projectLabel: policy.documentProjectLabel,
     contractorName: org?.name ?? "Contractor",
     projectName: project?.name ?? "Project",
     propertyDescription: projectPropertyText(project?.location),

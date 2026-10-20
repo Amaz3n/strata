@@ -4,10 +4,20 @@ import { PageLayout } from "@/components/layout/page-layout";
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton";
 import { BuilderConnections } from "@/components/trade/builder-connections";
 import { getTradeBuilderWorkspace } from "@/lib/services/external-portal-auth";
+import {
+  listLinkableJobs,
+  listProjectConnectionsForGrants,
+} from "@/lib/services/project-connections";
+import { defaultTradeJobType } from "@/lib/business-profile";
+import { getOrgProductTier } from "@/lib/services/context";
 
 async function Connections() {
   await connection();
-  const workspace = await getTradeBuilderWorkspace();
+  const [workspace, linkable, tier] = await Promise.all([
+    getTradeBuilderWorkspace(),
+    listLinkableJobs(),
+    getOrgProductTier(),
+  ]);
   // Raw portal tokens never enter this client list. The open action resolves
   // the grant against the current verified identity again before navigation.
   const items = (workspace?.items ?? [])
@@ -20,9 +30,18 @@ async function Connections() {
       subtitle,
       due_at,
     }));
+  const links = await listProjectConnectionsForGrants(
+    items.filter((item) => item.kind === "sub").map((item) => item.id),
+  );
   return (
     <PageLayout title="Builder connections">
-      <BuilderConnections items={items} />
+      <BuilderConnections
+        items={items}
+        links={links}
+        linkableJobs={linkable.jobs}
+        linkableJobsTruncated={linkable.truncated}
+        defaultJobType={defaultTradeJobType(tier)}
+      />
     </PageLayout>
   );
 }

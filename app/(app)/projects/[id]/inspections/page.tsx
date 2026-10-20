@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
@@ -20,6 +21,7 @@ async function InspectionsPageContent({
 }) {
   await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
+  await guardProjectTab(id, "inspections")
   const scheduleLink = query.schedule_item
     ? { id: query.schedule_item, title: query.title?.trim() ?? "" }
     : null

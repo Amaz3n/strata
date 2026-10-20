@@ -17,6 +17,15 @@ import { ProductionHouseOverview } from "@/components/projects/production-house-
 import { getProductionHouseOverview } from "@/lib/services/production-house-overview"
 import { getOrgProductTier } from "@/lib/services/context"
 import { getProjectPosture } from "@/lib/product-tier"
+import { BuilderProjectPanel } from "@/components/trade/builder-project-panel"
+import { getProjectConnection } from "@/lib/services/project-connections"
+import { TradeJobBand, TradeJobBandSkeleton } from "@/components/trade/job-overview-band"
+import { crewHoursInPeriod, crewPeriod } from "@/lib/trade/job-band"
+import { getProjectBillingSummary } from "@/lib/services/billing-book"
+import { listProjectTimeEntries } from "@/lib/services/cost-plus"
+import { hasPermission } from "@/lib/services/permissions"
+import { getWorkspaceSurface } from "@/lib/services/workspace-surface"
+import { isTradeSurface } from "@/lib/workspace-surface"
 import { withSpan } from "@/lib/observability/spans"
 import {
   getProjectOverviewFinancials,
@@ -52,7 +61,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
 async function ProjectOverview({ params }: ProjectDetailPageProps) {
   const { id } = await params
-  const { tier, project } = await loadOverviewIdentity(id)
+  const [{ tier, project }, surface] = await Promise.all([loadOverviewIdentity(id), getWorkspaceSurface()])
   if (!project) notFound()
 
   const posture = getProjectPosture(project.property_type, tier)
@@ -77,8 +86,20 @@ async function ProjectOverview({ params }: ProjectDetailPageProps) {
       <ProjectOverviewActions project={project} />
 
       <SectionErrorBoundary title="Project health">
-        <Suspense fallback={<StatsSkeleton />}>
-          <StatsBand id={id} project={project} />
+        {isTradeSurface(surface) ? (
+          <Suspense fallback={<TradeJobBandSkeleton />}>
+            <TradeBand id={id} />
+          </Suspense>
+        ) : (
+          <Suspense fallback={<StatsSkeleton />}>
+            <StatsBand id={id} project={project} />
+          </Suspense>
+        )}
+      </SectionErrorBoundary>
+
+      <SectionErrorBoundary title="Builder project">
+        <Suspense fallback={null}>
+          <BuilderProjectBand id={id} />
         </Suspense>
       </SectionErrorBoundary>
 
@@ -141,6 +162,32 @@ async function StatsBand({ id, project }: {
       adjustedBudgetCents={financials.adjustedBudgetCents ?? undefined}
     />
   )
+}
+
+async function TradeBand({ id }: { id: string }) {
+  await connection()
+  const period = crewPeriod(new Date())
+  const [canBilling, canTime] = await Promise.all([hasPermission("invoice.read"), hasPermission("time.read")])
+  const [financials, billing, timeEntries] = await Promise.all([
+    getProjectOverviewFinancials(id),
+    canBilling ? getProjectBillingSummary(id) : null,
+    canTime ? listProjectTimeEntries(id) : null,
+  ])
+  const crew = timeEntries ? crewHoursInPeriod(timeEntries, period) : null
+
+  return (
+    <TradeJobBand
+      contractTotalCents={financials.contractTotalCents}
+      billing={billing}
+      crew={crew && { ...crew, periodLabel: `This week · ${period.start} to ${period.end}` }}
+    />
+  )
+}
+
+async function BuilderProjectBand({ id }: { id: string }) {
+  await connection()
+  const link = await getProjectConnection(id)
+  return link ? <BuilderProjectPanel connection={link} /> : null
 }
 
 async function AttentionBand({ id }: { id: string }) {

@@ -35,7 +35,7 @@
  * stamps a later `updated_at` (the standard trigger), `update/delete(...)
  * .select().maybeSingle()` returns one row, `{ count: "exact" }` on a mutation
  * counts it, `.eq(jsonColumn, JSON.stringify(value))` compares by value,
- * `.eq("relation.column", x)` (also `in`, `gte`) filters on an embedded row, and `maxRows` caps
+ * `.eq("relation.column", x)` (also `in`, `gte`, `lte`) filters on an embedded row, and `maxRows` caps
  * each response the way PostgREST's max-rows does.
  *
  * Seeded tables are copied as JSON, so Infinity, NaN and undefined do not
@@ -82,6 +82,10 @@ const ACCESS_TABLES = new Set([
   "project_members",
   "platform_memberships",
   "authorization_audit_log",
+  // The workspace surface (plan entitlements + business profile) bounds every decision.
+  "org_settings",
+  "entitlements",
+  "subscriptions",
 ])
 
 /**
@@ -136,10 +140,16 @@ function embeddedFilter(query, method) {
   query[method] = (column, value) => {
     if (!column.includes(".")) return original(column, value)
     const [relation, field] = column.split(".")
-    if (method === "gte") {
+    if (method === "gte" || method === "lte") {
+      // Numbers compare as numbers, dates and other text as text.
+      const compare = (actual) => {
+        const numeric = Number.isFinite(Number(actual)) && Number.isFinite(Number(value))
+        const [left, right] = numeric ? [Number(actual), Number(value)] : [String(actual), String(value)]
+        return method === "gte" ? left >= right : left <= right
+      }
       return query.addFilter((row) => {
         const related = Array.isArray(row[relation]) ? row[relation] : [row[relation]]
-        return related.some((entry) => entry && entry[field] != null && Number(entry[field]) >= Number(value))
+        return related.some((entry) => entry && entry[field] != null && compare(entry[field]))
       })
     }
     const values = method === "in" ? value.map(String) : [String(value)]
@@ -250,7 +260,7 @@ function createServiceHarness(options = {}) {
   service.client = {
     from(table) {
       const query = fake.from(table)
-      for (const method of ["eq", "neq", "in", "gte"]) embeddedFilter(query, method)
+      for (const method of ["eq", "neq", "in", "gte", "lte"]) embeddedFilter(query, method)
       // `query.where` is the query's equality filters, so a tamper can aim at
       // one read of a table: `query.where.sheet_version_id === TARGET`.
       query.where = {}

@@ -24,6 +24,8 @@ export interface InvoiceEmailProps {
   invoiceNumber: string
   invoiceTitle: string
   projectName: string
+  /** The org's noun for a project: "Job" for a trade company. */
+  projectLabel?: string
   amount: string
   dueDate?: string
   invoiceLink: string
@@ -37,6 +39,7 @@ export function InvoiceEmail({
   invoiceNumber = "INV-001",
   invoiceTitle = "New Invoice",
   projectName = "Project",
+  projectLabel = "Project",
   amount = "$0.00",
   dueDate,
   invoiceLink = "#",
@@ -68,7 +71,7 @@ export function InvoiceEmail({
           <span style={metaLabel}>Invoice:</span> <span style={metaValue}>{invoiceNumber}</span>
         </Text>
         <Text style={metaRow}>
-          <span style={metaLabel}>Project:</span> <span style={metaValue}>{projectName}</span>
+          <span style={metaLabel}>{projectLabel}:</span> <span style={metaValue}>{projectName}</span>
         </Text>
         <Text style={metaRow}>
           <span style={metaLabel}>Amount Due:</span> <span style={amountValue}>{amount}</span>

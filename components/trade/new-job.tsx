@@ -4,9 +4,14 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createTradeJobAction } from "@/app/(app)/trade/actions";
 import type { TradeWorkspace } from "@/lib/services/trade-workspace";
+import {
+  isTradeBillingBasis,
+  tradeJobBillingDefaults,
+} from "@/lib/trade/workspace";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Sheet,
@@ -27,6 +32,18 @@ export function NewTradeJob({
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const [customerKind, setCustomerKind] = useState<"company" | "homeowner">(
+    "homeowner",
+  );
+  const [billing, setBilling] = useState(() =>
+    tradeJobBillingDefaults("homeowner"),
+  );
+  const [reviewBeforeSend, setReviewBeforeSend] = useState(false);
+  const chooseCustomer = (kind: "company" | "homeowner") => {
+    setCustomerKind(kind);
+    setBilling(tradeJobBillingDefaults(kind));
+  };
+  const customerNoun = customerKind === "company" ? "builder" : "customer";
   return (
     <>
       <Button size="sm" onClick={() => setOpen(true)}>
@@ -57,7 +74,12 @@ export function NewTradeJob({
                   address: data.get("address"),
                   description: data.get("description"),
                   property_type: data.get("property_type"),
-                  billing_model: data.get("billing_model"),
+                  customer_kind: customerKind,
+                  billing_basis: billing.billing_basis,
+                  retainage_percent: billing.retainage_percent,
+                  payment_terms_days: billing.payment_terms_days,
+                  review_before_send: reviewBeforeSend,
+                  customer_certifies: billing.customer_certifies,
                   total_contract_value_cents: data.get("value")
                     ? Math.round(Number(data.get("value")) * 100)
                     : undefined,
@@ -84,6 +106,27 @@ export function NewTradeJob({
                 placeholder="Oak Street — electrical installation"
               />
             </div>
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium">Who pays you</legend>
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    ["company", "A builder or GC"],
+                    ["homeowner", "The homeowner"],
+                  ] as const
+                ).map(([kind, label]) => (
+                  <Button
+                    key={kind}
+                    type="button"
+                    variant={customerKind === kind ? "default" : "outline"}
+                    aria-pressed={customerKind === kind}
+                    onClick={() => chooseCustomer(kind)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            </fieldset>
             <div className="space-y-2">
               <Label htmlFor="trade-job-client">Customer contact</Label>
               <select
@@ -127,7 +170,7 @@ export function NewTradeJob({
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
-                <Label htmlFor="trade-job-type">Project type</Label>
+                <Label htmlFor="trade-job-type">Job type</Label>
                 <select
                   id="trade-job-type"
                   name="property_type"
@@ -139,17 +182,93 @@ export function NewTradeJob({
                 </select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="trade-job-billing">Billing</Label>
+                <Label htmlFor="trade-job-billing">How you bill</Label>
                 <select
                   id="trade-job-billing"
-                  name="billing_model"
+                  value={billing.billing_basis}
+                  onChange={(e) => {
+                    const basis = e.target.value;
+                    if (!isTradeBillingBasis(basis)) return;
+                    setBilling((current) => ({
+                      ...current,
+                      billing_basis: basis,
+                    }));
+                  }}
                   className="h-10 w-full border border-input bg-background px-3 text-sm"
                 >
-                  <option value="fixed_price">Fixed price</option>
+                  <option value="progress">Pay applications (SOV)</option>
+                  <option value="invoices">Fixed price invoices</option>
                   <option value="time_and_materials">Time & materials</option>
                 </select>
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="trade-job-retainage">
+                  Retainage the {customerNoun} holds (%)
+                </Label>
+                <Input
+                  id="trade-job-retainage"
+                  type="number"
+                  min="0"
+                  max="50"
+                  step="0.5"
+                  value={billing.retainage_percent}
+                  onChange={(e) =>
+                    setBilling((current) => ({
+                      ...current,
+                      retainage_percent: Number(e.target.value) || 0,
+                    }))
+                  }
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="trade-job-terms">Payment terms</Label>
+                <select
+                  id="trade-job-terms"
+                  value={billing.payment_terms_days}
+                  onChange={(e) =>
+                    setBilling((current) => ({
+                      ...current,
+                      payment_terms_days: Number(e.target.value),
+                    }))
+                  }
+                  className="h-10 w-full border border-input bg-background px-3 text-sm"
+                >
+                  <option value={0}>Due on receipt</option>
+                  <option value={15}>Net 15</option>
+                  <option value={30}>Net 30</option>
+                  <option value={45}>Net 45</option>
+                  <option value={60}>Net 60</option>
+                </select>
+              </div>
+            </div>
+            {billing.billing_basis === "progress" && (
+              <label className="flex items-start gap-2 text-sm">
+                <Checkbox
+                  checked={billing.customer_certifies}
+                  onCheckedChange={(checked) =>
+                    setBilling((current) => ({
+                      ...current,
+                      customer_certifies: checked === true,
+                    }))
+                  }
+                />
+                <span>
+                  The {customerNoun} certifies each pay application before it
+                  is invoiced
+                </span>
+              </label>
+            )}
+            <label className="flex items-start gap-2 text-sm">
+              <Checkbox
+                checked={reviewBeforeSend}
+                onCheckedChange={(checked) =>
+                  setReviewBeforeSend(checked === true)
+                }
+              />
+              <span>Approve each invoice in the office before it goes out</span>
+            </label>
             <div className="space-y-2">
               <Label htmlFor="trade-job-value">
                 Contract amount ($, optional)

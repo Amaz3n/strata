@@ -13,6 +13,7 @@ import {
 } from "@/lib/financials/billing-model"
 import type { Contract } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
+import { writeJobReceivablesTerms } from "@/lib/receivables/policy"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -616,8 +617,10 @@ export function prepareProjectFinancialSettings(args: {
     resolveProjectBillingModel({ ...args.existingContract, contract_type: args.existingContract?.contract_type ?? undefined, snapshot: args.existingContract?.snapshot ?? undefined })
   const isCostPlus = billingModel === "cost_plus_percent" || billingModel === "cost_plus_fixed_fee" || billingModel === "cost_plus_gmp"
   const metadata = {
+    ...(existingSettings?.metadata ?? {}),
     source: "project_settings",
     updated_from_project_form_at: now,
+    ...(args.input.receivables_terms ? { receivables: writeJobReceivablesTerms(args.input.receivables_terms) } : {}),
   }
 
   const payload = {
@@ -804,6 +807,7 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
     updated_by: userId,
     created_by: userId,
     metadata: {
+      ...(existingSettings?.metadata ?? {}),
       source: "financial_setup_wizard",
       contract_id: contractId,
       updated_at: new Date().toISOString(),

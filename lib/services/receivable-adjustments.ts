@@ -4,6 +4,7 @@ import { z } from "zod"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { assertNotConnectedReceivable } from "@/lib/receivables/connected"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { assertDateInOpenPeriod, assertNotPostedInClosedPeriod } from "@/lib/services/books/closed-period-guard"
 import { requireOrgContext } from "@/lib/services/context"
@@ -54,12 +55,13 @@ export async function createReceivableAdjustment(input: CreateReceivableAdjustme
   const { orgId, userId, supabase } = await requireOrgContext()
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
-    .select("id, project_id")
+    .select("id, project_id, metadata")
     .eq("org_id", orgId)
     .eq("id", parsed.invoiceId)
     .maybeSingle()
   if (invoiceError) throw new Error(`Failed to load invoice: ${invoiceError.message}`)
   if (!invoice) throw new Error("Invoice not found")
+  assertNotConnectedReceivable(invoice.metadata)
 
   await requireAuthorization({
     permission: "invoice.write",
@@ -125,6 +127,14 @@ export async function voidReceivableAdjustment(adjustmentId: string) {
     .maybeSingle()
   if (adjustmentError) throw new Error(`Failed to load receivable adjustment: ${adjustmentError.message}`)
   if (!adjustment) throw new Error("Receivable adjustment not found")
+  const { data: invoice, error: invoiceError } = await supabase
+    .from("invoices")
+    .select("metadata")
+    .eq("org_id", orgId)
+    .eq("id", adjustment.invoice_id)
+    .maybeSingle()
+  if (invoiceError) throw new Error(`Failed to load invoice: ${invoiceError.message}`)
+  assertNotConnectedReceivable(invoice?.metadata)
 
   await requireAuthorization({
     permission: "invoice.write",

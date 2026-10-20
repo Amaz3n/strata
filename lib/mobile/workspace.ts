@@ -1,6 +1,7 @@
 import { MobileAPIError } from "@/lib/mobile/api"
 import type { MobileOrgContext } from "@/lib/mobile/auth"
-import { workspaceModules, workspaceRecord, projectModuleVisible, type WorkspaceModule } from "@/lib/mobile/workspace-catalog"
+import { workspaceModules, workspaceRecord, projectModuleVisible, surfaceAllowsModule, workspaceModuleFields, workspaceModuleTitle, type WorkspaceModule } from "@/lib/mobile/workspace-catalog"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
 import { authorize } from "@/lib/services/authorization"
 import { runWithServiceOrgContext } from "@/lib/services/context"
 import { listProjects } from "@/lib/services/projects"
@@ -16,14 +17,19 @@ async function visibleModules(context: MobileOrgContext, projectId?: string) {
   const project = projectId ? (await listProjects(context.orgId, context.serviceContext)).find(p => p.id === projectId) : null
   if (projectId && !project) throw new MobileAPIError(404, "project_not_found", "Project not found.")
   const posture = project ? getProjectPosture(project.property_type, context.serviceContext.productTier) : context.serviceContext.productTier
-  const booksEnabled = projectId ? false : await runWithServiceOrgContext(context.serviceContext, async () => (await import("@/lib/services/books/module")).isBooksWorkspaceEnabled(context.orgId))
-  return workspaceModules.filter(module => module.group !== "Books" || booksEnabled).filter(module => projectId
-    ? module.scope !== "organization" && projectModuleVisible(module, posture, project?.phase, project?.module_overrides ?? {})
-    : module.scope !== "project" && (!module.postures || module.postures.includes(posture)))
+  const [booksEnabled, surface] = await Promise.all([
+    projectId ? false : runWithServiceOrgContext(context.serviceContext, async () => (await import("@/lib/services/books/module")).isBooksWorkspaceEnabled(context.orgId)),
+    loadWorkspaceSurface(context.orgId),
+  ])
+  const overrides = project?.module_overrides ?? {}
+  const modules = workspaceModules.filter(module => module.group !== "Books" || booksEnabled).filter(module => projectId
+    ? module.scope !== "organization" && projectModuleVisible(module, posture, project?.phase, overrides) && surfaceAllowsModule(module, surface, overrides)
+    : module.scope !== "project" && (!module.postures || module.postures.includes(posture)) && surfaceAllowsModule(module, surface))
+  return { modules, surface }
 }
 
 export async function listWorkspaceModules(context: MobileOrgContext, projectId?: string) {
-  const visible = await visibleModules(context, projectId)
+  const { modules: visible, surface } = await visibleModules(context, projectId)
   const modules = await Promise.all(visible.map(async module => {
     if (!await allowed(context, module.permission, projectId)) return null
     if (module.id === "signatures" && !await (await import("@/lib/services/feature-flags")).isFeatureEnabledForOrg({ supabase: context.serviceSupabase, orgId: context.orgId, flagKey: "unified_esign" })) return null
@@ -52,14 +58,14 @@ export async function listWorkspaceModules(context: MobileOrgContext, projectId?
       const templates = await runWithServiceOrgContext(context.serviceContext, async () => (await import("@/lib/services/inspections")).listChecklistTemplates(context.orgId))
       createFields = templates.length ? createFields.map(field => field.key === "template_id" ? { ...field, options: templates.map(t => t.id), option_labels: Object.fromEntries(templates.map(t => [t.id, t.name])) } : field) : []
     }
-    return { id: module.id, title: module.title, group: module.group, symbol: module.symbol,
-      create_fields: createFields, edit_fields: canEdit ? module.editFields ?? [] : [] }
+    return { id: module.id, title: workspaceModuleTitle(module, surface), group: module.group, symbol: module.symbol,
+      create_fields: workspaceModuleFields(createFields, surface), edit_fields: workspaceModuleFields(canEdit ? module.editFields ?? [] : [], surface) }
   }))
   return modules.filter((module): module is NonNullable<typeof module> => module !== null)
 }
 
 export async function requireModule(context: MobileOrgContext, moduleId: string, projectId?: string) {
-  const workspaceModule = (await visibleModules(context, projectId)).find(module => module.id === moduleId)
+  const workspaceModule = (await visibleModules(context, projectId)).modules.find(module => module.id === moduleId)
   if (!workspaceModule || !await allowed(context, workspaceModule.permission, projectId)) {
     throw new MobileAPIError(403, "module_forbidden", "This module is not available in this workspace.")
   }

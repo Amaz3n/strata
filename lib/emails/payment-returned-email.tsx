@@ -39,6 +39,8 @@ export interface PaymentReturnedEmailProps {
   /** "Invoice 1042" — the bill or invoice the money was against. */
   documentLabel?: string | null
   projectName?: string | null
+  /** The org's noun for a project: "Job" for a trade company. */
+  projectLabel?: string
   reason?: string | null
   occurredLabel?: string | null
   actionUrl: string
@@ -127,6 +129,7 @@ export function PaymentReturnedEmail({
   counterpartyName = null,
   documentLabel = null,
   projectName = null,
+  projectLabel = "Project",
   reason = null,
   occurredLabel = null,
   actionUrl = "#",
@@ -172,7 +175,7 @@ export function PaymentReturnedEmail({
             </tr>
             {projectName ? (
               <tr>
-                <td style={factLabelCell}>Project</td>
+                <td style={factLabelCell}>{projectLabel}</td>
                 <td style={factValueCell} align="right">
                   {projectName}
                 </td>

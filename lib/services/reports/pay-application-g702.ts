@@ -3,7 +3,10 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { renderSovPayApplicationPdf, type SovPayAppPdfData, type SovPayAppPdfLine } from "@/lib/pdfs/pay-application-g702"
 import { normalizeRetainageSchedule, resolveRetainageRatePercent } from "@/lib/financials/pay-app-math"
 import { readCertification, readRevision } from "@/lib/financials/pay-app-lifecycle"
+import { getProjectPosture, normalizeProductTier } from "@/lib/product-tier"
+import { resolveReceivablesPolicy } from "@/lib/receivables/policy"
 import { requireOrgContext } from "@/lib/services/context"
+import { loadWorkspaceSurface } from "@/lib/services/workspace-surface"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { storeGeneratedPdf } from "@/lib/services/generated-documents"
@@ -80,6 +83,7 @@ export async function buildSovPayApplicationReport(
     { data: contract },
     { data: changeOrders },
     { data: submitter },
+    surface,
   ] = await Promise.all([
     supabase
       .from("pay_application_lines")
@@ -91,8 +95,8 @@ export async function buildSovPayApplicationReport(
       .select("id, line_number, description, stored_materials_cents, retainage_held_cents, retainage_released_cents, previous_billed_cents")
       .eq("org_id", orgId)
       .eq("contract_id", app.contract_id),
-    supabase.from("projects").select("name, location, client_id").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
-    supabase.from("orgs").select("name").eq("id", orgId).maybeSingle(),
+    supabase.from("projects").select("name, location, client_id, property_type, project_financial_settings(metadata)").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
+    supabase.from("orgs").select("name, product_tier").eq("id", orgId).maybeSingle(),
     supabase
       .from("contracts")
       .select("signed_at, effective_date, retainage_percent, retainage_schedule, stored_materials_retainage_percent")
@@ -109,6 +113,7 @@ export async function buildSovPayApplicationReport(
     submittedById
       ? supabase.from("app_users").select("full_name").eq("id", submittedById).maybeSingle()
       : Promise.resolve({ data: null as { full_name?: string | null } | null }),
+    loadWorkspaceSurface(orgId),
   ])
   if (linesError) throw new Error(`Failed to load pay application lines: ${linesError.message}`)
   if (sovError) throw new Error(`Failed to load schedule of values: ${sovError.message}`)
@@ -161,6 +166,13 @@ export async function buildSovPayApplicationReport(
     (await resolveAccountingTarget({ orgId, projectId }).catch(() => null))?.dimensions.customer?.name ?? null
 
   const certification = readCertification(metadata)
+  const settings = Array.isArray(project.project_financial_settings) ? project.project_financial_settings[0] : project.project_financial_settings
+  const policy = resolveReceivablesPolicy({
+    posture: getProjectPosture(project.property_type, normalizeProductTier(org?.product_tier)),
+    profile: surface.profile,
+    settingsMetadata: settings?.metadata,
+  })
+  const customerLabel = policy.documentCustomerLabel
   const data: SovPayAppPdfData = {
     applicationNumber: Number(app.application_number),
     applicationDateIso: app.submitted_at ?? app.created_at ?? new Date().toISOString(),
@@ -168,7 +180,9 @@ export async function buildSovPayApplicationReport(
     periodToIso: app.period_end,
     projectName: project.name ?? "Project",
     propertyDescription: projectLocationText(project.location),
-    ownerName: clientResult.data?.full_name ?? accountingCustomerName ?? "Owner",
+    ownerName: clientResult.data?.full_name ?? accountingCustomerName ?? customerLabel,
+    customerLabel,
+    projectLabel: policy.documentProjectLabel,
     contractorName: org?.name ?? "Contractor",
     contractDateIso: contract?.signed_at ?? contract?.effective_date ?? null,
     invoiceNumber: invoiceResult.data?.invoice_number ?? null,

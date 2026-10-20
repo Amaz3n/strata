@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface";
 import { cacheLife } from "next/cache";
 import { DealBids } from "@/components/pipeline/deal-bids";
 import { DealBidsSkeleton } from "@/components/pipeline/pipeline-skeletons";
@@ -18,6 +19,7 @@ async function loadBids(dealId: string) {
 
 async function Bids({ params }: Props) {
   const { dealId } = await params;
+  await guardWorkspaceDesk("deal_room");
   return <DealBids {...await loadBids(dealId)} />;
 }
 

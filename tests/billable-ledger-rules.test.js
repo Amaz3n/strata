@@ -54,3 +54,25 @@ test("unapproved costs and fixed-price projects are refused", () => {
     /Only cost-driven projects/,
   )
 })
+
+test("time locked into a closed pay period still bills, but only once the client approved it where required", () => {
+  const locked = { billingModel: "time_and_materials", sourceType: "time_entry", sourceStatus: "locked" }
+  assert.doesNotThrow(() => assertCostSourceCanEnterBillableLedger({ ...locked, clientCostApprovalRequired: false }))
+  assert.doesNotThrow(() =>
+    assertCostSourceCanEnterBillableLedger({ ...locked, clientCostApprovalRequired: true, clientApproved: true }),
+  )
+  assert.throws(
+    () => assertCostSourceCanEnterBillableLedger({ ...locked, clientCostApprovalRequired: true }),
+    /not approved for billing/,
+  )
+  assert.throws(
+    () =>
+      assertCostSourceCanEnterBillableLedger({
+        billingModel: "time_and_materials",
+        sourceType: "time_entry",
+        sourceStatus: "submitted",
+        clientCostApprovalRequired: false,
+      }),
+    /not approved for billing/,
+  )
+})

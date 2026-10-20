@@ -12,14 +12,16 @@ import { hasPermission } from "@/lib/services/permissions"
 import { listTeamMembers } from "@/lib/services/team"
 import { PageLayout } from "@/components/layout/page-layout"
 import { TimeEntriesClient } from "@/components/time/time-entries-client"
+import { periodParam, TimesheetSection, TimesheetSectionSkeleton } from "@/components/time/timesheet-section"
 import { Button } from "@/components/ui/button"
 
 interface Props {
   params: Promise<{ id: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
 }
 
 
-export default function ProjectTimePage({ params }: Props) {
+export default function ProjectTimePage({ params, searchParams }: Props) {
   return (
     <>
       <PageLayout
@@ -30,17 +32,17 @@ export default function ProjectTimePage({ params }: Props) {
         ]}
       />
       <Suspense fallback={<ProjectTimeFallback />}>
-        <ProjectTimePageRoute params={params} />
+        <ProjectTimePageRoute params={params} searchParams={searchParams} />
       </Suspense>
     </>
   )
 }
 
-async function ProjectTimePageRoute({ params }: Props) {
+async function ProjectTimePageRoute({ params, searchParams }: Props) {
   await connection()
-  const { id } = await params
+  const [{ id }, query] = await Promise.all([params, searchParams])
 
-  return <ProjectTimeData id={id} />
+  return <ProjectTimeData id={id} period={periodParam(query.period)} />
 }
 
 function ProjectTimeFallback() {
@@ -56,13 +58,21 @@ function ProjectTimeFallback() {
   )
 }
 
-async function ProjectTimeData({ id }: { id: string }) {
-  const canManageCrewPromise = hasPermission("time.write").catch(() => false)
-  const teamMembersPromise = canManageCrewPromise.then((canManageCrew) =>
-    canManageCrew
-      ? listTeamMembers(undefined, { includeProjectCounts: false }).catch(() => [])
-      : [],
-  )
+async function ProjectTimeData({ id, period }: { id: string; period?: string }) {
+  const canManageCrewPromise = hasPermission("time.manage").catch(() => false)
+  // The roster picks who the hours are for. Pay rates stay on the server: the
+  // entry is priced from the rate on file.
+  const teamMembersPromise = canManageCrewPromise.then(async (canManageCrew) => {
+    if (!canManageCrew) return []
+    const members = await listTeamMembers(undefined, { includeProjectCounts: false }).catch(() => [])
+    return members.map((member) => ({
+      ...member,
+      labor_cost_rate_cents: undefined,
+      labor_bill_rate_cents: undefined,
+      labor_burden_multiplier: undefined,
+      labor_is_billable_default: undefined,
+    }))
+  })
 
   const [project, costCodes, data, canManageCrew, teamMembers] = await Promise.all([
     getProjectAction(id),
@@ -90,6 +100,15 @@ async function ProjectTimeData({ id }: { id: string }) {
           </Button>
         </div>
       ) : null}
+      <div className="mb-8">
+        <Suspense fallback={<TimesheetSectionSkeleton />}>
+          <TimesheetSection
+            period={period}
+            projectId={project.id}
+            basePath={`/projects/${project.id}/time`}
+          />
+        </Suspense>
+      </div>
       <TimeEntriesClient
         projectId={project.id}
         initialEntries={data ?? []}

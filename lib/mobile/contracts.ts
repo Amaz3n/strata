@@ -15,6 +15,12 @@ export interface MobileOrganizationDTO {
   slug: string | null
   logo_url: string | null
   role: string | null
+  /** Builder or trade company; the app follows it for nouns and which modules it offers. */
+  business_profile: { kind: "builder" | "trade"; specialty: string }
+  /** "Arc", "Arc Commercial", "Arc Production" or "Arc Trade". */
+  brand: string
+  /** The org-level nouns for a project, e.g. Job / Jobs for a trade company. */
+  terms: { project: string; projects: string }
 }
 
 export interface MobileProjectDTO {
@@ -191,7 +197,11 @@ export interface MobilePunchItemDTO {
 
 export interface MobileExpenseDTO {
   id: string
-  project_id: string
+  /** Null for overhead and for an unsorted expense the office will place. */
+  project_id: string | null
+  overhead_category: string | null
+  /** Where the expense lives: the job's name, the overhead category, or "Needs a job or category". */
+  home_label: string
   vendor_name: string | null
   description: string | null
   expense_date: string | null
@@ -214,6 +224,9 @@ export interface MobileReceiptScanDTO {
   description: string | null
   confidence: string
   notes: string[]
+  /** The job the caller was clocked into on the receipt's date; null when none, and on the project-scoped scan. */
+  suggested_project_id: string | null
+  suggested_project_name: string | null
 }
 
 export interface MobileFileDTO {

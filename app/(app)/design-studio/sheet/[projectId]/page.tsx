@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
@@ -14,6 +15,7 @@ interface PageProps {
 
 async function SelectionSheetPageContent({ params }: PageProps) {
   await connection()
+  await guardWorkspaceDesk("design_studio")
   const { projectId } = await params
   const sheet = await getSelectionSheet(projectId)
   if (!sheet) notFound()

@@ -75,6 +75,8 @@ export const createProspectInputSchema = z.object({
   timeline_preference: z.string().trim().optional().nullable(),
   tags: z.array(z.string().trim().min(1)).optional(),
   notes: z.string().trim().max(10000).optional().nullable(),
+  /** When the price is due to the customer. */
+  due_at: z.string().datetime({ offset: true }).optional().nullable(),
   primary_contact: prospectContactInputSchema.optional(),
 });
 export type CreateProspectInput = z.infer<typeof createProspectInputSchema>;
@@ -94,6 +96,7 @@ export const updateProspectInputSchema = z.object({
   notes: z.string().trim().max(10000).optional().nullable(),
   lost_reason: z.string().trim().max(2000).optional().nullable(),
   next_follow_up_at: z.string().trim().min(1).optional().nullable(),
+  due_at: z.string().datetime({ offset: true }).optional().nullable(),
 });
 export type UpdateProspectInput = z.infer<typeof updateProspectInputSchema>;
 

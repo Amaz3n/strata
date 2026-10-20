@@ -1,3 +1,4 @@
+import { guardWorkspaceDesk } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 
@@ -9,7 +10,7 @@ import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
 async function DivisionsData() {
   await connection()
-  const [divisions, permissions] = await Promise.all([listDivisions(), getCurrentUserPermissions()])
+  const [, divisions, permissions] = await Promise.all([guardWorkspaceDesk("settings_divisions"), listDivisions(), getCurrentUserPermissions()])
   const canManage = permissions.permissions.some((permission) => ["division.manage", "org.admin", "*"].includes(permission))
   return <DivisionRoster divisions={divisions} canManage={canManage} />
 }

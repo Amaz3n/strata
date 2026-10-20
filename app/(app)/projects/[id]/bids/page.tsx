@@ -1,3 +1,4 @@
+import { guardProjectTab } from "@/lib/services/workspace-surface"
 import { connection } from "next/server"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
@@ -51,6 +52,7 @@ export default function ProjectBidsPage({ params, searchParams }: ProjectBidsPag
 async function ProjectBidsPageRoute({ params, searchParams }: ProjectBidsPageProps) {
   await connection()
   const { id } = await params
+  await guardProjectTab(id, "bids")
   const query = (await searchParams) ?? {}
   const initialDraft = {
     title: firstParam(query.title) ?? null,
