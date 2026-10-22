@@ -160,7 +160,7 @@ test("entering refuses a short reason and more than eight hours before writing a
  * `grants` is what the database reports as the operator's open, unexpired
  * grants (expiry itself is the database's job, tested below).
  */
-function loadContext({ memberOf = [], grants = [], grantError = null, operator = true, orgAccess = true, cookieOrgId = ORG }) {
+function loadContext({ memberOf = [], grants = [], grantError = null, operator = true, orgAccess = true, cookieOrgId = ORG, owner = false }) {
   delete process.env.SUPERADMIN_IDS
   const supabase = createFakeSupabase(
     {
@@ -181,7 +181,7 @@ function loadContext({ memberOf = [], grants = [], grantError = null, operator =
               user_id: OPERATOR,
               status: "active",
               expires_at: null,
-              role: { permissions: [{ permission_key: orgAccess ? "platform.org.access" : "platform.users.read" }] },
+              role: { key: owner ? "platform_super_admin" : "platform_admin", permissions: [{ permission_key: orgAccess ? "platform.org.access" : "platform.users.read" }] },
             },
           ]
         : [],
@@ -216,6 +216,17 @@ function loadContext({ memberOf = [], grants = [], grantError = null, operator =
   freshRequire("lib/auth/platform.ts")
   return freshRequire("lib/auth/context.ts")
 }
+
+test("a platform owner enters without a grant and overrides a limited membership", async () => {
+  for (const memberOf of [[], [ORG]]) {
+    const context = loadContext({ memberOf, owner: true, grantError: "Grant database unavailable" })
+    const resolved = await context.requireOrgMembership(ORG)
+    assert.equal(resolved.orgId, ORG)
+    assert.equal(resolved.membership.role_key, "owner")
+    assert.equal(resolved.membership.id, "platform-admin")
+  }
+  await assert.rejects(loadContext({ owner: true }).requireOrgMembership(OTHER_ORG), /Organization not found/)
+})
 
 const OPEN_GRANT = { id: "grant", org_id: ORG, operator_user_id: OPERATOR }
 

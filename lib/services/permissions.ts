@@ -31,8 +31,8 @@ async function resolveContext(ctx?: Partial<PermissionContext>): Promise<Permiss
 // through the service client — RLS hides role_permissions from user sessions —
 // so there is no caller-supplied client to key on.
 export const getUserPermissions = cache(async (userId: string, orgId: string) => {
-  // Staff inside an open support grant (and not a real member) hold every key;
-  // anyone else — staff who belong here included — holds their membership's.
+  // Owners always hold every key. Other staff need an open support grant
+  // and no real membership here; real members hold their membership's keys.
   if (await hasPlatformOrgContext(orgId, userId)) {
     return ["*", ...(await listAllPermissionKeys())]
   }

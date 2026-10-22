@@ -2,7 +2,7 @@ import { readAllRows } from "@/lib/land/paging"
 import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { getPlatformPermissions, hasActivePlatformAccessGrant, holdsPlatformOrgAccess, isPlatformAdminId } from "@/lib/auth/platform"
+import { getPlatformPermissions, hasActivePlatformAccessGrant, holdsPlatformOrgAccess, isPlatformOwner } from "@/lib/auth/platform"
 import { correlationId } from "@/lib/observability/correlation"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { decideAuthorization, hasAllProjectAccess, type AuthorizationReasonCode } from "@/lib/services/authorization-policy"
@@ -298,6 +298,7 @@ async function readAuthorizationHomes(supabase: SupabaseClient, projectIds: stri
  * permission is — the divergence risk on a security path is the point.
  */
 export async function getEffectiveOrgPermissions(orgId: string, userId: string) {
+  if (await isPlatformOwner(userId)) return ["*", ...await listAllPermissionKeys()]
   const result = await fetchOrgPermissionsCached(orgId, userId)
   if (!result.hasMembership) return []
   const denied = new Set(result.denies)
@@ -311,6 +312,7 @@ export async function getDivisionAccessForUser({
   orgId: string
   userId: string
 }): Promise<{ assignedOnly: boolean; divisionIds: string[] }> {
+  if (await isPlatformOwner(userId)) return { assignedOnly: false, divisionIds: [] }
   // A non-member (including staff inside a support grant) has no division
   // assignment to narrow by; a staff member who really belongs is narrowed by
   // their own membership like anyone else.
@@ -375,21 +377,10 @@ export async function getDivisionScopedProjectIds({
   )
 }
 
-/**
- * Whether Arc staff stand inside this organization as the platform pseudo-owner:
- * every permission, no denies, no division or project narrowing.
- *
- * Platform standing is not tenant access. It applies only when all three hold:
- * the user is staff with org access (an environment superadmin, or a platform
- * role holding `platform.org.access` or `*`); the user is NOT a real active
- * member here — a staff member who belongs to the organization acts as exactly
- * that membership, never as the pseudo-owner; and an open, unexpired support
- * grant exists for this organization. This is the same grant
- * `requireOrgMembership()` reads, so entering and acting never disagree.
- */
-// Members never depend on reading platform roles: staff standing is probed only
-// for someone who is not a member of the organization.
+/** Owners have unrestricted org standing. Other staff need a support grant
+ * and must not already hold a real membership in the organization. */
 export const hasPlatformOrgContext = cache(async (orgId: string, userId: string) => {
+  if (await isPlatformOwner(userId)) return true
   const org = await fetchOrgPermissionsCached(orgId, userId)
   if (org.hasMembership) return false
   return (await holdsPlatformOrgAccess(userId)) && hasActivePlatformAccessGrant(orgId, userId)
@@ -520,25 +511,25 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     return decision
   }
 
-  // Platform authority comes only from an environment superadmin or an active
-  // platform membership. Tenant wildcards, overrides and a support grant's
-  // tenant-context expansion must never grant a platform capability.
-  if (input.permission.startsWith("platform.") || input.permission.startsWith("impersonation.")) {
-    if (isPlatformAdminId(input.userId, undefined)) {
-      const decision: AuthorizationDecision = {
-        allowed: true,
-        reasonCode: "allow_superadmin",
-        permission: input.permission,
-        userId: input.userId,
-        orgId: input.orgId ?? home?.org_id,
-        projectId: input.projectId,
-        permissions: ["*"],
-        scopesEvaluated: ["superadmin"],
-      }
-      if (input.logDecision) await auditAuthorizationDecision(catalogSupabase, input, decision)
-      return decision
+  // Owner authority is independent of tenant membership, support grants and
+  // workspace entitlements. Permission names and project/org identity stay valid.
+  if (await isPlatformOwner(input.userId)) {
+    const decision: AuthorizationDecision = {
+      allowed: true,
+      reasonCode: "allow_superadmin",
+      permission: input.permission,
+      userId: input.userId,
+      orgId: input.orgId ?? home?.org_id,
+      projectId: input.projectId,
+      permissions: ["*"],
+      scopesEvaluated: ["superadmin"],
     }
+    if (input.logDecision) await auditAuthorizationDecision(catalogSupabase, input, decision)
+    return decision
+  }
 
+  // Tenant roles and support grants never grant platform capabilities.
+  if (input.permission.startsWith("platform.") || input.permission.startsWith("impersonation.")) {
     const platform = await getPlatformPermissions(input.userId)
     const allowed = platform.hasMembership &&
       (platform.permissions.includes(input.permission) || platform.permissions.includes("*"))
@@ -693,9 +684,12 @@ export async function authorizeMany({
 
   const supabase = createServiceSupabaseClient()
   if (!(await permissionExists(supabase, permission))) return settle(false)
+  const platformOwner = await isPlatformOwner(userId)
   const homes = await readAuthorizationHomes(supabase, uniqueProjectIds)
   const identityMatches = (projectId: string) => homes.get(projectId)?.org_id === orgId
   const settleScoped = () => { for (const projectId of uniqueProjectIds) verdicts.set(projectId, identityMatches(projectId)); return verdicts }
+
+  if (platformOwner) return settleScoped()
 
   if (permission.startsWith("platform.") || permission.startsWith("impersonation.")) {
     const decision = await authorize({ permission, userId })

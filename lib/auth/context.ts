@@ -8,7 +8,7 @@ import { unstable_rethrow } from "next/navigation"
 import { preserveQueryError } from "@/lib/supabase/query-error"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
-import { hasActivePlatformAccessGrant, holdsPlatformOrgAccess } from "@/lib/auth/platform"
+import { hasActivePlatformAccessGrant, holdsPlatformOrgAccess, isPlatformOwner } from "@/lib/auth/platform"
 import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
 
 export interface OrgMembership {
@@ -264,21 +264,20 @@ export const requireOrgMembership = cache(async (
   // revocation takes effect on the next request even if the browser still has
   // an active Supabase session and a cached app shell.
   //
-  // Whether the caller is Arc staff matters only when they are not a member of
-  // the organization, so that probe runs only then: a member's own access never
-  // depends on reading platform roles, and staff pay the extra round trip.
+  // Owner standing is checked even for members so a limited tenant role never
+  // narrows a platform owner. Other staff still use their actual membership.
   const ambientOrgId = orgId ?? context.orgId
   const ambientMembership = ambientOrgId ? await fetchMembershipWithServiceRole(ambientOrgId, context.user.id) : null
 
-  // Break-glass: Arc staff reach an organization they do not belong to only
-  // through an open, unexpired grant with a stated reason. Being staff is not
-  // access. A staff member who really belongs to the organization always acts
-  // as that membership, never as the pseudo-owner.
+  // Owners always act as owners, even if they also have a limited membership.
+  // Other staff need an open support grant and use real memberships when present.
+  const platformOwner = ambientOrgId ? await isPlatformOwner(context.user.id, context.user.email) : false
   if (
-    !ambientMembership &&
     ambientOrgId &&
-    (await holdsPlatformOrgAccess(context.user.id, context.user.email)) &&
-    (await hasActivePlatformAccessGrant(ambientOrgId, context.user.id))
+    (platformOwner ||
+      (!ambientMembership &&
+        (await holdsPlatformOrgAccess(context.user.id, context.user.email)) &&
+        (await hasActivePlatformAccessGrant(ambientOrgId, context.user.id))))
   ) {
     const svc = createServiceSupabaseClient()
     const { data: platformOrg } = await svc
@@ -286,6 +285,8 @@ export const requireOrgMembership = cache(async (
       .select("product_tier")
       .eq("id", ambientOrgId)
       .maybeSingle()
+
+    if (!platformOrg) throw new Error("Organization not found")
 
     const pseudoMembership: OrgMembership = {
       id: "platform-admin",

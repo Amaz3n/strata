@@ -96,9 +96,8 @@ test('desk scope includes wildcard, platform and empty division cases and fails 
 })
 
 // --- Arc staff inside a customer organization ---------------------------------
-// Platform standing is not tenant access: staff reach an organization they do
-// not belong to only through an open support grant, and staff who really belong
-// act as exactly their membership.
+// Owners have direct access. Other staff need an open support grant when
+// they do not belong, and otherwise act as their actual membership.
 
 const OTHER_ORG='00000000-0000-4000-8000-0000000000aa',OTHER_PROJECT='00000000-0000-4000-8000-0000000000ab'
 const HOUR=3600_000
@@ -123,12 +122,12 @@ test('staff who are real limited members hold only their role there, grant or no
   assert.deepEqual(await h.service.getDivisionAccessForUser({orgId:ORG,userId:PACKAGE}),{assignedOnly:true,divisionIds:[PACKAGE]})
  }
  const h=operator();h.admin()
- assert.equal((await h.service.authorize({permission:'members.manage',userId:PACKAGE,orgId:ORG})).allowed,false,'environment superadmin')
+ assert.equal((await h.service.authorize({permission:'members.manage',userId:PACKAGE,orgId:ORG})).allowed,true,'environment superadmin overrides a limited membership')
 })
 
-test('staff with neither membership nor an open grant are a non-member',async()=>{
- for(const env of [false,true]){
-  const h=operator();if(env)h.admin()
+test('non-owner staff with neither membership nor an open grant are a non-member',async()=>{
+ {
+  const h=operator()
   const decision=await h.service.authorize(h.inOther)
   assert.equal(decision.allowed,false);assert.equal(decision.reasonCode,'deny_no_org_membership')
   assert.equal((await h.service.authorize({...h.inOther,projectId:OTHER_PROJECT})).allowed,false)
@@ -172,4 +171,41 @@ test('a grant that cannot be read refuses rather than grants',async()=>{
  const h=operator({grants:[{}]})
  h.db.rpc=async()=>({data:null,error:{message:'timeout'}})
  await assert.rejects(h.service.authorize(h.inOther),/Unable to verify support access/)
+})
+
+
+test('platform owners need no grant, override limited memberships, and keep project identities scoped', async () => {
+ for (const mode of ['id', 'email', 'role']) {
+  const h=operator({platform:null})
+  delete process.env.SUPERADMIN_EMAILS
+  if(mode==='id')h.admin()
+  if(mode==='email'){
+   process.env.SUPERADMIN_EMAILS='owner@arc.test'
+   h.db.store.app_users=[{id:PACKAGE,email:'owner@arc.test'}]
+  }
+  if(mode==='role')h.db.store.platform_memberships=[{user_id:PACKAGE,status:'active',expires_at:null,role:{key:'platform_super_admin',permissions:[]}}]
+  h.db.rpc=async()=>{throw new Error('Owner must not need a support grant')}
+  try {
+   assert.equal((await h.service.authorize(h.inOther)).allowed,true,mode)
+   assert.equal((await h.service.authorize({permission:'members.manage',userId:PACKAGE,orgId:ORG})).allowed,true,mode)
+   assert.equal((await h.service.authorize({...h.inOther,projectId:OTHER_PROJECT})).allowed,true,mode)
+   assert.equal((await h.many()).get(OTHER_PROJECT),true,mode)
+   assert.deepEqual(await h.scope(),{divisionIds:null,projectMembershipRequired:false})
+   assert.deepEqual(await h.service.getDivisionAccessForUser({orgId:ORG,userId:PACKAGE}),{assignedOnly:false,divisionIds:[]})
+   assert.equal((await h.service.authorize({...h.inOther,projectId:PROJECT})).reasonCode,'deny_project_org_mismatch')
+   assert.equal((await h.service.authorizeMany({...h.inOther,projectIds:[PROJECT,OTHER_PROJECT]})).get(PROJECT),false)
+   assert.equal((await h.service.authorize({...h.inOther,permission:'invented.permission'})).allowed,false)
+  } finally {
+   delete process.env.SUPERADMIN_IDS
+   delete process.env.SUPERADMIN_EMAILS
+  }
+ }
+})
+
+test('revoked, expired and ordinary platform roles never become platform owners', async () => {
+ for(const overrides of [{status:'revoked'},{expires_at:'2000-01-01T00:00:00Z'},{role:{key:'platform_admin',permissions:[{permission_key:'*'}]}}]){
+  const h=operator({platform:null})
+  h.db.store.platform_memberships=[{user_id:PACKAGE,status:'active',expires_at:null,role:{key:'platform_super_admin',permissions:[]},...overrides}]
+  assert.equal((await h.service.authorize(h.inOther)).allowed,false)
+ }
 })

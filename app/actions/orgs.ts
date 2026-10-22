@@ -3,6 +3,7 @@
 import { refresh } from "next/cache"
 import { cookies } from "next/headers"
 
+import { isPlatformOwner } from "@/lib/auth/platform"
 import { requireAuth } from "@/lib/auth/context"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getOrgOnboardingState } from "@/lib/services/orgs"
@@ -20,6 +21,21 @@ export interface OrgMembershipSummary {
 
 export async function listMembershipsAction(): Promise<OrgMembershipSummary[]> {
   const { user } = await requireAuth()
+  if (await isPlatformOwner(user.id, user.email)) {
+    const { data, error } = await createServiceSupabaseClient()
+      .from("orgs")
+      .select("id, name, slug, logo_url, billing_model")
+      .order("created_at", { ascending: true })
+    if (error) throw new Error(`Unable to load organizations: ${error.message}`)
+    return (data ?? []).map((row) => ({
+      org_id: row.id,
+      org_name: row.name,
+      org_slug: row.slug ?? null,
+      logo_url: row.logo_url ?? null,
+      role_key: "platform",
+      billing_model: row.billing_model ?? null,
+    }))
+  }
   const supabase = await createServerSupabaseClient()
 
   const [{ data, error }, isPlatformOperator] = await Promise.all([
@@ -100,7 +116,24 @@ export async function switchOrgAction(orgId: string) {
     .limit(1)
     .maybeSingle()
 
-  if (error || !data) {
+  const platformOwner = await isPlatformOwner(user.id, user.email)
+  if (platformOwner) {
+    const { data: org, error: orgError } = await createServiceSupabaseClient()
+      .from("orgs").select("id").eq("id", orgId).maybeSingle()
+    if (orgError) throw new Error(`Unable to verify organization: ${orgError.message}`)
+    if (!org) throw new Error("Organization not found")
+    const { error: auditError } = await createServiceSupabaseClient()
+      .from("authorization_audit_log")
+      .insert({
+        actor_user_id: user.id,
+        org_id: orgId,
+        action_key: "platform.org.access",
+        decision: "allow",
+        reason_code: "allow_superadmin",
+        context: { source: "org_switcher" },
+      })
+    if (auditError) throw new Error(`Unable to record organization access: ${auditError.message}`)
+  } else if (error || !data) {
     const isPlatformOperator = await hasPlatformAccessByUserId(user.id, user.email ?? undefined)
     const granted =
       isPlatformOperator && (await listActivePlatformAccessGrants()).some((grant) => grant.orgId === orgId)

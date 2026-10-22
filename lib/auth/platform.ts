@@ -46,7 +46,7 @@ export const hasActivePlatformAccessGrant = cache(async (orgId: string, userId: 
 })
 
 type PlatformRolePermissions = {
-  role?: { permissions?: { permission_key: string }[] | null } | { permissions?: { permission_key: string }[] | null }[] | null
+  role?: { key?: string; permissions?: { permission_key: string }[] | null } | { key?: string; permissions?: { permission_key: string }[] | null }[] | null
 }
 
 /**
@@ -57,7 +57,7 @@ type PlatformRolePermissions = {
 export const getPlatformPermissions = cache(async (userId: string) => {
   const { data, error } = await createServiceSupabaseClient()
     .from("platform_memberships")
-    .select("role:roles!inner(permissions:role_permissions(permission_key))")
+    .select("role:roles!inner(key, permissions:role_permissions(permission_key))")
     .eq("user_id", userId)
     .eq("status", "active")
     .or("expires_at.is.null,expires_at.gt.now")
@@ -68,15 +68,21 @@ export const getPlatformPermissions = cache(async (userId: string) => {
     const role = Array.isArray(row.role) ? row.role[0] : row.role
     return role?.permissions?.map((permission) => permission.permission_key) ?? []
   })
-  return { permissions: [...new Set(keys)], hasMembership: rows.length > 0 }
+  return {
+    permissions: [...new Set(keys)],
+    hasMembership: rows.length > 0,
+    isSuperadmin: rows.some((row) => {
+      const role = Array.isArray(row.role) ? row.role[0] : row.role
+      return role?.key === "platform_super_admin"
+    }),
+  }
 })
 
 /**
  * Whether this user is Arc staff entitled to enter an organization they do not
  * belong to: an environment superadmin, or a platform role holding
- * `platform.org.access` or `*`. Being staff is not access by itself; an open
- * support grant is also required. Org context (`requireOrgMembership`) and
- * permission decisions (`hasPlatformOrgContext`) both ask this one question.
+ * `platform.org.access` or `*`. Non-owner staff also need an open support grant.
+ * Org context (`requireOrgMembership`) and permission decisions (`hasPlatformOrgContext`) both ask this one question.
  */
 // A superadmin may be configured by email alone; a caller that knows only the
 // user id (authorize()) resolves the email so both gates decide alike.
@@ -92,3 +98,13 @@ export async function holdsPlatformOrgAccess(userId: string, email?: string | nu
   const { permissions } = await getPlatformPermissions(userId)
   return permissions.includes("*") || permissions.includes("platform.org.access")
 }
+
+/** Platform owners enter and act directly; ordinary staff still need support grants.
+ * Only server configuration or an active, unexpired platform_super_admin role
+ * grants this authority. Tenant roles and permission wildcards do not.
+ */
+export const isPlatformOwner = cache(async (userId: string, email?: string | null): Promise<boolean> => {
+  if (isPlatformAdminId(userId, email)) return true
+  if (email == null && isPlatformAdminId(userId, await superadminEmailOf(userId))) return true
+  return (await getPlatformPermissions(userId)).isSuperadmin
+})
