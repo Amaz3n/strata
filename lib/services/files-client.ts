@@ -108,7 +108,9 @@ async function transferDocument<T>(file: File, options: TransferOptions, scope: 
       })
     } else {
       // The server returns the same key for every retry and checks R2 before reissuing a PUT.
-      const session = await uploadControlRequest<{ storagePath: string; uploadUrl?: string; completed: boolean }>(
+      const session = await uploadControlRequest<{
+        storagePath: string; uploadUrl?: string; uploadHeaders?: Record<string, string>; completed: boolean
+      }>(
         "/api/documents/upload-url", createBody, options.signal,
       )
       receipt.storagePath = session.storagePath
@@ -120,7 +122,7 @@ async function transferDocument<T>(file: File, options: TransferOptions, scope: 
         try {
           await uploadBlobWithProgress(session.uploadUrl, file, contentType, loaded => {
             options.onProgress?.({ loaded, total: file.size, percent: Math.round(loaded / file.size * 100) })
-          }, { signal: options.signal, headers: { "If-None-Match": "*" } })
+          }, { signal: options.signal, headers: { "If-None-Match": "*", ...session.uploadHeaders } })
         } catch (error) {
           if (options.signal?.aborted) throw error
           const reconciled = await uploadControlRequest<{ state: string }>("/api/documents/multipart/status", {

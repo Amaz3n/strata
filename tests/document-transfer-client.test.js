@@ -12,8 +12,9 @@ function fixture(t){
   '@/lib/files/content-policy':{validateDocumentUpload:()=>{}},
   '@/lib/services/multipart-upload-client':{
    MULTIPART_THRESHOLD:32*1024*1024,clearMultipartResumeState:k=>saved.delete(k),
-   uploadControlRequest:async(url)=>url.endsWith('upload-url')?{storagePath:'org/project/documents/uploads/reserved',uploadUrl:complete?undefined:'signed',completed:complete}:{state:complete?'completed':'uploading'},
-   uploadBlobWithProgress:async(_url,_file,_type,_progress,options)=>{assert.equal(options.headers['If-None-Match'],'*');putCalls++;complete=true;if(putFails)throw Error('Upload failed with status 412')},
+   uploadControlRequest:async(url)=>url.endsWith('upload-url')?{storagePath:'org/project/documents/uploads/reserved',uploadUrl:complete?undefined:'signed',uploadHeaders:{'x-amz-meta-transfer-id':'stable','x-amz-meta-content-identity':'sha256-chain-v1:4:'+'b'.repeat(64)},completed:complete}:{state:complete?'completed':'uploading'},
+   // The signed URL covers the reservation metadata as headers; a PUT without them lands an object R2 cannot match to its reservation.
+   uploadBlobWithProgress:async(_url,_file,_type,_progress,options)=>{assert.deepEqual(options.headers,{'If-None-Match':'*','x-amz-meta-transfer-id':'stable','x-amz-meta-content-identity':'sha256-chain-v1:4:'+'b'.repeat(64)});putCalls++;complete=true;if(putFails)throw Error('Upload failed with status 412')},
   }
  })
  return {client,saved,file:new File(['test'],'x.pdf',{type:'application/pdf'}),options:{projectId:'project',transferId:'stable'},loseMetadata:()=>{finalizeFails=true},losePut:()=>{putFails=true},puts:()=>putCalls,finalizations:()=>finalizeCalls}

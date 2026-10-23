@@ -31,7 +31,7 @@ function fixture() {
     async listFilesMultipartParts({uploadId}){if(!uploads.has(uploadId)){const e=new Error('gone');e.name='NoSuchUpload';throw e}return uploads.get(uploadId).parts},
     async createFilesMultipartPartUrl({partNumber}){return {uploadUrl:`fixture:${partNumber}`}},
     async completeFilesMultipartUpload({path,uploadId}){const upload=uploads.get(uploadId);objects.set(path,{size,metadata:upload.metadata});uploads.delete(uploadId);if(lostComplete){lostComplete=false;throw Error('lost complete')}},
-    async createFilesUploadUrl(){return {uploadUrl:'fixture:put'}},
+    async createFilesUploadUrl({metadata}){return {uploadUrl:'fixture:put',uploadHeaders:Object.fromEntries(Object.entries(metadata).map(([k,v])=>[`x-amz-meta-${k}`,v]))}},
   }
   class UploadPreparationError extends Error {}
   const sut=loadHandler('lib/services/document-upload-transfers.ts',{
@@ -72,6 +72,7 @@ test('cancel by queue identity aborts a persisted upload, is idempotent and pres
 })
 test('single PUT retry recognizes complete bytes and does not reissue a mutable URL',async()=>{
  const f=fixture();const a=await f.sut.createDocumentTransfer(f.input,'single')
+ assert.deepEqual(a.uploadHeaders,{'x-amz-meta-transfer-id':id,'x-amz-meta-content-identity':identity})
  f.objects.set(a.storagePath,{size,metadata:{'transfer-id':id,'content-identity':identity}})
  const b=await f.sut.createDocumentTransfer(f.input,'single');assert.equal(b.completed,true);assert.equal(b.uploadUrl,undefined);assert.equal(a.storagePath,b.storagePath)
 })

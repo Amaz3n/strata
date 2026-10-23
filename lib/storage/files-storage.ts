@@ -231,7 +231,7 @@ export async function createFilesUploadUrl(params: {
   contentType: string
   cacheControl?: string
   expiresIn?: number
-}): Promise<{ storagePath: string; uploadUrl: string; provider: FilesStorageProvider }> {
+}): Promise<{ storagePath: string; uploadUrl: string; uploadHeaders: Record<string, string>; provider: FilesStorageProvider }> {
   const { supabase: _supabase, orgId, contentType } = params
   const provider = getFilesStorageProvider()
   const storagePath = ensureOrgScopedPath(orgId, params.path)
@@ -250,11 +250,18 @@ export async function createFilesUploadUrl(params: {
     ContentType: contentType,
     CacheControl: params.cacheControl ?? "private, max-age=3600",
   })
+  // The presigner hoists x-amz-* headers into the query string by default, and R2
+  // does not read object metadata from there: the object lands with none and fails
+  // its reservation check. Keep metadata as signed headers the uploader must send.
+  const uploadHeaders = Object.fromEntries(
+    Object.entries(params.metadata ?? {}).map(([name, value]) => [`x-amz-meta-${name}`, value]),
+  )
   const uploadUrl = await getSignedUrl(client, command, {
     expiresIn: params.expiresIn ?? 600,
+    unhoistableHeaders: new Set(Object.keys(uploadHeaders)),
   })
 
-  return { storagePath, uploadUrl, provider }
+  return { storagePath, uploadUrl, uploadHeaders, provider }
 }
 
 export async function createFilesDownloadUrl(params: {
